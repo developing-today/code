@@ -23,6 +23,15 @@ argon2 = "0.6"
 chacha20poly1305 = "0.11"
 # Signed transport advertisements (transport_advertisement.rs, #8214).
 ed25519-dalek = { version = "3", features = ["rand_core"] }
+# OPAQUE (RFC 9807) password login over a client-held ID key
+# (opaque_login.rs, #13710). opaque-ke 4 pins the digest 0.10 / rand_core
+# 0.6 generation, so its SHA-512 and OS RNG come from those versions.
+opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255", "argon2"] }
+rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+sha2_010 = { package = "sha2", version = "0.10" }
+# ID Token signature checks for OIDC login (oidc_login.rs, #13710):
+# RS256 and ES256 verification. Already in the tree via rustls.
+ring = "0.17"
 rand = "0.10"
 sha2 = "0.11"
 zeroize = "1"
@@ -36,9 +45,9 @@ futures-lite = "2"
 idna = "1"
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+iroh-blobs = "0.103"
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
+p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
 postcard = { version = "1", features = ["alloc"] }
@@ -158,8 +167,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

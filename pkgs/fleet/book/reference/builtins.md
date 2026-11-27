@@ -60,20 +60,21 @@ $ echo $?
 ## fleet session bind
 
 ```text
-Usage: fleet session bind [--session-id ID]
+Usage: fleet session bind [--session-id ID] [--force]
 ```
 
 | Flag           | Argument   | Default                  | Meaning                                                                                                                                                                                                   |
 | -------------- | ---------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--session-id` | session id | resolved (see Behaviour) | The explicit session identity to validate and persist. Both `--session-id ID` and `--session-id=ID` spellings are accepted; at most one value — a second value is the usage error shown in the help dump. |
+| `--force`      | —          | off                      | Remove the worktree marker without validating it before resolving, so a dead binding can be replaced in place (#14454). May precede or follow `--session-id`; a second `--force` is a usage error.        |
 
 **Behaviour.** `fleet session bind` validates and persists this worktree's session identity. The identity is an OpenCode session id of the form `ses_` followed by ASCII letters and digits — anything else fails closed.
 
-Resolution precedence: the explicit `--session-id` → `$FLEET_SESSION_ID` → the OpenCode environment → the worktree's marker file. The marker is a plain one-line file `.fleet-session-id` at the git worktree root, so each worktree retains its own active session association. A marker is used only when the session is **live** — checked against the OpenCode server's session endpoint; a stale marker (ended or unverifiable session) is an explicit error naming the file and the id, never a silent fall-through, and an unavailable server is not proof a recorded session is live.
+Resolution precedence: the explicit `--session-id` → `$FLEET_SESSION_ID` → the OpenCode environment → the worktree's marker file. The marker is a plain one-line file `.fleet-session-id` at the git worktree root, so each worktree retains its own active session association. A marker is used only when the session is **live** — checked against the OpenCode server's session endpoint; a stale marker (ended or unverifiable session) is an explicit error naming the file and the id, never a silent fall-through, and an unavailable server is not proof a recorded session is live. The liveness check also answers false in builds without the session probe, so a marker that merely cannot be verified is never removed on its own: only an explicit `--force` clears it, and the operator asserts the recorded session is gone when they pass it.
 
-A successful bind sets `FLEET_SESSION_ID` for fleet's child processes and persists the identity to the marker, so a later bare invocation in the same worktree resolves the same session. Every domain invocation runs this initialisation (with no explicit id) before dispatch; `fleet init` runs it explicitly.
+A successful bind sets `FLEET_SESSION_ID` for fleet's child processes and persists the identity to the marker, so a later bare invocation in the same worktree resolves the same session. Every domain invocation runs this initialisation (with no explicit id) before dispatch; `fleet init` runs it explicitly. A worktree whose marker names an ended session blocks every domain invocation until the marker is removed or rebound — `fleet session bind --force` does that in place from inside the worktree, then resolves (and persists) any supplied or inherited identity, or nothing when there is none.
 
-Exit codes: 0 ok · 2 usage error, malformed session id, or stale/unverifiable marker.
+Exit codes: 0 ok · 2 usage error, malformed session id, stale/unverifiable marker, or a marker that could not be removed.
 
 ```text
 $ fleet session bind --session-id ses_01J9EXAMPLE0000000000000
@@ -104,7 +105,7 @@ Enabled capabilities: proxy-connect, proxy-serve, … (usable set, registry orde
 
 The fields are: the workspace **version**; the **build** name — `fleet`, `fleet-serve`, or `fleet-connect`, derived by matching the _compiled_ capability set against the variant sets (an unrecognised compiled set falls back to the plain build name) — with the profile annotation when the invocation name narrowed the surface; the **derived version** (the `0.1.0-dev+g<rev>` form); the **source rev** (the full commit SHA the build was cut from); and the **enabled capabilities** — the _usable_ set (compiled ∩ profile ∩ `[domains]` enables), comma-joined in registry order, or `none`. The values above are the reference build's, as captured in the capabilities dump.
 
-There are 15 capability atoms, in registry order: `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent`. `proxy-connect` is unconditional — present in every variant. The three build variants are: Full (`fleet`, all 15), Serve (`fleet-serve`: `proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets` — daemon roles plus proxy, no working-seat clients), and Connect (`fleet-connect`: `proxy-connect, proxy-raw-splice` only). Invoking the binary under a hyphenated name selects that profile as a ceiling; profiles can only narrow, never widen. An unknown invocation name is a usage error, exit 2, naming the expected names.
+There are 24 capability atoms, in registry order: `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent, commander, laptop-http, laptop-ssh, laptop, cert, actions, orgs, kv, id`. `proxy-connect` is unconditional — present in every variant. The three build variants are: Full (`fleet`, all 24), Serve (`fleet-serve`: `proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets` — daemon roles plus proxy, no working-seat clients), and Connect (`fleet-connect`: `proxy-connect, proxy-raw-splice` only). Invoking the binary under a hyphenated name selects that profile as a ceiling; profiles can only narrow, never widen. An unknown invocation name is a usage error, exit 2, naming the expected names.
 
 Exit codes: 0 ok · 2 usage error (any argument, including `--help`).
 
@@ -145,7 +146,7 @@ Usage: fleet capabilities
 }
 ```
 
-Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this _invocation_ can use; `compiled_capabilities` is what the _binary_ was built with — their difference is the profile/config narrowing. In the reference build both are the full 15 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
+Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this _invocation_ can use; `compiled_capabilities` is what the _binary_ was built with — their difference is the profile/config narrowing. In the reference build both are the full 24 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
 
 Exit codes: 0 ok · 2 usage error (any argument, including `--help`).
 
@@ -178,7 +179,7 @@ Usage: fleet help [domain]
 | ----------------------- | ----------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<domain>` (positional) | domain name | full registry | With no argument, prints the full registry help (identical to `fleet --help`). With one domain name, prints that domain's help. A second argument is rejected. `fleet help --help` is an error: there is no domain named `--help`. |
 
-**Behaviour.** `fleet help` with no argument prints the full registry: `fleet 0.1.0 — one multicall binary for the fleet's tools`, the usage lines, all 12 domains with summaries and argv0 aliases, the five built-in commands, and the note that a domain this invocation cannot use answers with a stub and exit code 69. `fleet help <domain>` prints the domain's registry help: summary line, `Usage: fleet <domain> <command> [args...]`, argv0 aliases, the command list, and a status line whose wording is per-domain and capability-aware. An unknown name is a usage error: `error: no domain named '<name>' — run 'fleet --help' for the registry`, exit 2. Domain help is registry data and renders identically on every build, with unavailable domains marked — help never stubs.
+**Behaviour.** `fleet help` with no argument prints the full registry: `fleet 0.1.0 — one multicall binary for the fleet's tools`, the usage lines, all 22 domains with summaries and argv0 aliases, the five built-in commands, and the note that a domain this invocation cannot use answers with a stub and exit code 69. `fleet help <domain>` prints the domain's registry help: summary line, `Usage: fleet <domain> <command> [args...]`, argv0 aliases, the command list, and a status line whose wording is per-domain and capability-aware. An unknown name is a usage error: `error: no domain named '<name>' — run 'fleet --help' for the registry`, exit 2. Domain help is registry data and renders identically on every build, with unavailable domains marked — help never stubs.
 
 Exit codes: 0 ok · 2 unknown domain name or extra argument.
 
@@ -188,7 +189,7 @@ fleet queue — Repo work queue: enqueue, claim, and complete tasks through the 
 
 Usage: fleet queue <command> [args...]
 Aliases (argv0): repo-queue
-Commands: validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
+Commands: validate, enqueue, list, meta, claim, release, lane, bind, heartbeat, checkpoint, reprioritize, park, wake, block, unblock, dep-recheck, quarantine-recheck, repair, resolution-backfill, cancel, revive, fail, complete, verify-disposition, timeline, history, staleness, needs-user, show, note, link, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
 Status: included in this build
 ```
 

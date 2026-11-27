@@ -312,11 +312,39 @@ test("sql store: hash-only storage and the claim predicate", async () => {
   assert.equal(noteRegs[0].token_hash, await noteTokenHash(out.notes_token), "notes registration is hash-only too");
 
   // The credential authenticates until revoked.
-  assert.deepEqual(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), { agent: "sql-1", scopes: ["inbox", "send"] });
+  assert.deepEqual(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), { agent: "sql-1", scopes: ["inbox", "send"], addr: null });
   assert.equal(fleetCredentialRevokeSql(sql, "sql-1", new Date().toISOString()), 1);
   assert.equal(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), null);
 
   // Expired tokens cannot be claimed.
   const stale = await mintEnrollToken(store, { agent: "sql-9", ttl_seconds: 60 }, Date.now() - 120_000);
   assert.equal(await exchangeEnrollToken(store, { bootstrap_token: stale.bootstrap_token, agent: "sql-9" }), null);
+});
+
+test("a credentialed hello cannot move its agent into new groups (#14370)", async () => {
+  const h = await harness();
+  const { creds } = await h.enroll({ agent: "bound-1", kind: "muse", groups: ["muse"] });
+  const cred = h.as(creds.fleet_token);
+
+  // The credential's hello names groups the mint never bound: the
+  // registration keeps the mint-bound groups (last_seen still moves).
+  const hello = await cred.hello({ agent: "bound-1", groups: ["muse", "ops", "everyone"] });
+  assert.equal(hello.status, 200);
+  assert.deepEqual((await hello.json()).agent.groups, ["muse"]);
+
+  // An inbox call carrying groups is pinned the same way.
+  const inbox = await cred.inbox({ agent: "bound-1", groups: "ops" });
+  assert.equal(inbox.status, 200);
+  const agents = (await (await h.api.agents()).json()).agents;
+  assert.deepEqual(
+    agents.map((a) => [a.name, a.groups]),
+    [["bound-1", ["muse"]]],
+    "group:ops addressing must not reach an agent whose mint bound only muse",
+  );
+
+  // The shared fleet token keeps the historical behaviour: its hello
+  // may still set groups (central and legacy lanes register that way).
+  const shared = await h.post(`/fleet/${h.ft}/hello`, { agent: "legacy-1", groups: ["ops"] });
+  assert.equal(shared.status, 200);
+  assert.deepEqual((await shared.json()).agent.groups, ["ops"]);
 });

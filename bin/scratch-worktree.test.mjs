@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { add, remove, runId, parseArgs, validatePrefix, ScratchError } from './scratch-worktree.mjs';
+import { add, remove, runId, parseArgs, validatePrefix, blockingChanges, ScratchError } from './scratch-worktree.mjs';
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scratch-worktree.mjs');
 
@@ -108,6 +108,35 @@ test('remove needs the owning token and a clean tree, and never forces', () => {
   assert.deepEqual(remove({ path: mine.path, token: mine.token }), { removed: mine.path, head: mine.head });
   assert.ok(!fs.existsSync(mine.path));
   assert.ok(fs.existsSync(theirs.path));
+});
+
+test('blockingChanges excuses only the exact untracked fleet marker (#14309)', () => {
+  assert.equal(blockingChanges('?? .fleet-session-id'), '');
+  assert.equal(blockingChanges(''), '');
+  // Any other state still blocks: another untracked file alongside the
+  // marker, a modified tracked marker, or a marker below the root.
+  assert.equal(blockingChanges('?? .fleet-session-id\n?? notes.txt'), '?? notes.txt');
+  assert.equal(blockingChanges(' M .fleet-session-id'), ' M .fleet-session-id');
+  assert.equal(blockingChanges('?? sub/.fleet-session-id'), '?? sub/.fleet-session-id');
+});
+
+test('remove succeeds when the only untracked file is the fleet session marker (#14309)', () => {
+  const { repo, root } = fixture();
+  const created = add({ repo, prefix: 'creator', root });
+  // The fixture repo does not ignore the marker, matching openchamber,
+  // opencode and darwin-nix in #14309.
+  fs.writeFileSync(path.join(created.path, '.fleet-session-id'), 'ses_test\n');
+  assert.deepEqual(remove({ path: created.path, token: created.token }), { removed: created.path, head: created.head });
+  assert.ok(!fs.existsSync(created.path));
+});
+
+test('a fleet marker does not excuse any other untracked file (#14309)', () => {
+  const { repo, root } = fixture();
+  const created = add({ repo, prefix: 'creator', root });
+  fs.writeFileSync(path.join(created.path, '.fleet-session-id'), 'ses_test\n');
+  fs.writeFileSync(path.join(created.path, 'notes.txt'), 'unsaved work\n');
+  assert.throws(() => remove({ path: created.path, token: created.token }), refused(3, 'uncommitted changes'));
+  assert.ok(fs.existsSync(path.join(created.path, 'notes.txt')));
 });
 
 test('a worktree this helper did not create is never removed', () => {

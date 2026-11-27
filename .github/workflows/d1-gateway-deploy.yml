@@ -1,0 +1,59 @@
+name: d1-gateway deploy
+
+# Deploys the d1-gateway Worker (pkgs/d1-gateway/worker: the Turso-protocol
+# endpoint over D1) from the repo: on every push to main that touches it,
+# the flake package builds (its checkPhase runs the tests) and
+#   nix run .#d1-gateway-deploy
+# uploads a Cloudflare Worker version tagged with the commit and deploys
+# it at 100% (wrangler versions upload + versions deploy). A manual run
+# with rollback_version deploys that existing version instead. Pull
+# requests build and test only.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/d1-gateway/**"
+      - ".github/workflows/d1-gateway-deploy.yml"
+  pull_request:
+    paths:
+      - "pkgs/d1-gateway/**"
+      - ".github/workflows/d1-gateway-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      rollback_version:
+        description: "Existing Worker version id to deploy instead of uploading (rollback); empty deploys this commit"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: build, test and deploy d1-gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - name: Build and test the Worker package
+        run: nix build .#d1Gateway .#d1GatewayDeploy --print-build-logs
+      - name: Deploy
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+        run: |
+          if [ -n "${ROLLBACK_VERSION:-}" ]; then
+            nix run .#d1-gateway-deploy -- --deploy-version "$ROLLBACK_VERSION"
+            echo "Rolled d1-gateway back to ${ROLLBACK_VERSION}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            nix run .#d1-gateway-deploy
+            echo "Deployed d1-gateway from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          fi

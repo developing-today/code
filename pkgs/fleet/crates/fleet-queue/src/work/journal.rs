@@ -37,7 +37,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::contracts::{is_canonical_decimal, ContractError, WorkRef};
+use super::contracts::{ContractError, WorkRef, is_canonical_decimal};
 use super::lifecycle::WorkflowState;
 
 /// Wire schema identifier of the journal checkpoint reference.
@@ -103,9 +103,7 @@ impl CheckpointError {
 impl From<ContractError> for CheckpointError {
     fn from(error: ContractError) -> Self {
         match error {
-            ContractError::InvalidSchema { detail } => {
-                CheckpointError::InvalidSchema { detail }
-            }
+            ContractError::InvalidSchema { detail } => CheckpointError::InvalidSchema { detail },
             ContractError::UnsupportedVersion { schema_version } => {
                 CheckpointError::UnsupportedVersion { schema_version }
             }
@@ -445,11 +443,10 @@ impl CheckpointRef {
     /// versions and non-private visibility are typed rejections,
     /// never best-effort projections.
     pub fn from_json(text: &str) -> Result<Self, CheckpointError> {
-        let checkpoint: CheckpointRef = serde_json::from_str(text).map_err(|error| {
-            CheckpointError::InvalidSchema {
+        let checkpoint: CheckpointRef =
+            serde_json::from_str(text).map_err(|error| CheckpointError::InvalidSchema {
                 detail: format!("checkpoint JSON does not parse: {error}"),
-            }
-        })?;
+            })?;
         checkpoint.validate()?;
         Ok(checkpoint)
     }
@@ -614,11 +611,10 @@ impl HandoffRef {
 
     /// Parse and validate a wire payload.
     pub fn from_json(text: &str) -> Result<Self, CheckpointError> {
-        let handoff: HandoffRef = serde_json::from_str(text).map_err(|error| {
-            CheckpointError::InvalidSchema {
+        let handoff: HandoffRef =
+            serde_json::from_str(text).map_err(|error| CheckpointError::InvalidSchema {
                 detail: format!("handoff JSON does not parse: {error}"),
-            }
-        })?;
+            })?;
         handoff.validate()?;
         Ok(handoff)
     }
@@ -828,8 +824,7 @@ mod tests {
     #[test]
     fn pmo_journal_checkpoint_pending_test_is_never_shown_passed() {
         let checkpoint = fixture_checkpoint();
-        let pending_name =
-            "pmo_journal_checkpoint_stale_checkpoint_never_projects_current";
+        let pending_name = "pmo_journal_checkpoint_stale_checkpoint_never_projects_current";
         assert_eq!(
             checkpoint.tests.outcome_of(pending_name),
             Some(TestOutcome::Pending)

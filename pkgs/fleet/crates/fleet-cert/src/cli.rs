@@ -7,8 +7,9 @@
 //! operational/policy/validation failure.
 
 use crate::algorithm::{self, AlgorithmId};
+use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{CertInfo, TrustSelection, parse_cert};
+use crate::chain::{parse_cert, CertInfo, TrustSelection};
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
@@ -18,10 +19,11 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Full usage for the cert domain (also what `fleet cert --help`
 /// prints through the bin crate's help carve-out).
@@ -30,14 +32,21 @@ Usage: fleet cert <group> <verb> [options]
        fleet pki  <group> <verb> [options]   (alias)
 
 Groups and verbs (spec §6.1 tree; status as built):
-  root     create | inspect | list | validate
-  issuer   create | inspect | list
-  leaf     issue | inspect | list
+  root     create | renew | rotate | replace | inspect | list | validate
+  issuer   create | renew | rotate | replace | inspect | list
+  leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
-  profile  list | show
-  algorithms list | describe
+  format   convert | verify
+  inventory list | show | search | audit
+  key      generate | inspect
+  publish  plan | verify (apply | status deferred, production-gated)
+  dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
+  batch    validate | plan | apply | status (reviewed, all-or-nothing)
+  trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
+  profile  list | show | validate | scaffold
+  algorithms list | describe | benchmark | doctor
   explain  [topic]
   doctor
 
@@ -46,6 +55,14 @@ Common options:
   --not-before <rfc3339>  Validity start (default: now).
   --not-after <rfc3339>   Exact validity end (mutually exclusive with --valid-for).
   --valid-for <duration>  Lifetime from not-before: 20y, 90d, '15 years 7 days'.
+
+Trust over a root set (documentation/output only; nothing installs trust):
+  trust inspect --root <root-set-dir> [--trust all|classical|pq]
+  trust pin --root <root-set-dir> [--trust ...] --out <pinset.json>
+  trust verify --root <root-set-dir> [--trust ...] --pins <pinset.json> [--store <pem-or-dir>]
+  trust export --root <root-set-dir> --target <consumer> [--trust ...] --out <dir>
+  trust install-plan --target <consumer>
+See `fleet cert explain trust` for the safety model.
 
 Signing operations never discover keys ambiently: issuer/leaf
 creation requires the signer's key directory as an explicit
@@ -228,6 +245,13 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "ocsp" => ocsp_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "format" => format_cmd(rest, json_out),
+        "inventory" => inventory_cmd(rest, json_out),
+        "key" => key_cmd(rest, json_out),
+        "publish" => publish_cmd(rest, json_out),
+        "dns" => dns_cmd(rest, json_out),
+        "batch" => batch_cmd(rest, json_out),
+        "trust" => trust_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
         "explain" => explain_cmd(rest, json_out),
@@ -236,6 +260,387 @@ fn run_inner(args: &[String]) -> Result<i32> {
             "unknown cert group '{other}' — run 'fleet cert --help' for the surface"
         ))),
     }
+}
+
+// ---------------------------------------------------------------- inventory (§6.1 read-only)
+
+fn inventory_scan_args(p: &Parsed) -> Result<crate::inventory::InventoryRequest> {
+    let dir = p
+        .get("dir")
+        .map(|s| s.to_string())
+        .or_else(|| p.positional(0).map(|s| s.to_string()))
+        .unwrap_or_else(|| ".".to_string());
+    let at = p
+        .get("at")
+        .map(Rfc3339::parse)
+        .transpose()?
+        .unwrap_or_else(Rfc3339::now);
+    let ca_within = p
+        .get("ca-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_CA_WITHIN);
+    let leaf_within = p
+        .get("leaf-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_LEAF_WITHIN);
+    Ok(crate::inventory::InventoryRequest {
+        dir: PathBuf::from(dir),
+        at,
+        ca_within,
+        leaf_within,
+    })
+}
+
+fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "list" => {
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let (text, value) = crate::inventory::render_list(&report);
+            Ok(emit(json_out, text, value))
+        }
+        "show" => {
+            let p = parse_args(
+                rest,
+                &["bundle", "dir", "at", "ca-within", "leaf-within"],
+                &["json"],
+            )?;
+            let bundle_dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("inventory show needs a bundle directory"))?;
+            let mut req = inventory_scan_args(&p)?;
+            // `list_bundles` considers the scan root itself when it is
+            // a bundle, so pointing the scan at the bundle directory
+            // audits exactly that bundle — including parseable-but-
+            // unverifiable ones.
+            req.dir = PathBuf::from(&bundle_dir);
+            let report = crate::inventory::audit(&req)?;
+            let at = report.at;
+            let found = report.bundles.into_iter().next().ok_or_else(|| {
+                CertError::usage(format!("{bundle_dir} is not a bundle directory"))
+            })?;
+            let (text, value) = crate::inventory::render_show(&found, at);
+            Ok(emit(json_out, text, value))
+        }
+        "search" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "dir",
+                    "at",
+                    "ca-within",
+                    "leaf-within",
+                    "subject",
+                    "fingerprint",
+                    "role",
+                    "algorithm",
+                ],
+                &["expired", "json"],
+            )?;
+            let req = inventory_scan_args(&p)?;
+            let filter = crate::inventory::SearchFilter {
+                subject: p.get("subject").map(|s| s.to_string()),
+                fingerprint: p.get("fingerprint").map(|s| s.to_string()),
+                role: p.get("role").map(|s| s.to_string()),
+                algorithm: p.get("algorithm").map(|s| s.to_string()),
+                expired: p.has("expired"),
+            };
+            let hits = crate::inventory::search(
+                &req.dir,
+                req.at,
+                req.ca_within,
+                req.leaf_within,
+                &filter,
+            )?;
+            let (text, value) = crate::inventory::render_search(&hits, req.at);
+            Ok(emit(json_out, text, value))
+        }
+        "audit" => {
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let failed = report.totals.expired > 0 || report.totals.drift_findings > 0;
+            let (text, value) = crate::inventory::render_audit(&report);
+            let code = emit(json_out, text, value);
+            Ok(if failed { 1 } else { code })
+        }
+        other => Err(CertError::usage(format!(
+            "unknown inventory verb '{other}' (list | show | search | audit)"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- standalone key ceremony
+
+fn key_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "generate" => {
+            let p = parse_args(rest, &["algorithm", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let out = PathBuf::from(p.require("out", "key generate")?);
+            let key = engine::generate_key(algorithm)?;
+            let der = key.serialize_der();
+            // Key generation is an explicit ceremony: create a new
+            // owner-readable file, and never replace an existing key.
+            write_new_file(&out, &der, true, "private key")?;
+            let value = json!({"algorithm": algorithm.info().name, "private_key": out.display().to_string(), "encoding": "PKCS#8 DER"});
+            Ok(emit(
+                json_out,
+                format!(
+                    "Generated {} private key at {} (PKCS#8 DER)\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "inspect" => {
+            let p = parse_args(rest, &["algorithm", "in"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let path = PathBuf::from(p.require("in", "key inspect")?);
+            let pkcs8 = std::fs::read(&path).map_err(|e| {
+                CertError::policy(format!("cannot read private key {}: {e}", path.display()))
+            })?;
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "private_key": path.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": fingerprint,
+                "public_key_bytes": public.len(),
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "{} private key\n  encoding: PKCS#8 DER\n  public-key SHA-256: {fingerprint}\n  public-key bytes: {}\n  private material: redacted\n",
+                    algorithm.info().name,
+                    public.len()
+                ),
+                value,
+            ))
+        }
+        "import" => {
+            let p = parse_args(rest, &["algorithm", "in", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key import")?);
+            let out = PathBuf::from(p.require("out", "key import")?);
+            let raw = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot read key to import {}: {e}",
+                    input.display()
+                ))
+            })?;
+            let pkcs8 = pkcs8_from_der_or_pem(&raw, &input)?;
+            // The key must load under the explicitly named algorithm
+            // before anything is written: a wrong algorithm or a
+            // non-PKCS#8 file is refused, and nothing is created.
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            write_new_file(&out, &pkcs8, true, "private key")?;
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "source": input.display().to_string(),
+                "private_key": out.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": fingerprint,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Imported {} private key into {} (PKCS#8 DER)\n  public-key SHA-256: {fingerprint}\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "export" => {
+            let p = parse_args(rest, &["algorithm", "in", "out", "format"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key export")?);
+            let out = PathBuf::from(p.require("out", "key export")?);
+            let pem = match p.get("format").unwrap_or("pem") {
+                "pem" => true,
+                "der" => false,
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown key export format '{other}' (pem | der)"
+                    )));
+                }
+            };
+            let pkcs8 = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!("cannot read private key {}: {e}", input.display()))
+            })?;
+            // Export is the public half only (SubjectPublicKeyInfo).
+            // Private-key export and escrow stay behind the custody
+            // gates of #9155; nothing here writes private material.
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let spki = engine::public_key_spki_der(algorithm, &public);
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            let bytes = if pem {
+                crate::bundle::pem_encode("PUBLIC KEY", &spki).into_bytes()
+            } else {
+                spki
+            };
+            write_new_file(&out, &bytes, false, "public key")?;
+            let encoding = if pem {
+                "SubjectPublicKeyInfo PEM"
+            } else {
+                "SubjectPublicKeyInfo DER"
+            };
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "private_key": input.display().to_string(),
+                "public_key": out.display().to_string(),
+                "encoding": encoding,
+                "public_key_fingerprint_sha256": fingerprint,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Exported {} public key to {} ({encoding})\n  public-key SHA-256: {fingerprint}\n  private material: not exported\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "rotate" => {
+            let p = parse_args(rest, &["algorithm", "in", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key rotate")?);
+            let out = PathBuf::from(p.require("out", "key rotate")?);
+            let old_pkcs8 = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot read private key to rotate {}: {e}",
+                    input.display()
+                ))
+            })?;
+            // Rotation (§6.1, V3-S19) is a new key generation, never a
+            // reuse: the old key must load under the named algorithm,
+            // the successor is a fresh key of that algorithm in a new
+            // owner-only file, and the old file is left untouched.
+            // Retiring the old key is a separate, explicit step.
+            let old_public = engine::inspect_key(algorithm, &old_pkcs8)?;
+            let key = engine::generate_key(algorithm)?;
+            let der = key.serialize_der();
+            let new_public = engine::inspect_key(algorithm, &der)?;
+            if new_public == old_public {
+                return Err(CertError::engine(
+                    "rotation produced the same public key as the old one; nothing written",
+                ));
+            }
+            write_new_file(&out, &der, true, "private key")?;
+            let old_fingerprint = crate::bundle::sha256_hex(&old_public);
+            let new_fingerprint = crate::bundle::sha256_hex(&new_public);
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "previous_private_key": input.display().to_string(),
+                "previous_public_key_fingerprint_sha256": old_fingerprint,
+                "private_key": out.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": new_fingerprint,
+                "previous_key_retained": true,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Rotated {} key: new private key at {} (PKCS#8 DER)\n  previous public-key SHA-256: {old_fingerprint}\n  new public-key SHA-256: {new_fingerprint}\n  previous key: kept at {} (retire it separately)\n",
+                    algorithm.info().name,
+                    out.display(),
+                    input.display()
+                ),
+                value,
+            ))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown key verb '{other}' (generate | inspect | import | export | rotate)"
+        ))),
+    }
+}
+
+/// Write `bytes` to a new file at `path`, refusing to replace anything
+/// already there. A private file is created owner-only (0600 on Unix).
+/// A failed write removes the partial file.
+fn write_new_file(path: &Path, bytes: &[u8], private: bool, what: &str) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if private {
+            options.mode(0o600);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path).map_err(|e| {
+        CertError::policy(format!(
+            "cannot create {what} {} without replacing an existing file: {e}",
+            path.display()
+        ))
+    })?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| {
+            let _ = std::fs::remove_file(path);
+            CertError::engine(format!("writing {what} {} failed: {e}", path.display()))
+        })
+}
+
+/// The PKCS#8 DER inside a key file: the bytes as they are, or the one
+/// `PRIVATE KEY` block of a PEM file. Encrypted PKCS#8 and legacy
+/// (`RSA PRIVATE KEY`, `EC PRIVATE KEY`) blocks are refused by name.
+fn pkcs8_from_der_or_pem(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return Ok(raw.to_vec());
+    };
+    if !text.contains("-----BEGIN ") {
+        return Ok(raw.to_vec());
+    }
+    let blocks = pem_decode_all(text)?;
+    let mut keys = blocks
+        .into_iter()
+        .filter(|(label, _)| label.ends_with("PRIVATE KEY"));
+    match (keys.next(), keys.next()) {
+        (Some((label, der)), None) if label == "PRIVATE KEY" => Ok(der),
+        (Some((label, _)), None) => Err(CertError::policy(format!(
+            "{} holds a '{label}' block; key import takes an unencrypted PKCS#8 'PRIVATE KEY'",
+            path.display()
+        ))),
+        (None, _) => Err(CertError::policy(format!(
+            "{} holds no PEM 'PRIVATE KEY' block",
+            path.display()
+        ))),
+        (Some(_), Some(_)) => Err(CertError::policy(format!(
+            "{} holds more than one private key; import one key per file",
+            path.display()
+        ))),
+    }
+}
+
+fn parse_key_algorithm(p: &Parsed) -> Result<AlgorithmId> {
+    let name = p.require("algorithm", "key operation")?;
+    AlgorithmId::parse(&name).map(|(algorithm, warning)| {
+        if let Some(warning) = warning {
+            eprintln!("warning: {warning}");
+        }
+        algorithm
+    })
 }
 
 // ---------------------------------------------------------------- root
@@ -308,6 +713,80 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["root", "root-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root renew requires --root <root-dir>"))?;
+            let signer = signer_source(&p, "root-key-dir", "root renew")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRenewRequest {
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "root renew")?;
+            let manifest = engine::renew_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec!["root", "out", "private-store"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(
+                rest,
+                &flags,
+                &["allow-legacy-root-strength", "private-in-bundle", "json"],
+            )?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root rotate requires --root <root-dir>"))?;
+            // §24.3 ceremony: the new keys' destination must be explicit.
+            let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+                (Some(dir), _) => Some(PathBuf::from(dir)),
+                (None, true) => None,
+                (None, false) => {
+                    return Err(CertError::policy(
+                        "root rotation is a ceremony: name the new root key destination \
+                         explicitly — --private-store <dir> or --private-in-bundle \
+                         (spec §24.3)",
+                    ));
+                }
+            };
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRotateRequest {
+                root_bundle: PathBuf::from(&root),
+                not_before: nb,
+                not_after: na,
+                allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+                private_store,
+            };
+            let out = p.require("out", "root rotate")?;
+            let manifest = engine::rotate_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "replace" => replace_cmd(rest, json_out, true),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::RootSet)),
         "list" => list_cmd(rest, json_out, BundleType::RootSet),
         "validate" => {
@@ -337,7 +816,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(if all_ok { code } else { 1 })
         }
         other => Err(CertError::usage(format!(
-            "unknown root verb '{other}' (create | inspect | list | validate)"
+            "unknown root verb '{other}' (create | renew | rotate | replace | inspect | list | validate)"
         ))),
     }
 }
@@ -400,10 +879,90 @@ fn issuer_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["issuer", "root", "root-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let issuer = p
+                .get("issuer")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage("issuer renew requires --issuer <issuer-set-dir>")
+                })?;
+            let root = p.require("root", "issuer renew")?;
+            let signer = signer_source(&p, "root-key-dir", "issuer renew")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::IssuerRenewRequest {
+                issuer_bundle: PathBuf::from(&issuer),
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "issuer renew")?;
+            let manifest = engine::renew_issuer_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Issuer set renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec![
+                "issuer",
+                "root",
+                "root-key-dir",
+                "out",
+                "private-store",
+                "overlap-root",
+                "overlap-root-key-dir",
+            ];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-legacy-root-strength", "json"])?;
+            let issuer = p
+                .get("issuer")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage("issuer rotate requires --issuer <issuer-set-dir>")
+                })?;
+            let root = p.require("root", "issuer rotate")?;
+            let signer = signer_source(&p, "root-key-dir", "issuer rotate")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::IssuerRotateRequest {
+                issuer_bundle: PathBuf::from(&issuer),
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+                private_store: p.get("private-store").map(PathBuf::from),
+                overlap_root_bundle: p.get("overlap-root").map(PathBuf::from),
+                overlap_root_signer: p.get("overlap-root-key-dir").map(|dir| SignerSource {
+                    key_dir: PathBuf::from(dir),
+                }),
+            };
+            let out = p.require("out", "issuer rotate")?;
+            let manifest = engine::rotate_issuer_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Issuer set rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "replace" => replace_cmd(rest, json_out, false),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::IssuerSet)),
         "list" => list_cmd(rest, json_out, BundleType::IssuerSet),
         other => Err(CertError::usage(format!(
-            "unknown issuer verb '{other}' (create | inspect | list)"
+            "unknown issuer verb '{other}' (create | renew | rotate | replace | inspect | list)"
         ))),
     }
 }
@@ -423,6 +982,8 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 "name",
                 "cn",
                 "dns",
+                "ip",
+                "csr",
                 "algorithm",
                 "issuer-algorithm",
                 "issuer-partition",
@@ -431,9 +992,18 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
             flags.extend(TIME_FLAGS);
             let p = parse_args(rest, &flags, &["json"])?;
             let issuer = p.require("issuer", "leaf issue")?;
+            let ip_addresses = p
+                .all("ip")
+                .iter()
+                .map(|s| {
+                    s.trim()
+                        .parse::<std::net::IpAddr>()
+                        .map_err(|_| CertError::usage(format!("--ip '{s}' is not an IP address")))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let signer = signer_source(&p, "issuer-key-dir", "leaf issue")?;
             let profile_name = p.require("profile", "leaf issue")?;
-            let prof = profile::leaf_profile(&profile_name)?;
+            let prof = profile::resolve_profile(&profile_name)?;
             let name = p
                 .get("name")
                 .map(|s| s.to_string())
@@ -459,6 +1029,8 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 name,
                 common_name: p.get("cn").map(|s| s.to_string()),
                 dns_names: p.all("dns"),
+                ip_addresses,
+                csr: p.get("csr").map(PathBuf::from),
                 key_algorithm: parse_algo("algorithm")?,
                 issuer_algorithm: parse_algo("issuer-algorithm")?,
                 issuer_partition: p.get("issuer-partition").map(|s| s.to_string()),
@@ -474,12 +1046,173 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["leaf", "issuer", "issuer-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf renew requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf renew")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf renew")?;
+            // The default lifetime is the leaf's own profile's.
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to renew under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRenewRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "leaf renew")?;
+            let manifest = engine::renew_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec![
+                "leaf",
+                "issuer",
+                "issuer-key-dir",
+                "out",
+                "csr",
+                "private-store",
+            ];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf rotate requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf rotate")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf rotate")?;
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to rotate under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRotateRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                csr: p.get("csr").map(PathBuf::from),
+                private_store: p.get("private-store").map(PathBuf::from),
+            };
+            let out = p.require("out", "leaf rotate")?;
+            let manifest = engine::rotate_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::Leaf)),
         "list" => list_cmd(rest, json_out, BundleType::Leaf),
         other => Err(CertError::usage(format!(
-            "unknown leaf verb '{other}' (issue | inspect | list)"
+            "unknown leaf verb '{other}' (issue | renew | rotate | inspect | list)"
         ))),
     }
+}
+
+/// `root replace` / `issuer replace` (§5.2): the replacement
+/// orchestration in [`crate::replace`].
+fn replace_cmd(rest: &[String], json_out: bool, rotate_roots: bool) -> Result<i32> {
+    let verb = if rotate_roots {
+        "root replace"
+    } else {
+        "issuer replace"
+    };
+    let p = parse_args(
+        rest,
+        &[
+            "root",
+            "root-key-dir",
+            "issuer",
+            "out",
+            "private-store",
+            "not-before",
+            "root-valid-for",
+            "issuer-valid-for",
+        ],
+        &["allow-legacy-root-strength", "private-in-bundle", "json"],
+    )?;
+    let root = p.require("root", verb)?;
+    let signer = signer_source(&p, "root-key-dir", verb)?;
+    // §24.3 ceremony: the new keys' destination must be explicit.
+    let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+        (Some(dir), _) => Some(PathBuf::from(dir)),
+        (None, true) => None,
+        (None, false) => {
+            return Err(CertError::policy(format!(
+                "{verb} makes new keys: name their destination explicitly — \
+                 --private-store <dir> or --private-in-bundle (spec §24.3)"
+            )));
+        }
+    };
+    let nb = p.get("not-before").map(Rfc3339::parse).transpose()?;
+    let window = |flag: &str, years: i64| -> Result<(Rfc3339, Rfc3339)> {
+        let vf = p.get(flag).map(CalendarDuration::parse).transpose()?;
+        crate::timeparse::resolve_validity(nb, vf, None, CalendarDuration::years(years))
+    };
+    let (not_before, root_not_after) = window(
+        "root-valid-for",
+        crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let (_, issuer_not_after) = window(
+        "issuer-valid-for",
+        crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let req = crate::replace::ReplaceRequest {
+        root_bundle: PathBuf::from(&root),
+        root_signer: signer,
+        issuer_bundles: p.all("issuer").into_iter().map(PathBuf::from).collect(),
+        rotate_roots,
+        not_before,
+        root_not_after,
+        issuer_not_after,
+        allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+        private_store,
+    };
+    let out = p.require("out", verb)?;
+    let report = crate::replace::replace(&req, &PathBuf::from(&out))?;
+    let mut text = String::new();
+    if let Some(root) = &report.root {
+        text.push_str(&format!(
+            "Root set rotated: {} at {}\n",
+            root.manifest.bundle_id, root.dir
+        ));
+    }
+    for issuer in &report.issuers {
+        text.push_str(&format!(
+            "Issuer set replaced: {} ({}) at {}\n",
+            issuer.manifest.name, issuer.manifest.bundle_id, issuer.dir
+        ));
+    }
+    text.push_str(&format!(
+        "Chains verified: {}\nOld material can retire after {}\nNext steps:\n",
+        report.checks.len(),
+        report.retire_old_after
+    ));
+    for (i, step) in report.next_steps.iter().enumerate() {
+        text.push_str(&format!("  {}. {step}\n", i + 1));
+    }
+    let value = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+    Ok(emit(json_out, text, value))
 }
 
 // ---------------------------------------------------------------- chain
@@ -616,6 +1349,19 @@ fn manifest_text(verb: &str, m: &crate::model::BundleManifest, dir: &str) -> Str
         m.bundle_id,
         m.certificates.len()
     );
+    if let Some(predecessor) = &m.predecessor {
+        if m.revision > 1 {
+            text.push_str(&format!(
+                "  revision: r{} on the same keys (renews {predecessor})\n",
+                m.revision
+            ));
+        } else {
+            text.push_str(&format!(
+                "  generation: g{} on new keys (replaces {predecessor})\n",
+                m.generation
+            ));
+        }
+    }
     for c in &m.certificates {
         text.push_str(&format!(
             "  {:10} {:10} {:40} sha256:{}.. {}\n",
@@ -689,6 +1435,407 @@ fn bundle_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- publish (slice 1: plan + verify read-only)
+
+fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "plan" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "bundle",
+                    "host",
+                    "aia-base-url",
+                    "dns-target",
+                    "format",
+                    "out",
+                ],
+                &["json"],
+            )?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish plan needs a bundle directory"))?;
+            // --aia-base-url overrides --host when both are given.
+            let host = p
+                .get("aia-base-url")
+                .map(|s| s.to_string())
+                .or_else(|| p.get("host").map(|s| s.to_string()))
+                .unwrap_or_else(|| crate::publish::DEFAULT_PUBLISH_HOST.to_string());
+            let req = crate::model::PublishPlanRequest {
+                bundle: PathBuf::from(&dir),
+                host,
+                dns_target: p.get("dns-target").map(|s| s.to_string()),
+            };
+            let plan = crate::publish::plan_bundle(&req)?;
+            let format = p.get("format").unwrap_or("text").to_ascii_lowercase();
+            let value =
+                serde_json::to_value(&plan).map_err(|e| CertError::engine(e.to_string()))?;
+            let text = crate::publish::render_plan_text(&plan);
+            let out_text = match format.as_str() {
+                "json" => serde_json::to_string_pretty(&value)
+                    .map_err(|e| CertError::engine(e.to_string()))?,
+                "yaml" | "yml" => crate::publish::render_plan_yaml(&plan),
+                "text" => text.clone(),
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown --format '{other}' (text | json | yaml)"
+                    )));
+                }
+            };
+            if let Some(out) = p.get("out") {
+                std::fs::write(out, format!("{out_text}\n"))?;
+            }
+            if format == "yaml" && !json_out {
+                print!("{out_text}\n");
+                return Ok(0);
+            }
+            Ok(emit(json_out, format!("{text}"), value))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["bundle", "published-dir", "host"], &["json"])?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish verify needs a bundle directory"))?;
+            let pub_dir = p
+                .get("published-dir")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(1).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage(
+                        "publish verify needs --published-dir <mirror> (read-only local check)",
+                    )
+                })?;
+            let req = crate::model::PublishVerifyRequest {
+                bundle: PathBuf::from(&dir),
+                published_dir: PathBuf::from(&pub_dir),
+                host: p.get("host").map(|s| s.to_string()),
+            };
+            let report = crate::publish::verify_bundle(&req)?;
+            let mut text = format!(
+                "Publish verify: {} against {}\n",
+                report.bundle, report.published_dir
+            );
+            for c in &report.checks {
+                text.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            text.push_str(&format!(
+                "  result: {}\n",
+                if report.valid {
+                    "IN SYNC"
+                } else {
+                    "OUT OF SYNC"
+                }
+            ));
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            let code = emit(json_out, text, value);
+            Ok(if report.valid { code } else { 1 })
+        }
+        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+            Err(CertError::policy(format!(
+                "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
+                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+            )))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown publish verb '{other}' (plan | verify; apply | status are a later gated slice)"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- dns (offline plan | render | verify, #13724)
+
+/// Usage for `fleet cert dns`. The verbs take no provider, endpoint
+/// or credential argument: they are offline by construction (contract
+/// §2), and a test pins that against this text.
+pub const DNS_USAGE: &str = "\
+Usage: fleet cert dns plan   --zone <apex> [--bundle <dir>]... [--policy <file>]
+                             [--current <snapshot-file>] [--ttl <seconds>]
+                             [--out <dir>] [--report json|yaml|text]
+       fleet cert dns render --change-set <file> [--format zone|json|yaml]
+                             [--out <dir>] [--report json|yaml|text]
+       fleet cert dns verify --change-set <file> [--bundle <dir>]...
+                             [--report json|yaml|text]
+
+All three verbs are offline: they read local files and write only
+under --out. Nothing queries a resolver or a DNS provider. A
+change-set that verifies is PROPOSED; publishing and proving it are
+production-gated (#9155) and not part of this command. --dry-run is
+accepted and changes nothing (every verb is already a dry run).
+
+Policy file (--policy, JSON, schema fleet.pki.dns-policy/v1):
+  {\"caa\":  [{\"name\": \"pki\", \"issue\": [\"letsencrypt.org\"]}],
+   \"tlsa\": [{\"host\": \"pki\", \"port\": 443, \"bundle\": \"<id|name|slug>\"}]}
+  TLSA defaults: usage 3 (DANE-EE), selector 1 (SPKI), matching 1
+  (SHA-256); usage 2 pins an issuer (DANE-TA). CAA never names the
+  private Fleet CA (spec §24.8).
+";
+
+const DNS_PLAN_FLAGS: &[&str] = &[
+    "zone", "bundle", "policy", "current", "ttl", "out", "report",
+];
+const DNS_RENDER_FLAGS: &[&str] = &["change-set", "format", "out", "report"];
+const DNS_VERIFY_FLAGS: &[&str] = &["change-set", "bundle", "report"];
+const DNS_BOOL_FLAGS: &[&str] = &["json", "dry-run"];
+
+fn dns_report_format(p: &Parsed, json_out: bool) -> Result<String> {
+    if json_out {
+        return Ok("json".into());
+    }
+    let f = p.get("report").unwrap_or("text").to_ascii_lowercase();
+    match f.as_str() {
+        "json" | "text" => Ok(f),
+        "yaml" | "yml" => Ok("yaml".into()),
+        other => Err(CertError::usage(format!(
+            "unknown --report '{other}' (json | yaml | text)"
+        ))),
+    }
+}
+
+fn write_out(dir: &str, file: &str, body: &str) -> Result<PathBuf> {
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(file);
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+fn dns_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "" | "--help" | "-h" | "help" => {
+            print!("{DNS_USAGE}");
+            Ok(if verb.is_empty() { 2 } else { 0 })
+        }
+        "plan" => {
+            let p = parse_args(rest, DNS_PLAN_FLAGS, DNS_BOOL_FLAGS)?;
+            let ttl = p
+                .get("ttl")
+                .map(|t| {
+                    t.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!("--ttl '{t}' is not a whole number of seconds"))
+                    })
+                })
+                .transpose()?;
+            let req = crate::dns::DnsPlanRequest {
+                zone: p.require("zone", "dns plan")?,
+                bundles: p.all("bundle").into_iter().map(PathBuf::from).collect(),
+                policy: p.get("policy").map(PathBuf::from),
+                current: p.get("current").map(PathBuf::from),
+                ttl,
+            };
+            let cs = crate::dns::plan(&req)?;
+            let canonical = crate::dns::render_json(&cs)?;
+            if let Some(out) = p.get("out") {
+                write_out(out, "dns-change-set.json", &format!("{canonical}\n"))?;
+            }
+            let body = match dns_report_format(&p, json_out)?.as_str() {
+                "json" => format!("{canonical}\n"),
+                "yaml" => crate::dns::render_yaml(&cs),
+                _ => crate::dns::render_text(&cs),
+            };
+            print!("{body}");
+            Ok(0)
+        }
+        "render" => {
+            let p = parse_args(rest, DNS_RENDER_FLAGS, DNS_BOOL_FLAGS)?;
+            let path = p.require("change-set", "dns render")?;
+            let cs = crate::dns::read_change_set(Path::new(&path))?;
+            let format = p.get("format").unwrap_or("zone").to_ascii_lowercase();
+            let (file, body) = match format.as_str() {
+                "zone" => ("dns.zone", crate::dns::render_zone(&cs)),
+                "json" => (
+                    "dns-change-set.json",
+                    format!("{}\n", crate::dns::render_json(&cs)?),
+                ),
+                "yaml" | "yml" => ("dns-change-set.yaml", crate::dns::render_yaml(&cs)),
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown --format '{other}' (zone | json | yaml)"
+                    )));
+                }
+            };
+            if let Some(out) = p.get("out") {
+                let written = write_out(out, file, &body)?;
+                let report = dns_report_format(&p, json_out)?;
+                let value = json!({"change_set": path, "format": format, "written": written.display().to_string()});
+                let text = format!("rendered {format} to {}\n", written.display());
+                return Ok(emit(report == "json", text, value));
+            }
+            print!("{body}");
+            Ok(0)
+        }
+        "verify" => {
+            let p = parse_args(rest, DNS_VERIFY_FLAGS, DNS_BOOL_FLAGS)?;
+            let path = p.require("change-set", "dns verify")?;
+            let cs = crate::dns::read_change_set(Path::new(&path))?;
+            let bundles: Vec<PathBuf> = p.all("bundle").into_iter().map(PathBuf::from).collect();
+            let report = crate::dns::verify(&cs, &path, &bundles)?;
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            let mut text = format!("DNS verify: {} ({})\n", report.change_set, report.zone);
+            for c in &report.checks {
+                text.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            text.push_str(&format!(
+                "  result: {}\n",
+                if report.valid {
+                    "PROPOSED (valid offline; not published or proven)"
+                } else {
+                    "INVALID"
+                }
+            ));
+            let format = dns_report_format(&p, json_out)?;
+            let code = if format == "yaml" {
+                // The verify report is small; YAML falls back to JSON,
+                // which YAML 1.2 parsers read unchanged.
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into())
+                );
+                0
+            } else {
+                emit(format == "json", text, value)
+            };
+            Ok(if report.valid { code } else { 1 })
+        }
+        "apply" | "status" | "publish" | "check" | "prove" => Err(CertError::policy(format!(
+            "dns {verb} is not part of this verb group: live DNS writes and live proof are \
+             production-gated (#9155) and undesigned on purpose; plan | render | verify are offline"
+        ))),
+        other => Err(CertError::usage(format!(
+            "unknown dns verb '{other}' (plan | render | verify)"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- batch (§6.5)
+
+pub const BATCH_USAGE: &str = "\
+Usage: fleet cert batch <verb> --file <batch.json|-> --base <dir> [options]
+
+Verbs:
+  validate   Check the batch and the base directory; writes nothing.
+  plan       Show the resolved DAG and the batch digest; writes nothing.
+  apply      Run every step in a staging area under <base>/.fleet-batch/,
+             then move the finished bundles into place, all or nothing.
+             Needs --approve <sha256> from the reviewed plan.
+             --dry-run runs every step, then removes the staging area.
+  status     Compare the batch's receipt with the bundles on disk.
+
+A batch is fleet.batch/v1 JSON: operations with id, after, command
+(cert.issuer.create | cert.leaf.issue), out (relative to --base),
+with (typed arguments) and expect. Steps reference each other only as
+@<id>.bundle and @<id>.keys; signer key directories are always named
+explicitly (spec §24.3). There is no interpolation or shell expansion.
+Root creation stays `fleet cert root create`. A completed apply writes
+a receipt, so applying the same batch again reissues nothing.
+
+Options:
+  --file <path|->     The batch document (- reads stdin).
+  --base <dir>        Directory that out paths and relative inputs resolve against.
+  --approve <sha256>  apply: the digest printed by plan.
+  --dry-run           apply: rehearse in staging, then discard.
+  --json              Emit the typed report as JSON.
+";
+
+fn batch_input(p: &Parsed, verb: &str) -> Result<(crate::batch::Batch, PathBuf, String, String)> {
+    let file = p.require("file", &format!("batch {verb}"))?;
+    let base_label = p.require("base", &format!("batch {verb}"))?;
+    let base = PathBuf::from(&base_label);
+    if !base.is_dir() {
+        return Err(CertError::usage(format!(
+            "--base {} is not a directory",
+            base.display()
+        )));
+    }
+    let bytes = if file == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+        buf
+    } else {
+        std::fs::read(&file)
+            .map_err(|e| CertError::usage(format!("cannot read --file {file}: {e}")))?
+    };
+    let batch = crate::batch::load(&bytes, &base)?;
+    Ok((batch, base, file, base_label))
+}
+
+fn batch_emit(json_out: bool, rep: &crate::batch::Report, file: &str, base: &str) -> Result<i32> {
+    let value = serde_json::to_value(rep)?;
+    Ok(emit(
+        json_out,
+        crate::batch::render_text(rep, file, base),
+        value,
+    ))
+}
+
+fn batch_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "" | "--help" | "-h" | "help" => {
+            print!("{BATCH_USAGE}");
+            Ok(if verb.is_empty() { 2 } else { 0 })
+        }
+        "validate" | "plan" | "status" => {
+            let p = parse_args(rest, &["file", "base"], &["json"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = match verb {
+                "validate" => crate::batch::validate(&batch, &base)?,
+                "plan" => crate::batch::plan(&batch),
+                _ => crate::batch::status(&batch, &base)?,
+            };
+            let code = batch_emit(json_out, &rep, &file, &base_label)?;
+            Ok(
+                if verb == "status" && rep.status != "applied" && rep.status != "pending" {
+                    1
+                } else {
+                    code
+                },
+            )
+        }
+        "apply" => {
+            let p = parse_args(rest, &["file", "base", "approve"], &["json", "dry-run"])?;
+            let (batch, base, file, base_label) = batch_input(&p, verb)?;
+            let rep = crate::batch::apply(
+                &batch,
+                &base,
+                &crate::batch::ApplyOptions {
+                    dry_run: p.has("dry-run"),
+                    approve: p.get("approve").map(|s| s.to_string()),
+                },
+            )?;
+            batch_emit(json_out, &rep, &file, &base_label)
+        }
+        "resume" => Err(CertError::policy(
+            "batch apply is all-or-nothing: a failed apply leaves nothing to resume, and applying \
+             a completed batch again returns its receipt without reissuing. Run `fleet cert batch \
+             status` to see where a batch stands.",
+        )),
+        other => Err(CertError::usage(format!(
+            "unknown batch verb '{other}' (validate | plan | apply | status)"
+        ))),
+    }
+}
+
 fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     let p = parse_args(args, &["dir"], &["json"])?;
     let dir = p.get("dir").unwrap_or(".").to_string();
@@ -721,6 +1868,73 @@ fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     Ok(emit(json_out, text, value))
 }
 
+fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "convert" => {
+            let p = parse_args(rest, &["in", "to", "out"], &["json"])?;
+            let input = p.require("in", "format convert")?;
+            let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let out = crate::format::convert(&bytes, to)?;
+            match p.get("out") {
+                Some(path) => {
+                    std::fs::write(path, &out)
+                        .map_err(|e| CertError::engine(format!("cannot write {path}: {e}")))?;
+                    Ok(emit(
+                        json_out,
+                        format!("wrote {} ({})\n", path, to.as_str()),
+                        json!({ "out": path, "format": to.as_str(), "bytes": out.len() }),
+                    ))
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout()
+                        .write_all(&out)
+                        .map_err(|e| CertError::engine(format!("cannot write stdout: {e}")))?;
+                    Ok(0)
+                }
+            }
+        }
+        "verify" => {
+            let p = parse_args(rest, &["in"], &["json"])?;
+            let input = p.require("in", "format verify")?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let v = crate::format::verify(&bytes)?;
+            Ok(emit(
+                json_out,
+                format!(
+                    "{input}: well-formed X.509 certificate ({} input, {} DER bytes, sha256 {}); PEM and DER round trips match\n",
+                    v.input.as_str(),
+                    v.der_len,
+                    v.sha256
+                ),
+                json!({ "in": input, "input": v.input.as_str(), "der_bytes": v.der_len, "sha256": v.sha256 }),
+            ))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown format verb '{other}' (convert | verify)"
+        ))),
+    }
+}
+
+fn san_policy_name(policy: profile::SanPolicy) -> &'static str {
+    match policy {
+        profile::SanPolicy::Free => "free",
+        profile::SanPolicy::Broker => "broker",
+    }
+}
+
+fn key_custody_name(custody: profile::KeyCustody) -> &'static str {
+    match custody {
+        profile::KeyCustody::IssuerOrCsr => "issuer-or-csr",
+        profile::KeyCustody::HostCsrOnly => "host-csr-only",
+    }
+}
+
 fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("list");
     let rest = &args[1.min(args.len())..];
@@ -729,7 +1943,7 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let mut text = String::from("Leaf profiles (mirroring pkgs/idp-pki idp-ca):\n");
             for prof in profile::leaf_profiles() {
                 text.push_str(&format!(
-                    "  {:12} key={:8} validity={}d  {}\n",
+                    "  {:14} key={:8} validity={}d  {}\n",
                     prof.name,
                     prof.key_algorithm.name(),
                     prof.default_validity.days,
@@ -744,6 +1958,10 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
                     "extended_key_usages": p.extended_key_usages.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
                     "default_validity_days": p.default_validity.days,
                     "san_defaults_to_cn": p.san_defaults_to_cn,
+                    "san_policy": san_policy_name(p.san_policy),
+                    "key_custody": key_custody_name(p.key_custody),
+                    "issuer_purpose": p.issuer_purpose,
+                    "renew_within_days": p.renew_within.map(|d| d.days),
                     "notes": p.notes,
                 })).collect::<Vec<_>>(),
             });
@@ -767,12 +1985,61 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 "key_algorithm": prof.key_algorithm.name(),
                 "default_validity_days": prof.default_validity.days,
                 "san_defaults_to_cn": prof.san_defaults_to_cn,
+                "san_policy": san_policy_name(prof.san_policy),
+                "key_custody": key_custody_name(prof.key_custody),
+                "issuer_purpose": prof.issuer_purpose,
+                "renew_within_days": prof.renew_within.map(|d| d.days),
                 "notes": prof.notes,
             });
             Ok(emit(json_out, text, value))
         }
+        "scaffold" => {
+            let p = parse_args(rest, &["name", "out"], &["json"])?;
+            let name = p
+                .get("name")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile scaffold needs --name <name>"))?;
+            let out = p.require("out", "profile scaffold")?;
+            let scaffold = profile::CustomProfile::scaffold(name);
+            scaffold.validate()?;
+            let bytes = serde_json::to_vec_pretty(&scaffold)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .map_err(|e| CertError::engine(format!("cannot create profile {out}: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| CertError::engine(format!("cannot write profile {out}: {e}")))?;
+            Ok(emit(
+                json_out,
+                format!("Scaffolded custom profile {name} at {out}\n"),
+                json!({"name": name, "path": out, "profile": scaffold}),
+            ))
+        }
+        "validate" => {
+            let p = parse_args(rest, &["file"], &["json"])?;
+            let path = p
+                .get("file")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile validate needs <file>"))?;
+            let (custom, resolved) = profile::load_custom_profile(&PathBuf::from(path))?;
+            let text = format!(
+                "Valid custom profile {} (key={}, validity={}d, ceiling={}d)\n",
+                custom.name,
+                resolved.key_algorithm.name(),
+                custom.default_validity_days,
+                custom.max_validity_days
+            );
+            Ok(emit(
+                json_out,
+                text,
+                json!({"valid": true, "profile": custom}),
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown profile verb '{other}' (list | show)"
+            "unknown profile verb '{other}' (list | show | validate | scaffold)"
         ))),
     }
 }
@@ -838,10 +2105,508 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "benchmark" => {
+            let p = parse_args(&args[1..], &["iterations"], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms benchmark takes one comma-separated algorithm list",
+                ));
+            }
+            let iterations = match p.get("iterations") {
+                Some(v) => v.parse::<usize>().map_err(|_| {
+                    CertError::usage(format!("--iterations must be a whole number, got '{v}'"))
+                })?,
+                None => algorithm_lab::DEFAULT_ITERATIONS,
+            };
+            let iterations = algorithm_lab::check_iterations(iterations)?;
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let host = algorithm_lab::host_info();
+            let mut results = Vec::new();
+            for info in &infos {
+                results.push(algorithm_lab::benchmark_algorithm(info.id, iterations)?);
+            }
+            let mut text = format!(
+                "fleet cert algorithms benchmark ({iterations} samples per operation, microseconds)\n  host: {} {} · {} cpus · {}{}\n",
+                host.os,
+                host.arch,
+                host.cpus,
+                host.backend,
+                if host.debug_build {
+                    " · DEBUG build (numbers not representative)"
+                } else {
+                    ""
+                }
+            );
+            text.push_str(&format!(
+                "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                "algorithm", "op", "min", "p50", "p95", "p99", "max"
+            ));
+            for r in &results {
+                for (op, t) in [
+                    ("keygen", &r.keygen),
+                    ("sign", &r.sign),
+                    ("verify", &r.verify),
+                ] {
+                    text.push_str(&format!(
+                        "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                        r.algorithm, op, t.min_us, t.p50_us, t.p95_us, t.p99_us, t.max_us
+                    ));
+                }
+                text.push_str(&format!(
+                    "  {:10} sizes: key {} B · cert {} B · signature {} B\n",
+                    r.algorithm,
+                    r.private_key_pkcs8_bytes,
+                    r.certificate_der_bytes,
+                    r.signature_bytes
+                ));
+            }
+            text.push_str(
+                "  Evidence for this host and build only, never a CI baseline (spec §26.2).\n",
+            );
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "iterations": iterations,
+                "unit": "microseconds",
+                "host": host,
+                "results": results,
+                "warnings": warnings,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "doctor" => {
+            let p = parse_args(&args[1..], &[], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms doctor takes one comma-separated algorithm list",
+                ));
+            }
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let env = algorithm_lab::OpensslEnv::detect();
+            let reports: Vec<_> = infos
+                .iter()
+                .map(|i| algorithm_lab::doctor_algorithm(i.id, &env))
+                .collect();
+            let all_ok = reports.iter().all(|r| r.ok());
+            let mut text = format!(
+                "fleet cert algorithms doctor\n  openssl: {}{}\n",
+                env.version.as_deref().unwrap_or("not found"),
+                if env.version.is_some() {
+                    if env.ml_dsa {
+                        " (ML-DSA available)"
+                    } else {
+                        " (no ML-DSA)"
+                    }
+                } else {
+                    ""
+                }
+            );
+            for r in &reports {
+                text.push_str(&format!(
+                    "  {} {}\n",
+                    r.algorithm,
+                    if r.ok() { "ok" } else { "FAIL" }
+                ));
+                for probe in &r.probes {
+                    let status = match probe.status {
+                        algorithm_lab::ProbeStatus::Ok => "ok",
+                        algorithm_lab::ProbeStatus::Fail => "FAIL",
+                        algorithm_lab::ProbeStatus::Skipped => "skipped",
+                    };
+                    text.push_str(&format!(
+                        "    {:17} {:7} {}\n",
+                        probe.probe, status, probe.detail
+                    ));
+                }
+            }
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "ok": all_ok,
+                "openssl": env,
+                "algorithms": reports,
+                "warnings": warnings,
+            });
+            let code = emit(json_out, text, value);
+            Ok(if all_ok { code } else { 1 })
+        }
         other => Err(CertError::usage(format!(
-            "unknown algorithms verb '{other}' (list | describe)"
+            "unknown algorithms verb '{other}' (list | describe | benchmark | doctor)"
         ))),
     }
+}
+
+// ---------------------------------------------------------------- trust (§3.5, BT-2)
+
+fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = if args.is_empty() { &[][..] } else { &args[1..] };
+    match verb {
+        "export" => {
+            let p = parse_args(
+                rest,
+                &["root", "out", "version", "name", "at", "target", "trust"],
+                &["json"],
+            )?;
+            if p.has("target") {
+                return trust_consumer_export(&p, json_out);
+            }
+            if p.has("trust") {
+                return Err(CertError::usage(
+                    "trust export --trust applies to a consumer export (--target <consumer>); \
+                     the versioned trust bundle always carries every §3.5 file",
+                ));
+            }
+            let root_bundles: Vec<PathBuf> = p.all("root").into_iter().map(PathBuf::from).collect();
+            if root_bundles.is_empty() {
+                return Err(CertError::usage(
+                    "trust export requires --root <root-set-bundle-dir> (repeatable)",
+                ));
+            }
+            let out = p.require("out", "trust export")?;
+            let version_raw = p.require("version", "trust export")?;
+            let version: u32 = version_raw.parse().map_err(|_| {
+                CertError::usage(format!(
+                    "trust export --version '{version_raw}' is not a version number"
+                ))
+            })?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let manifest = crate::trust::export_trust_bundle(
+                &crate::trust::TrustExportRequest {
+                    root_bundles,
+                    version,
+                    name: p.get("name").unwrap_or("Fleet Trust Bundle").to_string(),
+                    at,
+                },
+                &PathBuf::from(&out),
+            )?;
+            let anchors = manifest
+                .certificates
+                .iter()
+                .filter(|c| c.role == "root")
+                .count();
+            let text = format!(
+                "Trust bundle exported: {} (version {}, {} anchors, {} files)\n  out: {}\n",
+                manifest.bundle_id,
+                manifest.bundle_version,
+                anchors,
+                manifest.files.len(),
+                out
+            );
+            let value = json!({
+                "bundle_id": manifest.bundle_id,
+                "bundle_version": manifest.bundle_version,
+                "anchors": anchors,
+                "files": manifest.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                "out": out,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "stage" => {
+            let p = parse_args(rest, &["bundle", "store"], &["json"])?;
+            let bundle = p.require("bundle", "trust stage")?;
+            let store = p.require("store", "trust stage")?;
+            let vref = crate::trust::stage_bundle(&PathBuf::from(&store), &PathBuf::from(&bundle))?;
+            let text = format!(
+                "Staged trust bundle version {} ({}) in {}\n",
+                vref.version, vref.bundle_id, store
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&vref)?))
+        }
+        "ack" => {
+            let p = parse_args(rest, &["store", "version", "at"], &["json"])?;
+            let store = p.require("store", "trust ack")?;
+            let version = p
+                .get("version")
+                .map(|v| {
+                    v.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!(
+                            "trust ack --version '{v}' is not a version number"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let ack = crate::trust::acknowledge(&PathBuf::from(&store), version, at)?;
+            let text = format!(
+                "Acknowledged trust bundle version {} ({}) at {}\n",
+                ack.version, ack.bundle_id, ack.acknowledged_at
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&ack)?))
+        }
+        "activate" => {
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
+            let store = p.require("store", "trust activate")?;
+            let version = p
+                .get("version")
+                .map(|v| {
+                    v.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!(
+                            "trust activate --version '{v}' is not a version number"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let vref = crate::trust::activate(&PathBuf::from(&store), version)?;
+            let text = format!(
+                "Active trust bundle is now version {} ({})\n",
+                vref.version, vref.bundle_id
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&vref)?))
+        }
+        "retire" => {
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
+            let store = p.require("store", "trust retire")?;
+            let version_raw = p.require("version", "trust retire")?;
+            let version: u32 = version_raw.parse().map_err(|_| {
+                CertError::usage(format!(
+                    "trust retire --version '{version_raw}' is not a version number"
+                ))
+            })?;
+            crate::trust::retire(&PathBuf::from(&store), version)?;
+            let text = format!("Retired trust bundle version {version}\n");
+            Ok(emit(json_out, text, json!({"retired": version})))
+        }
+        "status" => {
+            let p = parse_args(rest, &["store"], &["json"])?;
+            let store = p.require("store", "trust status")?;
+            let status = crate::trust::store_status(&PathBuf::from(&store))?;
+            let fmt_ref = |r: &Option<crate::trust::VersionRef>| match r {
+                Some(v) => format!("{} ({})", v.version, v.bundle_id),
+                None => "none".to_string(),
+            };
+            let mut text = format!(
+                "Trust store {}\n  active:   {}\n  previous: {}\n  staged:   {}\n  installed: {}\n",
+                store,
+                fmt_ref(&status.active),
+                fmt_ref(&status.previous),
+                fmt_ref(&status.staged),
+                status
+                    .installed_versions
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for ack in &status.acks {
+                text.push_str(&format!(
+                    "  ack: version {} ({}) at {}\n",
+                    ack.version, ack.bundle_id, ack.acknowledged_at
+                ));
+            }
+            Ok(emit(json_out, text, serde_json::to_value(&status)?))
+        }
+        "inspect" => {
+            let p = parse_args(rest, &["root", "trust"], &["json"])?;
+            let root_dir = p.require("root", "trust inspect")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+            let mut text = format!(
+                "Trust selection {} ({}) from {}: {} anchor(s)\n",
+                crate::trust_consumer::bundle_file_name(kind),
+                kind.as_str(),
+                bundle.manifest.name,
+                assembled.certificates.len()
+            );
+            for c in &assembled.certificates {
+                text.push_str(&format!(
+                    "  {} {} {}\n",
+                    &c.fingerprint_sha256[..12.min(c.fingerprint_sha256.len())],
+                    c.subject_algorithm.map(|a| a.name()).unwrap_or("unknown"),
+                    c.subject_dn
+                ));
+            }
+            text.push_str(&format!("  sha256: {}\n", assembled.sha256));
+            let anchors: Vec<Value> = assembled
+                .certificates
+                .iter()
+                .map(|c| {
+                    json!({
+                        "subject_dn": c.subject_dn,
+                        "algorithm": c.subject_algorithm.map(|a| a.name()),
+                        "fingerprint_sha256": c.fingerprint_sha256,
+                    })
+                })
+                .collect();
+            let value = json!({
+                "trust": kind.as_str(),
+                "bundle": bundle.manifest.name,
+                "bundle_id": bundle.manifest.bundle_id,
+                "anchors": anchors,
+                "bundle_sha256": assembled.sha256,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "pin" => {
+            let p = parse_args(rest, &["root", "trust", "out"], &["json"])?;
+            let root_dir = p.require("root", "trust pin")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let out = p.require("out", "trust pin")?;
+            if Path::new(&out).exists() {
+                return Err(CertError::policy(format!(
+                    "pinset already exists at {out}; remove it explicitly before re-pinning"
+                )));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let pins = crate::trust_consumer::create_pins(&bundle, kind)?;
+            std::fs::write(&out, serde_json::to_string_pretty(&pins)? + "\n")?;
+            let text = format!(
+                "Pinned {} {} anchor(s) -> {out}\n",
+                pins.pins.len(),
+                kind.as_str()
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&pins)?))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["root", "trust", "pins", "store"], &["json"])?;
+            let root_dir = p.require("root", "trust verify")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let pins_path = p.get("pins");
+            let store_path = p.get("store");
+            if pins_path.is_none() && store_path.is_none() {
+                return Err(CertError::usage(
+                    "trust verify requires --pins <pinset.json> and/or --store <pem-or-dir>",
+                ));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let mut checks = Vec::new();
+            if let Some(path) = pins_path {
+                let pins: crate::trust_consumer::TrustPins =
+                    serde_json::from_str(&std::fs::read_to_string(path)?)?;
+                checks.extend(crate::trust_consumer::check_pins(&bundle, kind, &pins));
+            }
+            if let Some(path) = store_path {
+                let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+                let store = crate::trust_consumer::read_store_certs(Path::new(path))?;
+                checks.extend(crate::trust_consumer::check_store(&assembled, &store));
+            }
+            let ok = checks.iter().all(|c| c.ok);
+            let mut text = format!(
+                "Trust verify ({}): {}\n",
+                kind.as_str(),
+                if ok { "OK" } else { "DRIFT" }
+            );
+            for c in &checks {
+                text.push_str(&format!(
+                    "  [{}] {}: {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            let code = emit(
+                json_out,
+                text,
+                json!({"trust": kind.as_str(), "ok": ok, "checks": checks}),
+            );
+            Ok(if ok { code } else { 1 })
+        }
+        "install-plan" => {
+            let p = parse_args(rest, &["target"], &["json"])?;
+            let name = p.require("target", "trust install-plan")?;
+            let target = trust_target(&name)?;
+            let text = format!(
+                "Install plan for {} ({} trust; documentation only, nothing installed):\n  install: {}\n  verify: {}\n  remove: {}\n  note: {}\n",
+                target.name,
+                target.kind.as_str(),
+                target.install,
+                target.verify,
+                target.remove,
+                target.note
+            );
+            let value = json!({
+                "consumer": target.name,
+                "trust": target.kind.as_str(),
+                "bundle_file": crate::trust_consumer::bundle_file_name(target.kind),
+                "install": target.install,
+                "verify": target.verify,
+                "remove": target.remove,
+                "note": target.note,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan)"
+        ))),
+    }
+}
+
+/// Resolve a `--target` consumer, refusing `ssh` (not X.509, §44).
+fn trust_target(name: &str) -> Result<&'static crate::trust_consumer::ConsumerTarget> {
+    if name.trim().eq_ignore_ascii_case("ssh") {
+        return Err(crate::trust_consumer::refuse_ssh());
+    }
+    crate::trust_consumer::consumer_target(name).ok_or_else(|| {
+        CertError::usage(format!(
+            "unknown trust target '{name}' ({} | ssh is refused)",
+            crate::trust_consumer::consumer_names().join(" | ")
+        ))
+    })
+}
+
+/// `trust export --target <consumer>`: PEM files plus per-consumer
+/// install/verify/remove guidance from one root set. Writes files
+/// only; never touches a consumer's store.
+fn trust_consumer_export(p: &Parsed, json_out: bool) -> Result<i32> {
+    for flag in ["version", "name", "at"] {
+        if p.has(flag) {
+            return Err(CertError::usage(format!(
+                "trust export --target writes a consumer export from one root set; \
+                 --{flag} applies to the versioned trust bundle (omit --target)"
+            )));
+        }
+    }
+    let roots = p.all("root");
+    let [root_dir] = roots.as_slice() else {
+        return Err(CertError::usage(
+            "trust export --target requires exactly one --root <root-set-bundle-dir>",
+        ));
+    };
+    let target_name = p.require("target", "trust export")?;
+    let out_dir = p.require("out", "trust export")?;
+    let target = trust_target(&target_name)?;
+    let kind = match p.get("trust") {
+        Some(flag) => {
+            let want = TrustSelection::parse(flag)?;
+            if want != target.kind {
+                return Err(CertError::usage(format!(
+                    "target {} takes the {} bundle, not {}",
+                    target.name,
+                    target.kind.as_str(),
+                    want.as_str()
+                )));
+            }
+            want
+        }
+        None => target.kind,
+    };
+    let bundle = load_bundle(&PathBuf::from(root_dir))?;
+    let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+    let manifest = crate::trust_consumer::write_export(
+        &PathBuf::from(&out_dir),
+        &bundle,
+        target.name,
+        target,
+        &assembled,
+    )?;
+    let text = format!(
+        "Trust export for {} ({}): {} anchor(s) -> {out_dir}\n  manifest: {out_dir}/export.json\n",
+        target.name,
+        kind.as_str(),
+        assembled.certificates.len(),
+    );
+    Ok(emit(json_out, text, serde_json::to_value(&manifest)?))
 }
 
 // ---------------------------------------------------------------- explain / doctor
@@ -852,33 +2617,14 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish",
-        "AIA/CDP publication machinery (spec §13 phase F)",
-    ),
-    ("dns", "DNS plan/render/verify (spec §24.7)"),
-    (
-        "trust",
-        "trust-store install/export (spec §3.5 follow-through)",
+        "publish apply/status",
+        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
     ),
     (
-        "key",
-        "key inspect/import/export/convert-public (spec §6.1)",
+        "key import/export/escrow/restore/rotate",
+        "remaining standalone key ceremonies (spec §6.1)",
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
-    (
-        "profile validate/scaffold",
-        "profile validation + scaffolding (spec §6.1)",
-    ),
-    (
-        "algorithms benchmark/doctor",
-        "algorithm benchmarks (spec §6.1)",
-    ),
-    ("batch", "batch plan/validate/apply (spec §6.5)"),
-    ("inventory", "inventory list/show/search/audit (spec §6.1)"),
-    (
-        "root/issuer renew/rotate/replace",
-        "lifecycle verbs (spec §5.2)",
-    ),
     (
         "bundle pack/unpack/diff/migrate",
         "bundle packaging verbs (spec §7)",
@@ -890,7 +2636,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
@@ -938,11 +2684,28 @@ window."
         "profiles" => "Leaf profiles mirror pkgs/idp-pki's idp-ca: server (P-256, \
 serverAuth, 730d, SAN defaults to DNS:<cn>), client (P-256, clientAuth, 730d), \
 saml-signing and oidc-signing (RSA-2048, digitalSignature + nonRepudiation, 1095d, \
-no EKU). See `fleet cert profile list`."
+no EKU). Two more are the fleet brokers' TLS leaves (broker-TLS ADR-0001): \
+broker-server and broker-client (P-256, serverAuth or clientAuth, 90d, renewed with 30d \
+left). They issue only from a Base (general) issuer set, only from a CSR made on the \
+broker's host (--csr; the issuer never holds the key), and only with internal SANs: \
+at least one --dns name under .internal and a tailnet --ip (100.64.0.0/10 or \
+fd7a:115c:a1e0::/48); wildcards, public names and other IPs are refused. Revocation \
+is CRL-only: no OCSP URL or AIA is embedded. See `fleet cert profile list`."
+            .to_string(),
+        "trust" => "Two trust surfaces share one rule: only signature-proven \
+self-signed roots become anchors (the record's role label alone never admits one). \
+The versioned trust bundle (`trust export --root ... --version N`) feeds the \
+broker-client store's stage -> ack -> activate -> retire rollover. The root-set verbs \
+work on one root set directly: `trust inspect` lists the anchors a selection admits, \
+`trust pin` records approved fingerprints, `trust verify --pins/--store` reports \
+rotation, new anchors and consumer-store drift, and `trust export --target <consumer>` \
+writes PEM files plus that consumer's install/verify/remove guidance. None of them \
+installs trust: live trust-store mutation is production-gated (#9155, spec §44). \
+`ssh` is refused because native OpenSSH CA trust is not X.509."
             .to_string(),
         other => {
             return Err(CertError::usage(format!(
-                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles)"
+                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | trust | profiles)"
             )));
         }
     };
@@ -959,7 +2722,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let mut algo_results = Vec::new();
     let mut all_ok = true;
     for info in algorithm::registry() {
-        let ok = engine_self_test(info.id);
+        let ok = algorithm_lab::engine_self_test(info.id);
         if !ok {
             all_ok = false;
         }
@@ -984,7 +2747,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -992,32 +2755,363 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
     Ok(if all_ok { code } else { 1 })
 }
 
-fn engine_self_test(algo: AlgorithmId) -> bool {
-    let Ok(key) = engine::generate_key(algo) else {
-        return false;
-    };
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("empty SAN list");
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "fleet cert doctor self-test");
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let now = Rfc3339::now();
-    params.not_before = now.0;
-    params.not_after = (now.0 + time::Duration::days(1));
-    let Ok(cert) = params.self_signed(&key) else {
-        return false;
-    };
-    match crate::chain::parse_cert(cert.der()) {
-        Ok(info) => crate::chain::verify_signature(&info, &info),
-        Err(_) => false,
+#[cfg(test)]
+mod key_ceremony_tests {
+    use super::*;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("fleet-cert-{tag}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).expect("create isolated test directory");
+        dir
+    }
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn exported_spki_matches_the_certificate_engine_for_every_algorithm() {
+        // Oracle: rcgen writes the SubjectPublicKeyInfo of every
+        // certificate it signs; `public_key_spki_der` must produce the
+        // same bytes from the public key `inspect_key` returns.
+        for algo in [
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::Rsa2048,
+            AlgorithmId::MlDsa44,
+        ] {
+            let key = engine::generate_key(algo).expect("generate");
+            let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+                .expect("params")
+                .self_signed(&key)
+                .expect("self-signed certificate");
+            let (_, parsed) =
+                x509_parser::parse_x509_certificate(cert.der()).expect("parse certificate");
+            let public = engine::inspect_key(algo, &key.serialize_der()).expect("inspect");
+            assert_eq!(
+                engine::public_key_spki_der(algo, &public),
+                parsed.tbs_certificate.subject_pki.raw,
+                "SPKI mismatch for {}",
+                algo.info().name
+            );
+        }
+    }
+
+    #[test]
+    fn import_takes_pem_or_der_pkcs8_and_refuses_the_wrong_algorithm() {
+        let dir = scratch_dir("key-import");
+        let key = engine::generate_key(AlgorithmId::Ed25519).expect("generate");
+        let der = key.serialize_der();
+        let pem_path = dir.join("external.pem");
+        std::fs::write(&pem_path, crate::bundle::pem_encode("PRIVATE KEY", &der)).unwrap();
+        let pem_text = pem_path.to_string_lossy().into_owned();
+
+        // A wrong algorithm is refused and nothing is written.
+        let wrong = dir.join("wrong.pk8");
+        let wrong_text = wrong.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "p256",
+                "--in",
+                &pem_text,
+                "--out",
+                &wrong_text
+            ]),
+            true,
+        )
+        .is_err());
+        assert!(!wrong.exists());
+
+        // The PEM block imports as the same PKCS#8 DER, owner-only.
+        let out = dir.join("imported.pk8");
+        let out_text = out.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&out).unwrap(), der);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // An existing destination is never replaced.
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_err());
+
+        // Raw DER imports too; a legacy PEM label is refused by name.
+        let der_path = dir.join("external.der");
+        std::fs::write(&der_path, &der).unwrap();
+        let der_out = dir.join("from-der.pk8");
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &der_path.to_string_lossy(),
+                "--out",
+                &der_out.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&der_out).unwrap(), der);
+        let legacy = dir.join("legacy.pem");
+        std::fs::write(&legacy, crate::bundle::pem_encode("EC PRIVATE KEY", &der)).unwrap();
+        let err = pkcs8_from_der_or_pem(&std::fs::read(&legacy).unwrap(), &legacy)
+            .expect_err("legacy label refused");
+        assert!(err.to_string().contains("EC PRIVATE KEY"));
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn rotate_writes_a_fresh_key_and_keeps_the_old_one() {
+        let dir = scratch_dir("key-rotate");
+        for (name, algorithm) in [
+            ("ed25519", AlgorithmId::Ed25519),
+            ("p256", AlgorithmId::P256),
+        ] {
+            let old = engine::generate_key(algorithm).expect("generate");
+            let old_der = old.serialize_der();
+            let old_path = dir.join(format!("{name}-g1.pk8"));
+            std::fs::write(&old_path, &old_der).unwrap();
+            let old_text = old_path.to_string_lossy().into_owned();
+            let new_path = dir.join(format!("{name}-g2.pk8"));
+            let new_text = new_path.to_string_lossy().into_owned();
+            let rotate = |out: &str| {
+                key_cmd(
+                    &args(&[
+                        "rotate",
+                        "--algorithm",
+                        name,
+                        "--in",
+                        &old_text,
+                        "--out",
+                        out,
+                    ]),
+                    true,
+                )
+            };
+            assert!(rotate(&new_text).is_ok());
+            // The old key file is untouched.
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+            // The successor loads under the same algorithm and is a
+            // different key.
+            let new_der = std::fs::read(&new_path).unwrap();
+            let old_public = engine::inspect_key(algorithm, &old_der).unwrap();
+            let new_public = engine::inspect_key(algorithm, &new_der).unwrap();
+            assert_ne!(old_public, new_public);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&new_path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            // An existing destination is never replaced, the old path
+            // included.
+            assert!(rotate(&new_text).is_err());
+            assert_eq!(std::fs::read(&new_path).unwrap(), new_der);
+            assert!(rotate(&old_text).is_err());
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+        }
+        // A key that does not load under the named algorithm is refused
+        // and nothing is written.
+        let ed = engine::generate_key(AlgorithmId::Ed25519).expect("generate");
+        let ed_path = dir.join("ed-as-p256.pk8");
+        std::fs::write(&ed_path, ed.serialize_der()).unwrap();
+        let refused = dir.join("never-written.pk8");
+        assert!(key_cmd(
+            &args(&[
+                "rotate",
+                "--algorithm",
+                "p256",
+                "--in",
+                &ed_path.to_string_lossy(),
+                "--out",
+                &refused.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_err());
+        assert!(!refused.exists());
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn export_writes_only_the_public_key_and_never_replaces_a_file() {
+        let dir = scratch_dir("key-export");
+        let key = engine::generate_key(AlgorithmId::P256).expect("generate");
+        let der = key.serialize_der();
+        let key_path = dir.join("p256.pk8");
+        std::fs::write(&key_path, &der).unwrap();
+        let key_text = key_path.to_string_lossy().into_owned();
+        let public = engine::inspect_key(AlgorithmId::P256, &der).unwrap();
+        let spki = engine::public_key_spki_der(AlgorithmId::P256, &public);
+
+        let pem_out = dir.join("p256.pub.pem");
+        let pem_text = pem_out.to_string_lossy().into_owned();
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_ok());
+        let written = std::fs::read_to_string(&pem_out).unwrap();
+        let blocks = pem_decode_all(&written).unwrap();
+        assert_eq!(blocks, vec![("PUBLIC KEY".to_string(), spki.clone())]);
+        assert!(!written.contains("PRIVATE"));
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_err());
+
+        let der_out = dir.join("p256.pub.der");
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &der_out.to_string_lossy(),
+                "--format",
+                "der",
+            ]),
+            true,
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(&der_out).unwrap(), spki);
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &dir.join("x").to_string_lossy(),
+                "--format",
+                "jwk",
+            ]),
+            true,
+        )
+        .is_err());
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn generate_creates_private_file_once_and_inspect_redacts_material() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("fleet-cert-key-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).expect("create isolated test directory");
+        let path = dir.join("p256.pk8");
+        let path_text = path.to_string_lossy().into_owned();
+        let generated = key_cmd(
+            &[
+                "generate".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--out".into(),
+                path_text.clone(),
+            ],
+            true,
+        );
+        assert!(generated.is_ok());
+        let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
+        assert!(!bytes.is_empty());
+        assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
+        assert!(key_cmd(
+            &[
+                "inspect".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--in".into(),
+                path_text.clone(),
+            ],
+            true,
+        )
+        .is_ok());
+        assert!(key_cmd(
+            &[
+                "generate".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--out".into(),
+                path_text,
+            ],
+            true,
+        )
+        .is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 }
 

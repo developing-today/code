@@ -138,6 +138,7 @@ fn signed_body_round_trip(kind: &str, body: &[u8]) {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         },
     )
     .expect("sign body");
@@ -396,7 +397,7 @@ fn worked_example_non_metric_water_record() {
     let decoded = decode_record_body(&bytes).expect("decode");
     assert!(decoded.measure.is_none());
     assert!(decoded.shared.is_none());
-    assert!(decoded.details.is_empty());
+    assert_eq!(decoded.details, [] as [(Hash, RecordDetail); 0]);
     assert!(decoded.note.is_none());
 }
 
@@ -871,7 +872,7 @@ fn evaluator_keeps_only_the_head_of_a_supersede_chain() {
         chicago(2026, 6, 15, 20, 0),
     )
     .expect("normal chain evaluates");
-    assert!(!verdicts.is_empty());
+    assert_ne!(verdicts, [] as [Verdict; 0]);
     assert!(
         verdicts
             .iter()
@@ -891,7 +892,7 @@ fn ends_at_stops_evaluation() {
     ));
     ended.ends_at = Some(chicago(2026, 6, 15, 0, 0));
     let verdicts = evaluate(&[ended], &[], chicago(2026, 6, 15, 20, 0)).expect("evaluate");
-    assert!(verdicts.is_empty());
+    assert_eq!(verdicts, [] as [Verdict; 0]);
 }
 
 #[test]

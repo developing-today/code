@@ -1,5 +1,5 @@
 {
-  "about": "Every file the app is made of, named once. The laptop's service (src/server.ts) and the Worker (edge/src/edge.ts) serve exactly these, the Worker's build (edge/build.mjs) ships exactly these, and the service worker (public/sw.js) keeps them for when there is no connection. A new file for the app is a line here and nothing else. 'kept' says when the service worker keeps a copy: 'installed' is at once, so the app opens offline after one visit; 'used' is when the page first asks for it (a typeface nobody chose is never fetched); 'never' is the service worker itself, which the browser keeps.",
+  "about": "Every file the app is made of, named once. The laptop's service (src/server.ts) and the Worker (edge/src/edge.ts) serve exactly these, the Worker's build (edge/build.mjs) ships exactly these, and the service worker (public/sw.js) keeps them for when there is no connection. A new file for the app is a line here and nothing else (a new page is its file under pages/, a line in pages/index.js, and a line here). 'kept' says when the service worker keeps a copy: 'installed' is at once, so the app opens offline after one visit; 'used' is when the page first asks for it (a typeface nobody chose is never fetched); 'never' is the service worker itself, which the browser keeps.",
   "page": "index.html",
   "files": [
     {
@@ -14,6 +14,36 @@
     },
     {
       "path": "look.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "ui.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "charts.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "pages/index.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "pages/trends.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "pages/reports.js",
+      "type": "text/javascript; charset=utf-8",
+      "kept": "installed"
+    },
+    {
+      "path": "pages/components.js",
       "type": "text/javascript; charset=utf-8",
       "kept": "installed"
     },

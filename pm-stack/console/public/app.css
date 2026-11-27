@@ -14,6 +14,17 @@
   --bad: #f85149;
   /* Text on that red: white on it was 3.4 to 1. */
   --bad-ink: #1a0405;
+  /* What a chart tells its series apart by (public/charts.js): a fixed
+     order of colours, chosen so that neighbours in it can be told apart
+     by people who see colour differently, and stepped for a dark page.
+     The light page's steps are below. They are not the status colours
+     above and are never used for them. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
   --tab-h: 62px;
   --top-h: 52px;
   /* How it looks beyond its colours, each set by an attribute on this
@@ -49,6 +60,12 @@
     --warn: #8a5a00;
     --bad: #c5222c;
     --bad-ink: #ffffff;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
   }
 }
 * {
@@ -834,4 +851,243 @@ input[type="radio"] {
 .sample .row {
   margin-top: calc(10px * var(--space));
   flex-wrap: wrap;
+}
+
+/* ---- charts --------------------------------------------------------- */
+/* Drawn by public/charts.js, which says the rules. A mark takes its
+   series' colour from its class; words and numbers stay in the text's. */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: calc(10px * var(--space));
+  margin-bottom: calc(10px * var(--space));
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2px * var(--space));
+  padding: calc(12px * var(--space));
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+}
+.kpi-label,
+.kpi-delta {
+  font-size: 0.78rem;
+  color: var(--quiet);
+}
+.kpi-value {
+  font-size: 1.6rem;
+  font-weight: 650;
+  line-height: 1.15;
+}
+.kpi-delta.up {
+  color: var(--good);
+}
+.kpi-delta.down {
+  color: var(--warn);
+}
+.spark {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: calc(4px * var(--space));
+}
+.spark .ln {
+  fill: none;
+  stroke: var(--quiet);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.spark .dot {
+  fill: var(--accent);
+}
+figure.chart {
+  margin: 0 0 calc(10px * var(--space));
+}
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(2px * var(--space)) calc(12px * var(--space));
+  min-height: 1.4em;
+  font-size: 0.85rem;
+  color: var(--quiet);
+}
+.readout b,
+.legend b {
+  color: var(--text);
+  font-weight: 650;
+}
+.plot {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  /* A finger moving across it reads the days; up and down still scrolls. */
+  touch-action: pan-y;
+  outline: none;
+}
+.plot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.plot .grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.plot .hair {
+  stroke: var(--quiet);
+  stroke-width: 1;
+}
+.plot .tick {
+  fill: var(--quiet);
+  font-size: 9.5px;
+}
+.plot .ln {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.plot .wash {
+  opacity: 0.1;
+}
+.plot .dot.ring {
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+/* Today is not over. */
+.plot .col.partial {
+  opacity: 0.55;
+}
+.plot.choosing .col {
+  opacity: 0.4;
+}
+.plot.choosing .col.on {
+  opacity: 1;
+}
+.s1 {
+  fill: var(--series-1);
+}
+.s2 {
+  fill: var(--series-2);
+}
+.s3 {
+  fill: var(--series-3);
+}
+.s4 {
+  fill: var(--series-4);
+}
+.s5 {
+  fill: var(--series-5);
+}
+.s6 {
+  fill: var(--series-6);
+}
+.so {
+  fill: var(--quiet);
+}
+.ln.s1 {
+  stroke: var(--series-1);
+}
+.ln.s2 {
+  stroke: var(--series-2);
+}
+.ln.s3 {
+  stroke: var(--series-3);
+}
+.ln.s4 {
+  stroke: var(--series-4);
+}
+.ln.s5 {
+  stroke: var(--series-5);
+}
+.ln.s6 {
+  stroke: var(--series-6);
+}
+.ln.so {
+  stroke: var(--quiet);
+}
+/* The mark of a series beside its name: a block for columns, a stroke
+   for lines. */
+.sw {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: calc(5px * var(--space));
+  border-radius: calc(2px * var(--round));
+  background: var(--quiet);
+}
+.sw.ln {
+  width: 14px;
+  height: 3px;
+  vertical-align: middle;
+}
+.sw.s1 {
+  background: var(--series-1);
+}
+.sw.s2 {
+  background: var(--series-2);
+}
+.sw.s3 {
+  background: var(--series-3);
+}
+.sw.s4 {
+  background: var(--series-4);
+}
+.sw.s5 {
+  background: var(--series-5);
+}
+.sw.s6 {
+  background: var(--series-6);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--space)) calc(14px * var(--space));
+  margin: calc(6px * var(--space)) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+.figures summary,
+.fold summary {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--space));
+  min-height: 36px;
+  cursor: pointer;
+}
+.figures summary {
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+.figures .scroll {
+  max-height: 260px;
+  overflow: auto;
+}
+.figures table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.figures th,
+.figures td {
+  padding: calc(3px * var(--space)) calc(12px * var(--space)) calc(3px * var(--space)) 0;
+  border-bottom: var(--edge) solid var(--line);
+  text-align: right;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.figures thead th {
+  color: var(--quiet);
+}
+.figures th:first-child {
+  text-align: left;
+}
+/* A card that opens: a project and the features it merged. */
+.fold .link {
+  margin-top: calc(6px * var(--space));
 }

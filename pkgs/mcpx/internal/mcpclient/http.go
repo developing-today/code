@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,9 +64,12 @@ type HTTPTransport struct {
 
 // HTTPOptions configure a remote MCP server.
 type HTTPOptions struct {
-	URL     string
-	Headers map[string]string
-	Timeout time.Duration
+	URL string
+	// UnixSocket routes HTTP requests through a Unix-domain socket while
+	// retaining Streamable HTTP framing. URL is the synthetic HTTP origin.
+	UnixSocket string
+	Headers    map[string]string
+	Timeout    time.Duration
 }
 
 // sameHTTPOrigin compares scheme, host and effective port. Explicit default
@@ -121,10 +125,16 @@ func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
 // (a pool call canceled on release, the abandoned GET stream) could be
 // handed to another transport's request, which net/http then fails with
 // context.Canceled before writing anything -- the #290 flake.
-func newHTTPClients(timeout time.Duration) (hc, streamHC *http.Client) {
+func newHTTPClients(timeout time.Duration, socket string) (hc, streamHC *http.Client) {
 	clone := func() http.RoundTripper {
 		if base, ok := http.DefaultTransport.(*http.Transport); ok {
-			return base.Clone()
+			tr := base.Clone()
+			if socket != "" {
+				tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+				}
+			}
+			return tr
 		}
 		return http.DefaultTransport
 	}
@@ -141,7 +151,7 @@ func NewHTTP(opts HTTPOptions) (*HTTPTransport, error) {
 	if timeout == 0 {
 		timeout = defaults.HTTPRequestTimeout
 	}
-	hc, streamHC := newHTTPClients(timeout)
+	hc, streamHC := newHTTPClients(timeout, opts.UnixSocket)
 	return &HTTPTransport{
 		url:      opts.URL,
 		headers:  opts.Headers,

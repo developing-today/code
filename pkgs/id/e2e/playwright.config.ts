@@ -1,3 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { defineConfig, devices } from "@playwright/test";
 
 /**
@@ -99,10 +104,26 @@ const projects = IS_NIX_BUILD && !IS_VM_TEST ? [firefoxProject] : [chromiumProje
 // nix/tests/playwright-e2e-test.nix); override with ID_E2E_WORLD_ADMIN_TOKEN
 // in all three places at once.
 const WORLD_ADMIN_TOKEN = process.env.ID_E2E_WORLD_ADMIN_TOKEN ?? "e2e-world-admin-token";
-const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module fixtures/roc-screen.wasm`;
+// Absolute path: `id --data-dir` chdirs the server into its data dir, so a
+// cwd-relative module path would no longer resolve to the checked-in fixture.
+const WORLD_MODULE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/roc-screen.wasm");
+const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module ${WORLD_MODULE}`;
+
+// Each server gets its own data dir (#15145): the two config-managed servers
+// used to start with identical flags from the same working directory, so
+// they shared .iroh-key (same iroh endpoint id) and the on-disk event store
+// — the second server exited immediately with "events.redb is open in
+// another process" and local mode could not start at all. `--data-dir`
+// chdirs the server into the given directory, isolating its key, event
+// store, identity db and serve lock. A fresh temp root per config load
+// keeps the per-invocation "fresh ephemeral server" model intact: no state
+// leaks between runs, and parallel invocations never collide.
+const DATA_ROOT = mkdtempSync(path.join(tmpdir(), "id-e2e-data-"));
+const CHROMIUM_DATA_DIR = path.join(DATA_ROOT, `chromium-${CHROMIUM_PORT}`);
+const FIREFOX_DATA_DIR = path.join(DATA_ROOT, `firefox-${FIREFOX_PORT}`);
 
 const chromiumServer = {
-  command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  command: `../target/debug/id --data-dir ${CHROMIUM_DATA_DIR} serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
   port: CHROMIUM_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,
@@ -111,7 +132,7 @@ const chromiumServer = {
 };
 
 const firefoxServer = {
-  command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  command: `../target/debug/id --data-dir ${FIREFOX_DATA_DIR} serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
   port: FIREFOX_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,

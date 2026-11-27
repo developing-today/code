@@ -173,6 +173,35 @@ test('unknown non-inverted window gates are rejected and excluded from coverage'
   assert.ok(result.issues.some((issue) => issue.includes('unknown model-route window "typo-window"')));
 });
 
+test('window class vocabulary and route window bindings (#9378 stage 2)', () => {
+  const config = configWith();
+  config.experimental.model_route_windows = {
+    peak: { daysOfWeek: ['mon'], start: '01:00', end: '04:00', timezone: 'UTC', class: 'peak' },
+    off: { daysOfWeek: ['mon'], start: '04:00', end: '06:00', timezone: 'UTC', class: 'off-peak' },
+    bad: { daysOfWeek: ['mon'], start: '00:00', end: '23:59', timezone: 'UTC', class: 'spicy' },
+  };
+  config.experimental.model_routes.bound = { targets: ['good/model#low'], windows: ['peak', 'off'] };
+  config.experimental.model_routes.badroute = { targets: ['good/model#low'], windows: ['nope'] };
+  config.experimental.model_routes.notalist = { targets: ['good/model#low'], windows: 'peak' };
+  const result = inspectRouteRules(config);
+  assert.ok(
+    result.issues.some((issue) => issue.includes('window "bad"') && issue.includes('unknown class')),
+    `bad class must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "badroute"') && issue.includes('unknown model-route window "nope"')),
+    `unknown binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "notalist"') && issue.includes('"windows" must be a list')),
+    `non-list binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    !result.issues.some((issue) => issue.includes('route "bound"')),
+    `valid binding must not flag: ${result.issues}`,
+  );
+});
+
 test('permanently closed window gates are rejected and excluded from coverage', () => {
   const config = configWith({ scout: [{ model: 'good/model#low', window: 'closed' }] });
   config.experimental.model_route_windows = {
@@ -202,8 +231,8 @@ test('repeated nested-route references expand once like the runtime', () => {
 });
 
 test('an emptied chain stage contributes nothing instead of failing the tier', () => {
-  // main's workhorse-primary is deliberately targets: [] while the
-  // chain's other stages serve the tier (Drew emptied it 2026-11-07).
+  // A legacy empty nested route is a no-op while the chain's other stages
+  // serve the tier; the canonical workhorse-primary stage is now removed.
   const config = configWith({
     workhorse: ['opencode-route/empty-stage#low', 'good/model#high'],
   });
@@ -228,30 +257,46 @@ test('canonical OpenCode config satisfies the route rules', () => {
   assert.deepEqual(checkRouteRules(source), []);
 });
 
-// --- class fallback layout (Drew 2026-11-13) ---
+// --- class fallback layout (route-pool decision #14432, 2026-11-26) ---
 import { CLASS_FALLBACKS, inspectFallbackLayout } from './check-opencode-route-rules.mjs';
 
 function configWithFallbacks(overrides = {}) {
   const config = configWith({
-    // Scout chain ruled by Drew 2026-11-14: background first, then workhorse
-    // (matches CLASS_FALLBACKS, .opencode/route-fallbacks.md, and the canonical config).
-    scout: ['good/model#low', 'opencode-route/background', 'opencode-route/workhorse'],
-    workhorse: ['good/model#high', 'opencode-route/scout', 'opencode-route/specialist'],
+    // Scout falls to background then workhorse; workhorse has no edge back
+    // to scout, so the class graph remains acyclic.
+    scout: ['good/model#low', 'opencode-route/background'],
+    workhorse: ['good/model#high', 'opencode-route/specialist'],
     summit: ['plan/model#high', 'opencode-route/specialist'],
     ...overrides,
   });
   const routes = config.experimental.model_routes;
   routes.small = { targets: ['good/model#low', 'opencode-route/speed'] };
   routes.speed = {
-    targets: ['good/model#high', 'opencode-route/workhorse', 'opencode-route/summit', 'opencode-route/specialist'],
+    targets: ['good/model#high', 'opencode-route/workhorse-last-resort', 'opencode-route/specialist'],
   };
   routes.background = { targets: ['good/model#low', 'opencode-route/workhorse'] };
+  routes['workhorse-last-resort'] = { targets: ['plan/model#low'] };
   return config;
 }
 
-test('class fallback layout passes and the workhorse<->scout pair is not a cycle', () => {
+test('class fallback layout passes with acyclic workhorse, scout and speed fallbacks', () => {
   const result = inspectRouteRules(configWithFallbacks());
   assert.deepEqual(result.issues, []);
+});
+
+test('declared class fallback graph is acyclic', () => {
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (route) => {
+    if (visiting.has(route)) throw new Error(`class fallback cycle reaches ${route}`);
+    if (visited.has(route)) return;
+    visiting.add(route);
+    for (const target of CLASS_FALLBACKS[route] ?? []) visit(target);
+    visiting.delete(route);
+    visited.add(route);
+  };
+  for (const route of Object.keys(CLASS_FALLBACKS)) visit(route);
+  assert.equal(visiting.size, 0, 'every fallback path returns from the cycle-check walk');
 });
 
 test('class fallback drift between config and the declared chain is flagged', () => {

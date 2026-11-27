@@ -247,6 +247,20 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inline mode needs a configuration: %w", err)
 	}
+	// Inline mode is a one-shot frontend: the in-process daemon lives
+	// exactly as long as the command, so its servers spawn directly.
+	// Supervised children would outlive the command in the shared
+	// state directory — leftover sup-*.sock sockets and children were
+	// half of what forced #11343 to pause the supervised default —
+	// and supervision's value (a child surviving its frontend) needs
+	// a frontend that comes back. A real daemon start supervises
+	// this same config.
+	for _, s := range cfg.MCPServers {
+		if s.Mcpx != nil {
+			off := false
+			s.Mcpx.Supervised = &off
+		}
+	}
 	config.ApplyPoolSettings(cfg, a.Settings())
 	// A private socket in a private directory, so two inline runs in the
 	// same shell cannot find each other's servers.
@@ -294,15 +308,25 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return paths.Socket, nil
 	})
 	deadline := time.Now().Add(a.Settings().Duration("daemon.inlineStartTimeout"))
+	poll := a.Settings().Duration("daemon.inlineStartPoll")
+	probes := 0
 	for time.Now().Before(deadline) {
+		probes++
 		if inlineDaemonPing(c, ctx) {
 			return c, nil
+		}
+		// Bound the last wait to the remaining start budget: a poll
+		// interval longer than the time left must not sleep past the
+		// deadline (#13595).
+		wait := poll
+		if remaining := time.Until(deadline); wait > remaining {
+			wait = remaining
 		}
 		select {
 		case <-ctx.Done():
 			a.inlineStop()
 			return nil, ctx.Err()
-		case <-time.After(a.Settings().Duration("daemon.inlineStartPoll")):
+		case <-time.After(wait):
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -310,7 +334,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	a.inlineStop()
-	return nil, fmt.Errorf("the in-process daemon did not answer")
+	return nil, fmt.Errorf("the in-process daemon did not answer after %d readiness probes", probes)
 }
 
 // inProcessTransport carries HTTP requests to a handler hosted in this

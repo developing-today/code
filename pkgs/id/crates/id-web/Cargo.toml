@@ -8,16 +8,21 @@ license = "MIT OR Apache-2.0"
 
 # Step 6c of the pkgs/id crate split (#3447 umbrella, #4409): the web
 # layer lives here. It is a pure consumer of the lower crates
-# (id-core, id-caps, id-store, id-events, id-groups, id-sync,
+# (id-core, id-caps, id-store, id-events, id-grants, id-groups, id-sync,
 # id-directory, id-worlds) and depends on all of them downward; the
 # facade re-exports this crate as `id::web` under its `web` feature,
 # so existing call sites are unchanged. The web-only dependencies
 # (axum, tower, rust-embed, comrak, ...) moved here from the facade
 # manifest with the code.
 
+# No cargo features: production code here keys on nothing, and the
+# wasmtime-backed world-WS *tests* get their execution support from the
+# dev-dependency below (id-worlds with `sandbox` + `test-utils`). The old
+# `sandbox` feature gated only test helpers, so it was dead in every
+# production build and present only under --all-features; S2 of #14056
+# removed it on that evidence (pkgs/id/composition/s2-feature-hygiene.md).
 [features]
 default = []
-sandbox = ["id-worlds/sandbox"]
 
 [dependencies]
 anyhow = "1"
@@ -30,19 +35,20 @@ id-core = { path = "../id-core", default-features = false, features = [
 ] }
 id-directory = { path = "../id-directory", default-features = false }
 id-events = { path = "../id-events", default-features = false }
+id-grants = { path = "../id-grants" }
 id-groups = { path = "../id-groups", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 id-sync = { path = "../id-sync", default-features = false }
 id-worlds = { path = "../id-worlds", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 redb = "=5.0.0"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-lite = "2"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 rand = "0.10"
 toml = "1"
 sha2 = "0.11"
@@ -76,7 +82,7 @@ id-worlds = { path = "../id-worlds", default-features = false, features = [
 ] }
 iroh = "1"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.103", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 proptest = "1.12"
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }
@@ -153,5 +159,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

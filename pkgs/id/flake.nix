@@ -46,6 +46,10 @@
       # Root runtime packages can skip duplicate tests; named flake checks
       # keep the same coverage. Standalone builds remain checked by default.
       checkRuntimePackages = args.checkRuntimePackages or true;
+      # Single profile source for build-variant feature sets (S2 of
+      # #14056): the id-web / id-lib package definitions below take
+      # their feature sets from composition/variants.toml, never inline.
+      variantsConfig = builtins.fromTOML (builtins.readFile ./composition/variants.toml);
       # The root flake injects its pinned Crane input for NixOS runtime
       # builds; standalone ID flakes keep their existing package builder.
       craneInput = args.crane or null;
@@ -112,7 +116,7 @@
           # Keyed by crate name-version, not rev: a p2panda rev bump keeps the
           # key, so these hashes (and default.nix's) must be updated by hand (#643).
           outputHashes = {
-            "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+            "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
           };
         };
 
@@ -441,6 +445,70 @@
           ];
         };
 
+        # Native shell (F13.6, #12819 slice 1): the installable Bevy client,
+        # Linux first per the Q1 platform order on #6297. A separate output
+        # so the default `id` packages never acquire Bevy. Tests stay in the
+        # test-native-shell check; this derivation only builds and wraps.
+        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          id-native-shell = pkgs.rustPlatform.buildRustPackage {
+            pname = "id-native-shell";
+            version = "0.1.0";
+            src = ./.;
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
+              };
+            };
+
+            cargoBuildFlags = [
+              "-p"
+              "id-native-shell"
+            ];
+            doCheck = false;
+            dontUseCmakeConfigure = true;
+
+            # nix-common's buildInputs carry the GUI system libraries the
+            # Bevy window/render features link (wayland, X11, xkbcommon,
+            # Vulkan) next to OpenSSL.
+            inherit buildInputs;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.cmake
+              pkgs.makeWrapper
+              rustToolchain
+            ];
+
+            inherit (opensslEnv) OPENSSL_DIR;
+            inherit (opensslEnv) OPENSSL_LIB_DIR;
+            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+            # winit and wgpu dlopen these at runtime; the dev shell sets the
+            # same LD_LIBRARY_PATH in nix-common's shellHook.
+            postFixup = ''
+              wrapProgram $out/bin/id-native-shell \
+                --prefix LD_LIBRARY_PATH : ${
+                  pkgs.lib.makeLibraryPath [
+                    pkgs.wayland
+                    pkgs.libxkbcommon
+                    pkgs.xorg.libX11
+                    pkgs.xorg.libXcursor
+                    pkgs.xorg.libXrandr
+                    pkgs.xorg.libXi
+                    pkgs.vulkan-loader
+                  ]
+                }
+            '';
+
+            meta = commonMeta // {
+              description = "Native reference shell for id: a Bevy client speaking the F13.1 shell contract";
+              mainProgram = "id-native-shell";
+              platforms = pkgs.lib.platforms.linux;
+            };
+          };
+        };
+
         # ─── Dynamic app generation from justfile ──────────────────────────
         #
         # Apps are generated from just-recipes.json (produced by `just just-recipes`).
@@ -542,7 +610,7 @@
             individualChecks =
               {
                 # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
-                # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
+                # NixOS VM integration tests (Linux only): nixos-serve nixos-world-host nixos-e2e
                 # Nix flake check builds all named checks as well as default.
                 # Use a link farm so the aggregate depends on those same results
                 # instead of rerunning the full CI recipe in a second derivation.
@@ -554,6 +622,13 @@
                 # id-native-shell gate (#5582): the crate is a non-default
                 # workspace member, invisible to the default-member checks.
                 clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
+                # id-bevy-bridge gate (#13704): also a non-default member.
+                # test-bevy-bridge runs the replay oracle, the acceptance
+                # gate for a bump of the bridge's pinned bevy_ecs.
+                clippy-bevy-bridge = mkCheckCargoOnly "clippy-bevy-bridge" "clippy-bevy-bridge";
+                # id-bevy-presenter gate (#13705): the Bevy slice 4
+                # presenter-client app, another non-default member.
+                clippy-bevy-presenter = mkCheckCargoOnly "clippy-bevy-presenter" "clippy-bevy-presenter";
                 web-lint = mkCheckBiome "web-lint" "web-lint";
                 # test-unit plus the four shards cover the same root suite
                 # as test-sandbox, without building and running that suite twice.
@@ -567,8 +642,11 @@
                 test-unit = mkCheck "test-unit" "test-unit";
                 test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
                 test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
+                test-android-remote = mkCheckCargoOnly "test-android-remote" "test-android-remote";
                 test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
                 test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
+                test-bevy-bridge = mkCheckCargoOnly "test-bevy-bridge" "test-bevy-bridge";
+                test-bevy-presenter = mkCheckCargoOnly "test-bevy-presenter" "test-bevy-presenter";
                 # Rust example guests (#7904): plaza-sdk (examples/rust-world)
                 # and rust-counter (examples/rust-counter) are standalone
                 # crates outside the pkgs/id workspace, so no workspace test
@@ -627,7 +705,24 @@
                   "test-web-unit"
                   "test-web-typecheck"
                 ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+                # The keyboard parity test reads the kitty corpus from
+                # doc/, a symlink to the repo-root doc/ that dangles in
+                # the check sandbox; materialize that one file as
+                # roc-test does (#14665).
+                test-web-unit = mkCheckWith {
+                  name = "test-web-unit";
+                  justCmd = "test-web-unit";
+                  needsCargoSetup = false;
+                  needsRustToolchain = false;
+                  needsBuildInputs = false;
+                  buildWebAssets = false;
+                  compileRocWorldHost = false;
+                  beforeCheck = ''
+                    rm doc
+                    mkdir doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
+                };
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
                 # recipe with the pinned nightly from nix/roc.nix (already in
@@ -1059,6 +1154,9 @@
                   nixos-serve = pkgs.testers.runNixOSTest (
                     import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
                   );
+                  nixos-world-host = pkgs.testers.runNixOSTest (
+                    import ./nix/tests/world-host-test.nix { idPackage = self.packages.${system}.id-web; }
+                  );
                   nixos-e2e = pkgs.testers.runNixOSTest (
                     import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
                   );
@@ -1091,9 +1189,14 @@
                 "cargo-check"
                 "clippy-lint"
                 "clippy-native-shell"
+                "clippy-bevy-bridge"
+                "clippy-bevy-presenter"
                 "web-lint"
                 "test"
                 "test-native-shell"
+                "test-android-remote"
+                "test-bevy-bridge"
+                "test-bevy-presenter"
                 "test-rust-examples"
                 "test-web-unit"
                 "test-web-typecheck"
@@ -1108,13 +1211,13 @@
         # =======================================================================
         # Packages: nix build
         # =======================================================================
-        packages = {
+        packages = nativeShellPackages // {
           # Web-enabled package (primary product)
           id-web =
             if craneLib != null && !checkRuntimePackages then
               mkCraneRuntime {
                 pname = "id";
-                cargoExtraArgs = "--locked -p id --features web,sandbox,ssh,world";
+                cargoExtraArgs = "--locked -p id --features " + builtins.concatStringsSep "," variantsConfig.variant.web.features;
                 nativeBuildInputs = [
                   pkgs.pkg-config
                   pkgs.cmake
@@ -1150,18 +1253,13 @@
             version = "0.1.0";
             src = ./.;
 
-            # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [
-              "web"
-              "sandbox"
-              "ssh"
-              "world"
-            ];
+            # Variant feature set from the single profile source (S2).
+            buildFeatures = variantsConfig.variant.web.features;
 
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 
@@ -1229,7 +1327,7 @@
             if craneLib != null && !checkRuntimePackages then
               mkCraneRuntime {
                 pname = "id-lib";
-                cargoExtraArgs = "--locked -p id --no-default-features --features sandbox,world";
+                cargoExtraArgs = "--locked -p id --no-default-features --features " + builtins.concatStringsSep "," variantsConfig.variant.lib.features;
                 nativeBuildInputs = [
                   pkgs.pkg-config
                   pkgs.cmake
@@ -1253,16 +1351,13 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
-            buildFeatures = [
-              "sandbox"
-              "world"
-            ];
+            buildFeatures = variantsConfig.variant.lib.features;
             dontUseCmakeConfigure = true;
 
             buildInputs = [ pkgs.openssl ];

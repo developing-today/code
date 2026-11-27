@@ -28,6 +28,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"github.com/developing-today/code/pkgs/mcpx/internal/source"
@@ -1721,7 +1722,56 @@ func (a *App) CmdStop(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Println("daemon stopped")
+	a.reapStoppedSupervisors(a.Paths.State, a.ConfigPath)
 	return nil
+}
+
+// reapStoppedSupervisors terminates the supervisors of configPath's
+// servers in stateDir (#9963). Supervisors are built to outlive
+// daemon restarts — a restarted frontend re-adopts the same child —
+// so daemon shutdown alone never reaps them; an explicit `mcpx stop`
+// is the operator's "nothing of this config runs any more", and it
+// reaps every instance of the config's servers, primary and scoped.
+// A supervisor that still refuses after a short retry (the stopped
+// daemon's detach lands asynchronously; another live frontend may
+// also own it) is reported and left in place. A config that no longer
+// loads reaps nothing: stop must not fail over cleanup.
+func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s: reap supervisors: %v\n", configPath, err)
+		return
+	}
+	names := make([]string, 0, len(cfg.MCPServers))
+	for name := range cfg.MCPServers {
+		names = append(names, name)
+	}
+	var outcomes []mcpclient.SupervisorScanOutcome
+	for attempt := 0; ; attempt++ {
+		outcomes = mcpclient.ReapSupervisors(stateDir, names, nil)
+		refused := false
+		for _, o := range outcomes {
+			if o.Action == "refused" {
+				refused = true
+			}
+		}
+		if !refused || attempt >= 20 {
+			break
+		}
+		time.Sleep(defaults.SupervisorReapRetry)
+	}
+	reaped := 0
+	for _, o := range outcomes {
+		switch o.Action {
+		case "reaped", "stale-removed":
+			reaped++
+		case "refused":
+			fmt.Fprintf(os.Stderr, "  %s: supervisor %s left in place: %s\n", configPath, filepath.Base(o.Socket), o.Detail)
+		}
+	}
+	if reaped > 0 {
+		fmt.Printf("reaped %d supervisor(s) for %s\n", reaped, configPath)
+	}
 }
 
 // daemonListing pairs a daemon record with the state directory it was
@@ -1786,6 +1836,7 @@ func (a *App) stopAll(ctx context.Context) error {
 		}
 		stopped++
 		fmt.Printf("stopped daemon for %s (pid %d)\n", info.ConfigPath, info.PID)
+		a.reapStoppedSupervisors(p.State, info.ConfigPath)
 	}
 	if stopped == 0 {
 		fmt.Println("no running daemons found")

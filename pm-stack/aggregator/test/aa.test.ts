@@ -599,6 +599,51 @@ describe("fleet catalog (Model Explorer)", () => {
     expect(gemini.goCapUsd).toBe(12);
   });
 
+  test("aaCatalogFromConfig includes ranking-only Carbon as measured/estimated non-routable rows", () => {
+    const carbonRows: [string, string, number][] = [
+      ["low", "google|gemini-4-carbon|low|reasoning|fallback-na|aa-v5|snapshot-2026-11-12", 54.2],
+      ["medium", "google|gemini-4-carbon|medium|reasoning|fallback-na|aa-v5|snapshot-2026-11-12", 58.3],
+      ["high", "google|gemini-4-carbon|high|reasoning|fallback-na|aa-v5|snapshot-2026-10-31", 60],
+      ["xhigh", "google|gemini-4-carbon|xhigh|reasoning|fallback-na|aa-v5|snapshot-2026-11-12|estimated", 61],
+    ];
+    const rankings: AaRanking[] = carbonRows.map(([effort, testRunKey, score], rowIndex) => ({
+      rowIndex,
+      testRunKey,
+      modelVariantKey: `google|gemini-4-carbon|${effort}|reasoning|fallback-na`,
+      family: "Gemini 4 Carbon",
+      creator: "Google",
+      effort,
+      benchmarkVersionKey: "AA|v5",
+      rawScore: score,
+      adjustedScore: score,
+      costTask: 7.19,
+      timeTaskSec: null,
+      speedTps: null,
+      qualStatus: "Contender",
+      availability: "yes",
+      eligible: true,
+      intelEffPerUsd: null,
+      usdPerUsableUnit: null,
+      pointsPerDollar: null,
+      pointsPerSecond: null,
+      balancedValue: null,
+      smartValue: null,
+      speedValue: null,
+      rankBalanced: null,
+      rankSmart: null,
+      rankSpeed: null,
+      rankIntelligence: null,
+      rankLowCost: null,
+    }));
+    const catalog = aaCatalogFromConfig('{"provider":{}}', { configs: [], rankings });
+    expect(catalog).not.toBeNull();
+    const carbon = catalog!.filter((entry) => entry.model === "Gemini 4 Carbon");
+    expect(carbon.map((entry) => entry.effort)).toEqual(["high", "low", "medium", "xhigh"]);
+    expect(carbon.every((entry) => entry.configured === false && entry.routes.length === 0)).toBe(true);
+    expect(carbon.map((entry) => entry.estimated)).toEqual([false, false, false, true]);
+    expect(carbon.map((entry) => entry.aaScore)).toEqual([60, 54.2, 58.3, 61]);
+  });
+
   test("null on unparseable config", () => {
     expect(aaCatalogFromConfig("{ nope", { configs: [], rankings: [] })).toBeNull();
   });
@@ -1007,6 +1052,21 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);
     for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+  });
+
+  test("band-scale redraws re-run the chart enhancer (#14479)", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    // renderBandComparisons() rebuilds #xpl-bandgroups via innerHTML,
+    // destroying the injected Expand / Zoom controls — so the band-scale
+    // handler must re-run enhanceCharts(), like the band-count handler.
+    const scaleHandler = html.match(
+      /getElementById\("xf-bandscale"\)[\s\S]*?renderBandComparisons\(\); enhanceCharts\(\);/,
+    );
+    expect(scaleHandler).not.toBeNull();
+    const countHandler = html.match(
+      /getElementById\("xf-bands"\)[\s\S]*?renderBandComparisons\(\); enhanceCharts\(\);/,
+    );
+    expect(countHandler).not.toBeNull();
   });
 
   test("the enhancer delegates its viewBox math to the tested computations module (#9581)", () => {

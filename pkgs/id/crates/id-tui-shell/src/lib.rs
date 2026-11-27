@@ -21,6 +21,12 @@
 //! pinning tests grow with them — the same progression the
 //! hardware shell (#10929) and the native shell (#10928) followed.
 
+pub mod frames;
+pub mod keys;
+pub mod present;
+pub mod render;
+pub mod session;
+
 /// Shell-contract name this client speaks (F13.1).
 pub const CONTRACT_NAME: &str = "id-shell";
 

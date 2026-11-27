@@ -1,6 +1,6 @@
 # fleet queue: inspection and admin
 
-The inspection and admin verbs read the queue's history and operate its side systems: `timeline` / `history` (one task's event timeline), `signal` (the wake-up signal file), `models` (serving-model rollup), `outbox` (the creation outbox for GitHub objects), and `stack` (merge-intent stacks).
+The inspection and admin verbs read the queue's history and operate its side systems: `timeline` / `history` (one task's event timeline), `staleness` / `needs-user` (the stewardship cycle's canned reads over the status-history table), `meta` / `note` / `link` (a task's metadata, notes stream and relationships), `signal` (the wake-up signal file), `models` (serving-model rollup), `outbox` (the creation outbox for GitHub objects), and `stack` (merge-intent stacks).
 
 Shared context — the global exit-code vocabulary (0 ok, 1 gate/not-found, 2 usage, 3 transport/401, 4 broker store failure, 5 no-claim/no-row, 6 fallback switch) — is stated in [fleet queue: core verbs](queue-core.md).
 
@@ -51,6 +51,143 @@ Exit codes: 0 ok · 2 usage · 3 broker does not serve `/events-list` / transpor
 $ fleet queue history 19479 --json
 {"task_id": 19479, "events": [{"kind": "claimed", "created_at": "2026-11-23T04:05:00Z"}], "served": []}
 ```
+
+## fleet queue staleness
+
+```text
+usage: repo-queue staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]
+```
+
+| Flag                   | Argument   | Default | Meaning                                                                                          |
+| ---------------------- | ---------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--queue`              | queue name | unset   | Restrict both reads to one queue. Unset = estate-wide.                                           |
+| `--older-than-seconds` | seconds    | 86400   | Staleness threshold: a task is stale when its last status-history transition is older than this. |
+| `--lease-cap-seconds`  | seconds    | 900     | Lease-cap window: a claim is near its cap when its lease expires within this many seconds.       |
+| `--limit`              | row cap    | 200     | Maximum rows per read. Clamped to 1..=50000.                                                     |
+
+**Behaviour.** The stewardship cycle's staleness read (broker route `/staleness`), landed as a Q8 consumer of the queue-schema design (#14170). One call returns two canned reads as a single JSON object: `rows` — every actionable task (queued, claimed, parked, blocked, handed_off) whose last `task_history` transition is older than the threshold, oldest first, each with `last_history_id`, `last_kind`, `last_to_status`, `last_actor`, and `last_transition_at`; and `claims_near_lease_cap` — claimed tasks whose `lease_until` falls inside the lease-cap window (already-expired leases sort first). A task with no history row falls back to its `updated_at` as its last transition and reports a null `last_history_id`, so pre-history tasks stay visible instead of dropping out of the read. The response also carries the thresholds used and the broker's `now`, so a reader can age leases against the same clock the broker used.
+
+Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
+
+```text
+$ fleet queue staleness --queue repo-health-code-pilot --older-than-seconds 3600
+{"rows": [{"id": 21706, "queue": "repo-health-code-pilot", "status": "parked", "last_kind": "parked", "last_transition_at": "2026-11-25T07:01:55Z"}], "claims_near_lease_cap": [], "older_than_seconds": 3600, "lease_cap_seconds": 900, "queue": "repo-health-code-pilot", "now": "2026-11-25T09:05:00Z"}
+```
+
+## fleet queue needs-user
+
+```text
+usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]
+```
+
+| Flag      | Argument   | Default | Meaning                                                                  |
+| --------- | ---------- | ------- | ------------------------------------------------------------------------ |
+| `--queue` | queue name | unset   | Restrict to one queue. Unset = estate-wide.                              |
+| `--state` | text       | unset   | Restrict to questions whose metadata `question.state` equals this value. |
+| `--limit` | row cap    | 200     | Maximum rows. Clamped to 1..=50000.                                      |
+
+**Behaviour.** The stewardship cycle's needs-user read (broker route `/needs-user`): blocked and parked tasks carrying a `question` metadata entry (the registry shape `{ledger_id, state}`), oldest last transition first. Each row carries the question object lifted out of the task's metadata, the task's `last_transition_at` from the status-history table, and `blocked_by_count_cache` — the count of the task's `blocked_deps` cache entries. The count is cache-derived until the Q6 slice normalises dependencies into `task_deps`; the canned query then reads its counts from `task_deps` instead.
+
+Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
+
+```text
+$ fleet queue needs-user --state open
+{"rows": [{"id": 22735, "queue": "repo-health-code-pilot", "status": "parked", "question": {"ledger_id": "q-0001", "state": "open"}, "last_transition_at": "2026-11-25T01:30:00Z", "blocked_by_count_cache": 1}], "queue": null}
+```
+
+## fleet queue meta
+
+```text
+usage: repo-queue meta get <task-id> [key] | set <task-id> <key> <json-value> | set <task-id> [--json '{...}'] | unset <task-id> <key> | keys
+```
+
+| Form                               | Meaning                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `get <task-id> [key]`              | Print the task's metadata, or the one key.                                                              |
+| `set <task-id> <key> <json-value>` | Merge-patch one key. The value must parse as JSON (quote a string: `'"text"'`); invalid JSON is exit 2. |
+| `set <task-id> --json '{...}'`     | Merge-patch several keys at once. The argument must be a JSON object.                                   |
+| `unset <task-id> <key>`            | Delete one key.                                                                                         |
+| `keys`                             | Print the metadata keys in use. Takes no other argument.                                                |
+
+**Behaviour.** Reads or merge-patches a task's queue metadata through the broker route `/meta`. A `null` value in a patch deletes that key. The client checks every `set` patch against the metadata rules before it sends it, so a malformed patch fails locally with exit 2. Every metadata write is recorded in the task's history. Output: the broker's row as JSON. A missing or unknown form prints the usage and exits 2.
+
+Exit codes: 0 ok · 2 usage or invalid patch · 3 transport · 4 broker store failure.
+
+## fleet queue note
+
+```text
+usage: repo-queue note <add|list|edit|remove> ...
+```
+
+A task's notes are an append-only, authored stream (#14170 Q4). `note` with no subcommand prints the usage and exits 2; `note --help` prints it and exits 0; an unknown subcommand exits 2. Each subcommand's `--help` prints its own usage. The `--worker` default is `repo-worker-code`, and the worker is the note's author.
+
+### fleet queue note add
+
+```text
+usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]
+```
+
+Appends a note to the task (route `/note-add`). `--text` is required, and the body is at most 4096 characters. `--kind` records the author kind. Without session or model marks, a note written by the task's claim holder copies the claim's session and model. Output: the new note row as JSON.
+
+### fleet queue note list
+
+```text
+usage: repo-queue note list <task-id> [--latest <n>] [--include-removed] [--json]
+```
+
+Lists the task's notes oldest first, with the count of live notes (route `/note-list`). `--latest <n>` keeps the newest n. Removed notes are hidden unless `--include-removed`. Without `--json` it prints `task <id>: <shown> of <count> notes` and one line per note, or `task <id>: no notes`; with `--json` it prints `{task_id, count, notes}`.
+
+### fleet queue note edit
+
+```text
+usage: repo-queue note edit <note-id> --text <text> [--worker <id>]
+```
+
+Replaces a note's body (route `/note-edit`). It takes a note id, not a task id. Only the note's author may edit it, and the old body is kept in the task's history.
+
+### fleet queue note remove
+
+```text
+usage: repo-queue note remove <note-id> [--worker <id>]
+```
+
+Soft-removes a note (route `/note-remove`): the row stays, hidden from `note list` unless `--include-removed`. Only the note's author may remove it.
+
+Exit codes (all four): 0 ok · 2 usage · 3 transport · 4 broker store failure · a broker refusal, such as an edit by someone other than the author, exits non-zero with the broker's reason.
+
+## fleet queue link
+
+```text
+usage: repo-queue link <add|remove|list> ...
+```
+
+Manages a task's normalized relationships (the `queue_links` table). `link` with no subcommand prints the usage and exits 2; `link --help` prints it and exits 0; an unknown subcommand exits 2.
+
+### fleet queue link add
+
+```text
+usage: repo-queue link add <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]
+```
+
+Adds a relationship from the task to one issue, pull request or other task (route `/link-add`). Exactly one of `--issue`, `--pr` or `--task` is required, else exit 2. `--issue` and `--pr` take `owner/repo#number` with a positive number; `--task` takes a positive task id. `--kind` defaults to `related`. Output: the broker's envelope as JSON.
+
+### fleet queue link remove
+
+```text
+usage: repo-queue link remove <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]
+```
+
+Soft-removes a relationship (route `/link-remove`), with the same target rules as `link add`.
+
+### fleet queue link list
+
+```text
+usage: repo-queue link list <task-id> [--include-removed] [--json]
+```
+
+Lists the task's relationships (route `/link-list`). Removed links are hidden unless `--include-removed`. Without `--json` it prints the `links` array; with `--json` it prints the whole broker envelope.
+
+Exit codes (all three): 0 ok · 2 usage or a malformed target · 3 transport · 4 broker store failure.
 
 ## fleet queue signal
 
