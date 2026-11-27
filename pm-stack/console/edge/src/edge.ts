@@ -2991,8 +2991,14 @@ export class Edge {
         const known = await this.knownMachines();
         const previous = id === null ? undefined : (await this.kv.get(`a:${id}`)) as Acted | undefined;
         let target = previous?.forKid ? known.find((m) => m.kid === previous.forKid) : undefined;
+        if (!target && previous?.forKid && await this.isFirstKey(previous.forKid) && this.machine === null) {
+          // An older report still has the same trusted tunnel identity.
+          target = { kid: previous.forKid, name: previous.for ?? "A machine", actions: [],
+            connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS };
+        }
         if (previous?.forKid && (!target || !target.connected)) {
-          return this.keep({ id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for });
+          return this.keep({ id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
+            (previous.relays ?? 1) > 0 ? "unknown" : "nowhere");
         }
         if (!given && known.length > 0) {
           const selection = selectMachine(known, kind);

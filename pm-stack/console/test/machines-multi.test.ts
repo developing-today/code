@@ -149,23 +149,23 @@ describe("key-bound multi-machine routing (#13492 slice 2)", () => {
     await sync(first, ["task.move"]);
     await sync(second, ["issue.comment"]);
     const act = (id: string, kind: string, args: unknown) => s.ownerBrowse("/console/api/act", { body: { id, kind, args } });
-    const relayed = await act("first-act", "task.move", { task: 21016, to: "first" });
+    const relayed = await act("00000000-0000-4000-8000-000000000001", "task.move", { task: 21016, to: "first" });
     expect(relayed.headers.get("x-pm-next")).toBe("relay");
     expect(await relayed.json()).toMatchObject({ forKid: firstKid });
-    const held = await act("second-act", "issue.comment", { issue: 301, text: "second only" });
+    const held = await act("00000000-0000-4000-8000-000000000002", "issue.comment", { issue: 301, text: "second only" });
     expect(held.headers.get("x-pm-next")).toBeNull();
     expect(await held.json()).toMatchObject({ held: true });
     s.restart();
-    const wrong = await sync(first, ["task.move", "issue.comment"], { acks: [{ id: "second-act", ok: true }] });
+    const wrong = await sync(first, ["task.move", "issue.comment"], { acks: [{ id: "00000000-0000-4000-8000-000000000002", ok: true }] });
     expect(await wrong.json()).toMatchObject({ commands: [] });
     const machines = await (await s.ownerBrowse("/console/api/machines")).json() as { held: { id: string; forKid: string }[] };
-    expect(machines.held).toContainEqual(expect.objectContaining({ id: "second-act", forKid: secondKid }));
+    expect(machines.held).toContainEqual(expect.objectContaining({ id: "00000000-0000-4000-8000-000000000002", forKid: secondKid }));
     // Capability changes on the other key and identical names do not steal it.
     const delivered = await sync(second, ["issue.comment"]);
-    expect(await delivered.json()).toMatchObject({ commands: [{ id: "second-act", forKid: secondKid }] });
+    expect(await delivered.json()).toMatchObject({ commands: [{ id: "00000000-0000-4000-8000-000000000002", forKid: secondKid }] });
     s.restart();
     // Same signed key can acknowledge even with an older, nameless report.
-    await sync(second, [], { legacy: true, acks: [{ id: "second-act", ok: true }] });
+    await sync(second, [], { legacy: true, acks: [{ id: "00000000-0000-4000-8000-000000000002", ok: true }] });
     expect((await (await s.ownerBrowse("/console/api/machines")).json() as { held: unknown[] }).held).toEqual([]);
     await sync(second, ["issue.comment"]);
     const none = await act("none-act", "pr.merge", { pr: 7 });
@@ -175,11 +175,11 @@ describe("key-bound multi-machine routing (#13492 slice 2)", () => {
     // A second machine's fresh report does not revive a stale first tunnel.
     s.now.t += 121000;
     await sync(second, ["issue.comment"]);
-    const stale = await act("stale-first", "task.move", { task: 21017, to: "first" });
+    const stale = await act("00000000-0000-4000-8000-000000000003", "task.move", { task: 21017, to: "first" });
     expect(stale.headers.get("x-pm-next")).toBeNull();
     expect(await stale.json()).toMatchObject({ held: true });
     expect(await (await sync(second, ["issue.comment"])).json()).toMatchObject({ commands: [] });
-    expect(await (await sync(first, ["task.move"])).json()).toMatchObject({ commands: [{ id: "stale-first", forKid: firstKid }] });
+    expect(await (await sync(first, ["task.move"])).json()).toMatchObject({ commands: [{ id: "00000000-0000-4000-8000-000000000003", forKid: firstKid }] });
   });
 });
 
