@@ -51,12 +51,17 @@ export function renderSessions(
     .map(
       ([source, list]) =>
         `<h2>${esc(source)} (${list.length})</h2>${list
-          .map((r) =>
-            sessionRecordLine(r, {
-              actions: act?.actionsByObject?.get(sessionObjectRef(r.id)),
-              identities: act?.identities,
-            }),
-          )
+          .map((r) => {
+            const actionsSelected = !view || view.query.id === r.id;
+            return sessionRecordLine(
+              r,
+              {
+                actions: act?.actionsByObject?.get(sessionObjectRef(r.id)),
+                identities: actionsSelected ? act?.identities : undefined,
+              },
+              { showActionsLink: Boolean(view && !actionsSelected) },
+            );
+          })
           .join("")}`,
     )
     .join("");
