@@ -127,12 +127,14 @@ let
   pmGitSync = pkgs.callPackage ../../../pkgs/pm-git-sync/package.nix { };
   sigtermWitness = pkgs.callPackage ../../../pkgs/sigterm-witness/package.nix { };
 
-  projectorReconcile = mode: pkgs.writeShellScript "pm-projector-reconcile-${mode}" ''
-    # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
-    exec ${pkgs.curl}/bin/curl -fsS -X POST \
-      -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
-      "http://127.0.0.1:${toString cfg.projectorPort}/reconcile?mode=${mode}"
-  '';
+  projectorReconcile =
+    mode:
+    pkgs.writeShellScript "pm-projector-reconcile-${mode}" ''
+      # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
+      exec ${pkgs.curl}/bin/curl -fsS -X POST \
+        -H "Authorization: Bearer $PM_PROJECTOR_API_TOKEN" \
+        "http://127.0.0.1:${toString cfg.projectorPort}/reconcile?mode=${mode}"
+    '';
 
   # The port cloudflared serves its metrics + /ready endpoint on
   # (loopback only). The watchdog below reads /ready from it (#6992).
@@ -349,8 +351,7 @@ in
             # restart, so keep the proxy's After dependency pending until
             # the backend accepts; otherwise its first cold connection is
             # reset by socket-proxyd (observed on #10383).
-            ExecStartPost = lib.optional cfg.aggregatorSocketActivation
-              "${pkgs.bash}/bin/bash ${./pm-aggregator-backend-ready.sh} ${toString cfg.aggregatorBackendPort} 30";
+            ExecStartPost = lib.optional cfg.aggregatorSocketActivation "${pkgs.bash}/bin/bash ${./pm-aggregator-backend-ready.sh} ${toString cfg.aggregatorBackendPort} 30";
             # The in-process quota job also needs the optional Antigravity
             # credential file previously loaded by quota-gatherer.service.
             EnvironmentFile = [

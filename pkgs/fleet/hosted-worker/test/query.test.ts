@@ -270,6 +270,19 @@ editWriterBody(
 }
 editWriterBody(109, "Sample item 109 — block removed by hand.");
 
+// #110/#111 — explicit null and a missing key must remain distinct in
+// either direction after the body and DB copies diverge.
+const block110 = await hostedBlock({ session_id: `ses_${"1".repeat(32)}`, lane: "code-null-missing", host: "amd-6" });
+await seed(110, "issue", BINDING_A, block110);
+const body110 = { ...block110 };
+delete body110["direct_parent"];
+editWriterBody(110, bodyText(body110, "Sample item 110"));
+
+const block111 = await hostedBlock({ session_id: `ses_${"2".repeat(32)}`, lane: "code-missing-null", host: "amd-6" });
+delete block111["direct_parent"];
+await seed(111, "issue", BINDING_A, block111);
+editWriterBody(111, bodyText({ ...block111, direct_parent: null }, "Sample item 111"));
+
 // --- Query helpers.
 
 interface ResultItem {
@@ -329,7 +342,7 @@ test("filters by session, lane, host, queue id, and kind", async () => {
   assert.deepEqual(numbers((await getQuery(tokenA, `session_id=${SES_A}`)).doc), [101, 103]);
   assert.deepEqual(numbers((await getQuery(tokenA, `session_id=${SES_B}`)).doc), [102]);
   assert.deepEqual(numbers((await getQuery(tokenA, "lane=code-a")).doc), [101, 103]);
-  assert.deepEqual(numbers((await getQuery(tokenA, "host=amd-6")).doc), [101, 103, 107, 108, 109]);
+  assert.deepEqual(numbers((await getQuery(tokenA, "host=amd-6")).doc), [101, 103, 107, 108, 109, 110, 111]);
   assert.deepEqual(numbers((await getQuery(tokenA, "queue_id=q-1")).doc), [101]);
   assert.deepEqual(numbers((await getQuery(tokenA, "kind=pr")).doc), [102]);
   // Combined filters AND together.
@@ -446,6 +459,17 @@ test("a body whose block was removed reports pm_meta_block divergence and serves
   assert.equal((result.metadata["provenance"] as Record<string, unknown>)["lane"], "code-f");
 });
 
+test("explicit null vs missing Metadata keys diverge in either direction", async () => {
+  const dbNullBodyMissing = await getQuery(tokenA, "lane=code-null-missing");
+  assert.deepEqual(dbNullBodyMissing.doc.results[0]?.divergence, { fields: ["direct_parent"] });
+  assert.equal(Object.hasOwn(dbNullBodyMissing.doc.results[0]?.metadata ?? {}, "direct_parent"), false);
+
+  const dbMissingBodyNull = await getQuery(tokenA, "lane=code-missing-null");
+  assert.deepEqual(dbMissingBodyNull.doc.results[0]?.divergence, { fields: ["direct_parent"] });
+  assert.equal(Object.hasOwn(dbMissingBodyNull.doc.results[0]?.metadata ?? {}, "direct_parent"), true);
+  assert.equal(dbMissingBodyNull.doc.results[0]?.metadata["direct_parent"], null);
+});
+
 // --- Failure shapes.
 
 test("an unconfigured metadata store fails closed with 503", async () => {
@@ -489,6 +513,41 @@ test("malformed filters refuse with 400 invalid_query, never a silent match-all"
   const notJson = await postQuery(tokenA, "{nope");
   assert.equal(notJson.status, 400);
   assert.equal(notJson.doc.error, "invalid_body");
+});
+
+test("string item references accept the safe integer boundary and reject larger values", async () => {
+  let githubReads = 0;
+  const watchedDeps: AuthDeps = {
+    ...deps,
+    githubItems: {
+      async getItem(repo, kind, number) {
+        githubReads += 1;
+        return writer.getItem(repo, kind, number);
+      },
+      async listItems(repo) {
+        githubReads += 1;
+        return writer.listItems(repo);
+      },
+    },
+  };
+
+  const atBoundary = await getQuery(
+    tokenA,
+    `repo=${REPO}&direct_parent=${encodeURIComponent(`${REPO}#9007199254740991`)}`,
+    watchedDeps,
+  );
+  assert.equal(atBoundary.status, 200);
+  assert.ok(githubReads > 0, "a valid safe integer reference reaches the normal GitHub-backed query path");
+
+  const readsBeforeUnsafe = githubReads;
+  const beyondBoundary = await getQuery(
+    tokenA,
+    `repo=${REPO}&direct_parent=${encodeURIComponent(`${REPO}#9007199254740993`)}`,
+    watchedDeps,
+  );
+  assert.equal(beyondBoundary.status, 400);
+  assert.equal(beyondBoundary.doc.error, "invalid_query");
+  assert.equal(githubReads, readsBeforeUnsafe, "an unsafe reference is rejected before a GitHub lookup");
 });
 
 test("the seeded sample's bodies parse back (fixture sanity)", async () => {

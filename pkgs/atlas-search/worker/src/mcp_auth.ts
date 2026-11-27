@@ -30,7 +30,8 @@ export function parseAgentTokenConfig(raw: string): AgentTokenConfig | null {
       agentId === "__proto__" ||
       typeof token !== "string" ||
       token.length < MIN_TOKEN_LENGTH
-    ) return null;
+    )
+      return null;
     if (seenTokens.has(token)) return null;
     seenTokens.add(token);
     config[agentId] = token;

@@ -10,7 +10,7 @@ const WORKER_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export function names(sha) {
   if (!SHA.test(sha)) throw new Error("--sha must be a full commit id");
   const short = sha.slice(0, 12);
-  return { short, tag: `git-${short}`, message: `git ${sha}` };
+  return { short, full: sha, tag: `git-${short}`, message: `git ${sha}` };
 }
 
 /** The name and the newest migration tag a wrangler configuration gives.
@@ -124,12 +124,21 @@ export function servingVersion(body) {
   return typeof id === "string" && VERSION_ID.test(id) ? id : null;
 }
 
-/** What a health answer means for a release of `short`. */
-export function healthSays(answer, short) {
+/** What a health answer means for a release of `full`.
+ * The deployed version must report the exact commit it was deployed
+ * from and a truthful age before it counts as this one. */
+export function healthSays(answer, full, nowMs = Date.now()) {
   if (!answer || typeof answer !== "object") return "silent";
   if (answer.empty === true && answer.edge === true) return "empty";
-  if (answer.ok === true && answer.edge === true) return answer.version === short ? "this" : "another";
-  return "silent";
+  if (answer.ok !== true || answer.edge !== true) return "silent";
+  if (answer.version !== full) return "another";
+  if (typeof answer.deployedAt !== "string" || !Number.isInteger(answer.ageSeconds) || answer.ageSeconds < 0) {
+    return "another";
+  }
+  const deployedAtMs = Date.parse(answer.deployedAt);
+  if (!Number.isFinite(deployedAtMs) || deployedAtMs > nowMs) return "another";
+  const expectedAgeSeconds = Math.floor((nowMs - deployedAtMs) / 1_000);
+  return Math.abs(answer.ageSeconds - expectedAgeSeconds) <= 5 ? "this" : "another";
 }
 
 /** A version id as a person may give it for a rollback. */

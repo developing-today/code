@@ -22,61 +22,63 @@ export function createPmCoreProjectorReader(
 
   let readerPromise: Promise<ProjectorReader | null> | undefined;
   const reader = async (): Promise<ProjectorReader | null> => {
-    readerPromise ??= import("../../projector/src/store.ts").then((store) => {
-      const db = store.openDb({
-        DATABASE_URL: databaseUrl,
-        TURSO_AUTH_TOKEN: env.PM_CORE_PROJECTOR_TURSO_AUTH_TOKEN,
-      });
-      return createStoreProjectorReader({
-        async getItems(refs, options) {
-          return (await store.getItems(db, refs, options)).map((row) => ({
-            ref: row.ref,
-            repo: row.repo,
-            number: row.number,
-            kind: row.kind,
-            url: row.url,
-            title: row.title,
-            state: row.state,
-            state_reason: row.state_reason,
-            draft: row.draft ?? undefined,
-            merged: row.merged ?? undefined,
-            author: row.author,
-            labels: row.labels,
-            assignees: row.assignees,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            closed_at: row.closed_at,
-            merged_at: row.merged_at,
-          }));
-        },
-        async getComments(refs, options) {
-          return (await store.getComments(db, refs, options)).map((row) => ({
-            id: row.id,
-            ref: row.ref,
-            kind: row.kind,
-            author: row.author,
-            body: row.body,
-            created_at: row.created_at,
-            url: row.url ?? undefined,
-            path: row.path,
-            line: row.line,
-            review_state: row.review_state,
-            commit_id: row.commit_id,
-            deleted: row.deleted,
-          }));
-        },
-        async getLinks(options) {
-          return (await store.getLinks(db, options)).map((row) => ({
-            subject: row.subject,
-            ref: row.ref,
-            relation: row.relation,
-            note: row.note,
-            created_by: row.created_by,
-            created_at: row.created_at,
-          }));
-        },
-      });
-    }).catch(() => null);
+    readerPromise ??= import("../../projector/src/store.ts")
+      .then((store) => {
+        const db = store.openDb({
+          DATABASE_URL: databaseUrl,
+          TURSO_AUTH_TOKEN: env.PM_CORE_PROJECTOR_TURSO_AUTH_TOKEN,
+        });
+        return createStoreProjectorReader({
+          async getItems(refs, options) {
+            return (await store.getItems(db, refs, options)).map((row) => ({
+              ref: row.ref,
+              repo: row.repo,
+              number: row.number,
+              kind: row.kind,
+              url: row.url,
+              title: row.title,
+              state: row.state,
+              state_reason: row.state_reason,
+              draft: row.draft ?? undefined,
+              merged: row.merged ?? undefined,
+              author: row.author,
+              labels: row.labels,
+              assignees: row.assignees,
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+              closed_at: row.closed_at,
+              merged_at: row.merged_at,
+            }));
+          },
+          async getComments(refs, options) {
+            return (await store.getComments(db, refs, options)).map((row) => ({
+              id: row.id,
+              ref: row.ref,
+              kind: row.kind,
+              author: row.author,
+              body: row.body,
+              created_at: row.created_at,
+              url: row.url ?? undefined,
+              path: row.path,
+              line: row.line,
+              review_state: row.review_state,
+              commit_id: row.commit_id,
+              deleted: row.deleted,
+            }));
+          },
+          async getLinks(options) {
+            return (await store.getLinks(db, options)).map((row) => ({
+              subject: row.subject,
+              ref: row.ref,
+              relation: row.relation,
+              note: row.note,
+              created_by: row.created_by,
+              created_at: row.created_at,
+            }));
+          },
+        });
+      })
+      .catch(() => null);
     const resolved = await readerPromise;
     if (!resolved) readerPromise = undefined;
     return resolved;
@@ -104,10 +106,25 @@ export function createPmCoreProjectorReader(
   };
 
   return {
-    items: (refs) => read((source) => source.items(refs), (source) => source.items(refs)),
-    comments: (refs) => read((source) => source.comments(refs), (source) => source.comments(refs)),
+    items: (refs) =>
+      read(
+        (source) => source.items(refs),
+        (source) => source.items(refs),
+      ),
+    comments: (refs) =>
+      read(
+        (source) => source.comments(refs),
+        (source) => source.comments(refs),
+      ),
     latestComments: (refs) =>
-      read((source) => source.latestComments(refs), (source) => source.latestComments(refs)),
-    links: (subject) => read((source) => source.links(subject), (source) => source.links(subject)),
+      read(
+        (source) => source.latestComments(refs),
+        (source) => source.latestComments(refs),
+      ),
+    links: (subject) =>
+      read(
+        (source) => source.links(subject),
+        (source) => source.links(subject),
+      ),
   };
 }

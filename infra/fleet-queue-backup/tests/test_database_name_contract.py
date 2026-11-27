@@ -2,9 +2,10 @@
 """The backup docs distinguish the live queue from its D1 backup copy.
 
 Oracle: README, runbook, and schedule registry consistently name the live
-database `fleet-queue` and the backup copy `fleet-queue-backup`, and the
+database `fleet-queue` and the backup copy `fleet-queue-backup`. The
 runbook labels the current Turso source separately from the post-CF-2 D1
-source.
+source; post-CF-3 (#14943) the registry records D1 `fleet-queue` as the
+live source and the Turso leg as the retired former source.
 
 Run: python3 -I tests/test_database_name_contract.py
 """
@@ -36,8 +37,10 @@ class DatabaseNameContractTests(unittest.TestCase):
 
     def test_schedule_registry_labels_source_and_backup_database(self):
         registry = _normalized(ROOT / "doc" / "fleet-schedule-registry.md")
-        self.assertTrue("current source: Turso `fleet-queue`" in registry)
-        self.assertTrue("CF-3 target source after CF-2: D1 `fleet-queue`" in registry)
+        # Post-CF-3 (#14943): D1 `fleet-queue` is the live source; the Turso
+        # leg is retired and recorded as the former source.
+        self.assertTrue("former source: Turso `fleet-queue`" in registry)
+        self.assertTrue("source: live D1 `fleet-queue`" in registry)
         self.assertTrue("backup D1 `fleet-queue-backup`" in registry)
 
 

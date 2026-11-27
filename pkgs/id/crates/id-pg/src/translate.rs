@@ -359,15 +359,21 @@ fn render_leaf_value(leaf: &FilterLeaf) -> Result<String, Refusal> {
 }
 
 /// Render the `order` parameter value over the effective ordering.
+///
+/// NULL placement is pinned explicitly to PostgreSQL's defaults:
+/// ascending keys sort nulls last, descending keys sort them first.
+/// Pinning the defaults keeps the server's row order exactly as before
+/// (a bare `asc`/`desc` already meant this) while giving the keyset
+/// continuation one fixed oracle to match (#16132).
 fn render_order(ordering: &[OrderKey]) -> String {
     ordering
         .iter()
         .map(|key| {
-            let direction = match key.direction {
-                Direction::Asc => "asc",
-                Direction::Desc => "desc",
+            let (direction, placement) = match key.direction {
+                Direction::Asc => ("asc", "nullslast"),
+                Direction::Desc => ("desc", "nullsfirst"),
             };
-            format!("{}.{direction}", key.column)
+            format!("{}.{direction}.{placement}", key.column)
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -387,28 +393,65 @@ fn keyset_or(ordering: &[OrderKey], cursor: &[Value]) -> Result<String, Refusal>
     if cursor.len() != ordering.len() {
         return Err(Refusal::shape(Feature::FieldUnsupported));
     }
-    let mut terms: Vec<String> = Vec::with_capacity(ordering.len());
+    let Some(first) = ordering.first() else {
+        return Err(Refusal::shape(Feature::FieldUnsupported));
+    };
+    let mut branches: Vec<String> = Vec::new();
     for j in 0..ordering.len() {
-        let mut parts: Vec<String> = Vec::with_capacity(j + 1);
-        for (i, key) in ordering.iter().enumerate().take(j) {
-            parts.push(format!("{}.eq.{}", key.column, cursor[i].quoted_literal()?));
+        let mut prefix: Vec<String> = Vec::with_capacity(j + 1);
+        for (key, value) in ordering.iter().zip(cursor.iter()).take(j) {
+            prefix.push(match value {
+                Value::Null => format!("{}.is.null", key.column),
+                _ => format!("{}.eq.{}", key.column, value.quoted_literal()?),
+            });
         }
-        let cmp = match ordering[j].direction {
-            Direction::Asc => "gt",
-            Direction::Desc => "lt",
+        let key = &ordering[j];
+        let steps: Vec<String> = match (&cursor[j], key.direction) {
+            // #16132: `NULL` sorts as one bucket per the pinned placement
+            // (`ASC` puts it last, `DESC` first), and every `NULL` in one
+            // bucket compares equal. A plain `eq` prefix already excludes
+            // `NULL` rows, since `NULL = v` is unknown.
+            //
+            // - `ASC` (nulls last), non-`NULL` cursor: rows after the
+            //   cursor are greater values plus the whole `NULL` bucket.
+            // - `ASC`, `NULL` cursor: nothing sorts after the last bucket.
+            // - `DESC` (nulls first), non-`NULL` cursor: rows after the
+            //   cursor are smaller values alone (`NULL` rows sort before
+            //   it, not after).
+            // - `DESC`, `NULL` cursor: every non-`NULL` row sorts after
+            //   the first bucket.
+            (Value::Null, Direction::Asc) => Vec::new(),
+            (Value::Null, Direction::Desc) => vec![format!("{}.not.is.null", key.column)],
+            (value, Direction::Asc) => vec![
+                format!("{}.gt.{}", key.column, value.quoted_literal()?),
+                format!("{}.is.null", key.column),
+            ],
+            (value, Direction::Desc) => {
+                vec![format!("{}.lt.{}", key.column, value.quoted_literal()?)]
+            }
         };
-        parts.push(format!(
-            "{}.{cmp}.{}",
-            ordering[j].column,
-            cursor[j].quoted_literal()?
-        ));
-        if parts.len() == 1 {
-            terms.push(parts.remove(0));
-        } else {
-            terms.push(format!("and({})", parts.join(",")));
+        for step in steps {
+            let mut branch = prefix.clone();
+            branch.push(step);
+            branches.push(if branch.len() == 1 {
+                branch.pop().expect("one branch part")
+            } else {
+                format!("and({})", branch.join(","))
+            });
         }
     }
-    Ok(format!("({})", terms.join(",")))
+    // A cursor that is `NULL` in every ascending key sits at the very
+    // end of the ordering, so its continuation is empty. Emit it as a
+    // contradiction on the first ordering column (which always exists:
+    // the effective ordering ends with the unique key) rather than as
+    // an empty `or=()`, which PostgREST would reject as malformed.
+    if branches.is_empty() {
+        return Ok(format!(
+            "and({}.is.null,{}.not.is.null)",
+            first.column, first.column
+        ));
+    }
+    Ok(format!("({})", branches.join(",")))
 }
 
 #[cfg(test)]
@@ -465,7 +508,7 @@ mod tests {
         query.select = vec![SelectItem::Column("title".to_string())];
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "select"), Some("title,id"));
-        assert_eq!(param(&request, "order"), Some("id.asc"));
+        assert_eq!(param(&request, "order"), Some("id.asc.nullslast"));
         assert_eq!(request.cursor_only, vec!["id".to_string()]);
     }
 
@@ -479,7 +522,10 @@ mod tests {
         }];
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "select"), Some("body,title,id"));
-        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
+        assert_eq!(
+            param(&request, "order"),
+            Some("title.desc.nullsfirst,id.asc.nullslast")
+        );
         assert_eq!(
             request.cursor_only,
             vec!["title".to_string(), "id".to_string()]
@@ -507,7 +553,7 @@ mod tests {
         assert_eq!(request.path, "/items");
         assert_eq!(request.accept_profile, "public");
         assert_eq!(param(&request, "select"), Some("id,title,body"));
-        assert_eq!(param(&request, "order"), Some("id.asc"));
+        assert_eq!(param(&request, "order"), Some("id.asc.nullslast"));
         assert_eq!(param(&request, "limit"), Some("50"));
     }
 
@@ -519,7 +565,10 @@ mod tests {
             direction: Direction::Desc,
         }];
         let request = translator().translate(&query).unwrap();
-        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
+        assert_eq!(
+            param(&request, "order"),
+            Some("title.desc.nullsfirst,id.asc.nullslast")
+        );
     }
 
     #[test]
@@ -535,7 +584,7 @@ mod tests {
         let request = translator().translate(&query).unwrap();
         assert_eq!(
             param(&request, "or"),
-            Some("(title.lt.m,and(title.eq.m,id.gt.42))")
+            Some("(title.lt.m,and(title.eq.m,id.gt.42),and(title.eq.m,id.is.null))")
         );
     }
 
@@ -688,5 +737,386 @@ mod tests {
         }));
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "title"), Some("is.null"));
+    }
+
+    #[test]
+    fn order_pins_postgres_null_placement() {
+        // Oracle: PostgreSQL defaults — ASC sorts NULLS LAST, DESC
+        // sorts NULLS FIRST. The adapter pins them explicitly so the
+        // server's row order and the continuation share one oracle.
+        let mut query = Query::read("items");
+        query.order = vec![
+            OrderKey {
+                column: "title".to_string(),
+                direction: Direction::Asc,
+            },
+            OrderKey {
+                column: "id".to_string(),
+                direction: Direction::Desc,
+            },
+        ];
+        let request = translator().translate(&query).unwrap();
+        assert_eq!(
+            param(&request, "order"),
+            Some("title.asc.nullslast,id.desc.nullsfirst")
+        );
+    }
+
+    fn score_collection() -> CollectionAllowlist {
+        CollectionAllowlist {
+            schema: "public".to_string(),
+            relation: "items".to_string(),
+            columns: vec![
+                ColumnDecl {
+                    name: "id".to_string(),
+                    filterable: true,
+                    orderable: true,
+                },
+                ColumnDecl {
+                    name: "score".to_string(),
+                    filterable: true,
+                    orderable: true,
+                },
+            ],
+            unique_key: vec!["id".to_string()],
+            max_limit: Some(50),
+        }
+    }
+
+    fn score_translator() -> Translator {
+        Translator::new(vec![score_collection()])
+    }
+
+    fn score_request(order: Vec<OrderKey>, cursor: Vec<Value>) -> PostgrestRequest {
+        let mut query = Query::read("items");
+        query.order = order;
+        query.pagination = Pagination::Keyset { cursor };
+        score_translator().translate(&query).unwrap()
+    }
+
+    fn asc(column: &str) -> OrderKey {
+        OrderKey {
+            column: column.to_string(),
+            direction: Direction::Asc,
+        }
+    }
+
+    fn desc(column: &str) -> OrderKey {
+        OrderKey {
+            column: column.to_string(),
+            direction: Direction::Desc,
+        }
+    }
+
+    #[test]
+    fn keyset_continuation_after_non_null_asc_includes_the_null_bucket() {
+        // #16132 defect case: a cursor of (score=10, id=1) used to emit
+        // only `score.gt.10`, silently dropping every NULL-score row and
+        // claiming completeness.
+        let request = score_request(
+            vec![asc("score"), asc("id")],
+            vec![Value::Int(10), Value::Int(1)],
+        );
+        assert_eq!(
+            param(&request, "or"),
+            Some(
+                "(score.gt.10,score.is.null,\
+                 and(score.eq.10,id.gt.1),and(score.eq.10,id.is.null))"
+            )
+        );
+    }
+
+    #[test]
+    fn keyset_continuation_after_null_asc_stays_inside_the_null_bucket() {
+        // A NULL cursor names the NULL bucket: only NULL-score rows with
+        // greater tiebreak ids follow.
+        let request = score_request(
+            vec![asc("score"), asc("id")],
+            vec![Value::Null, Value::Int(5)],
+        );
+        assert_eq!(
+            param(&request, "or"),
+            Some("(and(score.is.null,id.gt.5),and(score.is.null,id.is.null))")
+        );
+    }
+
+    #[test]
+    fn keyset_continuation_desc_pages_around_the_null_bucket() {
+        // DESC is NULLS FIRST: after (score=10, id=1) come only smaller
+        // scores — NULL rows sort before the cursor, not after it.
+        let request = score_request(
+            vec![desc("score"), asc("id")],
+            vec![Value::Int(10), Value::Int(1)],
+        );
+        assert_eq!(
+            param(&request, "or"),
+            Some("(score.lt.10,and(score.eq.10,id.gt.1),and(score.eq.10,id.is.null))")
+        );
+        // After (NULL, 5): every non-NULL row sorts after the first
+        // bucket, plus the greater NULL-bucket ids.
+        let request = score_request(
+            vec![desc("score"), asc("id")],
+            vec![Value::Null, Value::Int(5)],
+        );
+        assert_eq!(
+            param(&request, "or"),
+            Some(
+                "(score.not.is.null,\
+                 and(score.is.null,id.gt.5),and(score.is.null,id.is.null))"
+            )
+        );
+    }
+
+    #[test]
+    fn keyset_continuation_past_the_final_null_bucket_is_empty_not_invalid() {
+        // An all-NULL ascending cursor is the end of the ordering; the
+        // continuation matches nothing but stays valid PostgREST rather
+        // than an empty `or=()` or a refusal.
+        let request = score_request(
+            vec![asc("score"), asc("id")],
+            vec![Value::Null, Value::Null],
+        );
+        assert_eq!(
+            param(&request, "or"),
+            Some("and(score.is.null,score.not.is.null)")
+        );
+    }
+
+    // #16132 regression harness: a PostgREST-lite row store. It sorts
+    // rows per the request's `order=` value and filters per its `or=`
+    // value under PostgreSQL comparison semantics (three-valued logic,
+    // NULL buckets per the pinned placement) — exactly what the real
+    // source does with the emitted strings. The oracle is tuple order:
+    // walking pages of size 1 must surface every row exactly once, in
+    // full database order, ending on an honestly complete empty page.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct LiteRow {
+        id: i64,
+        score: Option<i64>,
+    }
+
+    fn lite_value(row: &LiteRow, column: &str) -> Option<i64> {
+        match column {
+            "id" => Some(row.id),
+            "score" => row.score,
+            _ => panic!("undeclared column {column}"),
+        }
+    }
+
+    /// Split a comma list at depth zero, so `and(a,b),c` yields its two
+    /// top-level branches.
+    fn split_top_level(value: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        for (i, c) in value.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(&value[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&value[start..]);
+        parts
+    }
+
+    fn lite_predicate(row: &LiteRow, predicate: &str) -> bool {
+        let (column, rest) = predicate.split_once('.').expect("predicate names a column");
+        let value = lite_value(row, column);
+        if rest == "is.null" {
+            return value.is_none();
+        }
+        if rest == "not.is.null" {
+            return value.is_some();
+        }
+        let (op, raw) = rest
+            .split_once('.')
+            .expect("comparison has an operator and a value");
+        let literal: i64 = raw.parse().expect("integer literal");
+        match (op, value) {
+            // SQL: any comparison against NULL is unknown, never true.
+            (_, None) => false,
+            (op, Some(seen)) => match op {
+                "eq" => seen == literal,
+                "gt" => seen > literal,
+                "lt" => seen < literal,
+                _ => panic!("unexpected operator {op}"),
+            },
+        }
+    }
+
+    fn lite_branch(row: &LiteRow, branch: &str) -> bool {
+        let inner = branch
+            .strip_prefix("and(")
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(branch);
+        split_top_level(inner)
+            .iter()
+            .all(|predicate| lite_predicate(row, predicate))
+    }
+
+    fn lite_sort(rows: &mut [LiteRow], order: &str) {
+        let mut keys: Vec<(&str, bool, bool)> = Vec::new();
+        for term in order.split(',') {
+            let mut parts = term.split('.');
+            let column = parts.next().expect("order term names a column");
+            let direction = parts.next().expect("order term has a direction");
+            let placement = parts.next().expect("order term pins null placement");
+            assert!(parts.next().is_none(), "order term has no extra: {term}");
+            keys.push((
+                column,
+                match direction {
+                    "asc" => true,
+                    "desc" => false,
+                    _ => panic!("unexpected direction {direction}"),
+                },
+                match placement {
+                    "nullslast" => true,
+                    "nullsfirst" => false,
+                    _ => panic!("unexpected placement {placement}"),
+                },
+            ));
+        }
+        rows.sort_by(|a, b| {
+            keys.iter()
+                .map(|(column, ascending, nulls_last)| {
+                    // NULL placement is absolute (NULLS FIRST means
+                    // first regardless of direction); only value
+                    // comparisons reverse with the direction.
+                    match (lite_value(a, column), lite_value(b, column)) {
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, _) => {
+                            if *nulls_last {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                std::cmp::Ordering::Less
+                            }
+                        }
+                        (_, None) => {
+                            if *nulls_last {
+                                std::cmp::Ordering::Less
+                            } else {
+                                std::cmp::Ordering::Greater
+                            }
+                        }
+                        (Some(x), Some(y)) => {
+                            let ord = x.cmp(&y);
+                            if *ascending { ord } else { ord.reverse() }
+                        }
+                    }
+                })
+                .find(|ord| *ord != std::cmp::Ordering::Equal)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    /// Walk the table one row per page through translated requests,
+    /// returning the visited ids and the page count (including the
+    /// final empty page that marks the result complete).
+    fn lite_walk(order: Vec<OrderKey>, select: Vec<SelectItem>) -> (Vec<i64>, usize) {
+        let table = vec![
+            LiteRow {
+                id: 1,
+                score: Some(10),
+            },
+            LiteRow { id: 2, score: None },
+            LiteRow {
+                id: 3,
+                score: Some(10),
+            },
+            LiteRow { id: 4, score: None },
+            LiteRow {
+                id: 5,
+                score: Some(3),
+            },
+        ];
+        let effective = effective_ordering(&score_collection(), &order);
+        let mut seen = Vec::new();
+        let mut pages = 0usize;
+        let mut pagination = Pagination::None;
+        loop {
+            let mut query = Query::read("items");
+            query.select = select.clone();
+            query.order = order.clone();
+            query.pagination = pagination.clone();
+            query.limit = Some(1);
+            let request = score_translator()
+                .translate(&query)
+                .expect("walk query translates");
+            let order_param = param(&request, "order")
+                .expect("walk request carries order")
+                .to_string();
+            let filter = param(&request, "or").map(str::to_string);
+            let mut rows = table.clone();
+            lite_sort(&mut rows, &order_param);
+            if let Some(condition) = filter {
+                let group = condition
+                    .strip_prefix('(')
+                    .and_then(|s| s.strip_suffix(')'))
+                    .expect("keyset condition is parenthesized");
+                rows.retain(|row| {
+                    split_top_level(group)
+                        .iter()
+                        .any(|branch| lite_branch(row, branch))
+                });
+            }
+            pages += 1;
+            match rows.first() {
+                // A short page ends the walk complete, like the reader.
+                None => return (seen, pages),
+                Some(row) => {
+                    seen.push(row.id);
+                    pagination = Pagination::Keyset {
+                        cursor: effective
+                            .iter()
+                            .map(|key| match key.column.as_str() {
+                                "id" => Value::Int(row.id),
+                                "score" => row.score.map_or(Value::Null, Value::Int),
+                                column => panic!("undeclared column {column}"),
+                            })
+                            .collect(),
+                    };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn keyset_walk_over_nullable_ordering_is_lossless_asc() {
+        // Page size 1 across NULL and non-NULL scores, duplicate
+        // scores, and multiple NULL rows: concatenated pages must equal
+        // full database order exactly once, ending complete.
+        let (seen, pages) = lite_walk(vec![asc("score")], vec![]);
+        assert_eq!(seen, vec![5, 1, 3, 2, 4]);
+        assert_eq!(pages, 6);
+    }
+
+    #[test]
+    fn keyset_walk_over_nullable_ordering_is_lossless_desc() {
+        let (seen, pages) = lite_walk(vec![desc("score")], vec![]);
+        assert_eq!(seen, vec![2, 4, 1, 3, 5]);
+        assert_eq!(pages, 6);
+    }
+
+    #[test]
+    fn keyset_walk_with_projected_out_ordering_column_is_lossless() {
+        // The ordering column is projected out, so it travels only as a
+        // cursor-only column (#15010); the walk must still be lossless.
+        let mut query = Query::read("items");
+        query.select = vec![SelectItem::Column("id".to_string())];
+        query.order = vec![asc("score")];
+        let request = score_translator().translate(&query).unwrap();
+        assert_eq!(param(&request, "select"), Some("id,score"));
+        assert_eq!(request.cursor_only, vec!["score".to_string()]);
+        let (seen, pages) = lite_walk(
+            vec![asc("score")],
+            vec![SelectItem::Column("id".to_string())],
+        );
+        assert_eq!(seen, vec![5, 1, 3, 2, 4]);
+        assert_eq!(pages, 6);
     }
 }

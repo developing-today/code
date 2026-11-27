@@ -81,16 +81,25 @@ def run_projector(manifest_path):
             continue
         for name in family.get("projector_tests", []):
             path = PurePosixPath(name)
-            if (not name.startswith("pm-stack/projector/test/")
-                    or not name.endswith(".test.ts")
-                    or ".." in path.parts or path.is_absolute()
-                    or "\\" in name):
+            if (
+                not name.startswith("pm-stack/projector/test/")
+                or not name.endswith(".test.ts")
+                or ".." in path.parts
+                or path.is_absolute()
+                or "\\" in name
+            ):
                 print(f"FAIL: invalid projector test file: {name}", file=sys.stderr)
                 return 2
             selected = "./" + str(path.relative_to("pm-stack/projector"))
             source = (projector / selected).resolve()
-            if not source.is_relative_to((projector / "test").resolve()) or not source.is_file():
-                print(f"FAIL: not an explicit projector test file: {name}", file=sys.stderr)
+            if (
+                not source.is_relative_to((projector / "test").resolve())
+                or not source.is_file()
+            ):
+                print(
+                    f"FAIL: not an explicit projector test file: {name}",
+                    file=sys.stderr,
+                )
                 return 2
             if selected not in files:
                 files.append(selected)

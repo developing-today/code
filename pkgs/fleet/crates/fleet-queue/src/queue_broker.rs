@@ -2133,7 +2133,12 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["ok"], json!(false));
         assert_eq!(body["exit"], json!(3));
-        assert!(body["error"].as_str().unwrap_or("").contains("not configured"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
     }
 
     #[test]

@@ -300,7 +300,13 @@ describe("ingestion store (#3321)", () => {
     );
     // Oracle: Array.includes on the bounded FIFO still sees the second copy
     // after new-1, but neither copy after new-2.
-    expect(await store.ingest(events, batch)).toEqual({ ingested: 3, duplicates: 1, failed: 0, failedIds: [], rejectedLinkIds: [] });
+    expect(await store.ingest(events, batch)).toEqual({
+      ingested: 3,
+      duplicates: 1,
+      failed: 0,
+      failedIds: [],
+      rejectedLinkIds: [],
+    });
     expect(appended).toEqual(["activity:kaneo:new-1", "activity:kaneo:new-2", "activity:kaneo:repeat"]);
   });
 
@@ -421,7 +427,13 @@ describe("ingestion store (#3321)", () => {
     // retryable failure), the link is rejected, and the rejection is
     // visible in the report.
     const report = await store.ingest(events, deliveries);
-    expect(report).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [], rejectedLinkIds: ["card-overlong"] });
+    expect(report).toEqual({
+      ingested: 1,
+      duplicates: 0,
+      failed: 0,
+      failedIds: [],
+      rejectedLinkIds: ["card-overlong"],
+    });
     const stream = await events.list();
     expect(stream).toHaveLength(1);
     expect(stream[0]?.source?.identity).toBe("pm-stack/aggregator/activity/kaneo");

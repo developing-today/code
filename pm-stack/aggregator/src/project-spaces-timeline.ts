@@ -220,8 +220,12 @@ function mondayOfWeek(weekId: string): string {
 export function buildTimelineIndex(options: BuildTimelineOptions): TimelineIndex {
   const wall = ctWallDate(options.asOf);
   const currentQuarter = quarterOf(wall.slice(0, 7));
-  const milestones = [...(options.designMilestones ?? [])].sort((a, b) => a.day.localeCompare(b.day) || a.ref.localeCompare(b.ref));
-  const specials = [...(options.specialReports ?? [])].sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
+  const milestones = [...(options.designMilestones ?? [])].sort(
+    (a, b) => a.day.localeCompare(b.day) || a.ref.localeCompare(b.ref),
+  );
+  const specials = [...(options.specialReports ?? [])].sort(
+    (a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id),
+  );
 
   const dayIds = new Set<string>();
   const weekToDays = new Map<string, Set<string>>();
@@ -314,43 +318,49 @@ export function buildTimelineIndex(options: BuildTimelineOptions): TimelineIndex
     specialByDay.get(s.day)!.push(s);
   }
 
-  const quarters: TimelineQuarter[] = [...quarterToMonths.keys()]
-    .sort()
-    .map((quarter) => {
-      const months: TimelineMonth[] = [...quarterToMonths.get(quarter)!].sort().map((month) => {
-        const weeks: TimelineWeek[] = [...(monthToWeeks.get(month) ?? new Set())]
-          .sort()
-          .filter((week) => {
-            // A week belongs to the month holding most of its days; keep it
-            // under every month that has one of its days (single-parent by day).
-            const days = [...(weekToDays.get(week) ?? new Set())];
-            return days.some((d) => d.slice(0, 7) === month);
-          })
-          .map((week) => {
-            const days: TimelineDay[] = [...(weekToDays.get(week) ?? new Set())]
-              .sort()
-              .filter((day) => day.slice(0, 7) === month)
-              .map((day) => ({
-                day,
-                recordIds: [...(dayRecords.get(day) ?? [])].sort(),
-                designMilestones: [...(milestoneByDay.get(day) ?? [])],
-                specialReports: [...(specialByDay.get(day) ?? [])],
-              }));
-            return { week, days };
-          });
-        return { month, weeks };
-      });
-      const hasContent =
-        recordRefs.some((r) => {
-          if (r.periodKind === "quarterly") return r.periodId.includes(quarter);
-          if (r.periodKind === "monthly") return quarterOf(r.periodId.slice("monthly:".length, "monthly:".length + 7)) === quarter;
-          return quarterToMonths.get(quarter)!.size > 0 && options.records.some((rec) => rec.period.kind !== "quarterly" && rec.period.kind !== "monthly");
-        }) ||
-        months.some((m) => m.weeks.some((w) => w.days.length > 0));
-      return { quarter, current: quarter === currentQuarter, empty: !hasContent, months };
+  const quarters: TimelineQuarter[] = [...quarterToMonths.keys()].sort().map((quarter) => {
+    const months: TimelineMonth[] = [...quarterToMonths.get(quarter)!].sort().map((month) => {
+      const weeks: TimelineWeek[] = [...(monthToWeeks.get(month) ?? new Set())]
+        .sort()
+        .filter((week) => {
+          // A week belongs to the month holding most of its days; keep it
+          // under every month that has one of its days (single-parent by day).
+          const days = [...(weekToDays.get(week) ?? new Set())];
+          return days.some((d) => d.slice(0, 7) === month);
+        })
+        .map((week) => {
+          const days: TimelineDay[] = [...(weekToDays.get(week) ?? new Set())]
+            .sort()
+            .filter((day) => day.slice(0, 7) === month)
+            .map((day) => ({
+              day,
+              recordIds: [...(dayRecords.get(day) ?? [])].sort(),
+              designMilestones: [...(milestoneByDay.get(day) ?? [])],
+              specialReports: [...(specialByDay.get(day) ?? [])],
+            }));
+          return { week, days };
+        });
+      return { month, weeks };
     });
+    const hasContent =
+      recordRefs.some((r) => {
+        if (r.periodKind === "quarterly") return r.periodId.includes(quarter);
+        if (r.periodKind === "monthly")
+          return quarterOf(r.periodId.slice("monthly:".length, "monthly:".length + 7)) === quarter;
+        return (
+          quarterToMonths.get(quarter)!.size > 0 &&
+          options.records.some((rec) => rec.period.kind !== "quarterly" && rec.period.kind !== "monthly")
+        );
+      }) || months.some((m) => m.weeks.some((w) => w.days.length > 0));
+    return { quarter, current: quarter === currentQuarter, empty: !hasContent, months };
+  });
 
-  return { asOf: options.asOf, currentQuarter, quarters, records: recordRefs.sort((a, b) => a.recordId.localeCompare(b.recordId)) };
+  return {
+    asOf: options.asOf,
+    currentQuarter,
+    quarters,
+    records: recordRefs.sort((a, b) => a.recordId.localeCompare(b.recordId)),
+  };
 }
 
 export interface TimelineLinkCheck {
@@ -391,7 +401,11 @@ export interface TimelineIndexEntry {
 export function timelineIndexEntries(timeline: TimelineIndex): TimelineIndexEntry[] {
   const entries: TimelineIndexEntry[] = [];
   for (const q of timeline.quarters) {
-    entries.push({ id: `quarter:${q.quarter}`, kind: "quarter", text: `Quarter ${q.quarter}${q.current ? " (current)" : ""}` });
+    entries.push({
+      id: `quarter:${q.quarter}`,
+      kind: "quarter",
+      text: `Quarter ${q.quarter}${q.current ? " (current)" : ""}`,
+    });
     for (const m of q.months) {
       entries.push({ id: `month:${m.month}`, kind: "month", text: `Month ${m.month}` });
       for (const w of m.weeks) {
@@ -403,7 +417,11 @@ export function timelineIndexEntries(timeline: TimelineIndex): TimelineIndexEntr
             text: `Day ${d.day}: ${d.recordIds.length} record(s), ${d.designMilestones.length} design milestone(s), ${d.specialReports.length} special report(s)`,
           });
           for (const milestone of d.designMilestones) {
-            entries.push({ id: `milestone:${milestone.ref}@${d.day}`, kind: "milestone", text: `${milestone.title} (${milestone.ref}) — ${d.day}` });
+            entries.push({
+              id: `milestone:${milestone.ref}@${d.day}`,
+              kind: "milestone",
+              text: `${milestone.title} (${milestone.ref}) — ${d.day}`,
+            });
           }
           for (const special of d.specialReports) {
             entries.push({ id: `special:${special.id}`, kind: "special", text: `${special.title} — ${d.day}` });

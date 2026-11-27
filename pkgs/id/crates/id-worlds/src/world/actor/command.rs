@@ -308,6 +308,8 @@ pub(crate) enum WorldCommand {
         token: Option<JoinCapability>,
         /// Connection context for attribution of resulting program requests.
         session_id: Option<SessionId>,
+        /// Authenticated account for attribution of guest fuel during delivery.
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
         reply: oneshot::Sender<Result<FormSubmissionStatus>>,
     },

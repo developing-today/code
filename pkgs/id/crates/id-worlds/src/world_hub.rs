@@ -30,6 +30,7 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
+use crate::account_charge::AccountWorldQuota;
 use crate::world::{
     Isolation, PortalDelivery, PortalDeliveryFuture, PortalGrants, PortalSendError,
     ScheduleDelivery, ScheduleDeliveryFuture,
@@ -106,6 +107,14 @@ pub struct HubLimits {
     /// How long after the hub starts signed requests are refused, because a
     /// restart empties the replay memory. `ZERO` refuses none.
     pub signed_boot_window: Duration,
+    /// Most worlds one account may hold at once (#1067, F12.10
+    /// per-account quotas). `0` = no per-account bound: accounts
+    /// share the hub-wide ceiling under the existing rules alone,
+    /// exactly as before. Mirrors
+    /// [`id_caps::account_quota::AccountQuotas::max_worlds`]; a
+    /// nonzero value enforces that quota at open/create for calls
+    /// that carry an account.
+    pub max_worlds_per_account: u32,
 }
 
 impl Default for HubLimits {
@@ -114,6 +123,7 @@ impl Default for HubLimits {
             max_open_worlds: 256,
             max_sessions: 1024,
             signed_boot_window: Duration::ZERO,
+            max_worlds_per_account: 0,
         }
     }
 }
@@ -229,6 +239,10 @@ struct HubInner {
     sessions: Arc<Semaphore>,
     slots: StdMutex<HashMap<String, Arc<Slot>>>,
     replays: StdMutex<crate::directory_auth::ReplayGuard>,
+    /// Worlds attributed to accounts for the per-account world-count
+    /// quota (#1067, F12.10). Taken only under (or after) the slots
+    /// lock, never before it, so the two locks cannot deadlock.
+    account_worlds: StdMutex<AccountWorldQuota>,
 }
 
 /// Registry of worlds. Cheap to clone.
@@ -397,6 +411,11 @@ struct SlotLeaseGuard {
     hub: WorldHub,
     name: String,
     slot: Arc<Slot>,
+    /// The account this acquire acted for, if any.
+    account: Option<String>,
+    /// Whether this acquire recorded a new world hold for `account`
+    /// (rolled back if the guard drops while armed).
+    noted: bool,
     armed: bool,
 }
 
@@ -404,6 +423,12 @@ impl Drop for SlotLeaseGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
+        }
+        if self.noted
+            && let Some(account) = self.account.as_deref()
+            && let Ok(mut worlds) = self.hub.inner.account_worlds.lock()
+        {
+            worlds.release(account, &self.name);
         }
         self.slot.leases.fetch_sub(1, Ordering::AcqRel);
         if let Ok(mut slots) = self.hub.inner.slots.lock()
@@ -472,6 +497,9 @@ impl WorldHub {
                 replays: StdMutex::new(crate::directory_auth::ReplayGuard::after_boot(
                     crate::time::unix_ms(),
                     limits.signed_boot_window,
+                )),
+                account_worlds: StdMutex::new(AccountWorldQuota::new(
+                    limits.max_worlds_per_account,
                 )),
             }),
         }
@@ -568,6 +596,30 @@ impl WorldHub {
         name: Option<&str>,
         admin: Option<&str>,
     ) -> Result<WorldLease, ResolveError> {
+        self.lease_as(name, admin, None).await
+    }
+
+    /// Claim `name` for a session acting for `account` (#1067, F12.10
+    /// per-account world quotas).
+    ///
+    /// Behaves exactly like [`Self::lease`], except a creation this
+    /// call would perform — an admin creation of a world that does
+    /// not exist yet — is charged against the account's world-count
+    /// quota and refused with [`ResolveError::TooManyWorlds`] when
+    /// the account is already at its limit. Naming (or reopening) a
+    /// world the hub already knows is never a new hold and is never
+    /// refused by the quota; a `None` account skips the quota, as
+    /// every pre-quota path does.
+    ///
+    /// # Errors
+    ///
+    /// See [`ResolveError`].
+    pub async fn lease_as(
+        &self,
+        name: Option<&str>,
+        admin: Option<&str>,
+        account: Option<&str>,
+    ) -> Result<WorldLease, ResolveError> {
         let name = name.unwrap_or_else(|| self.default_world());
         // A pinned view resolves only its own world (#5728): any
         // other name is UnknownWorld, exactly as if the world did
@@ -581,7 +633,7 @@ impl WorldHub {
             .try_acquire_owned()
             .map_err(|_| ResolveError::Busy)?;
         let create = admin.is_some_and(|token| self.admin_ok(token));
-        self.lease_with(name, create, permit).await
+        self.lease_with(name, create, permit, account).await
     }
 
     async fn lease_with(
@@ -589,15 +641,19 @@ impl WorldHub {
         name: &str,
         create: bool,
         permit: OwnedSemaphorePermit,
+        account: Option<&str>,
     ) -> Result<WorldLease, ResolveError> {
-        let (slot, evicted) = self.acquire_slot(name, create)?;
+        let (slot, evicted, noted) = self.acquire_slot(name, create, account)?;
         // Armed until the lease is handed to the caller: dropping the guard
         // (error return, or cancellation of the awaits below) releases the
-        // counted lease exactly once.
+        // counted lease exactly once, and rolls back a world hold this
+        // acquire recorded, so a creation that never opens charges no quota.
         let mut guard = SlotLeaseGuard {
             hub: self.clone(),
             name: name.to_owned(),
             slot: Arc::clone(&slot),
+            account: account.map(str::to_owned),
+            noted,
             armed: true,
         };
         for (victim, service) in evicted {
@@ -651,12 +707,20 @@ impl WorldHub {
 
     /// Find or create the slot for `name` and count a lease on it. Returns
     /// the worlds evicted to make room (name and service), to be shut down
-    /// by the caller.
+    /// by the caller — plus whether this call recorded a new world hold
+    /// for `account` (for the [`SlotLeaseGuard`] rollback).
+    ///
+    /// A slot that already exists is never a new hold, so the
+    /// per-account quota cannot refuse a reopen; a `None` account
+    /// skips the quota entirely. Refusing with
+    /// [`ResolveError::TooManyWorlds`] reuses the global ceiling's
+    /// refusal, so every bridge path handles it as it already does.
     fn acquire_slot(
         &self,
         name: &str,
         create: bool,
-    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>), ResolveError> {
+        account: Option<&str>,
+    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>, bool), ResolveError> {
         let mut slots = self
             .inner
             .slots
@@ -666,7 +730,7 @@ impl WorldHub {
             // Counted under the map lock so eviction cannot slip in between.
             slot.leases.fetch_add(1, Ordering::AcqRel);
             slot.touch();
-            return Ok((Arc::clone(slot), Vec::new()));
+            return Ok((Arc::clone(slot), Vec::new(), false));
         }
         let opener = self
             .inner
@@ -703,8 +767,21 @@ impl WorldHub {
         }
         let slot = Arc::new(Slot::new());
         slot.leases.store(1, Ordering::Release);
+        // The per-account quota is checked and recorded under the same
+        // map lock as the slot insert, so two concurrent creations for
+        // one account cannot both slip past the limit. The hold is
+        // rolled back by the lease guard when the open never completes.
+        let mut noted = false;
+        if let Some(account) = account
+            && let Ok(mut worlds) = self.inner.account_worlds.lock()
+        {
+            match worlds.try_acquire(account, name) {
+                Ok(new_hold) => noted = new_hold,
+                Err(_) => return Err(ResolveError::TooManyWorlds),
+            }
+        }
         slots.insert(name.to_owned(), Arc::clone(&slot));
-        Ok((slot, evicted))
+        Ok((slot, evicted, noted))
     }
 
     /// The cross-world schedule delivery sink backed by this hub
@@ -746,7 +823,7 @@ impl WorldHub {
         );
         let name = self.inner.default_world.clone();
         let lease = self
-            .lease_with(&name, true, permit)
+            .lease_with(&name, true, permit, None)
             .await
             .map_err(|e| anyhow::anyhow!("open default world: {}", e.message()))?;
         tracing::info!("serve startup: open_default lease acquired (#190 breadcrumb)");
@@ -759,6 +836,23 @@ impl WorldHub {
     ///
     /// See [`ResolveError`]; hubs without an opener cannot create worlds.
     pub async fn create(&self, name: &str) -> Result<bool, ResolveError> {
+        self.create_as(name, None).await
+    }
+
+    /// Create `name` for `account` if it does not exist (#1067, F12.10
+    /// per-account world quotas). Returns whether it was created.
+    ///
+    /// Behaves exactly like [`Self::create`], except a creation is
+    /// charged against the account's world-count quota and refused
+    /// with [`ResolveError::TooManyWorlds`] when the account is
+    /// already at its limit. Creating nothing new — the world
+    /// already exists — is never refused by the quota; a `None`
+    /// account skips the quota, as every pre-quota path does.
+    ///
+    /// # Errors
+    ///
+    /// See [`ResolveError`]; hubs without an opener cannot create worlds.
+    pub async fn create_as(&self, name: &str, account: Option<&str>) -> Result<bool, ResolveError> {
         // A pinned view may create only its own world (#5728).
         if !self.pin_allows(name) {
             return Err(ResolveError::UnknownWorld);
@@ -778,7 +872,7 @@ impl WorldHub {
         let permit = Arc::clone(&self.inner.sessions)
             .try_acquire_owned()
             .map_err(|_| ResolveError::Busy)?;
-        let _lease = self.lease_with(name, true, permit).await?;
+        let _lease = self.lease_with(name, true, permit, account).await?;
         Ok(!existed)
     }
 
@@ -1584,6 +1678,45 @@ mod tests {
             hub.create("../x").await.err(),
             Some(ResolveError::InvalidName)
         );
+    }
+
+    /// Oracle (#1067 F12.10 world-count slice): a hub with a
+    /// per-account world limit refuses a new world for the account
+    /// already at its limit — with the existing `TooManyWorlds`
+    /// refusal, so every bridge path handles it like the global
+    /// ceiling — while another account may still create, and
+    /// reopening a world the account already holds never refuses.
+    #[tokio::test]
+    async fn a_per_account_world_limit_refuses_only_the_full_account() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(
+            &opener,
+            HubLimits {
+                max_worlds_per_account: 1,
+                ..HubLimits::default()
+            },
+        );
+        assert!(hub.create_as("w1", Some("acct-a")).await.unwrap());
+        assert_eq!(
+            hub.create_as("w2", Some("acct-a")).await.err(),
+            Some(ResolveError::TooManyWorlds)
+        );
+        // Another account is unaffected.
+        assert!(hub.create_as("w2", Some("acct-b")).await.unwrap());
+        // Reopening an already-held world is idempotent, not a new hold.
+        assert!(!hub.create_as("w1", Some("acct-a")).await.unwrap());
+        // An admin lease that would create a new world for the full
+        // account is refused the same way; a lease of an existing
+        // world is not.
+        assert_eq!(
+            hub.lease_as(Some("w3"), Some("admin"), Some("acct-a"))
+                .await
+                .err(),
+            Some(ResolveError::TooManyWorlds)
+        );
+        hub.lease_as(Some("w1"), None, Some("acct-a"))
+            .await
+            .unwrap();
     }
 
     #[test]

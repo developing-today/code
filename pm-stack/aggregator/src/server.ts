@@ -329,7 +329,11 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
       mergedAt?: unknown;
     };
     if (!Number.isSafeInteger(viewed.number) || (viewed.number as number) !== item.number) return null;
-    if (typeof viewed.title !== "string" || typeof viewed.createdAt !== "string" || typeof viewed.updatedAt !== "string") {
+    if (
+      typeof viewed.title !== "string" ||
+      typeof viewed.createdAt !== "string" ||
+      typeof viewed.updatedAt !== "string"
+    ) {
       return null;
     }
     return {

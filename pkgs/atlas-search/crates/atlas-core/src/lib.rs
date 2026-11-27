@@ -46,6 +46,7 @@ pub mod catalog;
 pub mod classification;
 pub mod classify;
 pub mod cold;
+pub mod cold_shard;
 pub mod consumer_preset;
 pub mod detect;
 pub mod disclosure;

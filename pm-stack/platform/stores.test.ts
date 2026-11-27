@@ -19,7 +19,8 @@ const tracked = Bun.spawnSync(["git", "ls-files", "--", "pm-stack"], { cwd: ROOT
   .stdout.toString()
   .split("\n")
   .filter((file) => CODE.test(file) && !file.includes("node_modules") && file !== STORES_FILE);
-const HOST = /https:\/\/(?:(?<turso>[a-z0-9-]+)-dezren39\.aws-[a-z0-9-]+\.turso\.io|d1-gateway\.developing-today\.workers\.dev\/db\/(?<gateway>[a-z0-9-]+))/g;
+const HOST =
+  /https:\/\/(?:(?<turso>[a-z0-9-]+)-dezren39\.aws-[a-z0-9-]+\.turso\.io|d1-gateway\.developing-today\.workers\.dev\/db\/(?<gateway>[a-z0-9-]+))/g;
 const sources = tracked.map((file) => readFileSync(join(ROOT, file), "utf8"));
 
 test("the list reads whole: every store is well formed, and no name is there twice", () => {

@@ -1854,6 +1854,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 max_open_worlds: world_max_open,
                 max_sessions: world_max_sessions,
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
+                // Per-account world quotas (#1067, F12.10) stay opt-in:
+                // no CLI flag sets this yet, so the serve path keeps
+                // the unconfigured hub's behaviour (no per-account bound).
+                max_worlds_per_account: 0,
             },
         );
         info!("serve startup: opening default world via hub (#190 breadcrumb)");

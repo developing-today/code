@@ -10,8 +10,9 @@ pub const USAGE: &str = "usage: fleet laptop-agent <command>
   health
   jobs
   kill JOB
+  exec-batch FILE.json
   exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
-  run  [--cwd DIR] [--shell] -- CMD...
+  run  [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
   poll JOB [--wait SECS]
   fetch REMOTE_PATH LOCAL_PATH";
 
@@ -23,6 +24,9 @@ pub enum Command {
     Jobs,
     Kill {
         job: String,
+    },
+    ExecBatch {
+        file: String,
     },
     Exec {
         cwd: Option<String>,
@@ -67,11 +71,8 @@ fn split_cmd(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
-/// Options for `exec` / `run`: `--cwd`, `--timeout` (exec only), `--shell`.
-fn parse_exec_opts(
-    opts: &[String],
-    allow_timeout: bool,
-) -> Result<(Option<String>, u64, bool), String> {
+/// Shared Python-compatible options for `exec` / `run`.
+fn parse_exec_opts(opts: &[String]) -> Result<(Option<String>, u64, bool), String> {
     let mut cwd = None;
     let mut timeout = 120;
     let mut shell = false;
@@ -85,9 +86,6 @@ fn parse_exec_opts(
         match flag {
             "--shell" if inline.is_none() => shell = true,
             "--cwd" | "--timeout" => {
-                if flag == "--timeout" && !allow_timeout {
-                    return Err(format!("unknown option {arg:?}"));
-                }
                 let value = match inline {
                     Some(v) => v,
                     None => {
@@ -101,6 +99,9 @@ fn parse_exec_opts(
                     cwd = Some(value);
                 } else {
                     timeout = number(flag, &value)?;
+                    if timeout == 0 {
+                        return Err("--timeout must be positive".into());
+                    }
                 }
             }
             _ => return Err(format!("unknown option {arg:?}")),
@@ -121,13 +122,23 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             [job] if valid_job(job) => Ok(Command::Kill { job: job.clone() }),
             _ => Err("kill takes one job id".into()),
         },
+        "exec-batch" => match rest {
+            // Exactly one positional, like the selector's
+            // `ap.add_argument("file")`: argparse rejects zero, two,
+            // or option-like spellings, so the binary refuses a
+            // leading dash here too rather than opening `--bogus`.
+            [file] if !file.is_empty() && !file.starts_with('-') => {
+                Ok(Command::ExecBatch { file: file.clone() })
+            }
+            _ => Err("exec-batch takes a FILE.json".into()),
+        },
         "exec" | "run" => {
             let (opts, cmd) = split_cmd(rest);
             if cmd.is_empty() {
                 return Err("no command given (use -- cmd...)".into());
             }
+            let (cwd, timeout, shell) = parse_exec_opts(opts)?;
             if verb == "exec" {
-                let (cwd, timeout, shell) = parse_exec_opts(opts, true)?;
                 Ok(Command::Exec {
                     cwd,
                     timeout,
@@ -135,7 +146,12 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     cmd: cmd.to_vec(),
                 })
             } else {
-                let (cwd, _, shell) = parse_exec_opts(opts, false)?;
+                // `run --timeout` is accepted for Python-selector
+                // compatibility but deliberately ignored: a detached job
+                // submit carries no client-side timeout (legacy oracle:
+                // laptop-agent-legacy.py submits cmd_spec only, with a
+                // fixed 30 s submit deadline).
+                let _ = timeout;
                 Ok(Command::Run {
                     cwd,
                     shell,
@@ -231,6 +247,7 @@ pub fn run(config: &fleet_config::Config, args: &[String]) -> i32 {
         Command::Health => client::health(&ladder),
         Command::Jobs => client::jobs(&ladder),
         Command::Kill { job } => client::kill(&ladder, &job),
+        Command::ExecBatch { file } => client::exec_batch(&ladder, std::path::Path::new(&file)),
         Command::Exec {
             cwd,
             timeout,
@@ -297,10 +314,44 @@ mod tests {
     }
 
     #[test]
+    fn run_timeout_matches_python_legacy_run_submit_oracle() {
+        // Oracle PythonLegacyRunSubmitOracle: laptop-agent-legacy.py
+        // main() accepts `run --timeout N` (positive int, separated or
+        // inline) but the submit path ignores it — the request is
+        // POST /jobs with cmd_spec only and a fixed _set_deadline(30).
+        // Every accepted spelling must therefore parse to the exact
+        // Command::Run the no-timeout spelling produces.
+        for timeout in [1, 5, 120, 3600, u64::MAX] {
+            for option in [
+                format!("--timeout {timeout}"),
+                format!("--timeout={timeout}"),
+            ] {
+                for (flag, shell) in [("", false), ("--shell", true)] {
+                    assert_eq!(
+                        parse(&v(&format!(
+                            "run {option} --cwd /w {flag} -- echo --timeout=0"
+                        )))
+                        .unwrap(),
+                        Command::Run {
+                            cwd: Some("/w".into()),
+                            shell,
+                            cmd: v("echo --timeout=0"),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn undeclared_options_are_usage_errors() {
         assert!(parse(&v("exec --bogus -- ls")).is_err());
-        assert!(parse(&v("run --timeout 5 -- ls")).is_err());
+        assert!(parse(&v("run --timeout 0 -- ls")).is_err());
+        assert!(parse(&v("run --timeout -1 -- ls")).is_err());
+        assert!(parse(&v("run --timeout x -- ls")).is_err());
+        assert!(parse(&v("run --timeout -- ls")).is_err());
         assert!(parse(&v("exec --timeout x -- ls")).is_err());
+        assert!(parse(&v("exec --timeout 0 -- ls")).is_err());
         assert!(parse(&v("exec --cwd")).is_err());
         assert!(parse(&v("exec --cwd /w")).is_err(), "a command is required");
     }
@@ -332,6 +383,7 @@ mod tests {
         assert!(!wants_help(&v("exec --cwd --help -- ls")));
         assert!(!wants_help(&v("exec -- ls --help")));
         assert!(!wants_help(&v("poll job1 --wait 30")));
+        assert!(wants_help(&v("exec-batch --help")));
         assert!(!wants_help(&v("health")));
     }
 
@@ -353,5 +405,24 @@ mod tests {
         );
         assert!(parse(&v("fetch /a")).is_err());
         assert!(parse(&v("fetch /a /b /c")).is_err());
+    }
+
+    #[test]
+    fn exec_batch_takes_exactly_one_file() {
+        // Oracle: laptop-agent.py validate() declares exactly one
+        // positional `file` for exec-batch; argparse rejects zero,
+        // two, or option-like spellings before any transport. The
+        // binary refuses the same shapes (exit 2) rather than
+        // treating `--bogus` as a filename.
+        assert_eq!(
+            parse(&v("exec-batch batch.json")).unwrap(),
+            Command::ExecBatch {
+                file: "batch.json".into()
+            }
+        );
+        assert!(parse(&v("exec-batch")).is_err());
+        assert!(parse(&v("exec-batch a.json b.json")).is_err());
+        assert!(parse(&v("exec-batch --bogus")).is_err());
+        assert!(parse(&v("exec-batch -x")).is_err());
     }
 }

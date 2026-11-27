@@ -233,7 +233,10 @@ fn live_short_page_with_explicit_incomplete_range_continues_keyset_read() {
     assert_eq!(result.pages, 2);
     assert_eq!(result.next_cursor, None);
     assert_eq!(transport.sent.len(), 2);
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.1)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.1,id.is.null)")
+    );
 }
 
 #[test]
@@ -293,7 +296,10 @@ fn live_follows_the_keyset_cursor_one_request_per_page() {
     // The observation time is the last page's.
     assert_eq!(result.observed_at_ms, 20);
     assert_eq!(param(&transport.sent[0], "or"), None);
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.2,id.is.null)")
+    );
 }
 
 /// The query of #15010: project `title` alone from a collection whose
@@ -353,7 +359,10 @@ fn projection_without_the_unique_key_continues_across_pages() {
     assert_eq!(result.pages, 2);
     // The second page continues after the first page's last key and
     // still fetches the key for its own cursor.
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.2,id.is.null)")
+    );
     assert_eq!(param(&transport.sent[1], "select"), Some("title,id"));
 }
 

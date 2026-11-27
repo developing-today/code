@@ -128,7 +128,9 @@ SENS_CANONICAL = {
     "private": "local-only",
     "sensitive": "secret-bearing",
 }
-SENS_CANONICAL_INVERSE = {legacy: canonical for canonical, legacy in SENS_CANONICAL.items()}
+SENS_CANONICAL_INVERSE = {
+    legacy: canonical for canonical, legacy in SENS_CANONICAL.items()
+}
 
 
 def ceiling_name(value):
@@ -139,6 +141,7 @@ def ceiling_name(value):
 def published_sensitivity_name(value):
     """Map a rung-typed published sensitivity to its legacy rung, if known."""
     return ceiling_name(value)
+
 
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",

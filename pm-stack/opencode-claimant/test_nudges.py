@@ -171,6 +171,49 @@ class TestPlan(unittest.TestCase):
         )
         self.assertEqual(actions, [])
 
+    def test_failed_error_retry_is_not_replanned_during_cooldown(self):
+        # #16066: a failed retry backs off until its cooldown round;
+        # before it, the retry plans nothing, at it, it re-plans.
+        prior = {
+            "ses_failed": {
+                "error_retried": False,
+                "error_retry_failures": 1,
+                "error_retry_next_round": 5,
+            }
+        }
+        self.assertEqual(
+            nudges.plan_actions(
+                record(round_no=4, verdicts={"ses_failed": error_stopped()}), prior
+            ),
+            [],
+        )
+        actions = nudges.plan_actions(
+            record(round_no=5, verdicts={"ses_failed": error_stopped()}), prior
+        )
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["kind"], "retry")
+        self.assertEqual(actions[0]["error_retry_failures"], 1)
+
+    def test_split_plan_serves_stall_work_before_retries(self):
+        # #16066: with the cap saturated by executable stall nudges,
+        # the retry is the overflow - retries never sort ahead of
+        # real nudges again.
+        cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
+        planned = [
+            {
+                "session_id": f"ses_{i:02d}",
+                "kind": "nudge",
+                "task_id": 100 + i,
+                "nudges_sent": 0,
+            }
+            for i in range(cap)
+        ]
+        planned.append({"session_id": "ses_failed", "kind": "retry", "task_id": 999})
+        to_apply, overflow = nudges.split_plan(planned)
+        self.assertEqual(len(to_apply), cap)
+        self.assertTrue(all(a["kind"] == "nudge" for a in to_apply))
+        self.assertEqual([a["session_id"] for a in overflow], ["ses_failed"])
+
     def test_unbound_confirmed_stall_is_observed_only(self):
         actions = nudges.plan_actions(
             record(verdicts={"ses_free": stalled(task_id=None)}), {}
@@ -228,6 +271,46 @@ class TestNudgeStep(unittest.TestCase):
         self.assertEqual(out["actions"][0]["kind"], "retry")
         self.assertTrue(out["actions"][0]["applied"])
         self.assertEqual(out["actions"][0]["detail"], "requeued_retry")
+
+    def test_failed_retry_records_backoff_and_skips_next_round(self):
+        # #16066: a failed recovery records a growing cooldown in
+        # the episode state; the next round does not call recovery
+        # again, and the round after the cooldown does.
+        fx = FakeEffects()
+        calls = []
+
+        def recover_error(session_id, task_id, binding):
+            calls.append(session_id)
+            return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            out = self._step(
+                fx,
+                record(round_no=3, verdicts={"ses_failed": error_stopped()}),
+                state_dir,
+                recover_error=recover_error,
+            )
+            self.assertEqual(calls, ["ses_failed"])
+            self.assertEqual(out["actions"][0]["detail"], "recovery_failed")
+            entry = self._state(state_dir)["sessions"]["ses_failed"]
+            self.assertEqual(entry["error_retry_failures"], 1)
+            self.assertEqual(entry["error_retry_next_round"], 5)
+            out2 = self._step(
+                fx,
+                record(round_no=4, verdicts={"ses_failed": error_stopped()}),
+                state_dir,
+                recover_error=recover_error,
+            )
+            self.assertEqual(calls, ["ses_failed"])
+            self.assertEqual(out2["actions"], [])
+            self._step(
+                fx,
+                record(round_no=5, verdicts={"ses_failed": error_stopped()}),
+                state_dir,
+                recover_error=recover_error,
+            )
+            self.assertEqual(calls, ["ses_failed", "ses_failed"])
 
     def _state(self, state_dir):
         return json.loads((state_dir / nudges.STATE_FILE_NAME).read_text())

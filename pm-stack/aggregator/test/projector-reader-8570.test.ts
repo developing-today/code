@@ -198,8 +198,22 @@ describe("projector reader seam (#8570)", () => {
           deleted: 0,
         })),
       getLinks: async () => [
-        { subject: "kaneo:board-item", ref: itemRef, relation: "implements", note: null, created_by: null, created_at: "2026-01-01T00:00:00Z" },
-        { subject: "kaneo:board-item", ref: "bad-ref", relation: "tracks", note: null, created_by: null, created_at: "2026-01-01T00:00:00Z" },
+        {
+          subject: "kaneo:board-item",
+          ref: itemRef,
+          relation: "implements",
+          note: null,
+          created_by: null,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          subject: "kaneo:board-item",
+          ref: "bad-ref",
+          relation: "tracks",
+          note: null,
+          created_by: null,
+          created_at: "2026-01-01T00:00:00Z",
+        },
       ],
     };
     const reader = createStoreProjectorReader(store);
@@ -215,7 +229,9 @@ describe("projector reader seam (#8570)", () => {
 
     const failed = createStoreProjectorReader({
       ...store,
-      getItems: async () => { throw new Error("store unavailable"); },
+      getItems: async () => {
+        throw new Error("store unavailable");
+      },
     });
     await expect(failed.items([itemRef])).resolves.toBeNull();
   });

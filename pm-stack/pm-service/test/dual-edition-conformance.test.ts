@@ -31,21 +31,12 @@ import type {
   RoadmapRow as AggregatorRoadmapRow,
 } from "../../aggregator/src/model.ts";
 import { itemJson } from "../src/read-api/api.ts";
-import {
-  loadBoardSummaries,
-  loadPool,
-  loadReleaseSnapshots,
-  loadRoadmapRows,
-} from "../src/read-api/store.ts";
+import { loadBoardSummaries, loadPool, loadReleaseSnapshots, loadRoadmapRows } from "../src/read-api/store.ts";
 import { historicalParentsFromMetadata } from "../src/collector/pool.ts";
 import { landSnapshot } from "../src/collector/store.ts";
 import { tenantStoreMigrations } from "../src/tenant-store/load.ts";
 import { applyMigrations, type SqlDb } from "../src/tenant-store/migrate.ts";
-import {
-  validateMetadataBlock,
-  type BoardDef,
-  type PmMetadataBlock,
-} from "../src/tenant-store/schema.ts";
+import { validateMetadataBlock, type BoardDef, type PmMetadataBlock } from "../src/tenant-store/schema.ts";
 import { openTenantDb } from "../src/tenant-store/sqlite.ts";
 
 const REPO = "developing-today/code";
@@ -143,7 +134,13 @@ const ROADMAP_ITEM = poolItem({
   milestone: { title: "ID platform — release 2026-12-01", dueOn: "2026-12-01", closedAt: null },
   blockedBy: [ref(1999)],
 });
-const PREDECESSOR = poolItem({ number: 1999, title: "prior ID milestone", state: "closed", status: "Done", kind: "Task" });
+const PREDECESSOR = poolItem({
+  number: 1999,
+  title: "prior ID milestone",
+  state: "closed",
+  status: "Done",
+  kind: "Task",
+});
 const POOL = resolveEpicRefs([STEP, EPIC, DESIGN, ROADMAP_ITEM, PREDECESSOR]);
 const STEP_IN_POOL = POOL.find((item) => item.ref === STEP.ref) as AggregatorPoolItem;
 
@@ -230,7 +227,10 @@ describe("dual-edition PM read-contract projections", () => {
     const registry: readonly BoardDef[] = PROJECT_BOARDS;
 
     deepStrictEqual(hostedRegistry, registry);
-    deepStrictEqual(hostedItems, [...POOL].sort((a, b) => a.ref.localeCompare(b.ref)));
+    deepStrictEqual(
+      hostedItems,
+      [...POOL].sort((a, b) => a.ref.localeCompare(b.ref)),
+    );
   });
 
   test("the same #9060 §8 item produces identical genealogy JSON", async () => {
@@ -268,10 +268,7 @@ describe("dual-edition PM read-contract projections", () => {
     const parsedFleetMetadata = parsePmMetadata(METADATA);
     expect(parsedFleetMetadata.ok).toBe(true);
     expect(validateMetadataBlock(METADATA)).toEqual([]);
-    deepStrictEqual(
-      aggregatorHistoricalParents(METADATA_BODY),
-      historicalParentsFromMetadata(METADATA_BODY),
-    );
+    deepStrictEqual(aggregatorHistoricalParents(METADATA_BODY), historicalParentsFromMetadata(METADATA_BODY));
 
     if (!parsedFleetMetadata.ok) throw new Error(parsedFleetMetadata.error);
     const metadataDb = new Database(":memory:");
@@ -297,13 +294,18 @@ describe("dual-edition PM read-contract projections", () => {
       provenance_lane: string | null;
       provenance_queue_id: string | null;
       metadata_json: string;
-    }>("SELECT pm_meta, direct_parent_ref, direct_parent_kind, lineage_design_ref, lineage_roadmap_item_ref, lineage_priority_ref, provenance_session_id, provenance_lane, provenance_queue_id, metadata_json FROM pm_item_metadata WHERE ref = ?", [STEP.ref])[0];
+    }>(
+      "SELECT pm_meta, direct_parent_ref, direct_parent_kind, lineage_design_ref, lineage_roadmap_item_ref, lineage_priority_ref, provenance_session_id, provenance_lane, provenance_queue_id, metadata_json FROM pm_item_metadata WHERE ref = ?",
+      [STEP.ref],
+    )[0];
 
     expect(fleetRow).not.toBeNull();
     expect(hostedRow).toBeDefined();
     expect(hostedRow?.pm_meta).toBe(fleetRow?.schemaVersion);
     expect(hostedRow?.metadata_json).toBe(JSON.stringify(fleetRow?.metadata));
-    expect(hostedRow?.direct_parent_ref).toBe(`${fleetRow?.indexes.directParentRepo}#${fleetRow?.indexes.directParentNumber}`);
+    expect(hostedRow?.direct_parent_ref).toBe(
+      `${fleetRow?.indexes.directParentRepo}#${fleetRow?.indexes.directParentNumber}`,
+    );
     expect(hostedRow?.direct_parent_kind).toBe(METADATA.direct_parent?.kind);
     expect(hostedRow?.lineage_design_ref).toBe(METADATA.lineage.design);
     expect(hostedRow?.lineage_roadmap_item_ref).toBe(METADATA.lineage.roadmap_item);

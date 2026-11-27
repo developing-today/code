@@ -68,12 +68,7 @@ describe("reconcileRepos against a fake GitHub", () => {
       return jsonRes([]);
     }) as unknown as typeof fetch;
 
-    const result = await reconcileRepos(
-      db,
-      { PM_REPOS: repo, GITHUB_TOKEN: "test-token" },
-      fetchFn,
-      "backfill",
-    );
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn, "backfill");
 
     expect(result.mode).toBe("backfill");
     expect(seen.some((url) => url.includes("/issues?since="))).toBe(false);

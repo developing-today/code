@@ -143,7 +143,11 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     const claim = { state: "claimed", worker: "lane-1", fresh: true, session_binding: "verified" } as const;
     const cases: WorkProjectionInput[] = [
       { ...base, claim },
-      { ...base, claim, session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" } },
+      {
+        ...base,
+        claim,
+        session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" },
+      },
       { ...base, claim, session: { value: { provider: "opencode", state: "terminal" }, source: "session-adapter" } },
     ];
     for (const input of cases) expect(projectWorkView(input).projection.column).not.toBe("In Progress");

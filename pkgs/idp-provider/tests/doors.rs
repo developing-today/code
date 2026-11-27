@@ -644,17 +644,29 @@ async fn verified_email_match_registers_unallowlisted_identity_pending_without_c
 
     let resp = drive_door(&h, "google").await;
     assert!(
-        h.mock.oidc_scope.lock().unwrap().as_deref().unwrap().contains("email"),
+        h.mock
+            .oidc_scope
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("email"),
         "OIDC authorization must request verified email claims"
     );
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(location(&resp).is_empty(), "pending claim must not receive a code");
+    assert!(
+        location(&resp).is_empty(),
+        "pending claim must not receive a code"
+    );
     assert_eq!(
         h.identities.status("google", CLAIM_SUB).unwrap().as_deref(),
         Some("pending")
     );
     assert_eq!(
-        h.identities.account_id_for("google", CLAIM_SUB).unwrap().as_deref(),
+        h.identities
+            .account_id_for("google", CLAIM_SUB)
+            .unwrap()
+            .as_deref(),
         Some("drew")
     );
     assert!(h.identities.events().unwrap().iter().any(|event| {
@@ -702,13 +714,22 @@ async fn github_verified_primary_email_registers_pending_claim() {
 
     let resp = drive_door(&h, "github").await;
     assert!(
-        h.mock.github_scope.lock().unwrap().as_deref().unwrap().contains("user:email"),
+        h.mock
+            .github_scope
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("user:email"),
         "GitHub authorization must request the private verified-email endpoint scope"
     );
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert!(location(&resp).is_empty());
     assert_eq!(
-        h.identities.status("github", &(GITHUB_ID + 1).to_string()).unwrap().as_deref(),
+        h.identities
+            .status("github", &(GITHUB_ID + 1).to_string())
+            .unwrap()
+            .as_deref(),
         Some("pending")
     );
     assert!(h.identities.events().unwrap().iter().any(|event| {
@@ -724,7 +745,9 @@ async fn github_verified_primary_email_registers_pending_claim() {
     let resp = drive_door(&h, "github").await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        h.identities.status("github", &(GITHUB_ID + 2).to_string()).unwrap(),
+        h.identities
+            .status("github", &(GITHUB_ID + 2).to_string())
+            .unwrap(),
         None,
         "an unverified GitHub address must not create a claim"
     );

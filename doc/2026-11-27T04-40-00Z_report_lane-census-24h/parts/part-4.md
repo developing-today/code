@@ -2,7 +2,7 @@
 
 Window: 2026-11-26 18:37 CST → 22:07 CST. Four staggered hourly jobs: alpha :37 DRIVE, bravo :52 SUSTAIN, charlie :07 ADVANCE, delta :22 PRESS. Lane keys = run-time + letter. Repo default is developing-today/code; other repos named explicitly (developing-today/fleet, dezren39/fleet, developing-today-forks/opencode, developing-today-forks/openchamber, dezren39/darwin-nix, dezren39/hatch-personal).
 
-Sources: run records in ~/workspace/work-loop/runs/2026-11-26-*.md + per-lane files (1837-B/D/E/I/M, 1952-G, 1952-K-bravo, 2037-alpha-H, 2026-11-26_2037-I_alpha-drive), ~/workspace/work-loop/lane-failures.md, and targeted lane-log.md greps for 1837-F/J/L/O, 2022-I, 2152-C/D/G/K/N, 2207-*.
+Sources: run records in ~/workspace/work-loop/runs/2026-11-26-_.md + per-lane files (1837-B/D/E/I/M, 1952-G, 1952-K-bravo, 2037-alpha-H, 2026-11-26_2037-I_alpha-drive), ~/workspace/work-loop/lane-failures.md, and targeted lane-log.md greps for 1837-F/J/L/O, 2022-I, 2152-C/D/G/K/N, 2207-_.
 
 Categories: LANDED (PR merged / issue closed) · GATE-HELD properly (verified blocker posted) · PARKED (wake condition) · STOOD DOWN (premise dead / owned elsewhere / already done) · FAILED (evaporated / silent / triage-only) with why.
 
