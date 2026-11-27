@@ -16,6 +16,15 @@ with the filename; the live API rejects that with
 These tests pin the step order and the poll payload so the drift is
 caught hermetically next time.
 
+Regression (#16070): a PUT accepted with its response lost is
+recovered idempotently -- the retry init may omit upload_url when
+the stored object verifies against the expected etag/length, and
+import_sql must finalize it without a second PUT; a resume naming
+a mismatched stored object, or no stored object at all, must raise
+a clear retryable RuntimeError, never KeyError or false success.
+Oracle: the same fake API; a resume is verified only by the fake's
+reported etag/length matching the digest/length of the SQL text.
+
 Run: python3 -I infra/fleet-queue-backup/tests/test_d1_import.py
 """
 
@@ -143,6 +152,109 @@ class ImportFlowTest(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         actions = [c[2]["action"] for c in self.calls]
         self.assertEqual(actions, ["init", "init", "ingest", "poll", "poll"])
+
+
+    def _resume_http_json(self, resume_result, calls):
+        """Fake API: first init offers an upload, later inits resume."""
+        state = {"init_count": 0, "poll_count": 0}
+
+        def fake(method, url, token, payload=None, timeout=None):
+            calls.append((method, url, payload))
+            action = payload["action"]
+            if action == "init":
+                state["init_count"] += 1
+                if state["init_count"] == 1:
+                    return {
+                        "success": True,
+                        "result": {
+                            "upload_url": "https://upload.example/put",
+                            "filename": "import.sql",
+                        },
+                    }
+                return {"success": True, "result": resume_result}
+            if action == "ingest":
+                self.assertEqual(
+                    payload,
+                    {"action": "ingest", "etag": self.digest,
+                     "filename": "import.sql"},
+                )
+                return {"success": True, "result": {"at_bookmark": "bm-1"}}
+            if action == "poll":
+                state["poll_count"] += 1
+                return {"success": True,
+                        "result": {"status": "complete",
+                                   "result": {"num_queries": 2}}}
+            raise AssertionError("unexpected action " + action)
+
+        return fake
+
+    def test_retry_after_accepted_put_lost_response_recovers(self):
+        # Accepted PUT + dropped response + retry init without
+        # upload_url, naming the stored object with matching etag.
+        calls = []
+        puts = {"n": 0}
+
+        def lost_response_urlopen(req, timeout=None):
+            puts["n"] += 1
+            # Storage accepted these bytes; only the response was lost.
+            self.assertEqual(
+                hashlib.md5(req.data).hexdigest(), self.digest)
+            raise fq_common.urllib.error.URLError("response lost")
+
+        resume = {"filename": "import.sql", "etag": self.digest,
+                  "size": len(self.sql.encode())}
+        with mock.patch.object(
+            fq_common, "http_json", self._resume_http_json(resume, calls)
+        ), mock.patch.object(
+            fq_common.urllib.request, "urlopen", lost_response_urlopen
+        ):
+            client = fq_common.D1Client("token", "acct")
+            result = client.import_sql("db-id", self.sql)
+        self.assertEqual(result["status"], "complete")
+        # Exactly one PUT: recovery must not re-upload or duplicate.
+        self.assertEqual(puts["n"], 1)
+        actions = [c[2]["action"] for c in calls]
+        self.assertEqual(actions, ["init", "init", "ingest", "poll"])
+
+    def test_resume_with_mismatched_stored_object_is_retryable_error(self):
+        calls = []
+
+        def lost_response_urlopen(req, timeout=None):
+            raise fq_common.urllib.error.URLError("response lost")
+
+        resume = {"filename": "import.sql", "etag": "0" * 32}
+        with mock.patch.object(
+            fq_common, "http_json", self._resume_http_json(resume, calls)
+        ), mock.patch.object(
+            fq_common.urllib.request, "urlopen", lost_response_urlopen
+        ):
+            client = fq_common.D1Client("token", "acct")
+            with self.assertRaises(RuntimeError) as ctx:
+                client.import_sql("db-id", self.sql)
+        self.assertIn("mismatch", str(ctx.exception))
+        self.assertIn("retryable", str(ctx.exception))
+        actions = [c[2]["action"] for c in calls]
+        self.assertNotIn("ingest", actions)
+        self.assertNotIn("poll", actions)
+
+    def test_resume_without_verified_object_is_retryable_not_keyerror(self):
+        calls = []
+
+        def lost_response_urlopen(req, timeout=None):
+            raise fq_common.urllib.error.URLError("response lost")
+
+        with mock.patch.object(
+            fq_common, "http_json", self._resume_http_json({}, calls)
+        ), mock.patch.object(
+            fq_common.urllib.request, "urlopen", lost_response_urlopen
+        ):
+            client = fq_common.D1Client("token", "acct")
+            with self.assertRaises(RuntimeError) as ctx:
+                client.import_sql("db-id", self.sql)
+        self.assertNotIsInstance(ctx.exception, KeyError)
+        self.assertIn("retryable", str(ctx.exception))
+        actions = [c[2]["action"] for c in calls]
+        self.assertNotIn("ingest", actions)
 
 
 if __name__ == "__main__":

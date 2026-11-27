@@ -98,6 +98,7 @@ const SECTION_NAMES = [
   "asks",
   "questionCount",
   "questions",
+  "questionSets",
   "prs",
   "priorities",
   "done",
@@ -1000,6 +1001,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     asks: [] as unknown[],
     questionCount: { total: 0, sets: 0 },
     questions: { open: [] },
+    questionSets: null,
     prs: [],
     priorities: { issues: [], truncated: false },
     done: {
