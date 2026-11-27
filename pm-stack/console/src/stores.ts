@@ -27,7 +27,8 @@ export const STORES_FILE = "pm-stack/platform/stores.json";
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const TABLE = /^[a-z_][a-z0-9_]{0,62}$/;
-const ADDRESS = /^https:\/\/[a-z0-9-]+-dezren39\.aws-[a-z0-9-]+\.turso\.io$/;
+const TURSO_ADDRESS = /^https:\/\/[a-z0-9-]+-dezren39\.aws-[a-z0-9-]+\.turso\.io$/;
+const D1_GATEWAY = "https://d1-gateway.developing-today.workers.dev/db/";
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.trim() !== "" && value.length <= max ? value : null;
 const textList = (value: unknown, max: number, item: RegExp | null): string[] | null => {
@@ -47,7 +48,12 @@ export function storeRow(value: unknown): StoreRow | null {
   const usedBy = textList(v.used_by, 120, null);
   const tables = textList(v.tables, 63, TABLE);
   if (typeof v.name !== "string" || !NAME.test(v.name) || !title || !does || !token || !usedBy || !tables) return null;
-  if (typeof v.address !== "string" || !ADDRESS.test(v.address)) return null;
+  if (
+    typeof v.address !== "string" ||
+    (!TURSO_ADDRESS.test(v.address) && v.address !== `${D1_GATEWAY}${v.name}`)
+  ) {
+    return null;
+  }
   if (v.schema_version !== null && v.schema_version !== undefined && text(v.schema_version, 200) === null) return null;
   return {
     name: v.name,
