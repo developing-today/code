@@ -15695,6 +15695,8 @@ mod presentation_policy_tests {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod template_roles_tests {
     //! The world's stored D5 template role definitions (#8282 slice 6):
     //! the journal entry, its version requirement, restore and
