@@ -149,12 +149,27 @@ fn test_cli_parse_compact_retention() {
                     if retain_recent == crate::commands::compact::DEFAULT_RETAIN_RECENT
             ));
             let cli = Cli::try_parse_from([
-                "id", "--event-store", "events", "compact", "--retain-recent", "0", "--json",
-            ]).unwrap();
+                "id",
+                "--event-store",
+                "events",
+                "compact",
+                "--retain-recent",
+                "0",
+                "--json",
+            ])
+            .unwrap();
             assert_eq!(cli.event_store, Some(std::path::PathBuf::from("events")));
-            assert!(matches!(cli.command, Some(Command::Compact { json: true, retain_recent: 0 })));
+            assert!(matches!(
+                cli.command,
+                Some(Command::Compact {
+                    json: true,
+                    retain_recent: 0
+                })
+            ));
             for invalid in ["-1", "not-a-number", "4294967296"] {
-                assert!(Cli::try_parse_from(["id", "compact", "--retain-recent", invalid]).is_err());
+                assert!(
+                    Cli::try_parse_from(["id", "compact", "--retain-recent", invalid]).is_err()
+                );
             }
         })
         .unwrap()

@@ -763,7 +763,10 @@ fn conversion_receipt_carries_the_offer_legs_and_outcome() {
         .expect("quote issues");
     let quoted = present(&fx.euro_issuer, &auth, Some(42));
     let signed_receipt = convert(&mut fx, 22, 1_000, &quoted).expect("quoted conversion posts");
-    assert!(verify_receipt(&fx.gateway_vk, &signed_receipt.signed_receipt));
+    assert!(verify_receipt(
+        &fx.gateway_vk,
+        &signed_receipt.signed_receipt
+    ));
 
     let intents = fx.svc.intents().all().expect("intents read");
     let intent = intents

@@ -42,13 +42,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use tokio_rustls::{TlsConnector, client::TlsStream};
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{client_async, tungstenite::client::IntoClientRequest, WebSocketStream};
+use tokio_tungstenite::{WebSocketStream, client_async, tungstenite::client::IntoClientRequest};
 
 use super::serve_proxy::{Frame, FrameDecoder, FrameType, MAX_FRAME_BODY};
 use super::serve_proxy_mux::StreamIdMap;
