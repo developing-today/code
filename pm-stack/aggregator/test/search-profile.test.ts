@@ -21,7 +21,7 @@
 // command and compare.
 
 import { describe, expect, test } from "bun:test";
-import type { RefKey } from "../src/model.ts";
+import type { BoardItem, RefKey, RoadmapRow } from "../src/model.ts";
 import { searchWork } from "../src/search-view.ts";
 import { median, parseProfileArgs, summarize, type MeasureRecord } from "../scripts/search-profile.ts";
 
@@ -141,7 +141,7 @@ describe("summarize", () => {
 
 describe("searchWork — stable fixture response", () => {
   const ref = "developing-today/code#14060" as RefKey;
-  const board = [
+  const board: BoardItem[] = [
     {
       id: "kaneo:pm-stack/task-9",
       title: "Bound the search read path",
@@ -151,7 +151,7 @@ describe("searchWork — stable fixture response", () => {
       links: [{ ref, relation: "implements" as const }],
     },
   ];
-  const rows = [
+  const rows: RoadmapRow[] = [
     {
       id: 9,
       subject: "grist:program/roadmap/9",

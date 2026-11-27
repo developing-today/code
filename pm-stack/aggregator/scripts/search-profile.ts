@@ -228,6 +228,7 @@ async function grabFreePort(): Promise<number> {
   const stub = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
   const port = stub.port;
   stub.stop(true);
+  if (port === undefined) throw new Error("search-profile: Bun did not allocate a port");
   return port;
 }
 

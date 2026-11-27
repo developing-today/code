@@ -91,16 +91,15 @@ describe("search registry candidate bound (#15785)", () => {
       title: `session title ${i}`,
       agentId: "opencode",
       agentLabel: "OpenCode",
+      parentId: null,
       status: "completed",
       model: "fixture-model",
       directory: `/workspace/session-${i}`,
       taskRefs: [],
     }));
-    const args = [[], [], new Map<RefKey, GhItem>()] as const;
-
     // The first call builds any snapshot-level search data. The next
     // query must use that data instead of walking all 28,479 records.
-    const expected = searchWork(...args, "needle", { registry });
+    const expected = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
     expect(expected.map((result) => result.id)).toEqual(matchingIds.map((i) => `needle-session-${i}`));
 
     let visited = 0;
@@ -115,7 +114,7 @@ describe("search registry candidate bound (#15785)", () => {
       },
     });
 
-    const actual = searchWork(...args, "needle", { registry });
+    const actual = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
     expect(actual).toEqual(expected);
     expect(visited).toBeLessThanOrEqual(64);
   });
