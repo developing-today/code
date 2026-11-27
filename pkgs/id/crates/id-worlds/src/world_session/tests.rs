@@ -181,7 +181,7 @@ mod tests {
         );
         let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
         let peer = Peer::connect_hub_with_account(
-            WorldHub::single(WorldService::new(world, None)),
+            WorldHub::single(WorldService::new(world.clone(), None)),
             SessionConfig::default(),
             Some("acct-ada".to_owned()),
         );

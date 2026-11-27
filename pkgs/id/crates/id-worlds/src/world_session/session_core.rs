@@ -593,6 +593,7 @@ async fn query_session<I: SessionIo>(
                     agent_profile,
                     device_input,
                     documents_store.clone(),
+                    caller_account.clone(),
                 )
                 .await;
                 return;
