@@ -61,6 +61,16 @@ impl Sensitivity {
         })
     }
 
+    /// Parse an explicitly rung-typed published label (#13506 stage 2):
+    /// the legacy ceiling spellings or the canonical ladder names.
+    /// Only `chunks` / `session_labels` (and rung-typed record fields
+    /// derived from them) take this path. Staging tier fields keep the
+    /// strict [`Sensitivity::from_name`] (via `Tier`), so the unversioned
+    /// staging tier word `internal` never reads as the canonical rung.
+    pub fn from_published_name(name: &str) -> Option<Sensitivity> {
+        Sensitivity::from_ceiling_name(name)
+    }
+
     pub fn name(self) -> &'static str {
         SENS_ORDER[self as usize]
     }
@@ -76,6 +86,18 @@ impl Sensitivity {
     /// `SENS_ORDER[:index+1]`).
     pub fn allowed(self) -> Vec<&'static str> {
         SENS_ORDER[..=self as usize].to_vec()
+    }
+
+    /// Every stored spelling a ceiling admits from explicitly rung-typed
+    /// published labels (#13506 stage 2): legacy + canonical per rung.
+    /// SQL `IN` sets bind this; emitted values still use [`Sensitivity::name`].
+    pub fn allowed_published(self) -> Vec<&'static str> {
+        let mut out = Vec::with_capacity(2 * (self as usize + 1));
+        for i in 0..=self as usize {
+            out.push(SENS_ORDER[i]);
+            out.push(CANONICAL_SENS_ORDER[i]);
+        }
+        out
     }
 }
 
@@ -201,6 +223,13 @@ impl Filters {
         self.max_sensitivity.allowed()
     }
 
+    /// Stored spellings admitted from published labels (#13506 stage 2).
+    /// All corpus query builders bind this; `allowed_sens` stays legacy
+    /// for parity checks. Staging tier reads never take this path.
+    pub fn allowed_published_sens(&self) -> Vec<&'static str> {
+        self.max_sensitivity.allowed_published()
+    }
+
     fn joins(&self, shape: BackendShape) -> String {
         format!(
             "JOIN messages m ON m.id = c.message_id \
@@ -215,7 +244,7 @@ impl Filters {
     pub fn where_clause(&self, shape: BackendShape) -> (String, Vec<Value>) {
         let mut clauses: Vec<String> = Vec::new();
         let mut params: Vec<Value> = Vec::new();
-        let allowed = self.allowed_sens();
+        let allowed = self.allowed_published_sens();
         clauses.push(format!(
             "{} IN ({})",
             shape.sens_expr,
@@ -359,7 +388,7 @@ pub fn turso_vector_scan_stmt(
     qvec_json: &str,
     pool: usize,
 ) -> Stmt {
-    let allowed = filters.allowed_sens();
+    let allowed = filters.allowed_published_sens();
     let mut sql = format!(
         "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist \
          FROM {vec_table} v JOIN chunks c ON c.id = v.chunk_id \
@@ -420,7 +449,7 @@ pub fn local_allowed_stmt(shape: BackendShape, filters: &Filters) -> Stmt {
 
 /// Sensitivity half of the Python's `turso_allowed_ids`.
 pub fn turso_allowed_sens_stmt(filters: &Filters) -> Stmt {
-    let allowed = filters.allowed_sens();
+    let allowed = filters.allowed_published_sens();
     Stmt::new(
         format!(
             "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN ({})",
@@ -601,6 +630,61 @@ mod tests {
     }
 
     #[test]
+    fn published_labels_dual_read_without_reinterpreting_staging_tiers() {
+        for (legacy, canonical) in SENS_ORDER.iter().zip(CANONICAL_SENS_ORDER) {
+            let rung = Sensitivity::from_name(legacy).expect("legacy spelling");
+            assert_eq!(Sensitivity::from_published_name(legacy), Some(rung));
+            assert_eq!(Sensitivity::from_published_name(canonical), Some(rung));
+            assert_eq!(Sensitivity::from_name(canonical), None);
+        }
+        // The corpus-tier word is not accepted as a strict sensitivity label.
+        assert_eq!(Sensitivity::from_name("internal"), None);
+        assert_eq!(Sensitivity::from_published_name("secret"), None);
+        assert_eq!(
+            crate::shards::Tier::parse("internal"),
+            Some(crate::shards::Tier::Internal)
+        );
+        assert_eq!(crate::shards::Tier::parse("personal"), None);
+    }
+
+    #[test]
+    fn published_filter_spellings_stop_at_each_ceiling_boundary() {
+        let expected = [
+            vec!["shareable", "public"],
+            vec!["shareable", "public", "personal", "internal"],
+            vec![
+                "shareable",
+                "public",
+                "personal",
+                "internal",
+                "local-only",
+                "private",
+            ],
+            vec![
+                "shareable",
+                "public",
+                "personal",
+                "internal",
+                "local-only",
+                "private",
+                "secret-bearing",
+                "sensitive",
+            ],
+        ];
+        for (rung, expected) in [
+            Sensitivity::Shareable,
+            Sensitivity::Personal,
+            Sensitivity::LocalOnly,
+            Sensitivity::SecretBearing,
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(rung.allowed_published(), expected);
+        }
+    }
+
+    #[test]
     fn canonical_names_are_ceilings_but_not_stored_labels() {
         for (legacy, canonical) in SENS_ORDER.iter().zip(CANONICAL_SENS_ORDER) {
             let rung = Sensitivity::from_name(legacy).expect("legacy name");
@@ -617,7 +701,10 @@ mod tests {
         let filters =
             Filters::new(vec![], vec![], vec![], vec![], "internal", None, None).expect("filters");
         assert_eq!(filters.max_sensitivity, Sensitivity::Personal);
-        assert_eq!(filters.max_sensitivity.allowed(), vec!["shareable", "personal"]);
+        assert_eq!(
+            filters.max_sensitivity.allowed(),
+            vec!["shareable", "personal"]
+        );
         assert_eq!(filters.max_sensitivity.name(), "personal");
     }
 
@@ -699,10 +786,15 @@ mod tests {
     fn where_clause_default_ceiling() {
         let f = default_filters();
         let (sql, params) = f.where_clause(TURSO_SHAPE);
-        assert_eq!(sql, "c.sensitivity IN (?,?)");
+        assert_eq!(sql, "c.sensitivity IN (?,?,?,?)");
         assert_eq!(
             params,
-            vec![Value::text("shareable"), Value::text("personal")]
+            vec![
+                Value::text("shareable"),
+                Value::text("public"),
+                Value::text("personal"),
+                Value::text("internal"),
+            ]
         );
     }
 
@@ -758,7 +850,7 @@ mod tests {
                 .any(|sql| sql == "l2.projects LIKE ? ESCAPE '\\'")
         );
         assert_eq!(
-            &where_params[2..],
+            &where_params[4..],
             &[Value::text(r#"%"my\_topic"%"#), Value::text(r#"%"\%"%"#)]
         );
         assert_eq!(

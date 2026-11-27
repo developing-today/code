@@ -1,6 +1,6 @@
 # Design: renaming the sensitivity ladder in code
 
-> **Partly shipped.** Stage 1 below is in the code. Stages 2 to 4 are a plan, and the open question at the end is not settled here. Tracking: #13506.
+> **Stages 1–2 shipped.** Stage 1 accepts canonical names as ceiling input; stage 2 dual-reads explicitly rung-typed published labels. Stages 3–4 remain planned. The staging-tier distinction is settled by the decision on #13506. Tracking: #13506.
 
 The sensitivity ladder's canonical names are `public < internal < private < sensitive`. The code still spells the rungs `shareable`, `personal`, `local-only` and `secret-bearing`, and those spellings are not only identifiers: they are stored labels in the corpus and staging databases, values in service and user configuration, CLI arguments, and fields on the wire. A one-step rename of the enum variants and their serde spellings would make every existing database, config and script unreadable. The rename therefore moves through four stages, each safe to ship on its own.
 
@@ -29,9 +29,9 @@ A stored label is a fact about a chunk. Staging databases already store the corp
 
 Consumers outside this package that pass a ceiling through (`fleet search --max-sensitivity`, the Worker and MCP pinned ceiling strings, `pkgs/id`, `pkgs/mcpx`, `pkgs/note-submission`, the pm-stack aggregator) keep working unchanged and can switch to the canonical names at any time after stage 1 is deployed.
 
-## Stage 2: dual-read stored labels, behind the open question
+## Stage 2: dual-read stored labels (shipped)
 
-Teach the label readers to accept canonical ceiling labels in the published `chunks` and `session_labels` columns, and have SQL filters bind both spellings for each admitted rung. This stage must wait for the one-ladder-or-two decision below, because it is exactly where the tier word `internal` and the ceiling name `internal` meet.
+Teach label readers to accept canonical names only in explicitly rung-typed published `chunks.sensitivity` and `session_labels.sensitivity`, and have SQL filters bind both spellings for each admitted rung. This does not change the strict `Tier::parse` path for staging-tier fields: the unversioned tier word `internal` continues to mean the physical internal corpus tier, never the canonical personal ceiling rung. Rust and Python search/classification readers use the dual-read; emitted values remain legacy until stage 4. The chosen two-vocabulary interpretation is recorded in the #13506 decision.
 
 ## Stage 3: migrate stored labels
 
@@ -41,6 +41,6 @@ An explicit, reversible migration rewrites published labels from legacy to canon
 
 Switch emitted JSON (`max_sensitivity`, `effective_ceiling`, per-hit `sensitivity`), the CLI help and default spelling, and the MCP tool descriptions to the canonical names, with a documented date. Keep accepting legacy input for at least one release after that, then retire it. The Rust enum variants can be renamed at this stage with no wire effect.
 
-## Open question: one ladder or two
+## Decision: two vocabularies
 
-After the rename, the ceiling ladder (`public < internal < private < sensitive`) shares the names `public` and `internal` with the corpus-tier vocabulary (`public / internal / secret`), whose `internal` tier spans two ceiling rungs. Whether the end state is one unified ladder or two vocabularies that share two names is a decision for the design owner. Stage 1 does not depend on it; stage 2 does.
+The ceiling ladder (`public < internal < private < sensitive`) and corpus-tier vocabulary (`public / internal / secret`) remain distinct, even though they share two names. The corpus-tier `internal` spans the `personal` and `local-only` ceiling rungs. Consequently, stage 2 accepts canonical names only in explicitly rung-typed published labels and does not reinterpret unversioned staging-tier values. See the decision comment on #13506 for rationale and the conditions required before any future unification.
