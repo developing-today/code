@@ -179,6 +179,48 @@ test.describe("Navigation", () => {
     // Regression (#15146): the row anchor collapsed to zero width when
     // crowded metadata left no flex space (truncate implies min-width 0).
     const row = page.locator(`.file-item[data-name="${fileName}"]`);
+    // TEMP-DIAG(#15146, oc-code-04): ground-truth layout for the hidden
+    // anchor. Removed before merge; the assertions below are the regression.
+    console.log(
+      "created-file row layout:",
+      await row.evaluate((element) => {
+        const describe = (node: Element | null) => {
+          if (!node || !(node instanceof HTMLElement)) return null;
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return {
+            tag: node.tagName,
+            className: String(node.className).slice(0, 160),
+            display: style.display,
+            visibility: style.visibility,
+            position: style.position,
+            overflow: style.overflow,
+            flex: style.flex,
+            minWidth: style.minWidth,
+            rect: `${rect.x.toFixed(1)},${rect.y.toFixed(1)},${rect.width.toFixed(1)},${rect.height.toFixed(1)}`,
+          };
+        };
+        const el = element as HTMLElement;
+        const rowRect = el.getBoundingClientRect();
+        return {
+          kind: el.getAttribute("data-kind"),
+          rowRect: `${rowRect.width.toFixed(1)}x${rowRect.height.toFixed(1)}`,
+          rowClient: `${el.clientWidth}x${el.clientHeight}`,
+          rowScroll: `${el.scrollWidth}x${el.scrollHeight}`,
+          viewport: `${window.innerWidth}x${window.innerHeight}`,
+          children: Array.from(el.children).map(describe),
+          anchorChain: (() => {
+            const chain: Array<ReturnType<typeof describe>> = [];
+            let node: HTMLElement | null = el.querySelector("a");
+            for (; node; node = node.parentElement) {
+              chain.push(describe(node));
+              if (node === el) break;
+            }
+            return chain;
+          })(),
+        };
+      }),
+    );
     await expect(row).toHaveAttribute("data-kind", "primary");
     await expect(row).toBeVisible();
     await expect(row.locator("a")).toBeVisible();
