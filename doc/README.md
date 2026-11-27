@@ -313,6 +313,8 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Cold-store nightly backup: as-built design and operating contract](2026-11-24T05-54-02Z_design_cold-store-nightly/2026-11-24T05-54-02Z_design_cold-store-nightly.md) — nine-point as-built design for #8833: daily D1/Turso Drive backups, verified Turso reconstruction, isolated nightly stages, retention, security boundaries, acceptance evidence, and the distinction from the broader proposed R2/bundling layout.
 - [design(#9068): 9-point sufficient-design record for design-spawn backfill](2026-11-24_design_id9068_design-spawn-backfill.md) — design record, PR #14159 (2026-11-24).
 - [Semantic cell/tag presentation model](2026-11-24T05-55-23Z_design_semantic-cell-tags/2026-11-24T05-55-23Z_design_semantic-cell-tags.md) — design record for #6010 (slice 1 under #13873): one tagged state with kind/identity/flags/tags, vocabulary v1 + extension rule, per-tier rendering obligations, inventory→spec→tests→pilot slices; no implementation authorized.
+- [Lane census — past 24 hours (2026-11-26)](2026-11-27T04-40-00Z_report_lane-census-24h/README.md) — 24-hour census of every lane system (window 2026-11-26T04:10Z → 2026-11-27T04:10Z): queue ledger 1,887 terminal events (1,706 completed / 24 failed / 157 cancelled); Muse work-loop lanes ≈549 lane instances, 160 PRs merged and 73 issues closed; OpenCode sessions 1,603 created (64.6% succeeded, 33.1% errored); Codex lanes 132 attributable completions with no failed-status tasks. Four slices inside (A Codex lanes, B OpenCode sessions, C Muse work-loop with per-lane parts, D queue ledger), including the Codex trigger mechanism and per-failure cause analysis.
+
 
 ## Legacy places
 
