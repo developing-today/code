@@ -72,7 +72,7 @@ The unix socket stays filesystem-permission authentication: 0600, owner-only. A 
 ### 2.7.2 Tool-call ceiling enforcement
 
 - `auth.capabilityCeilings` defaults to three named policies: `full` allows all upstream tools (including the legacy transport-token identity), while `discovery` and `admin` allow no upstream tool calls.
-- The daemon resolves the authenticated key's named ceiling and checks its `namespace:tool` allowlist in each registry call entry point before invoking an upstream tool. A missing policy, unknown ceiling, malformed JSON, duplicate ceiling name, or denied tool fails closed with a permission refusal. Anonymous calls keep their existing behavior.
+- The daemon resolves the authenticated key's named ceiling and checks its `namespace:tool` allowlist in each registry call entry point before invoking an upstream tool. A local MCP request that re-enters the daemon preserves its validated key for the nested call. A missing policy, unknown ceiling, malformed JSON, duplicate ceiling name, or denied tool fails closed with a permission refusal. Anonymous calls keep their existing behavior.
 - This slice does not implement namespace filtering, quota charging, program invocation policy, or front-door mapping.
 
 ### 2.8 Non-goals
