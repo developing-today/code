@@ -32,6 +32,12 @@ import os
 import pathlib
 import sys
 
+# The workflow runs this file with `python3 -I`, whose isolated mode
+# keeps the script's own directory off sys.path; the sibling module
+# below is this directory's, so name it explicitly (as test_apply.py
+# does). Without this the Actions apply job dies at the import.
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+
 import cloudflare as expose
 
 
