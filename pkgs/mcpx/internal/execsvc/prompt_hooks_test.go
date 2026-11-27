@@ -47,7 +47,10 @@ func TestValidateHooksPromptActions(t *testing.T) {
 		{"prompt on error", Hook{Phase: HookOnError, Prompt: "what failed: @error"}, ""},
 		{"both actions", Hook{Phase: HookBefore, Script: "x.ts", Prompt: "look"}, "both script and prompt"},
 		{"neither action", Hook{Phase: HookBefore}, "neither script nor prompt"},
-		{"prompt effect apply", Hook{Phase: HookOnSuccess, Prompt: "fix it", Effect: "apply"}, "not implemented"},
+		{"prompt apply on success", Hook{Phase: HookOnSuccess, Prompt: "fix it", Effect: "apply"}, ""},
+		{"prompt apply on error", Hook{Phase: HookOnError, Prompt: "fix it", Effect: "apply"}, ""},
+		{"prompt apply before", Hook{Phase: HookBefore, Prompt: "fix it", Effect: "apply"}, "only available"},
+		{"prompt apply suffix", Hook{Phase: HookSuffix, Prompt: "fix it", Effect: "apply"}, "only available"},
 		{"prompt effect ask on success", Hook{Phase: HookOnSuccess, Prompt: "ask me", Effect: "ask"}, "only available"},
 		{"prompt ask before", Hook{Phase: HookBefore, Prompt: "ask me", Effect: "ask"}, ""},
 		{"prompt ask suffix", Hook{Phase: HookSuffix, Prompt: "ask me", Effect: "ask"}, "only available"},
@@ -593,5 +596,128 @@ func TestRunHooksAskFrameRetainedAndResultIdentical(t *testing.T) {
 	after, _ := json.Marshal(res.Result)
 	if string(before) != string(after) {
 		t.Fatalf("result changed: %s -> %s", before, after)
+	}
+}
+
+// Oracle for the apply slice (#15845): a prompt apply hook is the
+// prompt analogue of script apply (hooks_test.go's apply semantics,
+// replayed through the prompt path). The reply's `apply` value is
+// honoured through applyHookResult: onSuccess replaces the result
+// with the original in the frame; keys above apply are dropped and
+// named; the apply system text frames the generation.
+func TestRunHooksPromptApplyOnSuccessReplacesResult(t *testing.T) {
+	fake := &fakeProvider{text: `{"apply": {"total": 4}, "run": "rm -rf /"}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	var frames []Frame
+	runs := s.runHooks(context.Background(), HookOnSuccess,
+		[]Hook{{Phase: HookOnSuccess, Prompt: "fix @result", Effect: "apply"}},
+		hctx, runner.Options{}, res, func(f Frame) { frames = append(frames, f) })
+	if len(runs) != 1 || runs[0].Failed {
+		t.Fatalf("runs = %+v", runs)
+	}
+	if got := res.Result.(map[string]any)["total"]; got != float64(4) {
+		t.Fatalf("result = %v, want the apply value 4", res.Result)
+	}
+	if len(res.Hooks) != 1 || !res.Hooks[0].Changed {
+		t.Fatalf("retained hooks = %+v, want one changed frame", res.Hooks)
+	}
+	var orig map[string]any
+	if err := json.Unmarshal(res.Hooks[0].Original, &orig); err != nil || orig["total"] != float64(3) {
+		t.Fatalf("frame original = %s (%v), want the replaced result", res.Hooks[0].Original, err)
+	}
+	if len(res.Hooks[0].Dropped) != 1 || res.Hooks[0].Dropped[0] != "run" {
+		t.Fatalf("frame dropped = %v, want [run]", res.Hooks[0].Dropped)
+	}
+	if len(frames) != 1 || frames[0].Hook == nil || !frames[0].Hook.Changed {
+		t.Fatalf("emitted frames = %+v", frames)
+	}
+	if !strings.Contains(fake.last.Messages[0].Content, "replaces the value the caller receives") ||
+		!strings.Contains(fake.last.Messages[0].Content, `"apply"`) {
+		t.Fatalf("apply system text not used: %q", fake.last.Messages[0].Content)
+	}
+}
+
+// At onError the replacement clears the error and the exit code,
+// mirroring script apply semantics.
+func TestRunHooksPromptApplyOnErrorReplacesErrorWithResult(t *testing.T) {
+	fake := &fakeProvider{text: `{"apply": {"recovered": true}}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Error: "it broke", ExitCode: 1, Artifacts: []Artifact{}}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnError}
+	s.runHooks(context.Background(), HookOnError,
+		[]Hook{{Phase: HookOnError, Prompt: "recover from @error", Effect: "apply"}},
+		hctx, runner.Options{}, res, func(Frame) {})
+	if res.Error != "" || res.ExitCode != 0 {
+		t.Fatalf("error/exit = %q/%d, want cleared by the replacement", res.Error, res.ExitCode)
+	}
+	if got := res.Result.(map[string]any)["recovered"]; got != true {
+		t.Fatalf("result = %v, want the apply value", res.Result)
+	}
+	if len(res.Hooks) != 1 || !res.Hooks[0].Changed ||
+		!strings.Contains(string(res.Hooks[0].Original), "it broke") {
+		t.Fatalf("frame must carry the replaced error as its original: %+v", res.Hooks)
+	}
+}
+
+// A non-JSON reply, a bare JSON value, and a keyless object all
+// apply nothing: the run is unchanged and the reason is recorded
+// in the frame.
+func TestRunHooksPromptApplyUnusableReplyAppliesNothing(t *testing.T) {
+	for _, reply := range []string{"just fix it", `42`, `{"propose": {"total": 4}}`, `{"run": "x"}`} {
+		fake := &fakeProvider{text: reply}
+		s := &Service{ModelProvider: fake}
+		res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
+		hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+		s.runHooks(context.Background(), HookOnSuccess,
+			[]Hook{{Phase: HookOnSuccess, Prompt: "fix @result", Effect: "apply"}},
+			hctx, runner.Options{}, res, func(Frame) {})
+		if got := res.Result.(map[string]any)["total"]; got != 3 {
+			t.Fatalf("reply %q changed the result: %v", reply, res.Result)
+		}
+		if len(res.Hooks) != 1 || res.Hooks[0].Changed ||
+			!strings.Contains(res.Hooks[0].Error, "applied nothing") {
+			t.Fatalf("reply %q: frame = %+v, want unchanged with the reason recorded", reply, res.Hooks)
+		}
+	}
+}
+
+// No provider: apply keeps prompt hooks' fail-soft contract — the
+// frame states the replacement is unavailable and the run is
+// unchanged.
+func TestRunPromptHookApplyNoProvider(t *testing.T) {
+	s := &Service{}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	run := s.runPromptHook(context.Background(), HookOnSuccess,
+		Hook{Phase: HookOnSuccess, Prompt: "fix it", Effect: "apply"}, hctx, runner.Options{}, res)
+	if !run.Failed || !strings.Contains(run.Frame.Error, "replacement unavailable: no model provider is configured") {
+		t.Fatalf("run = %+v", run)
+	}
+	if res.Result != "ok" {
+		t.Fatalf("result changed by unavailable apply hook: %v", res.Result)
+	}
+}
+
+// Composition: an apply prompt hook after a script hook sees the
+// script hook's transformed value (the runHooks context-refresh
+// rule), and its own replacement is what the caller receives.
+func TestRunHooksPromptApplyAfterScriptHookSeesTransformedValue(t *testing.T) {
+	fake := &fakeProvider{text: `{"apply": {"total": 11}}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	s.runHooks(context.Background(), HookOnSuccess,
+		[]Hook{
+			{Phase: HookOnSuccess, Script: `console.log(JSON.stringify({ apply: { total: 10 } }));`},
+			{Phase: HookOnSuccess, Prompt: "fix @result", Effect: "apply"},
+		},
+		hctx, runner.Options{}, res, func(Frame) {})
+	if !strings.Contains(fake.last.Messages[1].Content, `"total":10`) {
+		t.Fatalf("prompt hook did not see the script hook's transformed value: %q", fake.last.Messages[1].Content)
+	}
+	if got := res.Result.(map[string]any)["total"]; got != float64(11) {
+		t.Fatalf("result = %v, want the prompt hook's replacement 11", res.Result)
 	}
 }
