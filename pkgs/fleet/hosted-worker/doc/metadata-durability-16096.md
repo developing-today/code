@@ -24,7 +24,8 @@ Issue #16096's module-scope-fixture evidence predates #15456. The existing
   create remains 201 with `metadata_inserted: false`, then the same Worker
   heals through backfill after database recovery, without a second GitHub
   create. The healed JSON survives a connection close/reopen.
-- **Unverified:** live D1 readback and deployed version identity. Authenticated
+- **Unverified:** live D1 row readback and deployment of this recovery fix
+  (the existing adapter deployment is confirmed below). Authenticated
   create traffic must remain disabled until the readback below is recorded.
   This slice changes no auth configuration, secrets, deployment, or bindings.
 

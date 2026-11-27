@@ -274,15 +274,23 @@ test("stamp issue and PR → database close/reopen → fresh Worker query and ba
   }),
 );
 
-for (const failure of ["schema", "insert"] as const) {
+for (const failure of ["schema", "index", "insert"] as const) {
   test(`D1 ${failure} failure preserves GitHub create and heals in the same Worker and after restart`,
     withRestartableDb(async (restart) => {
       const db = restart();
       let failing = true;
       const faulty: D1DatabaseLike = {
         prepare(sql: string) {
+          if (failing && failure === "index" && sql.startsWith("CREATE INDEX IF NOT EXISTS fleet_metadata_binding")) {
+            // A real D1 RPC rejects asynchronously, after table DDL succeeded.
+            return {
+              bind() { return this; },
+              async all() { throw new Error("unexpected row read"); },
+              async run() { throw new Error("forced D1 index outage"); },
+            };
+          }
           if (failing && (failure === "schema" ? sql.startsWith("CREATE TABLE IF NOT EXISTS fleet_metadata")
-            : sql.startsWith("INSERT INTO fleet_metadata"))) {
+            : failure === "insert" && sql.startsWith("INSERT INTO fleet_metadata"))) {
             throw new Error(`forced D1 ${failure} outage`);
           }
           return db.prepare(sql);

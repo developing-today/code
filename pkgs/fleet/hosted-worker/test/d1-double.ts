@@ -46,7 +46,7 @@ export class FakeD1Database implements D1DatabaseLike {
 }
 
 /** Reopen the actual file, closing the previous connection. No JS store or
- * connection survives restart; only SQLite's committed bytes do. */
+ * connection is reused after restart; reads use only SQLite's committed bytes. */
 export function withRestartableDb(fn: (restart: () => FakeD1Database) => Promise<void>): () => Promise<void> {
   return async () => {
     const dir = mkdtempSync(join(tmpdir(), "fleet-d1-restart-"));
