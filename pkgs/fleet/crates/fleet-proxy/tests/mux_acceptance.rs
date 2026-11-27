@@ -152,7 +152,8 @@ fn spawn_loopback(handler: StreamHandler) -> Loopback {
         })),
     );
     let reader_session = client.clone();
-    let reader_thread = thread::spawn(move || reader_session.run(client_reader, originator_handler()));
+    let reader_thread =
+        thread::spawn(move || reader_session.run(client_reader, originator_handler()));
 
     Loopback {
         client,
@@ -232,8 +233,7 @@ fn acceptance_warm_trivial_exec_p50() {
     let _ = trivial_roundtrip(&pair.client, Some("warmup".to_string()));
     let mut samples = Vec::with_capacity(50);
     for i in 0..50 {
-        let (elapsed, echo) =
-            trivial_roundtrip(&pair.client, Some(format!("warm-{i:02}")));
+        let (elapsed, echo) = trivial_roundtrip(&pair.client, Some(format!("warm-{i:02}")));
         assert_eq!(echo.as_deref(), Some(format!("warm-{i:02}").as_str()));
         samples.push(elapsed.as_micros());
     }
@@ -247,7 +247,11 @@ fn acceptance_warm_trivial_exec_p50() {
         p50 <= 50_000,
         "warm trivial exec p50 {p50}µs exceeds the §6 50 ms bound even on loopback"
     );
-    assert_eq!(seen.lock().unwrap().len(), 51, "every open reached the terminator");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        51,
+        "every open reached the terminator"
+    );
     pair.join();
 }
 
@@ -286,10 +290,15 @@ fn acceptance_concurrent_128_zero_failures() {
     let p50 = percentile(samples, 50.0);
     metric(
         "concurrent_128",
-        &format!("\"n\":128,\"failures\":{failures},\"trip_mismatches\":{mismatches},\"wall_ms\":{wall_ms},\"p50_us\":{p50},\"baseline_wall_ms\":14600"),
+        &format!(
+            "\"n\":128,\"failures\":{failures},\"trip_mismatches\":{mismatches},\"wall_ms\":{wall_ms},\"p50_us\":{p50},\"baseline_wall_ms\":14600"
+        ),
     );
     assert_eq!(failures, 0, "128 concurrent: no request may fail");
-    assert_eq!(mismatches, 0, "128 concurrent: every trip must echo to its caller");
+    assert_eq!(
+        mismatches, 0,
+        "128 concurrent: every trip must echo to its caller"
+    );
     assert!(
         wall_ms <= 14_600,
         "128 concurrent wall {wall_ms}ms exceeds the §6 14.6 s ramp baseline"
@@ -326,7 +335,12 @@ fn acceptance_failure_recovery_within_2s() {
                 stream.send_chunk(b"ping").expect("send");
                 stream.close_send().expect("close send");
                 match stream.read_to_fin(1 << 20) {
-                    Ok(_) => (trip, StreamError::Reset { reason: "unexpected-ok".to_string() }),
+                    Ok(_) => (
+                        trip,
+                        StreamError::Reset {
+                            reason: "unexpected-ok".to_string(),
+                        },
+                    ),
                     Err(e) => (trip, e),
                 }
             })
@@ -378,9 +392,15 @@ fn acceptance_failure_recovery_within_2s() {
     let total_ms = kill_at.elapsed().as_millis();
     metric(
         "failure_recovery",
-        &format!("\"inflight\":8,\"fail_elapsed_ms\":{fail_elapsed_ms},\"slow\":{slow},\"wrong_trip\":{wrong_trip},\"unexpected\":{unexpected},\"recovered\":{recovered},\"recover_roundtrip_us\":{},\"total_ms\":{total_ms},\"threshold_ms\":2000", elapsed.as_micros()),
+        &format!(
+            "\"inflight\":8,\"fail_elapsed_ms\":{fail_elapsed_ms},\"slow\":{slow},\"wrong_trip\":{wrong_trip},\"unexpected\":{unexpected},\"recovered\":{recovered},\"recover_roundtrip_us\":{},\"total_ms\":{total_ms},\"threshold_ms\":2000",
+            elapsed.as_micros()
+        ),
     );
-    assert_eq!(unexpected, 0, "in-flight streams must fail as tunnel-lost, not otherwise");
+    assert_eq!(
+        unexpected, 0,
+        "in-flight streams must fail as tunnel-lost, not otherwise"
+    );
     assert_eq!(wrong_trip, 0, "every failed stream keeps its own trip id");
     assert_eq!(slow, 0, "fail-fast must land within the §6 2 s bound");
     assert!(recovered, "a fresh tunnel must serve again after the kill");
@@ -418,8 +438,14 @@ fn acceptance_trip_correlation_both_sides() {
         "trip_correlation",
         &format!("\"n\":{},\"matched\":{matched}", sent.len()),
     );
-    assert_eq!(seen_sorted, sent_sorted, "terminator saw exactly the trips sent");
-    assert_eq!(echoed_sorted, sent_sorted, "every echo matches the trip sent");
+    assert_eq!(
+        seen_sorted, sent_sorted,
+        "terminator saw exactly the trips sent"
+    );
+    assert_eq!(
+        echoed_sorted, sent_sorted,
+        "every echo matches the trip sent"
+    );
     // The tripless stream correlates as absence on both sides.
     let mut counts: HashMap<Option<String>, usize> = HashMap::new();
     for t in &echoed {
