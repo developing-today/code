@@ -32,6 +32,7 @@ mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
 mod mode_report;
+pub(crate) mod placement_emit;
 mod support;
 mod transport;
 mod verify_disposition;
