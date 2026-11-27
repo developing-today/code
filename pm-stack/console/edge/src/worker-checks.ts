@@ -182,6 +182,23 @@ export function selfCheck(name: string, version: string | undefined, askedAt: nu
   };
 }
 
+/** One scheduled round, without the runtime around it: resolve the
+ * configured bindings to targets, ask each, and add the edge's own
+ * record. The stateless part's `scheduled` handler runs this and
+ * hands the set to the object to keep; the console tests run it
+ * with stand-in bindings, which is the scheduled path exercised. */
+export async function runCheckRound(
+  resolve: (binding: string) => WorkerBinding | undefined,
+  edgeName: string,
+  version: string | undefined,
+  askedAt: number,
+): Promise<WorkerCheckSet> {
+  const set = await probeWorkers(workerCheckTargets(resolve), askedAt);
+  set.checks.push(selfCheck(edgeName, version, askedAt));
+  set.checks.sort((a, b) => a.name.localeCompare(b.name));
+  return set;
+}
+
 /** Read a stored set back, or null when what is stored is not one:
  * the store is written by this code, but an object that outlives a
  * change of shape must not hand the health answer a shape it cannot

@@ -10,7 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
-import { probeWorkers, selfCheck, workerCheckTargets, type WorkerBinding } from "./worker-checks.ts";
+import { runCheckRound, type WorkerBinding } from "./worker-checks.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -311,10 +311,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const askedAt = Date.now();
     const byBinding = env as unknown as Record<string, WorkerBinding | undefined>;
-    const targets = workerCheckTargets((binding) => byBinding[binding]);
-    const set = await probeWorkers(targets, askedAt);
-    set.checks.push(selfCheck("pm-console-edge", env.VERSION, askedAt));
-    set.checks.sort((a, b) => a.name.localeCompare(b.name));
+    const set = await runCheckRound((binding) => byBinding[binding], "pm-console-edge", env.VERSION, askedAt);
     const stub = env.PM.get(env.PM.idFromName("pm"));
     ctx.waitUntil(
       stub.fetch(
