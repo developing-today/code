@@ -167,6 +167,7 @@ interface Harness {
   deps: CollectorDeps;
   requests: { boardId: string; authorization: string | null; ifNoneMatch: string | null }[];
   mintedOrgs: string[];
+  notifications: { boardId: string; snapshotId: string }[];
   storages: Map<string, MemoryIngestStorage>;
   setHandler: (boardId: string, handler: ((ifNoneMatch: string | null) => Response) | null) => void;
   setNow: (iso: string) => void;
@@ -175,6 +176,7 @@ interface Harness {
 function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): Harness {
   const requests: Harness["requests"] = [];
   const mintedOrgs: string[] = [];
+  const notifications: Harness["notifications"] = [];
   const storages = new Map<string, MemoryIngestStorage>();
   const dos = new Map<string, IngestDO>();
   const handlers = new Map<string, ((ifNoneMatch: string | null) => Response) | null>();
@@ -220,10 +222,14 @@ function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): 
         }
         return entry;
       },
+      boardDoFor: (boardId) => ({
+        snapshotLanded: async (snapshotId) => { notifications.push({ boardId, snapshotId }); },
+      }),
       now: () => nowValue,
     },
     requests,
     mintedOrgs,
+    notifications,
     storages,
     setHandler: (boardId, handler) => handlers.set(boardId, handler),
     setNow: (iso) => {
@@ -288,6 +294,10 @@ describe("hosted collector (#12826)", () => {
 
     expect(report.landedBoardIds).toEqual(["devtoday-main", "forks-main"]);
     expect(report.failedBoardIds).toEqual([]);
+    expect(h.notifications).toEqual([
+      { boardId: "devtoday-main", snapshotId: `snap-devtoday-main-${T1}` },
+      { boardId: "forks-main", snapshotId: `snap-forks-main-${T1}` },
+    ]);
     // Tokens are minted per run, per board org, through the tenancy seam.
     expect(h.mintedOrgs).toEqual(["developing-today", "developing-today-forks"]);
     expect(h.requests.map((r) => r.authorization)).toEqual([

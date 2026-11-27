@@ -40,6 +40,19 @@
 //! service by account first, then by key: across accounts, a heavy
 //! account queues behind a light one; within one account the
 //! per-key order above is unchanged.
+//!
+//! A permit is also a turn, not only a whole call (#15577). An
+//! admitted call that burns for a long time offers its permit back
+//! at each scheduling quantum ([`GuestBurnPermit::yield_turn`],
+//! driven by the sandbox's epoch tick): the fuel it spent so far is
+//! settled, the call rejoins the queue under the same grant rule,
+//! and it carries on at once if it is still first in line. So a
+//! spinner that holds a permit no longer makes a light world wait
+//! for its whole fuel budget; the light world waits about one
+//! quantum. The scheduler stays work-conserving — a yield with no
+//! one waiting ahead of it costs a lock and nothing else — and
+//! starvation-free, since every turn charges the yielder and the
+//! least-attained waiter goes next.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -75,6 +88,9 @@ pub struct GuestBurnKeySnapshot {
     /// Total fuel settled by this key's calls (actual spend; the
     /// full allowance for a call that never settled).
     pub settled_fuel: u64,
+    /// Times a call of this key gave its permit to a waiter at a
+    /// quantum boundary and queued to finish ([`GuestBurnPermit::yield_turn`]).
+    pub yields: u64,
 }
 
 /// A point-in-time read of one budget's counters.
@@ -102,6 +118,7 @@ struct KeyCharge {
     admitted: u64,
     waits: u64,
     settled_fuel: u64,
+    yields: u64,
     /// Decayed attained service (fuel) as of `attained_at`.
     attained: f64,
     attained_at: Option<Instant>,
@@ -318,37 +335,85 @@ impl GuestBurnBudget {
         {
             Self::admit(&mut state, key, account);
         } else {
-            let ticket = state.next_ticket;
-            state.next_ticket += 1;
             state.key_mut(key).waits += 1;
             state.account_mut(account).waits += 1;
-            state.waiters.push_back(Waiter {
-                ticket,
-                key: key.to_owned(),
-                account: account.to_owned(),
-            });
-            loop {
-                if state.in_flight < self.max_concurrent
-                    && state.account_has_room(account)
-                    && state.next_grant(Instant::now()) == Some(ticket)
-                {
-                    state.waiters.retain(|waiter| waiter.ticket != ticket);
-                    Self::admit(&mut state, key, account);
-                    break;
-                }
-                state = self
-                    .available
-                    .wait(state)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
+            let ticket = Self::enqueue(&mut state, key, account);
+            let mut state = self.wait_for_grant(state, account, ticket);
+            Self::admit(&mut state, key, account);
         }
         GuestBurnPermit {
             budget: Arc::clone(self),
             key: key.to_owned(),
             account: account.to_owned(),
             fuel_allowance,
+            charged: 0,
             settled: false,
         }
+    }
+
+    /// Queue a waiter for `key` and `account`, returning its ticket.
+    fn enqueue(state: &mut BudgetState, key: &str, account: &str) -> u64 {
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
+        state.waiters.push_back(Waiter {
+            ticket,
+            key: key.to_owned(),
+            account: account.to_owned(),
+        });
+        ticket
+    }
+
+    /// Block until the queued `ticket` is entitled to a permit, then
+    /// take it off the queue. The caller admits it.
+    fn wait_for_grant<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, BudgetState>,
+        account: &str,
+        ticket: u64,
+    ) -> MutexGuard<'a, BudgetState> {
+        loop {
+            if state.in_flight < self.max_concurrent
+                && state.account_has_room(account)
+                && state.next_grant(Instant::now()) == Some(ticket)
+            {
+                state.waiters.retain(|waiter| waiter.ticket != ticket);
+                return state;
+            }
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// End one turn of an admitted call at a quantum boundary: charge
+    /// `fuel` (spent since the turn began), give the permit up, and
+    /// take it back under the grant rule. Returns whether another
+    /// call ran in between. With no waiter ahead, the call keeps its
+    /// permit without waiting.
+    fn yield_turn(&self, key: &str, account: &str, fuel: u64) -> bool {
+        let mut state = self.lock_state();
+        let now = Instant::now();
+        state.in_flight = state.in_flight.saturating_sub(1);
+        let charge = state.key_mut(key);
+        charge.in_flight = charge.in_flight.saturating_sub(1);
+        charge.settle(fuel, now);
+        let charge = state.account_mut(account);
+        charge.in_flight = charge.in_flight.saturating_sub(1);
+        charge.settle(fuel, now);
+        let ticket = Self::enqueue(&mut state, key, account);
+        let yielded = state.next_grant(now) != Some(ticket);
+        if yielded {
+            state.key_mut(key).yields += 1;
+            state.account_mut(account).yields += 1;
+            self.available.notify_all();
+        }
+        let mut state = self.wait_for_grant(state, account, ticket);
+        state.in_flight += 1;
+        state.in_flight_max = state.in_flight_max.max(state.in_flight);
+        state.key_mut(key).in_flight += 1;
+        state.account_mut(account).in_flight += 1;
+        yielded
     }
 
     fn admit(state: &mut BudgetState, key: &str, account: &str) {
@@ -390,6 +455,7 @@ impl GuestBurnBudget {
                             admitted: charge.admitted,
                             waits: charge.waits,
                             settled_fuel: charge.settled_fuel,
+                            yields: charge.yields,
                         },
                     )
                 })
@@ -421,6 +487,9 @@ pub struct GuestBurnPermit {
     key: String,
     account: String,
     fuel_allowance: u64,
+    /// Fuel already settled at earlier turn boundaries
+    /// ([`Self::yield_turn`]); the final settlement charges the rest.
+    charged: u64,
     settled: bool,
 }
 
@@ -437,17 +506,37 @@ impl std::fmt::Debug for GuestBurnPermit {
 
 impl GuestBurnPermit {
     /// Record the call's actual spent fuel and release the permit.
+    /// Fuel already charged at turn boundaries is not charged again.
     pub fn settle(mut self, fuel_spent: u64) {
-        self.budget.release(&self.key, &self.account, fuel_spent);
+        self.budget.release(
+            &self.key,
+            &self.account,
+            fuel_spent.saturating_sub(self.charged),
+        );
         self.settled = true;
+    }
+
+    /// A quantum boundary inside the call: `fuel_spent` is the call's
+    /// spend so far. The spend since the last boundary is charged,
+    /// and the permit goes to a waiter the grant rule puts ahead of
+    /// this call, which then queues to finish (#15577). Returns
+    /// whether it gave way. The call's own work is untouched: it
+    /// resumes exactly where it stopped, with the same fuel.
+    pub fn yield_turn(&mut self, fuel_spent: u64) -> bool {
+        let fuel = fuel_spent.saturating_sub(self.charged);
+        self.charged = self.charged.max(fuel_spent);
+        self.budget.yield_turn(&self.key, &self.account, fuel)
     }
 }
 
 impl Drop for GuestBurnPermit {
     fn drop(&mut self) {
         if !self.settled {
-            self.budget
-                .release(&self.key, &self.account, self.fuel_allowance);
+            self.budget.release(
+                &self.key,
+                &self.account,
+                self.fuel_allowance.saturating_sub(self.charged),
+            );
         }
     }
 }
@@ -543,6 +632,74 @@ mod tests {
         assert_eq!(snapshot.keys["waiter"].admitted, 1);
         assert_eq!(snapshot.keys["waiter"].waits, 1);
         assert_eq!(snapshot.in_flight, 0);
+    }
+
+    #[test]
+    fn a_turn_with_no_one_waiting_keeps_the_permit() {
+        // #15577: a quantum boundary is free when nobody queues: the
+        // call keeps its permit, its spend so far is charged once, and
+        // the final settlement charges only the rest.
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        let mut permit = budget.acquire("spinner", 1_000);
+        assert!(!permit.yield_turn(100));
+        assert!(!permit.yield_turn(250));
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight, 1);
+        assert_eq!(snapshot.keys["spinner"].settled_fuel, 250);
+        assert_eq!(snapshot.keys["spinner"].yields, 0);
+        permit.settle(400);
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight, 0);
+        assert_eq!(snapshot.keys["spinner"].settled_fuel, 400);
+        assert_eq!(snapshot.keys["spinner"].admitted, 1);
+    }
+
+    #[test]
+    fn a_turn_boundary_hands_the_permit_to_a_lighter_waiter() {
+        // #15577: a spinner holding the only permit gives it to a
+        // waiting light call at its next quantum boundary, instead of
+        // keeping it for its whole fuel budget, and then finishes.
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        let mut spinner = budget.acquire("spinner", 1_000_000);
+        let victim_budget = Arc::clone(&budget);
+        let victim = thread::spawn(move || {
+            victim_budget.acquire("victim", 10).settle(10);
+        });
+        wait_until(|| budget.waiting() == 1);
+        let spinner = thread::spawn(move || {
+            let gave_way = spinner.yield_turn(5_000);
+            spinner.settle(9_000);
+            gave_way
+        });
+        victim.join().unwrap();
+        assert!(spinner.join().unwrap(), "the spinner gave way");
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight, 0);
+        assert_eq!(snapshot.in_flight_max, 1, "the bound held throughout");
+        assert_eq!(snapshot.keys["spinner"].yields, 1);
+        assert_eq!(snapshot.keys["spinner"].settled_fuel, 9_000);
+        assert_eq!(snapshot.keys["spinner"].admitted, 1);
+        assert_eq!(snapshot.keys["victim"].settled_fuel, 10);
+    }
+
+    #[test]
+    fn a_heavier_waiter_does_not_take_the_turn_of_a_lighter_holder() {
+        // #15577: the boundary uses the grant rule, not round-robin: a
+        // waiter with more attained service than the holder waits for
+        // the holder's call to end.
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        budget.acquire("heavy", 0).settle(10_000_000);
+        let mut light = budget.acquire("light", 1_000);
+        let heavy_budget = Arc::clone(&budget);
+        let heavy = thread::spawn(move || {
+            heavy_budget.acquire("heavy", 10).settle(10);
+        });
+        wait_until(|| budget.waiting() == 1);
+        assert!(!light.yield_turn(10));
+        assert_eq!(budget.waiting(), 1, "the heavy call still waits");
+        light.settle(20);
+        heavy.join().unwrap();
+        assert_eq!(budget.snapshot().keys["light"].yields, 0);
     }
 
     #[test]

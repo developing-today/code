@@ -712,6 +712,57 @@ func TestTransportBearerTokenGatesTheDaemon(t *testing.T) {
 	}
 }
 
+// auth.mode governs per-user daemon keys (#13659). Under required, a
+// raw TCP caller with no credential is refused 401 with a Bearer
+// challenge, and so is one presenting an mcpx key the store does not
+// hold; the owner's unix socket needs no key, so the CLI (which reaches
+// the daemon over the socket) and a raw socket caller keep working.
+// Under the default (off), the same raw TCP caller is served.
+func TestAuthModeRequiredGatesTCPButNotTheSocket(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_AUTH_MODE=required")
+	e.run("ls")
+	ep := endpointOf(t, e)
+	req, err := http.NewRequest(http.MethodGet, ep+"/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("required: an unauthenticated TCP caller should be refused 401, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("required: the 401 should carry a Bearer challenge, got %q", resp.Header.Get("WWW-Authenticate"))
+	}
+	unknown := daemon.KeyPrefix + strings.Repeat("A", 43)
+	if code, body := getWith(t, ep+"/v1/health", map[string]string{"Authorization": "Bearer " + unknown}); code != http.StatusUnauthorized {
+		t.Fatalf("required: an unknown key should be refused 401, got %d: %s", code, body)
+	} else if strings.Contains(body, unknown) {
+		t.Fatalf("the refusal echoes the presented key: %s", body)
+	}
+	sock, err := e.socketClient(t).Get("http://mcpx/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sock.Body.Close()
+	if sock.StatusCode != http.StatusOK {
+		t.Fatalf("required: the owner's socket should need no key, got %d", sock.StatusCode)
+	}
+	if out := e.run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("the CLI should keep working over the socket under auth.mode=required:\n%s", out)
+	}
+
+	open := newEnv(t, oneServer)
+	open.run("ls")
+	if code, _ := getWith(t, endpointOf(t, open)+"/v1/health", nil); code != http.StatusOK {
+		t.Fatalf("oracle: with auth.mode unset a raw TCP caller should be served, got %d", code)
+	}
+}
+
 // transport.allowedOrigins is the list of browser origins, beyond
 // loopback, that may reach the daemon. The with/without is the
 // setting itself: the same origin is refused 403 against a daemon

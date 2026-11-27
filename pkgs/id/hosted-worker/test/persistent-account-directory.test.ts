@@ -138,6 +138,37 @@ test("concurrent persistent signups for one subject preserve exactly one row", a
   }
 });
 
+test("a signup racing a legacy inventory leaves the subject in one table", async () => {
+  // Both calls pass their advisory cross-table read before either
+  // writes; the conditional inserts must still let only one land (#15661).
+  for (const signupFirst of [true, false]) {
+    const { db, directory: accountDirectory } = await createTestDirectory();
+    try {
+      const signup = () =>
+        accountDirectory.signup({ subjectKey: "subject-both", bindingId: BINDING, jurisdiction: "us" });
+      const inventory = () =>
+        accountDirectory.inventoryLegacy({ subjectKey: "subject-both", bindingId: OTHER_BINDING });
+      const results = await Promise.allSettled(signupFirst ? [signup(), inventory()] : [inventory(), signup()]);
+      const fulfilled = results.filter((result) => result.status === "fulfilled");
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+      assert.ok(rejected[0].reason instanceof FailClosed);
+      assert.ok(
+        ["legacy_subject_requires_migration", "legacy_subject_already_registered"].includes(
+          rejected[0].reason.code,
+        ),
+        String(rejected[0].reason.code),
+      );
+      const validated = db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count;
+      const legacy = db.prepare("SELECT COUNT(*) AS count FROM legacy_hosted_accounts").get()?.count;
+      assert.equal(Number(validated) + Number(legacy), 1);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test("persistent signup rejects conflicting subject and binding mappings", async () => {
   const { db, directory: accountDirectory } = await createTestDirectory();
   try {
@@ -584,4 +615,18 @@ test("transitions refuse steps out of order, foreign migration ids and bad targe
   } finally {
     db.close();
   }
+});
+
+test("hosted README discloses the shared directory residency exception and its limits", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+
+  // Oracle: the disclosure checklist in the jurisdiction-aware store design
+  // requires the shared D1 exception, the pseudonymous-data caveat, and the
+  // separate KV, logging, request-processing, and backup residency gaps.
+  assert.match(readme, /single\s+shared durable-directory residency exception/i);
+  assert.match(readme, /hashed subject.{0,40}potentially personal data/i);
+  assert.match(readme, /KV caches/i);
+  assert.match(readme, /logs/i);
+  assert.match(readme, /request\s+processing/i);
+  assert.match(readme, /backup\s+placement/i);
 });

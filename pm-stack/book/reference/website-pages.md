@@ -8,7 +8,7 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 - **What it is:** The stack front door (#1134): needs-you, projects, quotas, and health at a glance. Manifest group Overview, `nav: primary`.
 - **Inputs:** None recorded in the survey. Machine twin: `/api/overview.json`.
-- **Behaviour:** The landing page of the dashboard; the item detail and discuss sub-routes (below) name it as their parent.
+- **Behaviour:** The landing page of the dashboard; the item detail and discuss sub-routes (below) name it as their parent. In-progress and blocked counts here are board-derived work items, not fleet queue tasks — the console Now page counts the queue broker's live tasks instead (same words, different source). The Needs-you count is the NEEDS USER intake queue, not the console's need-you set (open questions plus hands, reviews, escalated).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/today` — Today
@@ -29,7 +29,7 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 - **What it is:** The attention queue: NEEDS USER against NEEDS ORCHESTRATOR, and every live session. Manifest group Overview, `nav: primary`.
 - **Inputs:** Machine twin: `/api/attention.json`. Fragments exist under `/frag/attention/*` (recorded in a comment at the `/attention` branch of `server.ts`).
-- **Behaviour:** The page the needs-Drew and blocked-age push notifications land on, anchored to the item acted on.
+- **Behaviour:** The page the needs-Drew and blocked-age push notifications land on, anchored to the item acted on. This is the NEEDS USER intake queue the orchestrator works first — different from the console's need-you set (open questions plus hands, reviews, escalated); each surface names its own source (#14063).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/decisions` — Decision sets
@@ -44,7 +44,7 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 - **What it is:** Review report versions and resolve prose conflicts without overwriting stored text. Manifest group Work, `nav: dropdown`.
 - **Inputs:** Machine twin: `/api/reports.json`. Writes: `POST /api/reports/resolve` and `POST /api/reports/late-update`.
-- **Behaviour:** A conflict resolves by choosing a stored version; the stored text itself is not overwritten.
+- **Behaviour:** A conflict resolves by choosing a stored version; the stored text itself is not overwritten. This is the aggregator's `/reports` route, distinct from the console's on-demand prose reports at `#more/reports` (see [The console, view by view](console-views.md)).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/board` — Board
@@ -135,7 +135,7 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 - **What it is:** In progress, blocked, recently completed, and next-up work across projects. Manifest group Work, `nav: primary`.
 - **Inputs:** Machine twin: `/api/queue.json`. Fragment form: `/frag/queue`. Orchestration twin: `/api/orchestration.json`.
-- **Behaviour:** A projection of queue state across projects; the queue itself is covered in the fleet book at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/).
+- **Behaviour:** A projection of queue state across projects; the queue itself is covered in the fleet book at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/). Rows are board-derived work items (board card dedupe: one row per work item, issue-first), not fleet queue tasks — the console Now page counts the queue broker's live tasks instead (same words, different source, #14063).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/health` — Health

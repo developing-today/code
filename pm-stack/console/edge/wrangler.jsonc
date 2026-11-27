@@ -31,7 +31,17 @@
   // sends the owner's messages through it with the PM stack's own
   // bridge credential, and reads the agents list and the message log
   // from it, instead of waiting for a machine's fleet binary.
-  "services": [{ "binding": "BRIDGE", "service": "message-bridge" }],
+  "services": [
+    { "binding": "BRIDGE", "service": "message-bridge" },
+    // The platform's Workers the edge checks on its schedule (#15793):
+    // asked by binding for the commit each was deployed from, the
+    // answers kept by the object and shown in its health answer.
+    { "binding": "PM_SERVICE", "service": "pm-service" },
+    { "binding": "DECISION_EVENTS", "service": "decision-events" }
+  ],
+  // The Worker checks above run on this trigger (#15793); registered
+  // in doc/fleet-schedule-registry.md (Surface 7).
+  "triggers": { "crons": ["*/15 * * * *"] },
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
   // linked phones. Three secrets are optional, put there by

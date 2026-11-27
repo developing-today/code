@@ -98,9 +98,7 @@ describe("decodeViewPatchAsync", () => {
 
   /** Raw-DEFLATE (RFC 1951) via the platform compressor. */
   async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
-    const stream = new Blob([bytes as BlobPart])
-      .stream()
-      .pipeThrough(new CompressionStream("deflate-raw"));
+    const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream("deflate-raw"));
     const out = new Uint8Array(await new Response(stream).arrayBuffer());
     return out;
   }

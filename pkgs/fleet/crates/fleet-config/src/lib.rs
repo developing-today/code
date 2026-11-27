@@ -122,6 +122,31 @@ pub struct GhConfig {
     /// rule. On the laptop itself localhost IS the laptop, so the
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
+    /// Additional GitHub Apps, declared without a fleet binary
+    /// change (code#10311 ask (b)). Existing built-in Apps remain
+    /// available; configured entries extend them by slug.
+    #[serde(default)]
+    pub apps: Vec<GhAppConfig>,
+}
+
+/// A GitHub App credential source declared in `[[gh.apps]]`.
+/// Exactly one of `app_id` and `app_id_secret` must be set. The
+/// private key is always resolved by name through fleet-secrets;
+/// key material is never stored in this config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhAppConfig {
+    /// Stable rotation slug, used by `FLEET_GH_ORDER` and cache requests.
+    pub slug: String,
+    /// Public GitHub App ID, when not resolved from fleet-secrets.
+    pub app_id: Option<u64>,
+    /// Secret name containing the GitHub App ID.
+    pub app_id_secret: Option<String>,
+    /// Secret name containing the App's private key.
+    pub key_secret: String,
+    /// Default owners whose installations may be used.
+    #[serde(default)]
+    pub owners: Vec<String>,
 }
 /// `[bridge]` — the message bridge's fleet mailboxes (`fleet
 /// bridge`). Everything is optional: the URL defaults to
@@ -153,6 +178,54 @@ pub struct BridgeConfig {
 pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
 pub const DEFAULT_BRIDGE_OWNER_TOKEN_NAME: &str = "message-bridge.access-token";
 pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
+
+/// Pass-1 tool endpoint sections (design mill #10389, pass 1 #10390):
+/// `[opencode]`, `[openchamber]`, `[id]` and `[mcpx]`. All optional:
+/// with no section fleet falls through to the tool's standard local
+/// endpoint. Resolution order for every tool is flag → this setting →
+/// env (`FLEET_<TOOL>_ENDPOINT`) → standard local endpoint (see
+/// [`resolve_tool_endpoint`]). The standard endpoints themselves are
+/// still TBD pending per-service confirmation — the next slice fills
+/// them in; this slice lands the mechanism plus its tests.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolEndpointConfig {
+    /// Explicit endpoint (`host[:port]`, socket path or base URL);
+    /// overrides the standard local endpoint for this tool.
+    pub endpoint: Option<String>,
+}
+
+/// Env var holding an explicit OpenCode endpoint (between the
+/// `[opencode]` setting and the standard local endpoint).
+pub const OPENCODE_ENDPOINT_ENV: &str = "FLEET_OPENCODE_ENDPOINT";
+/// Env var holding an explicit OpenChamber endpoint.
+pub const OPENCHAMBER_ENDPOINT_ENV: &str = "FLEET_OPENCHAMBER_ENDPOINT";
+/// Env var holding an explicit ID-tool endpoint.
+pub const FLEET_ID_ENDPOINT_ENV: &str = "FLEET_ID_ENDPOINT";
+/// Env var holding an explicit mcpx endpoint.
+pub const MCPX_ENDPOINT_ENV: &str = "FLEET_MCPX_ENDPOINT";
+
+/// Resolve one pass-1 tool endpoint in flag → setting → env → standard
+/// order (#10390). Blank levels (empty or whitespace-only) count as
+/// unset; the first non-blank wins, else `standard`. Values pass
+/// through byte-for-byte (no trimming of the winner). Pure function
+/// so the precedence is unit-testable; callers read the env var
+/// themselves.
+pub fn resolve_tool_endpoint(
+    flag: Option<&str>,
+    setting: Option<&str>,
+    env: Option<&str>,
+    standard: &str,
+) -> String {
+    for candidate in [flag, setting, env] {
+        if let Some(value) = candidate {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    standard.to_string()
+}
 
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
@@ -400,6 +473,14 @@ pub struct Config {
     /// (fleet mailboxes): URL, this host's agent name and groups,
     /// and the secret names its tokens resolve under.
     pub bridge: BridgeConfig,
+    /// `[opencode]` — pass-1 endpoint view for OpenCode (#10390).
+    pub opencode: ToolEndpointConfig,
+    /// `[openchamber]` — pass-1 endpoint view for OpenChamber (#10390).
+    pub openchamber: ToolEndpointConfig,
+    /// `[id]` — pass-1 endpoint view for the ID tool (#10390).
+    pub id: ToolEndpointConfig,
+    /// `[mcpx]` — pass-1 endpoint view for mcpx (#10390).
+    pub mcpx: ToolEndpointConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -951,6 +1032,55 @@ impl Config {
                     path: path.to_path_buf(),
                     message: format!(
                         "{field} must not be empty or blank; omit the field for the default"
+                    ),
+                });
+            }
+        }
+        // [[gh.apps]] (#10311 ask (b)): these records are a
+        // credential-source schema, so reject ambiguous ID sources,
+        // built-in slug collisions and blank secret/owner fields at
+        // config load rather than silently shadowing a rotation leg.
+        let mut gh_app_slugs = std::collections::BTreeSet::new();
+        for (index, app) in self.gh.apps.iter().enumerate() {
+            let row = index + 1;
+            let slug_valid = !app.slug.is_empty()
+                && app
+                    .slug
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !slug_valid || matches!(app.slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} has an invalid or reserved slug; use lowercase letters, digits and hyphens, excluding app, devtoday and backup"
+                    ),
+                });
+            }
+            if !gh_app_slugs.insert(app.slug.as_str()) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!("[[gh.apps]] row {row} duplicates an App slug"),
+                });
+            }
+            if app.app_id.is_some() == app.app_id_secret.is_some() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} must set exactly one of app_id or app_id_secret"
+                    ),
+                });
+            }
+            if app.key_secret.trim().is_empty()
+                || app
+                    .app_id_secret
+                    .as_deref()
+                    .is_some_and(|name| name.trim().is_empty())
+                || app.owners.iter().any(|owner| owner.trim().is_empty())
+            {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[gh.apps]] row {row} secret names and owners must not be empty or blank"
                     ),
                 });
             }
@@ -1714,10 +1844,103 @@ mod tests {
     }
 
     #[test]
+    fn gh_configured_apps_parse_and_validate_sources() {
+        // Oracle: a configured App has a stable slug, exactly one
+        // App-ID source, a secret name for its private key and
+        // default owners; duplicate/reserved slugs and ambiguous
+        // IDs are rejected at config load.
+        let (_dir, path) = write_temp(
+            "[[gh.apps]]\nslug = \"backup-next\"\napp_id_secret = \"github.backup-next.id\"\nkey_secret = \"github.backup-next.key\"\nowners = [\"developing-today\", \"layercloud\"]\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.gh.apps.len(), 1);
+        assert_eq!(cfg.gh.apps[0].slug, "backup-next");
+        assert_eq!(cfg.gh.apps[0].app_id, None);
+        assert_eq!(
+            cfg.gh.apps[0].app_id_secret.as_deref(),
+            Some("github.backup-next.id")
+        );
+        assert_eq!(cfg.gh.apps[0].key_secret, "github.backup-next.key");
+        assert_eq!(cfg.gh.apps[0].owners, ["developing-today", "layercloud"]);
+
+        for (contents, expected) in [
+            (
+                "[[gh.apps]]\nslug = \"app\"\napp_id = 1\nkey_secret = \"key\"\n",
+                "invalid or reserved slug",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id = 1\napp_id_secret = \"id\"\nkey_secret = \"key\"\n",
+                "exactly one of app_id or app_id_secret",
+            ),
+            (
+                "[[gh.apps]]\nslug = \"extra\"\napp_id_secret = \"id\"\nkey_secret = \"key\"\n\n[[gh.apps]]\nslug = \"extra\"\napp_id = 2\nkey_secret = \"key2\"\n",
+                "duplicates an App slug",
+            ),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(expected), "{message}");
+                }
+                other => panic!("expected Parse error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn missing_file_is_defaults() {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn tool_endpoint_resolution_is_flag_then_setting_then_env_then_standard() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(None, None, None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(None, None, Some("http://env:1"), std),
+            "http://env:1"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(None, Some("http://file:2"), Some("http://env:1"), std),
+            "http://file:2"
+        );
+        assert_eq!(
+            resolve_tool_endpoint(
+                Some("http://flag:3"),
+                Some("http://file:2"),
+                Some("http://env:1"),
+                std
+            ),
+            "http://flag:3"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_blank_levels_count_as_unset() {
+        let std = "http://127.0.0.1:9999";
+        assert_eq!(resolve_tool_endpoint(Some("  "), Some(""), None, std), std);
+        assert_eq!(
+            resolve_tool_endpoint(Some("  "), Some("http://file:2"), None, std),
+            "http://file:2"
+        );
+    }
+
+    #[test]
+    fn tool_endpoint_sections_default_to_unset_and_parse() {
+        let cfg = Config::default();
+        assert!(cfg.opencode.endpoint.is_none());
+        assert!(cfg.openchamber.endpoint.is_none());
+        assert!(cfg.id.endpoint.is_none());
+        assert!(cfg.mcpx.endpoint.is_none());
+        let (_dir, path) = write_temp("[opencode]\nendpoint = \"http://127.0.0.1:4096\"\n");
+        let cfg = Config::load_from(path.as_path()).unwrap();
+        assert_eq!(
+            cfg.opencode.endpoint.as_deref(),
+            Some("http://127.0.0.1:4096")
+        );
+        assert!(cfg.mcpx.endpoint.is_none());
     }
 
     #[test]

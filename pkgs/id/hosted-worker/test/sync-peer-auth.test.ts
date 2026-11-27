@@ -73,7 +73,7 @@ function makeDO() {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return { doA: new UserDO(state as never, { BLOBS: bucket } as never), bucket, sql };
+  return { doA: new UserDO(state as never, { BLOBS_US: bucket } as never), bucket, sql };
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {
@@ -123,6 +123,56 @@ test("sync session: key-based peer auth works with no bearer credential sent", a
   assert.equal(pushReq.headers.get("authorization"), null);
   const push = await doA.fetch(pushReq);
   assert.equal(push.status, 200);
+
+  // The same author publishing a different event at sequence zero is
+  // a fork. The hosted peer must preserve both branches and surface a
+  // durable conflict report, matching BridgeStore's fork semantics.
+  const rival: SignedEvent = await signEvent(author, {
+    seq: 0,
+    backlink: null,
+    kind: "message",
+    body: new TextEncoder().encode("forked author"),
+  });
+  const rivalBatch = encodeBatch([rival.bytes]);
+  const rivalNonce = await challenge(doA, key.publicHex);
+  const rivalProof = await proofHeaders(key, rivalNonce, "push", rivalBatch);
+  const rivalPush = await doA.fetch(
+    routed("/v1/bridge/push", key.publicHex, {
+      method: "POST",
+      headers: rivalProof,
+      body: rivalBatch as BodyInit,
+    }),
+  );
+  assert.equal(rivalPush.status, 200);
+  const rivalResult = (await rivalPush.json()) as {
+    outcomes: { kind: string }[];
+    conflicts: { author: string; seq: number; event_ids: string[] }[];
+  };
+  assert.equal(rivalResult.outcomes[0].kind, "fork");
+  assert.equal(rivalResult.conflicts.length, 1);
+  assert.equal(rivalResult.conflicts[0].author, author.publicHex);
+  assert.equal(rivalResult.conflicts[0].seq, 0);
+  assert.equal(rivalResult.conflicts[0].event_ids.length, 2);
+
+  // The signed push response surfaces the conflict report immediately.
+
+  // The hosted ingress gate refuses a tampered signed event before it
+  // reaches the store; malformed outcomes are explicit and not applied.
+  const tampered = new Uint8Array(event.bytes);
+  tampered[tampered.length - 1] ^= 1;
+  const invalidBatch = encodeBatch([tampered]);
+  const invalidNonce = await challenge(doA, key.publicHex);
+  const invalidHeaders = await proofHeaders(key, invalidNonce, "push", invalidBatch);
+  const invalidPush = await doA.fetch(
+    routed("/v1/bridge/push", key.publicHex, {
+      method: "POST",
+      headers: invalidHeaders,
+      body: invalidBatch as BodyInit,
+    }),
+  );
+  const invalidResult = (await invalidPush.json()) as { outcomes: { kind: string; reason?: string }[] };
+  assert.equal(invalidResult.outcomes[0].kind, "refused");
+  assert.equal(invalidResult.outcomes[0].reason, "malformed");
 
   // Heads: same key-auth, still no Authorization header.
   const headsNonce = await challenge(doA, key.publicHex);

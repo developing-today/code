@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 45 public modules, grouped by job
+## The 48 public modules, grouped by job
 
-`lib.rs` declares 45 public modules. Grouped by the job they do:
+`lib.rs` declares 48 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -52,6 +52,7 @@ fixtures recorded from the production Python module.
 
 | Module            | Job                                                                                                                                                                                                                                                                         |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog`         | The hot-side cold catalog: maps explicitly addressed file versions to cold shards and builds search scopes for queries that name cold tiers or shards; default fan-out does not open cold shards                                                                                 |
 | `shards`          | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`)                                                                       |
 | `turso`           | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT`                                                                                                                                          |
 | `local`           | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan                                                                                                                  |
@@ -79,6 +80,7 @@ fixtures recorded from the production Python module.
 | `consumer_preset`    | The attested-only consumer view preset (#13766): a consumer-side selection over one pinned publication — exactly the versions whose batch has a published `attestation.claim`, joined on `batch_id`. Any inconsistency refuses the whole selection rather than returning a partial one |
 | `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                                                                           |
 | `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                                                                                 |
+| `session_stage`     | Shared staging core for conversation-export adapters: retains user-facing messages, chunks text at paragraph boundaries, and stages each message with stable IDs and source metadata                                                                                                                                 |
 | `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                                                                        |
 
 ### Classification
@@ -90,6 +92,7 @@ fixtures recorded from the production Python module.
 | `detect`         | Source detection: passes over plain trees, git trees and row stores, producing a versioned ledger of per-path and per-table verdicts                                                                                                                                                                  |
 | `c8_fingerprint` | The C8 error-investigation fingerprint core: error-string normalisation, fingerprints, occurrence grouping and evidence bundles. Pure types and derivations; no telemetry search                                                                                                                      |
 | `c8_profile`     | The C8 report and page metadata profile: source and page records, typed links and URL sanitising. Likewise seam-independent                                                                                                                                                                           |
+| `remediation`    | The secret-bearing remediation inventory and destination verifier (#8479, #12406): the read-only, no-write half of the classification-model remediation order — inventories reported chunks, maps source to destination with checksums, and verifies the secret-tier destination's content and vectors before any visibility switch; anything unverified is reported explicitly, never treated as safe to purge |
 
 ### Quality
 

@@ -89,6 +89,14 @@ export interface ChainState {
   frozen: boolean;
 }
 
+/** Durable report of a fork the chain store refused to choose between. */
+export interface ConflictReport {
+  id: string;
+  author: string;
+  seq: number;
+  event_ids: [string, string];
+}
+
 export interface HeldEvent {
   author: string;
   seq: number;
@@ -160,6 +168,25 @@ export class BridgeStore {
       const chain = this.chainOf(author);
       return { author, next_seq: chain.next_seq, head: chain.head };
     });
+  }
+
+  /** Open fork reports, reconstructed from the tenant DB's fork proof rows.
+   * No branch is selected: the report names both signed event IDs. */
+  conflictReports(): ConflictReport[] {
+    return this.sql
+      .exec("SELECT author, seq, first_id, second_id FROM bridge_forks ORDER BY author, seq")
+      .toArray()
+      .map((row) => {
+        const author = String(row.author);
+        const seq = Number(row.seq);
+        const event_ids = [String(row.first_id), String(row.second_id)].sort() as [string, string];
+        return {
+          id: `fork:${author}:${seq}:${event_ids[0]}:${event_ids[1]}`,
+          author,
+          seq,
+          event_ids,
+        };
+      });
   }
 
   knownAuthors(): string[] {

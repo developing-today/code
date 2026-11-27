@@ -533,23 +533,27 @@ alias release-force := release-web-force
 [group('build')]
 release-lib-force: release-lib-cargo mark-variant-release-lib
 
-# Run cargo build with web feature (debug)
+# Run cargo build with the web variant's feature set (debug). The set
+# comes from composition/variants.toml (S2 of #14056) via
+# scripts/variant-features.sh -- minus the root defaults, which a
+# defaulted cargo build already enables.
 [group('build')]
 build-web-cargo:
-    cargo build --features web
+    cargo build --features "$(./scripts/variant-features.sh web --minus-defaults)"
 alias build-cargo := build-web-cargo
 
-# Run cargo build without web feature (debug)
+# Run cargo build with the lib variant's feature set (debug): plain
+# `cargo build`, because the lib set equals the root default set.
 [group('build')]
 build-lib-cargo:
     cargo build
 
-# Run cargo build with web feature (release)
+# Run cargo build with the web variant's feature set (release)
 [group('build')]
 release-web-cargo:
-    cargo build --release --features web
+    cargo build --release --features "$(./scripts/variant-features.sh web --minus-defaults)"
 
-# Run cargo build without web feature (release)
+# Run cargo build with the lib variant's feature set (release)
 [group('build')]
 release-lib-cargo:
     cargo build --release

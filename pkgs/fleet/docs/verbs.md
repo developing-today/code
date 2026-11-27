@@ -49,6 +49,7 @@ Client for the repo-queue broker. It supports direct broker transport and the co
 | `link`                | Add, remove, or list normalized issue, pull-request, and task relationships.                                                                                                                     |
 | `dep-recheck`         | Re-evaluate recorded dependency edges.                                                                                                                                                           |
 | `quarantine-recheck`  | Re-evaluate quarantined items.                                                                                                                                                                   |
+| `time-recheck`        | Re-evaluate items blocked until a time; requeue the ones whose time has passed (#14212).                                                                                                         |
 | `repair`              | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                  |
 | `resolution-backfill` | Run the idempotent, evidence-only Q2 terminal-resolution backfill and print its census.                                                                                                          |
 | `cancel`              | Cancel an item.                                                                                                                                                                                  |
@@ -166,7 +167,7 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 | Command                     | Purpose                                                                    |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `tiers`                     | Show token-source rate-limit headroom.                                     |
+| `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
 | `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
 | `cache-status`              | Probe configured token-cache daemons.                                      |
 | `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
@@ -487,6 +488,17 @@ enqueue one command on the session's runner, stream its output,
 exit with the command's exit code (default command timeout
 600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
 form.
+
+`fleet actions exec once [--repo OWNER/REPO] [--target-repo
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar over start+run: find a live
+session for `--repo` in the local store or start one with the
+start path (same #13765 claim, same handoff — new sessions take
+`--lease`, default 1800 s, where start requires `--timeout` by
+construction), run one command, exit with its code (default
+command `--timeout` 600 s). The session stays open for the next
+`once` unless `--close`.
 
 `fleet actions exec attach <ref>` / `fleet actions exec watch
 <ref>` — stream the session's IO after handoff (watch also

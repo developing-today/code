@@ -688,6 +688,12 @@ skipped launcher phases).
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold | `TestArtifactsQuotaBoundsTheStore` |
 | `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected | `TestArtifactsTTLExpiresAnArtifactFromTheEnvironment` |
 
+### auth
+
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `auth.mode` | enum | `off` | daemon | no | `--auth-mode` | `MCPX_AUTH_MODE` | whether the daemon's HTTP surface honours or requires per-user keys | `TestAuthModeRequiredGatesTCPButNotTheSocket` |
+
 ### autonomy
 
 | setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
@@ -732,7 +738,7 @@ skipped launcher phases).
 | `daemon.endpoint` | string | *(empty)* | client | no | `--daemon-endpoint` | `MCPX_DAEMON_ENDPOINT` | a daemon somewhere else, instead of the local socket | `TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment` |
 | `daemon.idleExit` | duration | `0s` | daemon | no | `--daemon-idle-exit`, `--idle-exit` | `MCPX_DAEMON_IDLE_EXIT` | stop the daemon after this long with nothing to do | `TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment` |
 | `daemon.inline` | enum | `off` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process; one of off (also false), fallback (also true), always | `TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment` |
-| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed | Exempt — daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically |
+| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed | `TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment` |
 | `daemon.inlineStartTimeout` | duration | `5s` | client | no | `--daemon-inline-start-timeout` | `MCPX_DAEMON_INLINE_START_TIMEOUT` | *(plumbing)* how long an in-process daemon has to become reachable | `TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment` |
 | `daemon.leaseTTL` | duration | `30m0s` | daemon | yes | `--daemon-lease-ttl` | `MCPX_DAEMON_LEASE_TTL` | *(plumbing)* how long a silent caller's instances are remembered | `TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment` |
 | `daemon.port` | int | `0` | daemon | no | `--daemon-port`, `--port` | `MCPX_DAEMON_PORT` | listen on a TCP port instead of choosing one | `TestDaemonPortBindsTheChosenPortFromTheEnvironment` |

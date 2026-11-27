@@ -27,14 +27,19 @@
 // A prompt, a note or a bug is filed at the edge and only its queue
 // task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
 // the issue is never filed twice.
-import { OpError } from "../../src/errors.ts";
+
+import { executeQueueVerb, nativeQueueEnv } from "../../../../pkgs/fleet/hosted-worker/src/queue.ts";
+import { FixtureQueueStore, type TaskRow } from "../../../../pkgs/fleet/hosted-worker/src/queue-store.ts";
+import type { Json } from "../../../../pkgs/fleet/hosted-worker/src/queue-validate.ts";
 import type { Config } from "../../src/config.ts";
 import type { EdgeConfig } from "../../src/edge-proto.ts";
-import { Ops, type Fetch, type Run, type RunResult } from "../../src/ops.ts";
+import { OpError } from "../../src/errors.ts";
+import { type Fetch, Ops, type Run, type RunResult } from "../../src/ops.ts";
 import { Plan } from "../../src/plan.ts";
 import { timed } from "../../src/timed.ts";
-import { Work } from "../../src/work.ts";
 import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
+import { Work } from "../../src/work.ts";
+import { type DecisionEventsSource, type QuestionsDiscovery, readQuestionSets } from "./questions.ts";
 
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
@@ -50,10 +55,12 @@ export const DIRECT_READ_SECTIONS = [
   "done",
   "agents",
   "pipeline",
+  "questionSets",
 ] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
+  "prompt.enqueue",
   "ask.send",
   "ask.reply",
   "ask.close",
@@ -77,7 +84,7 @@ export const DIRECT_ACTIONS = [
  * before then: it is recorded as the 429 it would have been, and as
  * it was not sent it wrote nothing and GitHub answered nothing. */
 export interface Outward {
-  to: "github" | "queue" | "bridge";
+  to: "github" | "queue" | "bridge" | "worker";
   write: boolean;
   status: number;
   limited?: boolean;
@@ -95,6 +102,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   done: ["queue", "github"],
   agents: ["bridge"],
   pipeline: ["bridge"],
+  questionSets: ["worker"],
 };
 
 export interface DirectSecrets {
@@ -111,6 +119,12 @@ export interface DirectSecrets {
   /** The bridge Worker's fetch: its service binding's, in the Worker.
    * A stand-in in tests. */
   bridgeFetch?: Fetch;
+  /** The decision-events Worker (#13491): where it is and the shared
+   * secret its reads take. With it, the Questions discovery section
+   * (the sets it holds and each set's state) is read here, with no
+   * machine; without it, that section stays a machine's, exactly as
+   * before. The secret is never logged or returned. */
+  decisionEvents?: DecisionEventsSource;
   /** Told of every call made, as it is answered. */
   seen?: (call: Outward) => void;
   /** Where GitHub's API and the queue store are, when a local run puts
@@ -1171,6 +1185,12 @@ export interface DirectClasses {
   work: Work;
   plan: Plan;
   trends: Trends;
+  queueEnqueue(packet: unknown): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** The Questions discovery section (#13491): the decision sets the
+   * decision-events Worker holds, each with its state, read from the
+   * Worker itself. Throws when this edge holds no decision-events
+   * source: the section is then a machine's, as it was before. */
+  questionSets(): Promise<QuestionsDiscovery>;
 }
 
 /** The console's own classes, wired for the edge. They are made once
@@ -1197,11 +1217,312 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
   const ops = new Ops(config, edgeRun(config, options, fetchImpl), options.seen ? queueFetch : fetchImpl);
   const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
   const work = new Work(ops, undefined, clock);
+  const queueEnqueue = async (packet: unknown): Promise<{ code: number; stdout: string; stderr: string }> => {
+    // Only the synchronous verb's read set is staged locally. Decisions about
+    // dedupe, identity, revival and label bands still belong to that verb.
+    const fields = [
+      "queue",
+      "manual_only",
+      "title",
+      "body",
+      "payload",
+      "metadata",
+      "dedupe_key",
+      "priority",
+      "status",
+      "not_before",
+      "worker_id",
+      "claimed_at",
+      "lease_until",
+      "lane_id",
+      "platform",
+      "attempts",
+      "max_attempts",
+      "claim_provider",
+      "claim_model",
+      "claim_variant",
+      "claim_session_id",
+      "progress",
+      "result",
+      "last_error",
+      "park_kind",
+      "wait_kind",
+      "ready_condition",
+      "required_budget_minutes",
+      "last_checked_at",
+      "check_outcome",
+      "created_at",
+      "updated_at",
+      "completed_at",
+      "blocked_deps",
+      "dep_next_recheck_at",
+      "dep_blocked_until",
+      "dep_recheck_seconds",
+    ];
+    const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
+    // SQL NULL is not JSON text "null" (notably for dependency columns).
+    // manual_only is an INTEGER 0/1 on the wire but a boolean in TaskRow.
+    const encode = (name: string, value: unknown): unknown => {
+      if (value == null) return null;
+      if (name === "manual_only") return value === true || value === 1 ? 1 : 0;
+      if (jsonFields.has(name)) return JSON.stringify(value);
+      return value;
+    };
+    const arg = (value: unknown) =>
+      typeof value === "number"
+        ? {
+            type: Number.isInteger(value) ? "integer" : "float",
+            value: Number.isInteger(value) ? String(value) : value,
+          }
+        : value == null
+          ? { type: "null" }
+          : { type: "text", value: String(value) };
+    const stmt = (sql: string, values: unknown[] = []) => ({ sql, args: values.map(arg) });
+    type Cell = { type: string; value?: string | number };
+    type SqlResult = { cols?: { name: string }[]; rows?: Cell[][]; affected_row_count?: number };
+    type BatchResult = { step_results?: (SqlResult | null)[]; step_errors?: ({ message?: string } | null)[] };
+    const pipeline = async (
+      request: unknown,
+      write: boolean,
+    ): Promise<{ result?: SqlResult; resultBatch?: BatchResult }> => {
+      const bearer = options.queueToken ?? "";
+      if (!bearer) throw new Error("queue token is unavailable");
+      const res = await fetchImpl(`${config.queueDbUrl.replace(/\/+$/, "")}/v2/pipeline`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ requests: [request, { type: "close" }] }),
+      }).catch((error: unknown) => {
+        options.seen?.({ to: "queue", write, status: 0 });
+        throw error;
+      });
+      options.seen?.({ to: "queue", write, status: res.status, ...(res.status === 429 ? { limited: true } : {}) });
+      if (!res.ok) throw new Error(`queue store answered http ${res.status}`);
+      const answer = (await res.json()) as {
+        results?: { type?: string; error?: { message?: string }; response?: { result?: SqlResult | BatchResult } }[];
+      };
+      const first = answer.results?.[0];
+      if (first?.type !== "ok" || !first.response?.result) {
+        throw new Error(first?.error?.message ?? "queue store returned an invalid response");
+      }
+      return { result: first.response.result as SqlResult, resultBatch: first.response.result as BatchResult };
+    };
+    const query = async (sql: string, values: unknown[] = []): Promise<Record<string, unknown>[]> => {
+      const { result } = await pipeline({ type: "execute", stmt: stmt(sql, values) }, false);
+      if (!result?.cols || !result.rows) throw new Error("queue store returned no query rows");
+      return result.rows.map((row) =>
+        Object.fromEntries(
+          result.cols!.map((col, i) => {
+            const cell = row[i];
+            if (!cell) throw new Error("queue store returned a short row");
+            if (cell.type === "null") return [col.name, null];
+            if (cell.type === "integer" || cell.type === "float") return [col.name, Number(cell.value)];
+            if (cell.type !== "text" || typeof cell.value !== "string")
+              throw new Error("queue store returned an invalid cell");
+            return [col.name, cell.value];
+          }),
+        ),
+      );
+    };
+    try {
+      const now = Math.floor((options.now?.() ?? Date.now()) / 1000);
+      const env = nativeQueueEnv(() => now);
+      let mirrorRef: { repo: string; number: number } | undefined;
+      let mirrorLabels: string[] | null = null;
+      let mirrorError: unknown;
+      class EnqueueStore extends FixtureQueueStore {
+        constructor(private readonly snapshot: TaskRow[] = []) {
+          super();
+        }
+        override async allTasks(): Promise<TaskRow[]> {
+          return this.snapshot;
+        }
+        override async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
+          // A sentinel, never a real DB id. Event persistence remaps it below.
+          return { ...row, id: -1 };
+        }
+        override async mirrorLabels(repo: string, number: number): Promise<string[] | null> {
+          mirrorRef = { repo, number };
+          if (mirrorError) throw mirrorError;
+          return mirrorLabels;
+        }
+      }
+      const request = { queue: config.queue, packet: packet as Json };
+      // Validation before I/O; dry-run also discovers the mirror lookup using
+      // the verb's own repo/issue fallback rules, rather than a second parser.
+      const dry = await executeQueueVerb(new EnqueueStore(), "enqueue", { ...request, dry_run: true }, env);
+      if (dry.ok !== true) {
+        return { code: Number(dry.exit ?? 2), stdout: "", stderr: String(dry.error ?? "queue enqueue refused") };
+      }
+      const taskInput = dry.task as Record<string, unknown>;
+      const payload = taskInput.payload as Record<string, unknown>;
+      const issue = payload.issue as Record<string, unknown> | undefined;
+      // The native broker can re-probe old filing stamps (#12966), while
+      // the shared hosted verb cannot. Leave those packets to a machine.
+      // Native FILING_RECHECK_AFTER is one hour; fresh console prompts do
+      // not need that probe. Invalid/absent stamps retain native fail-open.
+      const stamp = typeof issue?.state_checked_at === "string" ? Date.parse(issue.state_checked_at) : NaN;
+      if (Number.isFinite(stamp) && now * 1000 - stamp > 3600_000) {
+        return { code: 1, stdout: "", stderr: "old filing stamp requires the native queue broker" };
+      }
+      if (mirrorRef) {
+        try {
+          const rows = await query("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", [
+            mirrorRef.repo,
+            mirrorRef.number,
+          ]);
+          const labels = rows[0]?.labels;
+          let parsed: unknown;
+          try {
+            parsed = typeof labels === "string" ? JSON.parse(labels) : labels;
+          } catch {
+            parsed = null;
+          }
+          mirrorLabels = Array.isArray(parsed)
+            ? parsed.filter((label): label is string => typeof label === "string")
+            : null;
+        } catch (error) {
+          // The native mirror is best-effort; the verb turns this into a warning.
+          mirrorError = error;
+        }
+      }
+      // Include all dedupe history (newest terminal becomes the predecessor),
+      // and live/done potential identity holders across queues. The verb still
+      // applies repo/PR identity, exemptions, overrides and claim validation.
+      const subset = `(queue = ? AND dedupe_key = ?) OR (status IN ('queued','claimed','parked','handed_off','blocked','done') AND json_valid(payload) AND json_extract(payload, '$.kind') = ? AND json_extract(payload, '$.issue.number') = ?)`;
+      const subsetArgs = [config.queue, taskInput.dedupe_key ?? null, payload.kind ?? null, issue?.number ?? null];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const raw = await query(`SELECT id, ${fields.join(", ")} FROM tasks WHERE ${subset} ORDER BY id`, subsetArgs);
+        // Native #13091 also absorbs completed dedupe/identity holders; the
+        // shared hosted verb has not ported that rule yet. Conservatively hand
+        // these candidates back to the machine rather than revive done work.
+        // Failed/cancelled predecessors still use the shared revival path.
+        if (raw.some((row) => row.status === "done")) {
+          return { code: 1, stdout: "", stderr: "queue enqueue requires native completed-work dedupe" };
+        }
+        const snapshot = raw.map(
+          (row) =>
+            Object.fromEntries(
+              Object.entries(row).map(([name, value]) => {
+                if (name === "manual_only") return [name, value === 1 || value === true];
+                if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+                return [name, value];
+              }),
+            ) as unknown as TaskRow,
+        );
+        const store = new EnqueueStore(snapshot);
+        const response = await executeQueueVerb(store, "enqueue", request, env);
+        if (response.ok !== true) {
+          return {
+            code: Number(response.exit ?? 2),
+            stdout: "",
+            stderr: String(response.error ?? "queue enqueue refused"),
+          };
+        }
+        const task = response.row as unknown as TaskRow;
+        const metadata = {
+          warnings: response.warnings,
+          ...(response.work_identity_collision ? { work_identity_collision: response.work_identity_collision } : {}),
+          ...(response.revived_from ? { revived_from: response.revived_from } : {}),
+        };
+        if (task.id !== -1) return { code: 0, stdout: JSON.stringify({ queued: false, ...metadata }), stderr: "" };
+        // Optimistic read-set guard: no matching row may have appeared,
+        // disappeared or changed since the read. A lost race re-runs the verb
+        // against fresh state; this covers identity races as well as dedupe.
+        const columns = ["id", ...fields];
+        const sameRows = raw.map(() => `(${columns.map((name) => `${name} IS ?`).join(" AND ")})`).join(" OR ");
+        const guard =
+          `(SELECT count(*) FROM tasks WHERE ${subset}) = ?` +
+          (raw.length ? ` AND NOT EXISTS (SELECT 1 FROM tasks WHERE (${subset}) AND NOT (${sameRows}))` : "");
+        const guardArgs = [
+          ...subsetArgs,
+          raw.length,
+          ...(raw.length ? [...subsetArgs, ...raw.flatMap((row) => columns.map((name) => row[name]))] : []),
+        ];
+        const insert = stmt(
+          `INSERT INTO tasks (${fields.join(", ")}) SELECT ${fields.map(() => "?").join(", ")} WHERE ${guard}`,
+          [...fields.map((name) => encode(name, task[name as keyof TaskRow])), ...guardArgs],
+        );
+        const steps: { stmt: ReturnType<typeof stmt>; condition?: unknown }[] = [
+          { stmt: stmt("BEGIN IMMEDIATE") },
+          { stmt: insert, condition: { type: "ok", step: 0 } },
+        ];
+        const insertedId = `(SELECT max(id) FROM tasks WHERE queue = ? AND dedupe_key IS ?)`;
+        for (const event of await store.allEvents()) {
+          let detailSql = "?";
+          const detailArgs: unknown[] = [JSON.stringify(event.detail)];
+          if (event.kind === "revived_by") {
+            detailSql = `json_set(?, '$.successor_task_id', ${insertedId})`;
+            detailArgs.push(task.queue, task.dedupe_key);
+          }
+          const taskIdSql = event.task_id === -1 ? insertedId : "?";
+          const taskIdArgs = event.task_id === -1 ? [task.queue, task.dedupe_key] : [event.task_id];
+          steps.push({
+            stmt: stmt(
+              `INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ${taskIdSql}, ?, ${detailSql}, ? WHERE changes() = 1`,
+              [event.worker_id, ...taskIdArgs, event.kind, ...detailArgs, event.created_at],
+            ),
+            condition: { type: "ok", step: steps.length - 1 },
+          });
+        }
+        const commitStep = steps.length;
+        steps.push({ stmt: stmt("COMMIT"), condition: { type: "ok", step: commitStep - 1 } });
+        steps.push({
+          stmt: stmt("ROLLBACK"),
+          condition: {
+            type: "and",
+            conds: [
+              { type: "ok", step: 0 },
+              { type: "not", cond: { type: "ok", step: commitStep } },
+            ],
+          },
+        });
+        const { resultBatch } = await pipeline({ type: "batch", batch: { steps } }, true);
+        const error = resultBatch?.step_errors?.find((value) => value !== null);
+        if (error) throw new Error(error.message ?? "queue store refused the enqueue");
+        if (
+          !resultBatch?.step_results?.[commitStep] ||
+          typeof resultBatch.step_results[1]?.affected_row_count !== "number"
+        ) {
+          throw new Error("queue store returned an invalid enqueue batch");
+        }
+        if (resultBatch.step_results[1].affected_row_count === 1) {
+          return { code: 0, stdout: JSON.stringify({ queued: true, ...metadata }), stderr: "" };
+        }
+      }
+      return { code: 1, stdout: "", stderr: "queue enqueue lost concurrent writes; retry the request" };
+    } catch (error) {
+      return {
+        code: 1,
+        stdout: "",
+        stderr: `queue enqueue: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  };
+  // The Questions discovery read (#13491): the decision-events
+  // Worker, reached with the fetch this side was given, each call
+  // told of like the queue store's.
+  const questionSets = async (): Promise<QuestionsDiscovery> => {
+    const source = options.decisionEvents;
+    if (!source) throw new Error("the decision-events Worker is not configured on this edge");
+    const workerFetch: Fetch = async (url, init) => {
+      try {
+        const res = await fetchImpl(url, init);
+        options.seen?.({ to: "worker", write: false, status: res.status });
+        return res;
+      } catch (error) {
+        options.seen?.({ to: "worker", write: false, status: 0 });
+        throw error;
+      }
+    };
+    return readQuestionSets(source, workerFetch as never);
+  };
   return {
     ops,
     work,
     plan: new Plan(ops, work, clock),
     trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
+    queueEnqueue,
+    questionSets,
   };
 }
 
@@ -1218,8 +1539,15 @@ export function queueWrites(body: string | undefined): boolean {
   }
 }
 
-/** One section, read by the class that reads it on the laptop. */
-export async function directRead(section: string, ops: Ops, work: Work): Promise<unknown> {
+/** One section, read by the class that reads it on the laptop. The
+ * Questions discovery section is the one exception: no laptop class
+ * reads it, so its reader is given beside the classes. */
+export async function directRead(
+  section: string,
+  ops: Ops,
+  work: Work,
+  questionSets?: () => Promise<QuestionsDiscovery>,
+): Promise<unknown> {
   switch (section) {
     case "board":
       return work.board();
@@ -1237,6 +1565,9 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return ops.agents();
     case "pipeline":
       return ops.unreadInstructions();
+    case "questionSets":
+      if (!questionSets) throw new Error("the decision-events Worker is not configured on this edge");
+      return questionSets();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }
