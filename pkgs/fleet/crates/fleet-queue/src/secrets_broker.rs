@@ -1331,9 +1331,8 @@ mod tests {
         apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
         entry_revision_unix, fetch_through_with, handle_request, hmac_sha256, install_list_refresh,
         keyed_set_hash, load_watermark, note_refresh_fetch, now_unix, parse_delta_entries,
-        parse_list_entries,
-        parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        secrets_list_prefix, secrets_list_project, url_decode,
+        parse_list_entries, parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal,
+        resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
     };
     use serde_json::json;
     use std::time::Duration;
