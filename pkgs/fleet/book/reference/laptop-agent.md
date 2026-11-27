@@ -79,7 +79,7 @@ fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 | Flag        | Argument | Default        | Meaning                                                                                                                  |
 | ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
-| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. The client deadline is timeout + 15 s transport grace.                                   |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                           |
 | `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
 | `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 

@@ -336,6 +336,7 @@ mod tests {
         assert!(parse(&v("run --timeout x -- ls")).is_err());
         assert!(parse(&v("run --timeout -- ls")).is_err());
         assert!(parse(&v("exec --timeout x -- ls")).is_err());
+        assert!(parse(&v("exec --timeout 0 -- ls")).is_err());
         assert!(parse(&v("exec --cwd")).is_err());
         assert!(parse(&v("exec --cwd /w")).is_err(), "a command is required");
     }
