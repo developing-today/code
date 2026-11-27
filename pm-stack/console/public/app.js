@@ -102,7 +102,7 @@ function toast(message, bad, undo) {
 
 /** Ask before acting. Resolves to the typed text ("" when none is asked
  * for), or null when the person backs out. */
-function ask({ title, text, label, okLabel, danger, required, value }) {
+function ask({ title, text, label, okLabel, danger, required, value, trim = true }) {
   const dialog = $("ask");
   const input = $("ask-input");
   const ok = $("ask-ok");
@@ -115,7 +115,7 @@ function ask({ title, text, label, okLabel, danger, required, value }) {
   ok.textContent = okLabel || "Confirm";
   ok.className = danger ? "danger" : "";
   return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? (trim ? input.value.trim() : input.value) : null), {
       once: true,
     });
     // A dialog keeps its last return value: clear it, or Escape after an
@@ -1110,6 +1110,9 @@ let shown = 12;
 const pending = new Map();
 /** Choices ticked on a many-answer question, kept across redraws. */
 const picks = new Map();
+/** Exact submitted words, until the platform or durable outbox accepts
+ * the answer. A refused send must not turn reopening into retyping. */
+const answerDrafts = new Map();
 
 /** Answer after a short pause, so a slip of the thumb can be undone. */
 function later(key, label, send) {
@@ -1160,6 +1163,7 @@ async function sendAnswer(kind, args, key, said) {
     else if (out.state === "kept") toast(out.note);
     else if (said) toast(said);
     picks.delete(key);
+    answerDrafts.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
@@ -1249,8 +1253,11 @@ function questionCard(q) {
         {
           class: "small ghost",
           onclick: async () => {
-            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true });
-            if (text) sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true, value: answerDrafts.get(key), trim: false });
+            if (text?.trim()) {
+              answerDrafts.set(key, text);
+              sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            }
           },
         },
         "Write an answer",
