@@ -581,7 +581,10 @@ mod tests {
         // entry shapes, but a different binding record.
         let other = make_export_for("other-subject-9", &events, Some(&content), None);
         let wrong = verify_import(&other, false).unwrap();
-        assert_ne!(wrong.binding_id(), verify_import(&export, false).unwrap().binding_id());
+        assert_ne!(
+            wrong.binding_id(),
+            verify_import(&export, false).unwrap().binding_id()
+        );
         assert_ne!(
             wrong.export_fingerprint(),
             verify_import(&export, false).unwrap().export_fingerprint()
@@ -681,10 +684,7 @@ mod tests {
             token_a.client_side_encryption(),
             token_b.client_side_encryption()
         );
-        assert_ne!(
-            token_a.export_fingerprint(),
-            token_b.export_fingerprint()
-        );
+        assert_ne!(token_a.export_fingerprint(), token_b.export_fingerprint());
 
         // The mismatched token writes nothing: no events, no blobs.
         let (_dir, mut target) = open_store();

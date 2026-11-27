@@ -86,7 +86,10 @@ fn golden_vectors() -> Vec<(String, Value, String)> {
         .iter()
         .map(|case| {
             (
-                case["name"].as_str().expect("fixture vector name").to_owned(),
+                case["name"]
+                    .as_str()
+                    .expect("fixture vector name")
+                    .to_owned(),
                 fixture_value(&case["value"]),
                 case["encoded_hex"]
                     .as_str()
@@ -100,7 +103,11 @@ fn golden_vectors() -> Vec<(String, Value, String)> {
 #[test]
 fn golden_vectors_encode_and_decode_byte_exactly() {
     let vectors = golden_vectors();
-    assert_eq!(vectors.len(), 27, "shared canonical CBOR fixture retains every vector");
+    assert_eq!(
+        vectors.len(),
+        27,
+        "shared canonical CBOR fixture retains every vector"
+    );
     for (name, value, want_hex) in vectors {
         let encoded = encode_canonical(&value).unwrap();
         assert_eq!(hex(&encoded), want_hex, "encode {name}");

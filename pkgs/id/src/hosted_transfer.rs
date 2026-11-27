@@ -208,7 +208,9 @@ impl TransferPlan {
         }
         for cited in &reachable {
             if !carried.contains(cited) {
-                return Err(TransferError::MissingBlob { hash: cited.clone() });
+                return Err(TransferError::MissingBlob {
+                    hash: cited.clone(),
+                });
             }
         }
         for blob in &export.blobs {
@@ -755,9 +757,7 @@ impl TransferCoordinator {
         let entries = self.journal.plan.entries.clone();
         for entry in &entries {
             if entry.kind == EntryKind::Blob
-                && fresh_scan
-                    .reachable_from_other_stores
-                    .contains(&entry.hash)
+                && fresh_scan.reachable_from_other_stores.contains(&entry.hash)
             {
                 retained_shared.push(entry.hash.clone());
                 continue;
@@ -893,10 +893,7 @@ mod tests {
         }
     }
 
-    fn envelope(
-        key: &SigningKey,
-        ext: crate::chain::ChainExt,
-    ) -> crate::chain::Event {
+    fn envelope(key: &SigningKey, ext: crate::chain::ChainExt) -> crate::chain::Event {
         crate::chain::sign(&panda_key(key), 0, None, None, ext).unwrap()
     }
 
@@ -1067,13 +1064,12 @@ mod tests {
 
         // Corrupt one target entry after the copy.
         let blob_hash = export.blobs[0].hash.clone();
-        target.entries.insert(blob_hash.clone(), b"tampered".to_vec());
+        target
+            .entries
+            .insert(blob_hash.clone(), b"tampered".to_vec());
         assert!(matches!(
             coord.verify(&export, &target, false),
-            Err(TransferError::CorruptEntry {
-                side: "target",
-                ..
-            })
+            Err(TransferError::CorruptEntry { side: "target", .. })
         ));
         // The switch refuses on the unverified journal.
         assert_eq!(
@@ -1221,9 +1217,7 @@ mod tests {
         ));
         // Carried but not cited.
         let mut unreferenced = sample_export();
-        unreferenced
-            .blobs
-            .push(ExportBlob::new(b"orphan".to_vec()));
+        unreferenced.blobs.push(ExportBlob::new(b"orphan".to_vec()));
         assert!(matches!(
             TransferPlan::from_export(&record, &unreferenced),
             Err(TransferError::UnreferencedBlob { .. })

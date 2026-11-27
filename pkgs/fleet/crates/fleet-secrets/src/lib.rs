@@ -48,6 +48,18 @@
 //!     environment only, and non-interactive callers run with the
 //!     variable unset or empty — the fallback was dead exactly
 //!     when it was needed (the other half of 2026-11-15).
+//!
+//! Backend selection (#14151): the secrets broker is Bitwarden-only
+//! (its refresh and read-through speak `bws`; see
+//! `fleet-queue`'s `secrets_broker`). 1Password stays a
+//! **client-chain-only** source ([`OpSource`]): the broker serves
+//! one shared vault cache keyed by name, and an op backend would
+//! need a second per-seat credential, a second refresh loop, and a
+//! merge rule for names present in both vaults — all for a seat
+//! that already resolves the same names locally through this
+//! crate. The broker's `/secrets` listing therefore never carries
+//! a 1Password-only name; 1Password-only seats resolve through
+//! the client chain below.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -646,8 +658,11 @@ impl Resolver {
     /// where the secrets-broker's own socket answers (the laptop,
     /// #6218), the direct source comes first: there is no session
     /// broker there. On the sandbox the probe selects TCP, no
-    /// direct source is inserted, and the chain is exactly the
-    /// historical broker-protocol-then-`bws` shape.
+    /// direct source is inserted, and the broker leg is the
+    /// historical broker-protocol shape. Behind the broker leg come
+    /// the `bws` fallback and, where a vault is named (env
+    /// `FLEET_OP_VAULT` or `[secrets] op_vault`, #14151), the
+    /// client-side op source.
     pub fn default_chain(config: &fleet_config::Config) -> Resolver {
         let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
         // Exactly one broker leg owns the retry budget: the first
@@ -668,7 +683,7 @@ impl Resolver {
                 .with_retry_policy(broker_retry),
         ));
         sources.push(Box::new(BwsSource::new()));
-        if let Some(op) = OpSource::from_environment() {
+        if let Some(op) = OpSource::from_config(config) {
             sources.push(Box::new(op));
         }
         Resolver::new(sources)
@@ -715,7 +730,10 @@ impl Resolver {
                 let sources: Vec<Box<dyn SecretSource>> = match OpSource::from_values(
                     vault.as_deref(),
                     field.as_deref(),
-                    Box::new(ProcessRunner::new()),
+                    // Self-loaded token (#14151), same as the default
+                    // chain: an explicit 1Password selection must not
+                    // need a shell wrapper either.
+                    Box::new(OpTokenRunner::from_environment()),
                 ) {
                     Some(op) => vec![Box::new(op)],
                     None => Vec::new(),
@@ -1746,6 +1764,102 @@ impl BwsStore {
     }
 }
 
+/// The 1Password service-account token for an `op` child,
+/// resolved from an env value and a home dir: the env value when
+/// non-empty, else the on-disk token files (the seat's
+/// `.config/op/service-account-token`, then
+/// `.config/1password/service-account-token`). This is the `op`
+/// analogue of the broker-mirroring [`bws_token_from`] lookup, so
+/// the op leg works for non-interactive callers without a shell
+/// wrapper pre-loading the variable (#14151). The token is
+/// returned trimmed; empty files and an empty env value count as
+/// absent. Fleet never fetches this token from a vault itself: a
+/// seat that keeps it in Bitwarden loads it into one of these
+/// places (env or file) once, outside this crate.
+fn op_token_from(env_value: Option<&str>, home: &Path) -> Option<String> {
+    if let Some(t) = env_value {
+        if !t.trim().is_empty() {
+            return Some(t.trim().to_string());
+        }
+    }
+    for rel in [
+        ".config/op/service-account-token",
+        ".config/1password/service-account-token",
+    ] {
+        if let Ok(t) = std::fs::read_to_string(home.join(rel)) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The ambient lookup: this process's env + the fleet home dir.
+fn op_service_account_token() -> Option<String> {
+    op_token_from(
+        std::env::var("OP_SERVICE_ACCOUNT_TOKEN").ok().as_deref(),
+        &fleet_config::Config::home_dir(),
+    )
+}
+
+/// A [`CommandRunner`] that hands the child the resolved 1Password
+/// service-account token explicitly, mirroring [`BwsTokenRunner`]
+/// (including its bounded subprocess wait, #14040). Before this
+/// runner existed, the op leg inherited the ambient environment
+/// only, so non-interactive callers without a shell wrapper
+/// pre-loading `OP_SERVICE_ACCOUNT_TOKEN` failed every op read.
+/// The runner always controls the variable: set from the resolved
+/// token, or removed when no token resolves.
+pub struct OpTokenRunner {
+    token: Option<String>,
+    timeout: Duration,
+}
+
+impl OpTokenRunner {
+    pub fn from_environment() -> OpTokenRunner {
+        OpTokenRunner {
+            token: op_service_account_token(),
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    pub fn with_token(token: Option<String>) -> OpTokenRunner {
+        OpTokenRunner {
+            token,
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// The same runner with a caller-chosen subprocess ceiling --
+    /// the shape tests use to prove a never-exiting child fails
+    /// within the bound without waiting out the production one.
+    pub fn with_timeout(mut self, timeout: Duration) -> OpTokenRunner {
+        self.timeout = timeout;
+        self
+    }
+}
+
+impl CommandRunner for OpTokenRunner {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        match &self.token {
+            Some(token) => {
+                cmd.env("OP_SERVICE_ACCOUNT_TOKEN", token);
+            }
+            None => {
+                cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN");
+            }
+        }
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
+        if !out.status.success() {
+            return Err(format!("exit status {}", out.status));
+        }
+        String::from_utf8(out.stdout).map_err(|_| "output not utf8".to_string())
+    }
+}
+
 /// Source 3, opt-in: the 1Password CLI. One read per name:
 /// `op read --no-newline op://<vault>/<name>/<field>`, so the item
 /// title in the vault is the fleet secret name. It joins the default
@@ -1799,7 +1913,30 @@ impl OpSource {
         Self::from_values(
             vault.as_deref(),
             field.as_deref(),
-            Box::new(ProcessRunner::new()),
+            Box::new(OpTokenRunner::from_environment()),
+        )
+    }
+
+    /// The source for a resolved fleet config (#14151): `[secrets]
+    /// op_vault` / `op_field` name the vault, with `FLEET_OP_VAULT` /
+    /// `FLEET_OP_FIELD` beating the file when both are set. The
+    /// credential is the same self-loaded service-account token as
+    /// [`OpSource::from_environment`].
+    pub fn from_config(config: &fleet_config::Config) -> Option<OpSource> {
+        let env_vault = std::env::var(Self::VAULT_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let env_field = std::env::var(Self::FIELD_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let vault = env_vault.or_else(|| config.secrets_op_vault());
+        let field = env_field.or_else(|| config.secrets_op_field());
+        Self::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(OpTokenRunner::from_environment()),
         )
     }
 
@@ -3700,19 +3837,127 @@ mod tests {
     }
 
     #[test]
-    fn op_answers_when_the_sources_before_it_cannot() {
-        let (op, _) = op_source(Some("fleet"), None, Ok("from-op".to_string()));
-        let resolver = Resolver::new(vec![
-            Box::new(FakeSource {
-                name: "bws",
-                result: Err(SecretError::Unavailable {
-                    source: "bws",
-                    name: "wanted.name".to_string(),
-                    detail: "bws secret list: spawn failed: NotFound".to_string(),
-                }),
-            }),
-            Box::new(op.unwrap()),
-        ]);
-        assert_eq!(resolver.resolve("wanted.name").unwrap().expose(), "from-op");
+    fn op_token_prefers_a_nonempty_env_value() {
+        let dir = test_temp_dir("op-token-env");
+        assert_eq!(
+            op_token_from(Some("  env-token  "), &dir).as_deref(),
+            Some("env-token")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_falls_back_to_the_token_files() {
+        let dir = test_temp_dir("op-token-file");
+        let config_dir = dir.join(".config/op");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("service-account-token"), "file-token\n").unwrap();
+        assert_eq!(op_token_from(None, &dir).as_deref(), Some("file-token"));
+        // An empty (or whitespace) env value counts as absent —
+        // the 2026-11-15 shape for the bws twin, mirrored here.
+        assert_eq!(op_token_from(Some(""), &dir).as_deref(), Some("file-token"));
+        assert_eq!(
+            op_token_from(Some("   "), &dir).as_deref(),
+            Some("file-token")
+        );
+        // The second path is the fallback for the fallback.
+        std::fs::remove_dir_all(&dir).ok();
+        let dir = test_temp_dir("op-token-file-alt");
+        let alt_dir = dir.join(".config/1password");
+        std::fs::create_dir_all(&alt_dir).unwrap();
+        std::fs::write(alt_dir.join("service-account-token"), "alt-token\n").unwrap();
+        assert_eq!(op_token_from(None, &dir).as_deref(), Some("alt-token"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_absent_everywhere_is_none() {
+        let dir = test_temp_dir("op-token-none");
+        assert_eq!(op_token_from(None, &dir), None);
+        assert_eq!(op_token_from(Some(""), &dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_runner_controls_the_child_env() {
+        // /bin/sh reports whether the variable is set in its
+        // environment: the runner must set it from the resolved
+        // token, and must remove it when no token resolved (so a
+        // stale ambient value cannot leak through either).
+        let probe = |runner: &OpTokenRunner| -> String {
+            runner
+                .run(
+                    "sh",
+                    &[
+                        "-c",
+                        "if [ -n \"$OP_SERVICE_ACCOUNT_TOKEN\" ]; then echo set; else echo unset; fi",
+                    ],
+                )
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(
+            probe(&OpTokenRunner::with_token(Some(
+                "fixture-token".to_string()
+            ))),
+            "set"
+        );
+        assert_eq!(probe(&OpTokenRunner::with_token(None)), "unset");
+    }
+
+    #[test]
+    fn op_token_runner_times_out_a_hanging_child() {
+        let runner = OpTokenRunner::with_token(None).with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn op_from_config_prefers_env_then_file() {
+        // Env manipulation is process-wide: save and restore so
+        // parallel tests never observe our values.
+        let saved_vault = std::env::var("FLEET_OP_VAULT").ok();
+        let saved_field = std::env::var("FLEET_OP_FIELD").ok();
+        unsafe {
+            std::env::remove_var("FLEET_OP_VAULT");
+            std::env::remove_var("FLEET_OP_FIELD");
+        }
+        let mut config = fleet_config::Config::default();
+        config.secrets.op_vault = Some("file-vault".to_string());
+        config.secrets.op_field = Some("password".to_string());
+        // File values turn the source on with the configured field.
+        let source = OpSource::from_config(&config).expect("file vault turns op on");
+        assert_eq!(source.reference("a.b"), "op://file-vault/a.b/password");
+        // Env beats the file when both are set; a blank env value
+        // counts as absent, not as a vault.
+        unsafe {
+            std::env::set_var("FLEET_OP_VAULT", " env-vault ");
+            std::env::set_var("FLEET_OP_FIELD", "  ");
+        }
+        let source = OpSource::from_config(&config).expect("env vault turns op on");
+        assert_eq!(source.reference("a.b"), "op://env-vault/a.b/password");
+        // Neither names a vault: the source stays off.
+        unsafe {
+            std::env::remove_var("FLEET_OP_VAULT");
+            std::env::remove_var("FLEET_OP_FIELD");
+        }
+        let config = fleet_config::Config::default();
+        assert!(OpSource::from_config(&config).is_none());
+        // Restore the ambient values.
+        unsafe {
+            match saved_vault {
+                Some(v) => std::env::set_var("FLEET_OP_VAULT", v),
+                None => std::env::remove_var("FLEET_OP_VAULT"),
+            }
+            match saved_field {
+                Some(v) => std::env::set_var("FLEET_OP_FIELD", v),
+                None => std::env::remove_var("FLEET_OP_FIELD"),
+            }
+        }
     }
 }
