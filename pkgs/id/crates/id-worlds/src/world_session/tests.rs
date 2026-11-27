@@ -1555,7 +1555,10 @@ mod tests {
         )
         .await
         .expect("a stalled transport must not keep a session alive");
-        assert_eq!(io.send_calls, 1, "the session attempts its refusal frame once");
+        assert_eq!(
+            io.send_calls, 1,
+            "the session attempts its refusal frame once"
+        );
     }
 
     #[tokio::test]
