@@ -181,6 +181,8 @@ fn record_schema_claims(
     source_ids: &BTreeSet<String>,
     claims: &[SchemaClaim],
 ) {
+    // A source absent from this inventory is a report-only deletion, not an
+    // authority to remove or supersede its last known schema claims.
     for record in &mut manifest.schema_claim_history {
         if !record.superseded && source_ids.contains(&record.claim.data_source_id) {
             let still_current = record.database_id == database_id

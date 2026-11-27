@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use id_import_notion::{
-    Inventory, InventoryObject, Manifest, NOTION_API_VERSION,
+    Inventory, InventoryObject, Manifest, NOTION_API_VERSION, Outcome, Stage,
     databases::convert_database,
     reimport::{ChangeKind, plan_reimport, rehome_moved_sources},
     rows::convert_row,
@@ -84,6 +84,9 @@ fn prepare_previous() -> Manifest {
         convert_row(&mut manifest, id).unwrap();
     }
     manifest
+        .record_progress("page-unchanged", Stage::Report, Outcome::Clean, None)
+        .unwrap();
+    manifest
 }
 
 /// Oracle: the frozen previous/current inventories in `fixtures/reimport.json`
@@ -158,6 +161,9 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
     let moves = rehome_moved_sources(&previous, &mut current).unwrap();
     current.validate_inventory_reconciles().unwrap();
 
+    assert_eq!(current.objects["page-unchanged"].stage, Stage::Report);
+    assert_eq!(current.objects["row-time"].stage, Stage::Inventory);
+    assert!(!current.objects.contains_key("row-missing"));
     assert_eq!(moves.len(), 1);
     assert_eq!(moves[0].data_source_id, "ds-move");
     assert_eq!(moves[0].from_database_id, "db-old");
@@ -185,6 +191,11 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
     assert!(
         current.row_records.contains_key("row-missing"),
         "source deletion remains report-only"
+    );
+    assert_eq!(current.row_records["row-missing"].database_id, "db-new");
+    assert_eq!(
+        current.row_records["row-missing"].database_note_id,
+        "new-database-db-new"
     );
     assert!(
         current.page_id_to_note_id.contains_key("row-missing"),
@@ -254,4 +265,42 @@ fn legacy_manifest_reconstructs_schema_history_when_a_source_moves() {
         }),
         "the moved source's schema is current on its new database note"
     );
+}
+
+/// Oracle: a source absent from the re-crawl is report-only. Its previously
+/// recorded claims remain intact rather than being superseded or deleted.
+#[test]
+fn deleted_source_claims_remain_as_last_known_history() {
+    let previous = prepare_previous();
+    let mut inventory = inventory_for("current");
+    inventory
+        .objects
+        .retain(|id, _| id != "db-new" && id != "row-time" && id != "row-hash" && id != "row-new");
+    inventory.data_sources.remove("db-new");
+    let mut current = Manifest::new(
+        "workspace-1".into(),
+        vec!["api".into()],
+        NOTION_API_VERSION.into(),
+        inventory,
+    )
+    .unwrap();
+    current
+        .assign_database_identities(&mut |id| Ok(format!("new-database-{id}")))
+        .unwrap();
+
+    let moves = rehome_moved_sources(&previous, &mut current).unwrap();
+    assert!(moves.is_empty());
+    convert_database(&mut current, "db-old").unwrap();
+    current.validate_inventory_reconciles().unwrap();
+
+    assert!(
+        current.schema_claim_history.iter().any(|record| {
+            record.claim.data_source_id == "ds-move"
+                && record.database_id == "db-old"
+                && !record.superseded
+        }),
+        "source deletion is report-only and does not mutate prior schema claims"
+    );
+    assert!(current.row_records.contains_key("row-time"));
+    assert!(current.page_id_to_note_id.contains_key("row-time"));
 }

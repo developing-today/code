@@ -109,7 +109,8 @@ pub fn plan_reimport(previous: &Inventory, current: &Inventory) -> Result<Reimpo
 
 /// Carry stable identities and prior conversion records into a fresh
 /// inventory, then re-home claims and row membership for data sources whose
-/// parent database changed. Source deletions remain in the old identity and
+/// parent database changed. The caller must assign note identities to newly
+/// discovered databases first. Source deletions remain in the old identity and
 /// row ledgers; this function never deletes or tombstones an ID object.
 pub fn rehome_moved_sources(
     previous: &Manifest,
@@ -226,20 +227,23 @@ pub fn rehome_moved_sources(
         if let Some(note_id) = next.page_id_to_note_id.get(page_id) {
             row.note_id = note_id.clone();
         }
-        let Some(source) = next.inventory.objects.get(page_id) else {
-            continue;
-        };
-        if source.kind != "page" {
-            continue;
-        }
-        let Some(source_id) = source
-            .source
-            .get("parent")
-            .filter(|parent| parent.get("type").and_then(Value::as_str) == Some("data_source_id"))
-            .and_then(|parent| parent.get("data_source_id"))
-            .and_then(Value::as_str)
-        else {
-            continue;
+        let source_id = match next.inventory.objects.get(page_id) {
+            Some(source) if source.kind == "page" => {
+                let Some(source_id) = source
+                    .source
+                    .get("parent")
+                    .filter(|parent| {
+                        parent.get("type").and_then(Value::as_str) == Some("data_source_id")
+                    })
+                    .and_then(|parent| parent.get("data_source_id"))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                source_id
+            }
+            Some(_) => continue,
+            None => row.data_source_id.as_str(),
         };
         let Some(database_id) = new_parents.get(source_id) else {
             continue;
@@ -276,6 +280,18 @@ pub fn rehome_moved_sources(
             .values()
             .filter(|object| object.kind == "database")
         {
+            let Some(progress) = previous.objects.get(&object.id) else {
+                continue;
+            };
+            if !matches!(
+                &progress.stage,
+                crate::Stage::Content | crate::Stage::References | crate::Stage::Report
+            ) {
+                continue;
+            }
+            // convert_database fails closed before creating schema claims when
+            // this identity is absent, so there is no prior note claim location
+            // to reconstruct for an interrupted pre-identity manifest.
             let Some(database_note_id) = previous.database_id_to_note_id.get(&object.id) else {
                 continue;
             };
@@ -401,6 +417,8 @@ fn object_changed(previous: &InventoryObject, current: &InventoryObject) -> Resu
         .source
         .get("last_edited_time")
         .and_then(Value::as_str);
+    // §6.2 treats an advance as a change signal; a regression by itself is
+    // not, while the content hash still catches content changes at that time.
     let timestamp_advanced =
         matches!((previous_time, current_time), (Some(old), Some(new)) if new > old);
     Ok(timestamp_advanced || content_hash(&previous.source)? != content_hash(&current.source)?)
