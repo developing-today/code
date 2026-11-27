@@ -54,14 +54,14 @@ cargo test -p idp-provider --test doors h7_gate_relaxation_drill_add_verify_remo
 
 ## Drill log (2026-11-25, automated run)
 
-| Step | Observation |
-| --- | --- |
-| 0. Pre-drill denial | Test identity denied 403 `not_allowlisted`, audited at `door/google`, no identity row created. Gate is deny-by-default as designed. |
-| 1. Enrollment added | One allowlist entry appended to a throwaway config; nothing redeployed. |
-| 2. Enrolled login | Login succeeds (302 → code → token). The identity row is created `active`, linked by the door login, with the link in the identity history and audit. |
-| 3. Claims observed | At the original drill run, `sub` was the provider's single account (`drew` in the harness) and `roles` was that account's **full role set** — the finding below. After the #15249 fix, the drill asserts the §4.4 oracle instead: `sub` is the enrolled identity's own new account and `roles` is `["read-only"]`. |
-| 4. Enrollment removed | Baseline allowlist restored exactly. |
-| 5. Post-drill denial | Same identity denied 403 `not_allowlisted`, audited — gate behaviour identical to the pre-drill state. |
+| Step                  | Observation                                                                                                                                                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0. Pre-drill denial   | Test identity denied 403 `not_allowlisted`, audited at `door/google`, no identity row created. Gate is deny-by-default as designed.                                                                                                                                                                                |
+| 1. Enrollment added   | One allowlist entry appended to a throwaway config; nothing redeployed.                                                                                                                                                                                                                                            |
+| 2. Enrolled login     | Login succeeds (302 → code → token). The identity row is created `active`, linked by the door login, with the link in the identity history and audit.                                                                                                                                                              |
+| 3. Claims observed    | At the original drill run, `sub` was the provider's single account (`drew` in the harness) and `roles` was that account's **full role set** — the finding below. After the #15249 fix, the drill asserts the §4.4 oracle instead: `sub` is the enrolled identity's own new account and `roles` is `["read-only"]`. |
+| 4. Enrollment removed | Baseline allowlist restored exactly.                                                                                                                                                                                                                                                                               |
+| 5. Post-drill denial  | Same identity denied 403 `not_allowlisted`, audited — gate behaviour identical to the pre-drill state.                                                                                                                                                                                                             |
 
 ## Finding — §4.4's default did not exist at drill time; fixed by #15249
 
@@ -75,7 +75,7 @@ allowlisted door identity was auto-linked to that account
 (`flow.rs`). There was no fresh read-only-on-no-tenant account
 for a new enrollment to land on, so an allowlist entry was safe
 only for the owner's own door identities — enrolling a
-*different person's* identity that way would have handed them
+_different person's_ identity that way would have handed them
 the owner account and its roles. That gap was filed as #15249.
 
 **Update (PR #15313, merged 2026-11-25):** the default now

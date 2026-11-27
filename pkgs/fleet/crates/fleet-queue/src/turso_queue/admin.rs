@@ -824,10 +824,7 @@ pub(crate) fn time_recheck_one(
         TimeRecheck::NotApplicable => Ok("not_applicable"),
         TimeRecheck::NotDue => Ok("not_due"),
         TimeRecheck::Release => {
-            let condition = row
-                .get("ready_condition")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let condition = row.get("ready_condition").cloned().unwrap_or(Value::Null);
             let cleared = t.exec(
                 "UPDATE tasks SET status = 'queued', not_before = NULL, \
                    park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \

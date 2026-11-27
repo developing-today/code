@@ -96,15 +96,20 @@ func TestEveryDeclaredOpHasARoute(t *testing.T) {
 	}
 }
 
-func TestEveryNonStreamingOpIsReachableAsAnMCPTool(t *testing.T) {
+func TestMcpxMCPSurfaceCoversV1Table(t *testing.T) {
 	// Built with a nil caller: only the names and schemas matter here, and
-	// nothing is invoked.
+	// nothing is invoked. This table-driven guard must not silently pass if
+	// the operation registry stops yielding entries.
+	ops := api.Ops()
+	if len(ops) == 0 {
+		t.Fatal("no /v1 operations; the MCP surface parity test checks nothing")
+	}
 	srv := mcpserver.New(nil, "mcpx", "test").WithExtras(mcpserver.OpTools(nil))
 	tools := map[string]bool{}
 	for _, tool := range srv.Tools() {
 		tools[tool.Name] = true
 	}
-	for _, op := range api.Ops() {
+	for _, op := range ops {
 		if op.Streams {
 			if tools["mcpx_"+op.Name] {
 				t.Errorf("%s streams and must not be a tool: a tool result is one "+

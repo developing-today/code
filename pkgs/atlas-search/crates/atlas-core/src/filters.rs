@@ -13,6 +13,7 @@
 use serde_json::{Map, Value as Json};
 
 use crate::error::{Error, Result};
+use crate::manifest::{Semantics, generic_list_filter};
 use crate::types::{Stmt, Value};
 
 /// The sensitivity ladder, least to most restricted (Python
@@ -120,6 +121,20 @@ pub fn split_csv(v: Option<&str>) -> Vec<String> {
     }
 }
 
+/// One manifest-defined `generic_list` filter (#6228 Phase 3,
+/// slice 2): the dimension name and match semantics are resolved
+/// against the effective manifest by the caller (the serve path
+/// validates before scheduling; see `server.rs`), and the values
+/// are applied through [`generic_list_filter`] — decoded-element
+/// matching over the generic label store, never string matching
+/// over the serialized list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericFilter {
+    pub name: String,
+    pub semantics: Semantics,
+    pub values: Vec<String>,
+}
+
 /// Classification + ceiling filters (the Python's `Filters`).
 #[derive(Debug, Clone, Default)]
 pub struct Filters {
@@ -133,6 +148,10 @@ pub struct Filters {
     pub until: Option<String>,
     /// `until` + 1 day, the exclusive SQL bound.
     pub until_exclusive: Option<String>,
+    /// Manifest-defined `generic_list` dimension filters (#6228
+    /// Phase 3, slice 2), in dimension-name order. Empty for every
+    /// pre-generic caller, so named-field result sets are unchanged.
+    pub generic: Vec<GenericFilter>,
 }
 
 impl Filters {
@@ -194,6 +213,7 @@ impl Filters {
             since,
             until,
             until_exclusive,
+            generic: Vec::new(),
         })
     }
 
@@ -242,6 +262,14 @@ impl Filters {
             clauses.push("s.created_at < ?".to_string());
             params.push(Value::text(u.clone()));
         }
+        for g in &self.generic {
+            if g.values.is_empty() {
+                continue;
+            }
+            let (frag, frag_params) = generic_list_filter(&g.name, g.semantics, &g.values, "s.id");
+            clauses.push(frag);
+            params.extend(frag_params.into_iter().map(Value::text));
+        }
         (clauses.join(" AND "), params)
     }
 
@@ -277,6 +305,16 @@ impl Filters {
             clauses.push(format!("{s_alias}.created_at < ?"));
             params.push(Value::text(u.clone()));
         }
+        for g in &self.generic {
+            if g.values.is_empty() {
+                continue;
+            }
+            let session_expr = format!("{s_alias}.id");
+            let (frag, frag_params) =
+                generic_list_filter(&g.name, g.semantics, &g.values, &session_expr);
+            clauses.push(frag);
+            params.extend(frag_params.into_iter().map(Value::text));
+        }
         (clauses, params)
     }
 
@@ -301,6 +339,11 @@ impl Filters {
         }
         if let Some(u) = &self.until {
             d.insert("until".to_string(), Json::from(u.clone()));
+        }
+        for g in &self.generic {
+            if !g.values.is_empty() {
+                d.insert(g.name.clone(), Json::from(g.values.clone()));
+            }
         }
         Json::Object(d)
     }
@@ -617,7 +660,10 @@ mod tests {
         let filters =
             Filters::new(vec![], vec![], vec![], vec![], "internal", None, None).expect("filters");
         assert_eq!(filters.max_sensitivity, Sensitivity::Personal);
-        assert_eq!(filters.max_sensitivity.allowed(), vec!["shareable", "personal"]);
+        assert_eq!(
+            filters.max_sensitivity.allowed(),
+            vec!["shareable", "personal"]
+        );
         assert_eq!(filters.max_sensitivity.name(), "personal");
     }
 
@@ -842,6 +888,88 @@ mod tests {
             dashed.session_clauses("s2", "l2")
         );
         assert_eq!(basic.describe(), dashed.describe());
+    }
+
+    #[test]
+    fn generic_list_filter_changes_result_set_to_fixture_oracle() {
+        // #6228 Phase 3 slice 2, oracle: an explicit fixture.
+        // Sessions s1/s2/s3 carry chunks 1/2/3; the generic label
+        // store says source_app = [mail] for s1, [chat] for s2 and
+        // [mail, chat] for s3. A generic_list filter for `mail`
+        // must return exactly chunks {1, 3} through BOTH builders
+        // (where_clause and session_clauses), and `chat` exactly
+        // {2, 3}; the unfiltered set is {1, 2, 3}.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, sensitivity TEXT NOT NULL);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, client TEXT, created_at TEXT);
+             CREATE TABLE session_labels (session_id TEXT PRIMARY KEY, kind TEXT, topics TEXT, projects TEXT);
+             CREATE TABLE generic_labels (session_id TEXT NOT NULL, dimension TEXT NOT NULL, values_json TEXT NOT NULL, PRIMARY KEY (session_id, dimension));
+             INSERT INTO sessions VALUES ('s1', 'cli', '2026-01-01'), ('s2', 'cli', '2026-01-01'), ('s3', 'cli', '2026-01-01');
+             INSERT INTO messages VALUES ('m1', 's1'), ('m2', 's2'), ('m3', 's3');
+             INSERT INTO chunks VALUES (1, 'm1', 'personal'), (2, 'm2', 'personal'), (3, 'm3', 'personal');
+             INSERT INTO session_labels VALUES ('s1', 'chat', '[]', '[]'), ('s2', 'chat', '[]', '[]'), ('s3', 'chat', '[]', '[]');
+             INSERT INTO generic_labels VALUES ('s1', 'source_app', '[\"mail\"]'), ('s2', 'source_app', '[\"chat\"]'), ('s3', 'source_app', '[\"mail\", \"chat\"]');",
+        )
+        .unwrap();
+        let run_where = |f: &Filters| -> Vec<i64> {
+            let (where_sql, params) = f.where_clause(TURSO_SHAPE);
+            let sql = format!(
+                "SELECT c.id FROM chunks c JOIN messages m ON m.id = c.message_id \
+                 JOIN sessions s ON s.id = m.session_id \
+                 LEFT JOIN session_labels l ON l.session_id = s.id WHERE {where_sql} ORDER BY c.id"
+            );
+            let mut stmt = db.prepare(&sql).unwrap();
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|v| match v {
+                        Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        Value::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        _ => panic!("unexpected param"),
+                    })),
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        let run_session = |f: &Filters| -> Vec<String> {
+            let (clauses, params) = f.session_clauses("s", "l");
+            let sql = format!(
+                "SELECT s.id FROM sessions s LEFT JOIN session_labels l ON l.session_id = s.id WHERE {} ORDER BY s.id",
+                clauses.join(" AND ")
+            );
+            let mut stmt = db.prepare(&sql).unwrap();
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|v| match v {
+                        Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        Value::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        _ => panic!("unexpected param"),
+                    })),
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        let mut mail = default_filters();
+        mail.generic = vec![GenericFilter {
+            name: "source_app".to_string(),
+            semantics: Semantics::Exact,
+            values: vec!["mail".to_string()],
+        }];
+        assert_eq!(run_where(&mail), vec![1, 3]);
+        assert_eq!(run_session(&mail), vec!["s1".to_string(), "s3".to_string()]);
+        let mut chat = default_filters();
+        chat.generic = vec![GenericFilter {
+            name: "source_app".to_string(),
+            semantics: Semantics::Exact,
+            values: vec!["chat".to_string()],
+        }];
+        assert_eq!(run_where(&chat), vec![2, 3]);
+        // No generic filter: the fixture's full set, unchanged.
+        assert_eq!(run_where(&default_filters()), vec![1, 2, 3]);
+        assert!(default_filters().session_clauses("s", "l").0.is_empty());
     }
 
     #[test]

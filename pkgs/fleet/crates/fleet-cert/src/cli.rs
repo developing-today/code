@@ -9,7 +9,7 @@
 use crate::algorithm::{self, AlgorithmId};
 use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{parse_cert, CertInfo, TrustSelection};
+use crate::chain::{CertInfo, TrustSelection, parse_cert};
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -41,7 +41,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   format   convert | verify
   inventory list | show | search | audit
   key      generate | inspect
-  publish  plan | verify (apply | status deferred, production-gated)
+  publish  plan | apply --bundle <dir> --staging-dir <dir> | verify (status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
@@ -49,6 +49,10 @@ Groups and verbs (spec §6.1 tree; status as built):
   algorithms list | describe | benchmark | doctor
   explain  [topic]
   doctor
+
+Format conversion:
+  Certificates retain the original PEM/DER behavior. Private keys use
+  --algorithm <id>; conversion requires --out and creates an owner-only file.
 
 Common options:
   --json                  Emit one JSON value instead of text.
@@ -635,7 +639,11 @@ fn pkcs8_from_der_or_pem(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
 
 fn parse_key_algorithm(p: &Parsed) -> Result<AlgorithmId> {
     let name = p.require("algorithm", "key operation")?;
-    AlgorithmId::parse(&name).map(|(algorithm, warning)| {
+    parse_algorithm_name(&name)
+}
+
+fn parse_algorithm_name(name: &str) -> Result<AlgorithmId> {
+    AlgorithmId::parse(name).map(|(algorithm, warning)| {
         if let Some(warning) = warning {
             eprintln!("warning: {warning}");
         }
@@ -1542,10 +1550,35 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let code = emit(json_out, text, value);
             Ok(if report.valid { code } else { 1 })
         }
-        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+        "apply" => {
+            let p = parse_args(rest, &["bundle", "staging-dir"], &["json"])?;
+            if !p.positionals.is_empty() {
+                return Err(CertError::usage(
+                    "publish apply accepts only --bundle <dir> and --staging-dir <local-dir>; live endpoint targets are not supported",
+                ));
+            }
+            let bundle = p
+                .get("bundle")
+                .map(PathBuf::from)
+                .ok_or_else(|| CertError::usage("publish apply needs --bundle <dir>"))?;
+            let staging = p.get("staging-dir").map(PathBuf::from).ok_or_else(|| {
+                CertError::usage("publish apply requires --staging-dir <local-dir>")
+            })?;
+            let report = crate::publish::apply_staging(&bundle, &staging)?;
+            let text = format!(
+                "Publish staging apply: {} -> {}\\n  wrote {} public artifacts\\n",
+                report.bundle,
+                report.staging_dir,
+                report.written.len()
+            );
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            Ok(emit(json_out, text, value))
+        }
+        "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
             Err(CertError::policy(format!(
                 "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
-                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+                 live endpoint publication remains unavailable; local staging apply has no network path"
             )))
         }
         other => Err(CertError::usage(format!(
@@ -1873,11 +1906,40 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = &args[1.min(args.len())..];
     match verb {
         "convert" => {
-            let p = parse_args(rest, &["in", "to", "out"], &["json"])?;
+            let p = parse_args(rest, &["in", "to", "out", "algorithm"], &["json"])?;
             let input = p.require("in", "format convert")?;
             let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+
+            if let Some(algorithm) = algorithm {
+                // Private-key material is never written to stdout and the
+                // destination is created owner-only without replacing an
+                // existing file.
+                let path = p.require("out", "private-key format convert")?;
+                let out = crate::format::convert_private_key(&bytes, to, algorithm)?;
+                write_new_file(Path::new(&path), &out, true, "converted private key")?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "wrote {} private-key encoding ({}, {})\n",
+                        path,
+                        algorithm.name(),
+                        to.as_str()
+                    ),
+                    json!({
+                        "out": path,
+                        "kind": "private-key",
+                        "algorithm": algorithm.name(),
+                        "format": to.as_str(),
+                        "bytes": out.len(),
+                    }),
+                ));
+            }
+
+            // Without --algorithm, preserve the original certificate path,
+            // including its stdout behavior and overwrite semantics.
             let out = crate::format::convert(&bytes, to)?;
             match p.get("out") {
                 Some(path) => {
@@ -1899,10 +1961,32 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
         }
         "verify" => {
-            let p = parse_args(rest, &["in"], &["json"])?;
+            let p = parse_args(rest, &["in", "algorithm"], &["json"])?;
             let input = p.require("in", "format verify")?;
+            let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+
+            if let Some(algorithm) = algorithm {
+                let verified = crate::format::verify_private_key(&bytes, algorithm)?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "{input}: well-formed {} PKCS#8 private key ({} input, {} DER bytes); PEM and DER round trips preserve the key\n",
+                        algorithm.name(),
+                        verified.input.as_str(),
+                        verified.der_len
+                    ),
+                    json!({
+                        "in": input,
+                        "kind": "private-key",
+                        "algorithm": algorithm.name(),
+                        "input": verified.input.as_str(),
+                        "der_bytes": verified.der_len,
+                    }),
+                ));
+            }
+
             let v = crate::format::verify(&bytes)?;
             Ok(emit(
                 json_out,
@@ -2617,8 +2701,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish apply/status",
-        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
+        "publish status",
+        "live AIA/CDP publication status (production-gated; local staging apply is supported)",
     ),
     (
         "key import/export/escrow/restore/rotate",
@@ -2747,7 +2831,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only, apply to local staging), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2755,7 +2839,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/apply-staging/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
@@ -2821,37 +2905,41 @@ mod key_ceremony_tests {
         // A wrong algorithm is refused and nothing is written.
         let wrong = dir.join("wrong.pk8");
         let wrong_text = wrong.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "p256",
-                "--in",
-                &pem_text,
-                "--out",
-                &wrong_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &wrong_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
         assert!(!wrong.exists());
 
         // The PEM block imports as the same PKCS#8 DER, owner-only.
         let out = dir.join("imported.pk8");
         let out_text = out.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &pem_text,
-                "--out",
-                &out_text
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &out_text
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&out).unwrap(), der);
         #[cfg(unix)]
         {
@@ -2862,43 +2950,308 @@ mod key_ceremony_tests {
             );
         }
         // An existing destination is never replaced.
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &pem_text,
-                "--out",
-                &out_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &out_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
 
         // Raw DER imports too; a legacy PEM label is refused by name.
         let der_path = dir.join("external.der");
         std::fs::write(&der_path, &der).unwrap();
         let der_out = dir.join("from-der.pk8");
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &der_path.to_string_lossy(),
-                "--out",
-                &der_out.to_string_lossy(),
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &der_path.to_string_lossy(),
+                    "--out",
+                    &der_out.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&der_out).unwrap(), der);
         let legacy = dir.join("legacy.pem");
         std::fs::write(&legacy, crate::bundle::pem_encode("EC PRIVATE KEY", &der)).unwrap();
         let err = pkcs8_from_der_or_pem(&std::fs::read(&legacy).unwrap(), &legacy)
             .expect_err("legacy label refused");
         assert!(err.to_string().contains("EC PRIVATE KEY"));
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_convert_and_verify_round_trip_keys_for_every_algorithm() {
+        // Oracle: the generated PKCS#8 DER bytes are the input identity;
+        // converting DER -> PEM -> DER must reproduce those exact bytes.
+        let dir = scratch_dir("format-key-roundtrip");
+        // Match the bundle's documented key_path layout; convert/verify act
+        // on the referenced key artifact without rewriting its manifest.
+        let key_dir = dir.join("bundle/private/keys");
+        std::fs::create_dir_all(&key_dir).expect("create bundle key path");
+        for algorithm in [
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::Rsa2048,
+            AlgorithmId::Rsa4096,
+            AlgorithmId::MlDsa44,
+        ] {
+            let key = engine::generate_key(algorithm).expect("generate key");
+            let expected_der = key.serialize_der();
+            let input = key_dir.join(format!("{}.pk8", algorithm.name()));
+            let pem = dir.join(format!("{}.pem", algorithm.name()));
+            let round_trip = dir.join(format!("{}-roundtrip.pk8", algorithm.name()));
+            std::fs::write(&input, &expected_der).expect("write source key");
+
+            let input_text = input.to_string_lossy().into_owned();
+            let pem_text = pem.to_string_lossy().into_owned();
+            let round_trip_text = round_trip.to_string_lossy().into_owned();
+            let algorithm_name = algorithm.name();
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input_text,
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &pem_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} DER-to-PEM failed: {error}", algorithm.name()));
+
+            let pem_bytes = std::fs::read(&pem).expect("read PEM output");
+            assert!(pem_bytes.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&pem)
+                        .expect("PEM metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600,
+                    "private-key conversion output must be owner-only"
+                );
+            }
+            format_cmd(
+                &args(&["verify", "--in", &pem_text, "--algorithm", algorithm_name]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM verify failed: {error}", algorithm.name()));
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &pem_text,
+                    "--to",
+                    "der",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &round_trip_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM-to-DER failed: {error}", algorithm.name()));
+            let round_trip_der = std::fs::read(&round_trip).expect("read DER output");
+            assert_eq!(round_trip_der, expected_der, "{}", algorithm.name());
+            format_cmd(
+                &args(&[
+                    "verify",
+                    "--in",
+                    &round_trip_text,
+                    "--algorithm",
+                    algorithm_name,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} DER verify failed: {error}", algorithm.name()));
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_key_conversion_rejects_malformed_trailing_and_mismatched_material() {
+        let dir = scratch_dir("format-key-invalid");
+        let key = engine::generate_key(AlgorithmId::Ed25519).expect("generate key");
+        let der = key.serialize_der();
+        let cases = [
+            ("trailing.der", [der.clone(), vec![0]].concat(), "ed25519"),
+            ("mismatch.der", der.clone(), "p256"),
+            (
+                "multi.pem",
+                format!(
+                    "{}{}",
+                    crate::bundle::pem_encode("PRIVATE KEY", &der),
+                    crate::bundle::pem_encode("PRIVATE KEY", &der)
+                )
+                .into_bytes(),
+                "ed25519",
+            ),
+            (
+                "text.pem",
+                format!("{}trailing", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "legacy-label.pem",
+                crate::bundle::pem_encode("RSA PRIVATE KEY", &der).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "encrypted-label.pem",
+                crate::bundle::pem_encode("ENCRYPTED PRIVATE KEY", &der).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "leading-text.pem",
+                format!("prefix{}", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
+        ];
+        for (name, bytes, algorithm) in cases {
+            let input = dir.join(name);
+            let output = dir.join(format!("{name}.out"));
+            std::fs::write(&input, bytes).expect("write invalid source");
+            let input_text = input.to_string_lossy().into_owned();
+            let output_text = output.to_string_lossy().into_owned();
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "convert",
+                        "--in",
+                        &input_text,
+                        "--to",
+                        "pem",
+                        "--algorithm",
+                        algorithm,
+                        "--out",
+                        &output_text,
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "accepted invalid key case {name}"
+            );
+            assert!(!output.exists(), "wrote output for invalid key case {name}");
+        }
+
+        // RSA-2048 and RSA-4096 share a signature scheme, so enforce the
+        // fleet-cert profile size as well as successful PKCS#8 parsing.
+        let rsa_der = engine::generate_key(AlgorithmId::Rsa2048)
+            .expect("generate RSA-2048")
+            .serialize_der();
+        let rsa_input = dir.join("rsa-2048.pk8");
+        let rsa_output = dir.join("rsa-mismatch.pem");
+        std::fs::write(&rsa_input, rsa_der).expect("write RSA-2048 key");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &rsa_input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "rsa-4096",
+                    "--out",
+                    &rsa_output.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "accepted an RSA key with the wrong registered size"
+        );
+        assert!(!rsa_output.exists());
+
+        let input = dir.join("valid.pk8");
+        std::fs::write(&input, &der).expect("write valid key");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must require an explicit output path"
+        );
+
+        let existing = dir.join("existing.pem");
+        let sentinel = b"do not replace this file";
+        std::fs::write(&existing, sentinel).expect("write existing destination");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                    "--out",
+                    &existing.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must not replace an existing file"
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), sentinel);
+
+        let cert_key = engine::generate_key(AlgorithmId::P256).expect("generate certificate key");
+        let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("certificate params")
+            .self_signed(&cert_key)
+            .expect("self-signed certificate");
+        let cert_input = dir.join("not-a-private-key.der");
+        let cert_output = dir.join("not-a-private-key.pem");
+        std::fs::write(&cert_input, cert.der()).expect("write certificate");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &cert_input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "p256",
+                    "--out",
+                    &cert_output.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "a certificate must not be accepted as private-key input"
+        );
+        assert!(!cert_output.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
@@ -2960,19 +3313,21 @@ mod key_ceremony_tests {
         let ed_path = dir.join("ed-as-p256.pk8");
         std::fs::write(&ed_path, ed.serialize_der()).unwrap();
         let refused = dir.join("never-written.pk8");
-        assert!(key_cmd(
-            &args(&[
-                "rotate",
-                "--algorithm",
-                "p256",
-                "--in",
-                &ed_path.to_string_lossy(),
-                "--out",
-                &refused.to_string_lossy(),
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "rotate",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &ed_path.to_string_lossy(),
+                    "--out",
+                    &refused.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err()
+        );
         assert!(!refused.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
@@ -2990,69 +3345,77 @@ mod key_ceremony_tests {
 
         let pem_out = dir.join("p256.pub.pem");
         let pem_text = pem_out.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &pem_text
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &pem_text
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         let written = std::fs::read_to_string(&pem_out).unwrap();
         let blocks = pem_decode_all(&written).unwrap();
         assert_eq!(blocks, vec![("PUBLIC KEY".to_string(), spki.clone())]);
         assert!(!written.contains("PRIVATE"));
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &pem_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &pem_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
 
         let der_out = dir.join("p256.pub.der");
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &der_out.to_string_lossy(),
-                "--format",
-                "der",
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &der_out.to_string_lossy(),
+                    "--format",
+                    "der",
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&der_out).unwrap(), spki);
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &dir.join("x").to_string_lossy(),
-                "--format",
-                "jwk",
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &dir.join("x").to_string_lossy(),
+                    "--format",
+                    "jwk",
+                ]),
+                true,
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
@@ -3081,28 +3444,32 @@ mod key_ceremony_tests {
         let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
         assert!(!bytes.is_empty());
         assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
-        assert!(key_cmd(
-            &[
-                "inspect".into(),
-                "--algorithm".into(),
-                "p256".into(),
-                "--in".into(),
-                path_text.clone(),
-            ],
-            true,
-        )
-        .is_ok());
-        assert!(key_cmd(
-            &[
-                "generate".into(),
-                "--algorithm".into(),
-                "p256".into(),
-                "--out".into(),
-                path_text,
-            ],
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &[
+                    "inspect".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--in".into(),
+                    path_text.clone(),
+                ],
+                true,
+            )
+            .is_ok()
+        );
+        assert!(
+            key_cmd(
+                &[
+                    "generate".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--out".into(),
+                    path_text,
+                ],
+                true,
+            )
+            .is_err()
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -1975,12 +1975,13 @@
     // programme (OpenAI Help Center art. 10306912): eligible traffic
     // is absorbed by daily token buckets BEFORE any billing. Two
     // buckets, shared across the models in each group, resetting
-    // 00:00 UTC: the large-model group (the gpt-5 / gpt-5-codex /
-    // gpt-5-chat-latest / gpt-4.1 / gpt-4o / o1 / o3 families, incl.
-    // gpt-6-luna / -astra / -sol) at 1M tokens/day (250K for usage
-    // tiers 1-2), and the small-model group (the mini / nano
-    // families, o4-mini, codex-mini) at 10M/day (2.5M tiers 1-2). A
-    // request that would cross the day's bucket is billed in full;
+    // 00:00 UTC: large group 1M tokens/day (250K for usage tiers 1-2),
+    // small group 10M/day (2.5M tiers 1-2). OpenAI's eligible model IDs
+    // are maintained in Help Center article 10306912; those IDs include
+    // families with independent shutdown dates. This alias maps only the
+    // current large-group GPT-6 models listed in tokenMetering below,
+    // not every model eligible on the account. A request that would
+    // cross the day's bucket is billed in full;
     // overage bills at normal rates; exhaustion is SILENT (no error
     // -- the traffic just bills), so no failure-driven wall can ever
     // fire for this alias. The bucket binds at the ORG across this

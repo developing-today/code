@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8025 | #6534 | `audit:complete` | Detects dead `systemd-inhibit` children, re-engages loudly and reaps on release. Review follow-ups #8182/#8183 were resolved by PR #8188 plus shepherd fixes before #8025 merged and #6534 closed. |
-| #8031 | #1066 | `audit:complete` | Adds versioned snapshots and an optional migration export; probe-first upgrades commit only after a successful state round-trip and preserve the old program on failure. |
-| #8032 | #6378 | `audit:partial` | Adopts nextest but does not measure or close all original unit/integration/E2E/VM targets. Follow-up #15079 and task #23801 cover remote measurement and routing; Lane 2 pointer: #13871 comment 7162067831. PR note: #7162274904. |
-| #8033 | #6218 | `audit:complete` | Selects UDS or TCP per broker role by configured preference and live socket probe, with same-call TCP fallback and coverage for socket-present/absent/stale cases. |
-| #8034 | #5544 | `audit:completed-later` | Implements phase 2 actor-authorized install/revoke. Later PR #8494 wires the joined-session frames (phase 3) and #5544 closes. PR note: #7162276253. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                            |
+| -------------: | -------------: | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #8025 |          #6534 | `audit:complete`        | Detects dead `systemd-inhibit` children, re-engages loudly and reaps on release. Review follow-ups #8182/#8183 were resolved by PR #8188 plus shepherd fixes before #8025 merged and #6534 closed.                                 |
+|          #8031 |          #1066 | `audit:complete`        | Adds versioned snapshots and an optional migration export; probe-first upgrades commit only after a successful state round-trip and preserve the old program on failure.                                                           |
+|          #8032 |          #6378 | `audit:partial`         | Adopts nextest but does not measure or close all original unit/integration/E2E/VM targets. Follow-up #15079 and task #23801 cover remote measurement and routing; Lane 2 pointer: #13871 comment 7162067831. PR note: #7162274904. |
+|          #8033 |          #6218 | `audit:complete`        | Selects UDS or TCP per broker role by configured preference and live socket probe, with same-call TCP fallback and coverage for socket-present/absent/stale cases.                                                                 |
+|          #8034 |          #5544 | `audit:completed-later` | Implements phase 2 actor-authorized install/revoke. Later PR #8494 wires the joined-session frames (phase 3) and #5544 closes. PR note: #7162276253.                                                                               |
 
 ## Slice state
 

@@ -1508,8 +1508,6 @@ describe("before the host's first report", () => {
     });
   });
 
-
-
   test("the edge says which commit the host is running, as the host last reported it", async () => {
     const w = await setup();
     const health = async () =>
@@ -5330,6 +5328,8 @@ describe("the edge does the core itself", () => {
         "hands.done",
         "issue.rank",
         "task.move",
+        "task.cancel",
+        "task.unblock",
         "pr.merge",
         "deploy.start",
         "intake.send",

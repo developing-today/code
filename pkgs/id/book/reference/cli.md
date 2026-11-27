@@ -124,6 +124,8 @@ The parser defines 32 top-level commands and 113 leaf commands. The reference ch
 | Gallery, match-audit, walk      | `gallery …`, `match-audit …`, `walk …`                                                                             | [Gallery, match-audit and walk](cli-gallery-walk.md)               |
 | Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `talk …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md)       |
 | Hosted bridge                   | `hosted heads`, `hosted push`, `hosted pull`                                                                       | [Groups, documents, claims and keys](cli-groups-identity.md)       |
+| Host mode                       | `host run`, `host list`, `host start`, `host stop`, `host archive`, `host restore`, `host pin`, `host wake-mode`, `host key`, `host export`, `host import`, `host drill`, `host snapshots`, `host inspect` | [Host mode and graph navigation](cli-host-nav.md)                  |
+| Graph navigation                | `nav neighbors`, `nav backlinks`, `nav threads`, `nav history`, `nav path`                                         | [Host mode and graph navigation](cli-host-nav.md)                  |
 | Interactive shell               | `repl` (alias `shell`), bare `id`                                                                                  | [The interactive REPL](repl.md)                                    |
 | Desktop shell                   | the separate `id-native-shell` binary                                                                              | [id-native-shell](native-shell.md)                                 |
 

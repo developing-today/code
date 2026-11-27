@@ -1735,6 +1735,28 @@ impl WorldHandle {
             .context("world actor dropped lease handoff response")?
     }
 
+    /// Recover an expired native lease back to the DO (#13938 slice 1).
+    /// The actor journals `LeaseRevoked` for the expired holder and then
+    /// `LeaseGranted` for the DO before reopening DO mutations; between
+    /// the two journaled transitions the world has no holder and refuses
+    /// writes. Only an expired native term may recover this way.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the term has not expired, when no native holder stands,
+    /// or on world storage failure (including a failed grant append after
+    /// a durable revoke, which leaves the world holder-less and read-only).
+    pub async fn recover_expired_lease(&self) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::RecoverExpiredLease { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease recovery response")?
+    }
+
     /// Run a spill v2 automatic failover (design #5787 §1, #7572).
     /// The actor plans from its journaled lease and the supplied
     /// grantor-side pool and journals the revoke/grant pair in plan

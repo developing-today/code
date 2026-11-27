@@ -1,5 +1,10 @@
 import { resolveFrontDoor, type FrontDoorDeps } from "./front-door.ts";
-import { createBrowserSession, type BrowserSessionStore, type ResolveLivePrincipal, type SessionAudit } from "./session.ts";
+import {
+  createBrowserSession,
+  type BrowserSessionStore,
+  type ResolveLivePrincipal,
+  type SessionAudit,
+} from "./session.ts";
 
 const STATE_COOKIE = "__Host-pm_oauth_state";
 const MAX_PENDING_MS = 10 * 60 * 1000;
@@ -74,7 +79,9 @@ export async function startBrowserLogin(deps: BrowserOAuthDeps): Promise<Respons
   const state = randomToken(32, deps.randomBytes);
   const nonce = randomToken(32, deps.randomBytes);
   const verifier = randomToken(32, deps.randomBytes);
-  const challenge = base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const challenge = base64url(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))),
+  );
   await deps.pending.put({ state, nonce, verifier, createdAt: now });
 
   const target = new URL(deps.provider.authorizationEndpoint);
@@ -96,7 +103,8 @@ export async function completeBrowserLogin(req: Request, deps: BrowserOAuthDeps)
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
   const cookieState = cookieValue(req, STATE_COOKIE);
-  if (!state || !code || !cookieState || state !== cookieState) return redirect("/login?error=invalid_state", 303, clearState);
+  if (!state || !code || !cookieState || state !== cookieState)
+    return redirect("/login?error=invalid_state", 303, clearState);
 
   const pending = await deps.pending.get(state);
   await deps.pending.delete(state);
@@ -105,12 +113,20 @@ export async function completeBrowserLogin(req: Request, deps: BrowserOAuthDeps)
     return redirect("/login?error=expired_state", 303, clearState);
 
   try {
-    const { idToken } = await deps.provider.exchangeCode({ code, verifier: pending.verifier, redirectUri: deps.provider.redirectUri });
+    const { idToken } = await deps.provider.exchangeCode({
+      code,
+      verifier: pending.verifier,
+      redirectUri: deps.provider.redirectUri,
+    });
     const result = await resolveFrontDoor(idToken, { ...deps.frontDoor, now: () => now / 1000 });
     if (!result.ok) return redirect("/login?error=authentication_failed", 303, clearState);
     const claims = readJwtClaims(idToken);
     if (!claims || claims.nonce !== pending.nonce) return redirect("/login?error=invalid_nonce", 303, clearState);
-    const sessionCookie = await createBrowserSession(result.principal, { store: deps.sessions, now: () => now, audit: deps.audit });
+    const sessionCookie = await createBrowserSession(result.principal, {
+      store: deps.sessions,
+      now: () => now,
+      audit: deps.audit,
+    });
     const response = redirect("/", 303, sessionCookie);
     response.headers.append("set-cookie", clearState);
     return response;
@@ -124,9 +140,13 @@ function readJwtClaims(token: string): Record<string, unknown> | null {
   if (parts.length !== 3 || !/^[A-Za-z0-9_-]+$/.test(parts[1] ?? "")) return null;
   try {
     const encoded = (parts[1] as string).replaceAll("-", "+").replaceAll("_", "/");
-    const bytes = Uint8Array.from(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")), (char) => char.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")), (char) =>
+      char.charCodeAt(0),
+    );
     const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }

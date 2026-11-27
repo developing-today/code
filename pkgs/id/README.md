@@ -315,6 +315,7 @@ it is — a valid world capability, minted by the host's admin with
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
+| `compact`      |                                | Reclaim live-class event bytes (one retention pass)     |
 | `nav`          |                                | Navigate the typed object graph (links, threads, paths) |
 | `talk`         |                                | Talk pages: post on and list an object's discussion     |
 | `hosted`       |                                | Push to and pull from a hosted instance over the bridge |

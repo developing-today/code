@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8000 | #6554 | `audit:complete` | Makes `save-secrets.sh` fail loudly and encrypt atomically through same-directory temporary files, preserving the prior ciphertext on failure; the issue closes with the fix. |
-| #8001 | #5783 | `audit:partial` | Delivers the ESP32 platform decision record, but the source issue remains open for board, provisioning, firmware/OTA, power and field work. Issue notes say these items have no separate follow-on packet yet. PR note: #7161278646. |
-| #8002 | #7077 | `audit:complete` | Replaces authorship-based program-tending phrasing with the label-based `user/owned` rule; the other issue sections were already corrected or moot, and the issue closes after the combined work. |
-| #8006 | #7686 | `audit:complete` | Seeds the fixture layer paths directly and adds a regression guard against ancestor/host config leakage; the hermeticity issue closes with the fix. |
-| #8008 | #7063 | `audit:complete` | Implements `procStat` with Linux `/proc`, Darwin `sysctl kern.proc`, and an explicit unsupported-platform error; updates the self-process test to skip with a reason where unsupported. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                              |
+| -------------: | -------------: | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #8000 |          #6554 | `audit:complete` | Makes `save-secrets.sh` fail loudly and encrypt atomically through same-directory temporary files, preserving the prior ciphertext on failure; the issue closes with the fix.                                                        |
+|          #8001 |          #5783 | `audit:partial`  | Delivers the ESP32 platform decision record, but the source issue remains open for board, provisioning, firmware/OTA, power and field work. Issue notes say these items have no separate follow-on packet yet. PR note: #7161278646. |
+|          #8002 |          #7077 | `audit:complete` | Replaces authorship-based program-tending phrasing with the label-based `user/owned` rule; the other issue sections were already corrected or moot, and the issue closes after the combined work.                                    |
+|          #8006 |          #7686 | `audit:complete` | Seeds the fixture layer paths directly and adds a regression guard against ancestor/host config leakage; the hermeticity issue closes with the fix.                                                                                  |
+|          #8008 |          #7063 | `audit:complete` | Implements `procStat` with Linux `/proc`, Darwin `sysctl kern.proc`, and an explicit unsupported-platform error; updates the self-process test to skip with a reason where unsupported.                                              |
 
 ## Slice state
 

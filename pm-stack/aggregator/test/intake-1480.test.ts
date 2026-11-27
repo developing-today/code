@@ -131,10 +131,9 @@ describe("gh-intake-poll CLI guards (#1480)", () => {
       await writeFile(gh, `#!/usr/bin/env bash\ncat ${JSON.stringify(page)}\n`);
       await chmod(gh, 0o755);
 
-      const r = await runScript(
-        ["poll", "--since", "2026-11-24T10:00:00Z", "--repos", "developing-today/code"],
-        { PATH: `${bin}:${process.env.PATH ?? ""}` },
-      );
+      const r = await runScript(["poll", "--since", "2026-11-24T10:00:00Z", "--repos", "developing-today/code"], {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      });
       expect(r.code).toBe(1);
       const output = JSON.parse(r.stdout);
       expect(output.errors[0].error).toContain("exceeded 1000 issue results");

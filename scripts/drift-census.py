@@ -59,15 +59,33 @@ _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)*)")
 class Row:
     """One census row. Plain class: the test harness imports this file by path."""
 
-    def __init__(self, plane, service, pinned, running, lag_s, state, overrides, held, reason=""):
+    def __init__(
+        self, plane, service, pinned, running, lag_s, state, overrides, held, reason=""
+    ):
         self.plane, self.service = plane, service
         self.pinned, self.running, self.lag_s = pinned, running, lag_s
-        self.state, self.overrides, self.held, self.reason = state, overrides, held, reason
+        self.state, self.overrides, self.held, self.reason = (
+            state,
+            overrides,
+            held,
+            reason,
+        )
 
     def as_dict(self) -> dict:
-        return {k: getattr(self, k) for k in
-                ("plane", "service", "pinned", "running", "lag_s", "state",
-                 "overrides", "held", "reason")}
+        return {
+            k: getattr(self, k)
+            for k in (
+                "plane",
+                "service",
+                "pinned",
+                "running",
+                "lag_s",
+                "state",
+                "overrides",
+                "held",
+                "reason",
+            )
+        }
 
 
 def _run(argv: list[str], timeout_s: int = 30) -> str | None:
@@ -98,8 +116,15 @@ def _pin_of(url: str) -> str:
     return tag.group(1) if tag else "unreadable"
 
 
-def classify(*, pinned: str, running: str, lag_s: int | None, window_s: int,
-             overrides: list, held: list) -> Row:
+def classify(
+    *,
+    pinned: str,
+    running: str,
+    lag_s: int | None,
+    window_s: int,
+    overrides: list,
+    held: list,
+) -> Row:
     """The one state decision (§4 vocabulary). Pure."""
     if pinned == "unreadable":
         state, reason = "drifted", "pin unreadable"
@@ -118,15 +143,30 @@ def classify(*, pinned: str, running: str, lag_s: int | None, window_s: int,
     return Row("-", "-", pinned, running, lag_s, state, overrides, held, reason)
 
 
-def evaluate(plane: str, service: str, pinned: str, running: str,
-             lag_s: int | None, window_s: int, overrides: list, held: list) -> Row:
-    row = classify(pinned=pinned, running=running, lag_s=lag_s, window_s=window_s,
-                   overrides=overrides, held=held)
+def evaluate(
+    plane: str,
+    service: str,
+    pinned: str,
+    running: str,
+    lag_s: int | None,
+    window_s: int,
+    overrides: list,
+    held: list,
+) -> Row:
+    row = classify(
+        pinned=pinned,
+        running=running,
+        lag_s=lag_s,
+        window_s=window_s,
+        overrides=overrides,
+        held=held,
+    )
     row.plane, row.service = plane, service
     return row
 
 
 # ---------------------------------------------------------------- pins
+
 
 def laptop_pin(root: Path) -> str:
     """The laptop pin is the flake on main (§4): origin/main's commit."""
@@ -140,16 +180,22 @@ def sandbox_pins(root: Path) -> dict[str, str]:
     except OSError:
         return {}
     pinned: dict[str, str] = {}
-    for name, url_key in (("fleet", "FLEET_URL"), ("bws", "BWS_URL"),
-                          ("restic", "RESTIC_URL"), ("tailscale", "TS_URL")):
-        match = re.search(rf'{url_key}="\$\{{{url_key}:-([^}}]+)\}}"', text) or \
-            re.search(rf'{url_key}="([^"]+)"', text)
+    for name, url_key in (
+        ("fleet", "FLEET_URL"),
+        ("bws", "BWS_URL"),
+        ("restic", "RESTIC_URL"),
+        ("tailscale", "TS_URL"),
+    ):
+        match = re.search(
+            rf'{url_key}="\$\{{{url_key}:-([^}}]+)\}}"', text
+        ) or re.search(rf'{url_key}="([^"]+)"', text)
         if match:
             pinned[name] = _pin_of(match.group(1))
     return pinned
 
 
 # ---------------------------------------------------------- collectors
+
 
 def _lag_since(root: Path, rev: str, now: datetime) -> int | None:
     """Seconds between a commit's committer time and now; None when unknown."""
@@ -170,9 +216,18 @@ def collect_laptop(root: Path, now: datetime, window_s: int) -> list[Row]:
         except ValueError:
             pass
     lag = _lag_since(root, pin, now) if pin != "unreadable" else None
-    return [evaluate("laptop", LAPTOP_SERVICES[0], pin[:12],
-                     running[:12] if running != "unreadable" else running,
-                     lag, window_s, [], [])]
+    return [
+        evaluate(
+            "laptop",
+            LAPTOP_SERVICES[0],
+            pin[:12],
+            running[:12] if running != "unreadable" else running,
+            lag,
+            window_s,
+            [],
+            [],
+        )
+    ]
 
 
 def collect_sandbox(root: Path, window_s: int) -> list[Row]:
@@ -186,8 +241,9 @@ def collect_sandbox(root: Path, window_s: int) -> list[Row]:
     return rows
 
 
-def collect_cloudflare(root: Path, now: datetime, fixture: dict | None,
-                       window_s: int) -> list[Row]:
+def collect_cloudflare(
+    root: Path, now: datetime, fixture: dict | None, window_s: int
+) -> list[Row]:
     """Input is #14107's commit-age machinery; the census consumes it, never a second system.
 
     The snapshot is `{"main_rev": SHA, "workers": {name: deployed SHA}}`
@@ -198,13 +254,23 @@ def collect_cloudflare(root: Path, now: datetime, fixture: dict | None,
         return []
     pin = fixture.get("main_rev", "unreadable")
     lag = _lag_since(root, pin, now) if pin != "unreadable" else None
-    return [evaluate("cloudflare", worker, pin, fixture["workers"][worker],
-                     None if fixture["workers"][worker] == pin else lag,
-                     window_s, [], [])
-            for worker in sorted(fixture.get("workers", {}))]
+    return [
+        evaluate(
+            "cloudflare",
+            worker,
+            pin,
+            fixture["workers"][worker],
+            None if fixture["workers"][worker] == pin else lag,
+            window_s,
+            [],
+            [],
+        )
+        for worker in sorted(fixture.get("workers", {}))
+    ]
 
 
 # ------------------------------------------------------------- output
+
 
 def summary(rows: list[Row]) -> dict:
     """Census summary. Silence means converged; anything else is the report."""
@@ -220,12 +286,16 @@ def summary(rows: list[Row]) -> dict:
 
 
 def render_text(report: dict) -> str:
-    lines = [f"census: {report['total']} rows "
-             f"({', '.join(f'{k}={v}' for k, v in report['counts'].items())})"]
+    lines = [
+        f"census: {report['total']} rows "
+        f"({', '.join(f'{k}={v}' for k, v in report['counts'].items())})"
+    ]
     for row in report["rows"]:
         lag = "?" if row["lag_s"] is None else f"{row['lag_s']}s"
-        line = (f"  {row['plane']}/{row['service']}: {row['state']} "
-                f"pinned={row['pinned']} running={row['running']} lag={lag}")
+        line = (
+            f"  {row['plane']}/{row['service']}: {row['state']} "
+            f"pinned={row['pinned']} running={row['running']} lag={lag}"
+        )
         if row["reason"]:
             line += f" ({row['reason']})"
         lines.append(line)
@@ -239,15 +309,18 @@ def render_text(report: dict) -> str:
 PLANES = ("laptop", "sandbox", "cloudflare")
 
 
-def build(planes: list[str], root: Path, fixture: dict | None, now: datetime,
-          window_s: int) -> dict:
+def build(
+    planes: list[str], root: Path, fixture: dict | None, now: datetime, window_s: int
+) -> dict:
     rows: list[Row] = []
     if "laptop" in planes:
         rows += collect_laptop(root, now, window_s)
     if "sandbox" in planes:
         rows += collect_sandbox(root, window_s)
     if "cloudflare" in planes:
-        rows += collect_cloudflare(root, now, (fixture or {}).get("cloudflare"), window_s)
+        rows += collect_cloudflare(
+            root, now, (fixture or {}).get("cloudflare"), window_s
+        )
     return summary(rows)
 
 
@@ -256,12 +329,22 @@ def main(argv: list[str] | None = None) -> int:
         description="Drift census v1 (#14134 U1): pinned vs running, three planes, read-only.",
         allow_abbrev=False,
     )
-    parser.add_argument("--plane", action="append", choices=PLANES,
-                        help="plane to census (repeatable; default all three)")
-    parser.add_argument("--fixture", type=Path, default=None,
-                        help="JSON observation snapshot (tests / offline)")
+    parser.add_argument(
+        "--plane",
+        action="append",
+        choices=PLANES,
+        help="plane to census (repeatable; default all three)",
+    )
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=None,
+        help="JSON observation snapshot (tests / offline)",
+    )
     parser.add_argument("--format", choices=("json", "text"), default="text")
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parent.parent
+    )
     parser.add_argument("--now", default=None, help="ISO-8601 instant (tests)")
     parser.add_argument("--window-s", type=int, default=DEFAULT_WINDOW_S)
     args = parser.parse_args(argv)
@@ -273,10 +356,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         fixture = json.loads(args.fixture.read_text())
 
-    now = datetime.fromisoformat(args.now).astimezone(timezone.utc) if args.now else datetime.now(timezone.utc)
+    now = (
+        datetime.fromisoformat(args.now).astimezone(timezone.utc)
+        if args.now
+        else datetime.now(timezone.utc)
+    )
     report = build(args.plane or list(PLANES), args.root, fixture, now, args.window_s)
-    print(json.dumps(report, indent=2, sort_keys=True) if args.format == "json"
-          else render_text(report))
+    print(
+        json.dumps(report, indent=2, sort_keys=True)
+        if args.format == "json"
+        else render_text(report)
+    )
     return 0
 
 

@@ -1818,8 +1818,10 @@ mod tests {
 
     #[test]
     fn classified_transcript_turns_never_cross_message_boundaries() {
-        let dir =
-            std::env::temp_dir().join(format!("atlas-stage-12403-transcript-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-stage-12403-transcript-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         let conn = provisioned_conn(&dir);
@@ -1830,9 +1832,14 @@ mod tests {
             ClassificationSegment::certain(0, trip.len(), Sensitivity::Personal),
             ClassificationSegment::certain(trip.len(), text.len(), Sensitivity::Shareable),
         ];
-        let item_id =
-            stage_classified_artifact(&conn, "unit-12403", &classified_entry(&text), &segments, "2026-11-24T00:00:00Z")
-                .expect("stage classified transcript");
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(&text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified transcript");
         let chunks = staged_chunks(&conn, item_id);
         assert_eq!(chunks.len(), 2, "one chunk per turn: {chunks:?}");
         assert_eq!(chunks[0].0, trip);
@@ -1868,9 +1875,14 @@ mod tests {
             ClassificationSegment::certain(secret_start, secret_end, Sensitivity::SecretBearing),
             ClassificationSegment::certain(secret_end, text.len(), Sensitivity::Shareable),
         ];
-        let item_id =
-            stage_classified_artifact(&conn, "unit-12403", &classified_entry(&text), &segments, "2026-11-24T00:00:00Z")
-                .expect("stage classified secret");
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(&text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified secret");
         let chunks = staged_chunks(&conn, item_id);
         assert_eq!(chunks.len(), 3, "before/secret/after: {chunks:?}");
         assert_eq!(chunks[1].0, secret);
@@ -1901,9 +1913,14 @@ mod tests {
             ClassificationSegment::certain(0, 14, Sensitivity::Shareable),
             ClassificationSegment::certain(14, code.len(), Sensitivity::Personal),
         ];
-        let item_id =
-            stage_classified_artifact(&conn, "unit-12403", &classified_entry(code), &segments, "2026-11-24T00:00:00Z")
-                .expect("stage classified code");
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(code),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified code");
         let chunks = staged_chunks(&conn, item_id);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].0, "fn alpha() {}\n");
@@ -1915,9 +1932,14 @@ mod tests {
             ClassificationSegment::certain(0, first_len, Sensitivity::Shareable),
             ClassificationSegment::certain(first_len, logs.len(), Sensitivity::LocalOnly),
         ];
-        let item_id =
-            stage_classified_artifact(&conn, "unit-12403", &classified_entry(logs), &segments, "2026-11-24T00:00:00Z")
-                .expect("stage classified logs");
+        let item_id = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(logs),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage classified logs");
         let chunks = staged_chunks(&conn, item_id);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].0, "2026-11-22T09:00:00Z INFO started\n");
@@ -1965,7 +1987,10 @@ mod tests {
         .expect("stage second");
         let first_chunks = staged_chunks(&conn, first);
         let second_chunks = staged_chunks(&conn, second);
-        assert_eq!(first_chunks, second_chunks, "unchanged embeds retain chunks/hashes");
+        assert_eq!(
+            first_chunks, second_chunks,
+            "unchanged embeds retain chunks/hashes"
+        );
         let first_records = chunk_classifications(&conn, first)
             .expect("records")
             .expect("records present");

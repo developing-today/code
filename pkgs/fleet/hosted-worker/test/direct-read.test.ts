@@ -94,7 +94,7 @@ test("mint: the token carries read-only access, the metadata DB, the binding, an
   const { header, payload } = parseJwt(token);
   assert.equal(header.alg, "EdDSA");
   assert.equal(header.kid, KEY_ID);
-  assert.equal(payload.a, "read-only");
+  assert.equal(payload.a, "ro");
   assert.equal(payload.id, METADATA_DB_ID);
   assert.equal(payload.binding_id, BINDING_A);
   assert.equal(payload.iat, NOW);
@@ -135,7 +135,7 @@ test("mint: refuses unconfigured, malformed binding, and out-of-range TTLs", asy
 test("inspect: a write-capable token is refused — direct access is read-only", async () => {
   const { config, privateKey } = await makeMintMaterial();
   const forged = await signRaw(privateKey, {
-    a: "full-access",
+    a: "rw",
     id: METADATA_DB_ID,
     binding_id: BINDING_A,
     iat: NOW,
@@ -147,7 +147,7 @@ test("inspect: a write-capable token is refused — direct access is read-only",
 
 test("inspect: the queue DB and any other DB are refused — metadata only", async () => {
   const { config, privateKey } = await makeMintMaterial();
-  const base = { a: "read-only", binding_id: BINDING_A, iat: NOW, exp: NOW + 600 };
+  const base = { a: "ro", binding_id: BINDING_A, iat: NOW, exp: NOW + 600 };
   const queueToken = await signRaw(privateKey, { ...base, id: QUEUE_DB_ID });
   assert.deepEqual(await inspectDirectReadToken(queueToken, config, NOW), {
     status: "refused",
@@ -172,7 +172,7 @@ test("inspect: expired and expiry-less tokens are refused", async () => {
     reason: "expired",
   });
   const noExpiry = await signRaw(privateKey, {
-    a: "read-only",
+    a: "ro",
     id: METADATA_DB_ID,
     binding_id: BINDING_A,
     iat: NOW,
@@ -195,7 +195,7 @@ test("inspect: tampered, unknown-key, and cross-account-shaped tokens are refuse
   const rebound = b64url(
     new TextEncoder().encode(
       JSON.stringify({
-        a: "read-only",
+        a: "ro",
         id: METADATA_DB_ID,
         binding_id: BINDING_B,
         iat: NOW,
@@ -209,7 +209,7 @@ test("inspect: tampered, unknown-key, and cross-account-shaped tokens are refuse
   });
   const unknownKey = await signRaw(
     privateKey,
-    { a: "read-only", id: METADATA_DB_ID, binding_id: BINDING_A, iat: NOW, exp: NOW + 600 },
+    { a: "ro", id: METADATA_DB_ID, binding_id: BINDING_A, iat: NOW, exp: NOW + 600 },
     { alg: "EdDSA", typ: "JWT", kid: "no-such-key" },
   );
   assert.deepEqual(await inspectDirectReadToken(unknownKey, config, NOW), {

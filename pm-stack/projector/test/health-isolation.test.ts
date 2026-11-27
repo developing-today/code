@@ -114,6 +114,10 @@ describe("/health isolation (#9850)", () => {
   });
 
   test("health keeps its response shape on the plain shared-client path", async () => {
+    for (let i = 0; i < 24; i++) {
+      await upsertComment(db, commentRow(i));
+    }
+
     const res = await handleRequest(new Request("http://127.0.0.1:7801/health"), db, env);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; comments: number };

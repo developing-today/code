@@ -205,8 +205,9 @@ allowlist, and the two public routes `GET /health` and
 
 The direct-read mint (#12592) issues scoped, expiring, read-only
 libsql tokens bound to the metadata database only. The token claims
-are `a: "read-only"`, `id`, `binding_id` and `exp`, and the package
-ships a scope inspector beside the mint. The queue database is
+are `a: "ro"` (libSQL's wire enum for read permission), `id`,
+`binding_id` and `exp`, and the package ships a scope inspector beside
+the mint. The queue database is
 refused: the mint is for the metadata store, not the broker's store.
 The wiring today is **library only** — no HTTP route and no CLI verb
 expose the mint (grep-verified in the survey).

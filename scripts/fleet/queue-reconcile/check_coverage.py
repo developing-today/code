@@ -1026,6 +1026,7 @@ def enqueue_packet(
     file is unique per enqueue: an ad-hoc run overlapping the scheduled
     one must never overwrite or delete the other's packet.
     """
+
     def run_once(candidate: dict) -> subprocess.CompletedProcess:
         payload = candidate["payload"]
         repo_slug = payload["repo"].replace("/", "-")

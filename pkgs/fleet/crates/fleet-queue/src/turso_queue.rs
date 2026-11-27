@@ -157,6 +157,60 @@ mod tests {
     }
 
     #[test]
+    fn park_time_condition_floor_9179() {
+        // #9179 (c)4, oracle: the audited failure shape — a time
+        // condition horizon later than the requested lapse term.
+        // The lapse term must rise to the condition's `until`;
+        // every other shape leaves the park untouched.
+        let cond = json!({"kind": "time", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "absolute"),
+            "a later time-until raises the lapse term to the condition horizon"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2027-01-05T00:00:00Z".to_string(), "absolute"),
+            ("2027-01-05T00:00:00Z".to_string(), "absolute"),
+            "a lapse term already past the condition stands"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-12-27T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "relative"),
+            "an equal horizon is not a raise"
+        );
+        let ci = json!({"kind": "ci", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&ci, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "non-time conditions never raise the lapse term"
+        );
+        let garbage = json!({"kind": "time", "until": "banana"});
+        assert_eq!(
+            apply_time_condition_floor(&garbage, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "an unparseable until leaves the park as requested"
+        );
+        let missing = json!({"kind": "time"});
+        assert_eq!(
+            apply_time_condition_floor(&missing, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "a time condition with no until leaves the park as requested"
+        );
+        // Wiring oracle: verb_park applies the floor to the final
+        // condition before storing the row.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_park(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn verb_release(").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("apply_time_condition_floor(&condition, not_before, park_kind)"),
+            "verb_park must floor the lapse term at the time condition's until"
+        );
+    }
+
+    #[test]
     fn enqueue_insert_stamps_required_budget_column_3418() {
         // #3418 (#4712) oracle: the live enqueue INSERT persists the
         // effective requirement in the queryable column (NULL when
@@ -371,10 +425,7 @@ mod tests {
             );
         }
         // No route: route_declaration reads None (unrouted, legacy).
-        assert_eq!(
-            crate::validate::route_declaration(&base["payload"]),
-            None
-        );
+        assert_eq!(crate::validate::route_declaration(&base["payload"]), None);
     }
 
     #[test]
@@ -3262,6 +3313,35 @@ mod tests {
     }
 
     #[test]
+    fn claim_contention_sql_oracle_13602() {
+        // The fixture benchmark isolates the queued branch of the real
+        // default predicate and the id/status/attempts/timer recheck in
+        // claim_update_sql. Keep those seams visible so SQL drift fails
+        // before the Python contention oracle runs.
+        let src = test_source();
+        let pick = seg8217(&src, "pub(crate) fn default_pick_predicate(", "\npub(crate) fn handoff_pick_predicate(");
+        assert!(pick.contains("status = 'queued' AND attempts < max_attempts"));
+        assert!(pick.contains("not_before IS NULL OR not_before <= ?"));
+        let update = seg8217(&src, "pub(crate) fn claim_update_sql(", "\n/// The default (lane) pick predicate");
+        assert!(update.contains("WHERE id = ?"));
+        assert!(update.contains("AND ( {pick_predicate} )"));
+        assert!(update.contains("{PLATFORM_LIMIT_PICK_CLAUSE}"));
+
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claim_contention.py"))
+            .arg("--verify")
+            .output()
+            .expect("claim contention oracle requires Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "claim contention oracle failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn claim_quarantine_budget_is_separate_from_race_budget_9609() {
         // #9609 oracle: quarantines in the claim pick loop carry
         // their own budget (MAX_CLAIM_QUARANTINES_PER_CALL), sized
@@ -3608,12 +3688,18 @@ mod tests {
             "status": "parked", "progress": {}, "result": {},
             "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
         });
-        assert_eq!(time_recheck_verdict(&parked, now), TimeRecheck::NotApplicable);
+        assert_eq!(
+            time_recheck_verdict(&parked, now),
+            TimeRecheck::NotApplicable
+        );
         let other = json!({
             "status": "blocked", "progress": {}, "result": {},
             "ready_condition": {"kind": "task_terminal", "task_id": 42},
         });
-        assert_eq!(time_recheck_verdict(&other, now), TimeRecheck::NotApplicable);
+        assert_eq!(
+            time_recheck_verdict(&other, now),
+            TimeRecheck::NotApplicable
+        );
     }
 
     #[test]

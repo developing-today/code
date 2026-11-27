@@ -87,8 +87,7 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    const envelope =
-      raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+    const envelope = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
     const candidate = envelope.decisionSet !== undefined ? envelope.decisionSet : raw;
     const v = validateDecisionSet(candidate);
     if (!v.ok) {

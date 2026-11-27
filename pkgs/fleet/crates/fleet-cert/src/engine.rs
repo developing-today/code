@@ -27,7 +27,7 @@ use crate::model::{
     ParentRef, RootCreateRequest,
 };
 use crate::naming::{GenerationPartition, slugify};
-use crate::profile::{check_broker_sans, resolve_profile, KeyCustody, SanPolicy};
+use crate::profile::{KeyCustody, SanPolicy, check_broker_sans, resolve_profile};
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
