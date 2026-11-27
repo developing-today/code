@@ -156,6 +156,7 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
         .assign_database_identities(&mut |id| Ok(format!("new-database-{id}")))
         .unwrap();
     let moves = rehome_moved_sources(&previous, &mut current).unwrap();
+    current.validate_inventory_reconciles().unwrap();
 
     assert_eq!(moves.len(), 1);
     assert_eq!(moves[0].data_source_id, "ds-move");
@@ -185,6 +186,10 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
         current.row_records.contains_key("row-missing"),
         "source deletion remains report-only"
     );
+    assert!(
+        current.page_id_to_note_id.contains_key("row-missing"),
+        "a missing source object keeps its stable note identity"
+    );
 
     let old_active = current
         .schema_claim_history
@@ -211,5 +216,42 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
                 && !record.superseded
         }),
         "unmoved source claims remain current on the old database"
+    );
+}
+
+/// Oracle: removing the new fields from a serialized prior manifest simulates
+/// pre-slice manifests; re-homing must reconstruct old schema claims from its
+/// recorded inventory before superseding them.
+#[test]
+fn legacy_manifest_reconstructs_schema_history_when_a_source_moves() {
+    let previous = prepare_previous();
+    let mut encoded = serde_json::to_value(&previous).unwrap();
+    let fields = encoded.as_object_mut().unwrap();
+    fields.remove("schema_claim_history");
+    fields.remove("moved_data_sources");
+    let previous: Manifest = serde_json::from_value(encoded).unwrap();
+    assert!(previous.schema_claim_history.is_empty());
+
+    let mut current = manifest_for("current");
+    current
+        .assign_database_identities(&mut |id| Ok(format!("new-database-{id}")))
+        .unwrap();
+    rehome_moved_sources(&previous, &mut current).unwrap();
+
+    assert!(
+        current.schema_claim_history.iter().any(|record| {
+            record.claim.data_source_id == "ds-move"
+                && record.database_id == "db-old"
+                && record.superseded
+        }),
+        "legacy claims are reconstructed, then retained as superseded history"
+    );
+    assert!(
+        current.schema_claim_history.iter().any(|record| {
+            record.claim.data_source_id == "ds-move"
+                && record.database_id == "db-new"
+                && !record.superseded
+        }),
+        "the moved source's schema is current on its new database note"
     );
 }

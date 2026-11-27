@@ -30,7 +30,8 @@ pub struct ReimportPlan {
 }
 
 impl ReimportPlan {
-    /// IDs whose source data should be imported; missing objects are report-only.
+    /// Import units for new/changed objects; data-source changes map to their
+    /// parent database, the converter's unit. Missing objects are report-only.
     pub fn import_ids(&self) -> Vec<String> {
         self.changes
             .iter()
@@ -125,6 +126,12 @@ pub fn rehome_moved_sources(
     // Work on a copy so malformed inventories or missing destination identities
     // cannot leave the caller with a partially reconciled manifest.
     let mut next = current.clone();
+    let plan = plan_reimport(&previous.inventory, &next.inventory)?;
+    let changes: BTreeMap<String, ChangeKind> = plan
+        .changes
+        .into_iter()
+        .map(|change| (change.object_id, change.kind))
+        .collect();
     let old_parents = source_parents(&previous.inventory)?;
     let new_parents = source_parents(&next.inventory)?;
     let mut moves = Vec::new();
@@ -160,6 +167,52 @@ pub fn rehome_moved_sources(
         next.database_id_to_note_id
             .insert(id.clone(), note_id.clone());
     }
+    for (id, identity) in &previous.block_id_to_identity {
+        next.block_id_to_identity
+            .insert(id.clone(), identity.clone());
+    }
+    for (id, blob) in &previous.file_blobs {
+        next.file_blobs
+            .entry(id.clone())
+            .or_insert_with(|| blob.clone());
+    }
+    for (id, claims) in &previous.comment_claims {
+        next.comment_claims
+            .entry(id.clone())
+            .or_insert_with(|| claims.clone());
+    }
+    for (id, coverage) in &previous.comments_coverage {
+        next.comments_coverage
+            .entry(id.clone())
+            .or_insert_with(|| coverage.clone());
+    }
+    for (id, losses) in &previous.page_losses {
+        next.page_losses
+            .entry(id.clone())
+            .or_insert_with(|| losses.clone());
+    }
+    for (path, matched) in &previous.export_matches {
+        next.export_matches
+            .entry(path.clone())
+            .or_insert_with(|| matched.clone());
+    }
+    for (id, identity) in &previous.degraded_identities {
+        next.degraded_identities
+            .entry(id.clone())
+            .or_insert_with(|| identity.clone());
+    }
+    for (id, reason) in &previous.comments_uncovered_reasons {
+        next.comments_uncovered_reasons
+            .entry(id.clone())
+            .or_insert_with(|| reason.clone());
+    }
+    for (id, progress) in &previous.objects {
+        if next.inventory.objects.contains_key(id)
+            && matches!(changes.get(id), Some(&ChangeKind::Unchanged))
+        {
+            next.objects.insert(id.clone(), progress.clone());
+        }
+    }
 
     // Retain earlier row records. For rows in a moved source, update only the
     // database membership reference; page identity and imported row values stay
@@ -170,6 +223,9 @@ pub fn rehome_moved_sources(
             .or_insert_with(|| record.clone());
     }
     for (page_id, row) in &mut next.row_records {
+        if let Some(note_id) = next.page_id_to_note_id.get(page_id) {
+            row.note_id = note_id.clone();
+        }
         let Some(source) = next.inventory.objects.get(page_id) else {
             continue;
         };
@@ -275,7 +331,9 @@ fn inventory_index(inventory: &Inventory) -> Result<BTreeMap<String, &InventoryO
     }
     for (database_id, sources) in &inventory.data_sources {
         for source in sources {
-            if source.kind != "data_source" || source.parent_id.as_deref() != Some(database_id) {
+            if source.kind != "data_source"
+                || source.parent_id.as_deref() != Some(database_id.as_str())
+            {
                 bail!(
                     "data source {} has inconsistent database membership under {database_id}",
                     source.id
@@ -306,7 +364,9 @@ fn source_parents(inventory: &Inventory) -> Result<BTreeMap<String, String>> {
     let mut parents = BTreeMap::new();
     for (database_id, sources) in &inventory.data_sources {
         for source in sources {
-            if source.kind != "data_source" || source.parent_id.as_deref() != Some(database_id) {
+            if source.kind != "data_source"
+                || source.parent_id.as_deref() != Some(database_id.as_str())
+            {
                 bail!(
                     "data source {} has inconsistent database membership under {database_id}",
                     source.id
