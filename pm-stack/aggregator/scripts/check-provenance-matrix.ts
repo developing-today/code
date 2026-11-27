@@ -15,7 +15,10 @@
 //   - install.sh renders PM_AGG_SOURCE=live for the deployment.
 //   - src/sources/live.ts wires items pool-first (fleet feed Project
 //     pool, then projector) and comments via the projector, with no
-//     fixture fallback for either in live mode (#14065).
+//     fixture fallback for either in live mode (#14065). Since the
+//     #8570 seam the projector reads go through the ProjectorReader
+//     (default: the HTTP reader built from cfg.projector.baseUrl), so
+//     the checks below pin that wiring, not the pre-seam call shape.
 //   - src/program.ts (/program) must not claim the comment projection
 //     is fixture-backed or still to come.
 //   - README.md carries the matrix, naming the projector and Pad.
@@ -54,15 +57,19 @@ check(install.includes("PM_AGG_SOURCE=live"), "install.sh renders PM_AGG_SOURCE=
 
 const live = read("pm-stack/aggregator/src/sources/live.ts");
 const poolIdx = live.indexOf("poolFromFeed(feed)");
-const projectorItemsIdx = live.indexOf("projectorItems(cfg.projector.baseUrl");
+const projectorItemsIdx = live.indexOf("projectorReader.items(");
 check(
   poolIdx >= 0 && projectorItemsIdx > poolIdx,
   "live.ts items() resolves the fleet-feed Project pool before the projector (pool-first)",
 );
+check(
+  live.includes("createHttpProjectorReader(cfg.projector.baseUrl"),
+  "live.ts defaults its ProjectorReader to the HTTP projector at cfg.projector.baseUrl",
+);
 const commentsStart = live.indexOf("async comments(refs)");
 const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStart + 600) : "";
 check(
-  commentsBody.includes("projectorComments(cfg.projector.baseUrl"),
+  commentsBody.includes("projectorReader.comments(refs)"),
   "live.ts comments() reads the GitHub comment projection from the projector",
 );
 check(
