@@ -66,6 +66,7 @@ pub mod inventory;
 pub mod model;
 pub mod naming;
 pub mod ocsp;
+pub mod pkcs12;
 pub mod profile;
 pub mod publish;
 pub mod replace;
