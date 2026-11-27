@@ -228,8 +228,11 @@ impl FunctionHost {
     /// Returns an error when no active instance exists or when the guest
     /// update or view traps or otherwise fails.
     pub fn call(&mut self, user: &str, name: &str, input: &[u8]) -> anyhow::Result<Vec<u8>> {
-        let _ = (user, name, input);
-        anyhow::bail!("function call is not implemented")
+        let instance = self
+            .active_instance_mut(user, name)
+            .ok_or_else(|| anyhow::anyhow!("no active function instance for ({user}, {name})"))?;
+        instance.update(0, input)?;
+        instance.view()
     }
 
     /// The active version's instance of (user, name), if any.
