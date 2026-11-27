@@ -83,7 +83,7 @@ def exercise(directory, cli):
             env=env,
             capture_output=True,
         )
-        assert invalid.returncode == 1 and b"permitted" in invalid.stderr
+        assert invalid.returncode == 2 and b"permitted" in invalid.stderr
         assert not scratch.exists()
     # A transfer reflected in the canonical repository URL must fail closed.
     transfer = subprocess.run(
