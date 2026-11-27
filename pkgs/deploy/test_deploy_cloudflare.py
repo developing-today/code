@@ -106,15 +106,36 @@ class PlanTests(unittest.TestCase):
         finally:
             deploy.cf_get_serving = orig
 
-    def test_other_cloudflare_names_still_refuse(self):
-        # Slice-2 oracle stays green: only the lifecycle set has a
-        # Cloudflare path; any other cloudflare/container target still
-        # reports the different-slice refusal.
+    def test_other_cloudflare_names_get_plans(self):
+        # #16239 item 1 (from PR #16095): cloudflare is a generic
+        # activation class -- every cloudflare target gets deploy and
+        # rollback plans, not only cf-container-hello.
         other = dict(DEFN)
-        self.assertIsNone(deploy.plan_deploy("other-worker", other, []))
-        steps, error = deploy.plan_rollback("other-worker", other, [])
-        self.assertIsNone(steps)
-        self.assertIn("not an activation-class", error)
+        steps = deploy.plan_deploy("other-worker", other, [])
+        self.assertIsNotNone(steps)
+        self.assertIn("publish", "\n".join(steps))
+        with tempfile.TemporaryDirectory() as state:
+            # record() writes under NAME; plan for the other name needs
+            # its own two generations with recorded versions.
+            for gen, ver in ((1, "v1"), (2, "v2")):
+                deploy.record_generation(
+                    "other-worker",
+                    artifact=other["package"],
+                    source_rev=f"rev{gen}",
+                    actor="tester",
+                    action="deploy",
+                    generation=gen,
+                    result="activated",
+                    at=f"2026-11-08T00:0{gen}:00Z",
+                    explicit_state=state,
+                    cloudflare_version=ver,
+                    cloudflare_deployment=f"d{gen}",
+                )
+            steps, error = deploy.plan_rollback(
+                "other-worker", other, deploy.read_generations("other-worker", state)
+            )
+            self.assertIsNone(error)
+            self.assertIn("no rebuild, no re-upload", "\n".join(steps))
 
     def test_rollback_plan_needs_recorded_version(self):
         with tempfile.TemporaryDirectory() as state:
@@ -370,6 +391,160 @@ class CliDryRunTests(unittest.TestCase):
             self.assertIn("no rebuild", proc.stdout)
             after = deploy.read_generations(NAME, state)
             self.assertEqual(before, after)
+
+
+class ProviderBoundaryTests(unittest.TestCase):
+    """#16239 item 3 (adapted from PR #16095): the cf_* provider
+    boundary itself, with run_cmd faked -- the app-output parsing path
+    the cf_*-faking suites above cannot reach.
+
+    Oracle: the deploy app answers one JSON object on the last
+    non-empty stdout line; progress lines before it are ignored, an
+    app-reported failure ({"ok": false, "error": ...}) surfaces as a
+    CloudflareError carrying the app's error, and a nonzero exit is a
+    failed step.
+    """
+
+    def patch_run_cmd(self, fake):
+        orig = deploy.run_cmd
+        deploy.run_cmd = fake
+        return orig
+
+    def test_app_provider_parses_last_json_line(self):
+        seen = []
+
+        def fake_run_cmd(argv):
+            seen.append(argv)
+            return (
+                0,
+                'progress line\n{"version_id": "v9", "deployment_id": "d9"}\n',
+                "",
+            )
+
+        orig = self.patch_run_cmd(fake_run_cmd)
+        try:
+            serving = deploy.cf_get_serving(NAME, DEFN)
+        finally:
+            deploy.run_cmd = orig
+        self.assertEqual(serving, {"version_id": "v9", "deployment_id": "d9"})
+        self.assertEqual(
+            seen,
+            [[
+                "/nix/store/cf-container-hello-1.0/bin/cf-container-hello-deploy",
+                "status",
+                "--json",
+            ]],
+        )
+
+    def test_app_provider_surfaces_app_failure(self):
+        orig = self.patch_run_cmd(
+            lambda argv: (0, '{"ok": false, "error": "nope"}\n', "")
+        )
+        try:
+            with self.assertRaises(deploy.CloudflareError) as ctx:
+                deploy.cf_publish(NAME, DEFN)
+        finally:
+            deploy.run_cmd = orig
+        self.assertIn("nope", str(ctx.exception))
+
+    def test_app_provider_nonzero_exit_is_a_failed_step(self):
+        orig = self.patch_run_cmd(lambda argv: (3, "", "app exploded"))
+        try:
+            with self.assertRaises(deploy.CloudflareError) as ctx:
+                deploy.cf_activate_version(NAME, DEFN, "v1")
+        finally:
+            deploy.run_cmd = orig
+        self.assertIn("exit 3", str(ctx.exception))
+
+    def test_app_provider_invalid_json_is_a_failed_step(self):
+        orig = self.patch_run_cmd(lambda argv: (0, "not json\n", ""))
+        try:
+            with self.assertRaises(deploy.CloudflareError) as ctx:
+                deploy.cf_get_serving(NAME, DEFN)
+        finally:
+            deploy.run_cmd = orig
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+
+class RollbackUnverifiableTests(unittest.TestCase):
+    """#16239 item 3: when the bindings query itself fails, rollback
+    refuses before mutation -- the provider is never asked to
+    re-activate."""
+
+    def test_rollback_refuses_when_bindings_unverifiable(self):
+        with tempfile.TemporaryDirectory() as state:
+            record(state, 1, cloudflare_version="v1", cloudflare_deployment="d1")
+            record(state, 2, cloudflare_version="v2", cloudflare_deployment="d2")
+            entries = deploy.read_generations(NAME, state)
+            activated = []
+
+            def boom(name, defn, version_id):
+                raise deploy.CloudflareError("verify-bindings exploded")
+
+            def fake_activate(name, defn, version_id):
+                activated.append(version_id)
+                return {"version_id": version_id, "deployment_id": "dx"}
+
+            orig_verify = deploy.cf_verify_bindings
+            orig_activate = deploy.cf_activate_version
+            deploy.cf_verify_bindings = boom
+            deploy.cf_activate_version = fake_activate
+            try:
+                code, lines = deploy.execute_rollback_cloudflare(
+                    NAME, DEFN, entries, state=state, actor="tester"
+                )
+            finally:
+                deploy.cf_verify_bindings = orig_verify
+                deploy.cf_activate_version = orig_activate
+            self.assertEqual(code, 1)
+            self.assertIn("REFUSED", lines[0])
+            self.assertEqual(activated, [])
+
+
+class RequiredBindingsTests(unittest.TestCase):
+    """#16239 item 2 decision: the required-bindings standard is the
+    union of the registered durable-object set and the definition's
+    required secret bindings."""
+
+    def test_required_bindings_union(self):
+        self.assertEqual(
+            list(deploy.cf_required_bindings(NAME, DEFN)), REQUIRED
+        )
+        with_secrets = dict(DEFN, secrets=["ACCESS_TOKEN"])
+        self.assertEqual(
+            list(deploy.cf_required_bindings(NAME, with_secrets)),
+            REQUIRED + ["ACCESS_TOKEN"],
+        )
+        other = dict(DEFN, secrets=["ACCESS_TOKEN"])
+        self.assertEqual(
+            list(deploy.cf_required_bindings("other-worker", other)),
+            ["ACCESS_TOKEN"],
+        )
+
+    def test_rollback_refuses_when_secret_binding_missing(self):
+        with tempfile.TemporaryDirectory() as state:
+            record(state, 1, cloudflare_version="v1", cloudflare_deployment="d1")
+            record(state, 2, cloudflare_version="v2", cloudflare_deployment="d2")
+            entries = deploy.read_generations(NAME, state)
+            activated = []
+            secret_defn = dict(DEFN, secrets=["ACCESS_TOKEN"])
+            orig_bindings = deploy.cf_version_bindings
+            orig_activate = deploy.cf_activate_version
+            # The version carries the durable-object bindings but not
+            # the definition's required secret binding.
+            deploy.cf_version_bindings = lambda n, d, v: list(REQUIRED)
+            deploy.cf_activate_version = lambda n, d, v: activated.append(v)
+            try:
+                code, lines = deploy.execute_rollback_cloudflare(
+                    NAME, secret_defn, entries, state=state, actor="tester"
+                )
+            finally:
+                deploy.cf_version_bindings = orig_bindings
+                deploy.cf_activate_version = orig_activate
+            self.assertEqual(code, 1)
+            self.assertIn("REFUSED", lines[0])
+            self.assertIn("ACCESS_TOKEN", lines[0])
+            self.assertEqual(activated, [])
 
 
 if __name__ == "__main__":
