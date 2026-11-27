@@ -20,7 +20,7 @@
 // leaves the key holder; the store keeps only the public key the
 // binding already publishes.
 
-import { blake3 } from "./blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex, hexToBytes, verifyEd25519 } from "./ed25519.ts";
 import type { BridgeStore } from "./bridge-store.ts";
 
