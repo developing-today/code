@@ -221,9 +221,11 @@ def _stmt(sql, args):
 # ------------------------------------------------------- schema reading
 def read_schema(client):
     """All user schema objects as (type, name, tbl_name, sql), in
-    creation order. Internal sqlite_% objects and this system's own
-    meta table are excluded: the meta table is written by the export,
-    not copied from the source."""
+    creation order. Internal sqlite_% objects, Cloudflare-internal
+    _cf_* objects, Turso-internal __turso_internal_* bookkeeping, and
+    this system's own meta table are excluded: none of them is queue
+    user data, and none is ever part of a backup copy. The meta table
+    is written by the export, not copied from the source."""
     _cols, rows = client.execute(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
@@ -232,6 +234,13 @@ def read_schema(client):
         # (SQLITE_AUTH, seen live on fleet-queue 2026-11-26, #14943);
         # they are not user data and never part of a backup copy.
         "AND substr(name, 1, 4) <> '_cf_' "
+        # Turso/libSQL-internal bookkeeping rides along when the plane
+        # is seeded from Turso, and the backup gains companion rows
+        # after an import (two one-row __turso_internal_seq_* tables
+        # observed on fleet-queue-backup 2026-11-27, #14943). Both the
+        # export record and the drill re-read skip them, or every drill
+        # refuses a faithful copy as smeared.
+        "AND substr(name, 1, 17) <> '__turso_internal_' "
         "AND name <> ? ORDER BY rowid",
         (META_TABLE,),
     )
