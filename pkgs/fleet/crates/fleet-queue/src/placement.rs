@@ -4222,4 +4222,98 @@ mod tests {
         assert_eq!(cap.free_slots, Some(35));
         assert!(cap.summary.contains("simulated"), "{}", cap.summary);
     }
+
+    // Oracle (developing-today/code#15651): a dispatch-command input
+    // becomes GitHub run metadata the moment it is POSTed, so a
+    // command carrying a locally-resolvable laptop-tier credential
+    // value must die by secret NAME before the POST — never
+    // forwarding the value, and never echoing the command that
+    // carries it.
+    fn stub_resolver<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_command_carrying_secret_value() {
+        use super::adapters::reject_secrets_in_command;
+        let value = "bearer-value-0123456789abcdef";
+        let pairs = [("desktop-commander.machine-bearer", value)];
+        let resolve = stub_resolver(&pairs);
+        let cmd = format!("fleet commander exec -- echo {value}");
+        let err = match reject_secrets_in_command(&cmd, &resolve) {
+            Ok(()) => panic!("a command carrying the T1 bearer value must die"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("desktop-commander.machine-bearer"),
+            "{}",
+            err.0
+        );
+        assert!(!err.0.contains(value), "the error must not echo the value");
+        assert!(!err.0.contains(&cmd), "the error must not echo the command");
+    }
+
+    #[test]
+    fn dispatch_allows_command_without_secret_values() {
+        use super::adapters::reject_secrets_in_command;
+        let pairs = [(
+            "desktop-commander.machine-bearer",
+            "bearer-value-0123456789abcdef",
+        )];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_skips_secrets_it_cannot_resolve() {
+        // Fail-open on resolution failure: when the broker cannot
+        // answer there is nothing to compare against, and the fleet
+        // stays dispatchable during a secrets-infra outage. A
+        // positive match always fails closed (previous test).
+        use super::adapters::reject_secrets_in_command;
+        let resolve = stub_resolver(&[]);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_ignores_short_secret_values() {
+        // Short strings match innocent commands by accident (a
+        // port, a single word); real bearers and tokens are far
+        // longer, so values under the floor never trigger.
+        use super::adapters::{embedded_secret_name, reject_secrets_in_command};
+        assert_eq!(
+            embedded_secret_name("run on port 8080 now", &[("s", "8080")]),
+            None
+        );
+        let pairs = [("fleet.laptop-agent-token", "abc")];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("echo abc", &resolve).is_ok());
+    }
+
+    #[test]
+    fn embedded_secret_reports_the_matching_name() {
+        use super::adapters::{DISPATCH_SECRET_NAMES, embedded_secret_name};
+        assert!(DISPATCH_SECRET_NAMES.contains(&"desktop-commander.machine-bearer"));
+        assert!(DISPATCH_SECRET_NAMES.contains(&"fleet.laptop-agent-token"));
+        let found = embedded_secret_name(
+            "curl -H 'X-Agent-Token: agent-token-0123456789abcdef' https://laptop/",
+            &[
+                (
+                    "desktop-commander.machine-bearer",
+                    "bearer-value-0123456789abcdef",
+                ),
+                ("fleet.laptop-agent-token", "agent-token-0123456789abcdef"),
+            ],
+        );
+        assert_eq!(found, Some("fleet.laptop-agent-token"));
+        assert_eq!(
+            embedded_secret_name("nix build .#mcpx", &[("s", "v")]),
+            None
+        );
+    }
 }
