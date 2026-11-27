@@ -64,7 +64,7 @@ describe("GitHub metadata webhook listener", () => {
       const response = await handler(signedRequest({}));
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "generated" });
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")?.indexes.directParentNumber).toBe(9060);
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")?.indexes.directParentNumber).toBe(9060);
       expect(writes).toHaveLength(1);
       expect(writes[0]?.body).toContain("<!-- pm-metadata:start -->");
       expect(enqueued).toHaveLength(0);
@@ -92,7 +92,7 @@ describe("GitHub metadata webhook listener", () => {
       const response = await handler(signedRequest({}, "issues", "opened", "wrong-secret"));
       expect(response.status).toBe(401);
       expect(lookedUpEpics).toBe(false);
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")).toBeNull();
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")).toBeNull();
     } finally {
       db.close();
     }
@@ -123,7 +123,7 @@ describe("GitHub metadata webhook listener", () => {
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "needs-triage" });
       expect(enqueued).toHaveLength(1);
       expect(enqueued[0]?.dedupe_key).toBe("repo-health:v1:triage:developing-today/code:issue:4242");
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")).toBeNull();
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")).toBeNull();
     } finally {
       db.close();
     }
@@ -198,7 +198,7 @@ describe("GitHub metadata webhook listener", () => {
       const response = await handler(request);
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "generated" });
-      expect(getPmMetadata(db, "github:developing-today/code#pr/4243")?.indexes.directParentNumber).toBe(9060);
+      expect(getPmMetadata(db, "gh:developing-today/code#pr:4243")?.indexes.directParentNumber).toBe(9060);
       expect(writes).toHaveLength(1);
     } finally {
       db.close();
