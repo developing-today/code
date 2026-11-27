@@ -119,7 +119,7 @@ if start < 0:
     sys.exit(1)
 end = raw.find(b"</hierarchy>", start)
 root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
-def tap_point(node):
+def box_of(node):
     bounds = node.get("bounds") or ""
     nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
     if len(nums) != 4:
@@ -127,10 +127,51 @@ def tap_point(node):
     x1, y1, x2, y2 = (int(n) for n in nums)
     if x2 <= x1 or y2 <= y1:
         return None
-    return bounds, (x1 + x2) // 2, (y1 + y2) // 2
+    return x1, y1, x2, y2
+
+def tap_point(node):
+    box = box_of(node)
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    return node.get("bounds"), (x1 + x2) // 2, (y1 + y2) // 2
+
+def covers(box, cx, cy):
+    x1, y1, x2, y2 = box
+    return x1 <= cx <= x2 and y1 <= cy <= y2
 
 def label_of(node):
     return node.get("text") or node.get("content-desc") or ""
+
+nodes = list(root.iter("node"))
+
+def occluded_by(cx, cy, self_box):
+    # A tap lands on the topmost view at its point: where the target
+    # shares its centre with another tappable node — the bottom tab
+    # bar of the app over page content scrolled beneath it — the tap
+    # lands on the cover, not the target. Ancestors hold the whole
+    # target inside themselves and are not covers: only a node with
+    # its own label, a different box, and the centre but not the
+    # whole target inside it counts. The smaller-box rule keeps the
+    # reverse direction working too: tapping the tab bar itself is
+    # never blocked by the bigger content behind it.
+    sx1, sy1, sx2, sy2 = self_box
+    sarea = (sx2 - sx1) * (sy2 - sy1)
+    for other in nodes:
+        if not (other.get("clickable") == "true" or (other.get("text") or other.get("content-desc"))):
+            continue
+        obox = box_of(other)
+        if obox is None or obox == self_box:
+            continue
+        if not covers(obox, cx, cy):
+            continue
+        ox1, oy1, ox2, oy2 = obox
+        if ox1 <= sx1 and oy1 <= sy1 and ox2 >= sx2 and oy2 >= sy2:
+            continue
+        if (ox2 - ox1) * (oy2 - oy1) >= sarea:
+            continue
+        return other
+    return None
 
 # A match only counts with a real box: the screen read holds the
 # whole page, and a node off the screen reports bounds [0,0][0,0] —
@@ -140,8 +181,9 @@ def label_of(node):
 # recommended option names its button with the word RECOMMENDED in
 # front of the label, so the answer the check taps never starts
 # the text of its button.
+occluded = None
 for mode in ("prefix", "contains"):
-    for node in root.iter("node"):
+    for node in nodes:
         label = label_of(node)
         hit = label.startswith(needle) if mode == "prefix" else needle in label
         if not hit:
@@ -150,10 +192,19 @@ for mode in ("prefix", "contains"):
         if got is None:
             continue
         bounds, cx, cy = got
+        cover = occluded_by(cx, cy, box_of(node))
+        if cover is not None:
+            occluded = (mode, label, bounds, cx, cy, label_of(cover), cover.get("bounds"))
+            continue
         print("tap_xy: %r -> (%s) text=%r bounds=%s tap=%d,%d" % (
             needle, mode, label, bounds, cx, cy), file=sys.stderr)
         print(cx, cy)
         sys.exit(0)
+if occluded is not None:
+    mode, label, bounds, cx, cy, clabel, cbounds = occluded
+    print("tap_xy: %r -> (%s) text=%r bounds=%s tap=%d,%d OCCLUDED by text=%r bounds=%s" % (
+        needle, mode, label, bounds, cx, cy, clabel, cbounds), file=sys.stderr)
+    sys.exit(2)
 # No tappable node matched: say what the screen did hold, so a miss
 # is diagnosable from the run log (run 45574682050 missed a tab five
 # times that the failure dump, seconds later, showed plainly).
@@ -238,8 +289,18 @@ wait_no_text() {
 }
 
 tap_text() {
-  local needle="$1" xy
-  xy="$(tap_xy "$needle")" || return 1
+  local needle="$1" xy rc
+  xy="$(tap_xy "$needle")"
+  rc=$?
+  # Exit 2 names an occluded target: its centre sits under another
+  # tappable node — the answer button scrolled beneath the app's own
+  # bottom tab bar, where the tap would land on the tab and sail to
+  # another list instead of answering (runs 46042225102 and
+  # 46046959172: the tap logged a button centre inside the Needs-me
+  # tab's bounds, the question left the screen by navigation, and
+  # the edge saw nothing). The caller scrolls it clear and looks again.
+  if [ "$rc" -eq 2 ]; then return 2; fi
+  [ "$rc" -eq 0 ] || return 1
   adb shell input tap "$xy"
 }
 
@@ -265,10 +326,20 @@ wait_text_scrolling() {
 # failure dump seconds after the stage-2 tap's own look had missed
 # it. Five looks, a breath between.
 tap_text_retry() {
-  local tries=0
+  local tries=0 rc=1
   until tap_text "$1"; do
+    rc=$?
     tries=$((tries + 1))
     [ "$tries" -ge 5 ] && return 1
+    # An occluded target sits under another tappable node — the
+    # answer button beneath the bottom tab bar. Scroll the page so
+    # the target moves clear of the bar, then look again.
+    if [ "$rc" -eq 2 ]; then
+      echo "offline-check: tap target '$1' is occluded, scrolling it clear (try $tries)" >&2
+      adb shell input swipe 540 1500 540 700 300 >/dev/null 2>&1 || true
+      sleep 2
+      continue
+    fi
     # A system dialog may be all that covers the app — in run
     # 45579940065 the launcher's "isn't responding" dialog came back
     # after the dismissal in wait_text, and every tap look saw only
@@ -401,6 +472,15 @@ echo "offline-check: 3. answered while offline, app swiped away, network back"
 wait_text_scrolling "$ANSWER_LABEL" || fail "the answer '$ANSWER_LABEL' is not shown"
 tap_text_retry "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
 wait_no_text "$QUESTION_TEXT" 30 || fail "the answered question is still listed"
+# The question leaving the screen is not yet proof it was answered:
+# a tap that lands on the bottom tab bar instead of the button sails
+# to another list, and the question is gone because the list is —
+# while nothing was kept and stage 4 sees nothing (runs 46042225102
+# and 46046959172). The answered list still holds its neighbours at
+# the same scroll position, so require one to still be there before
+# swiping the app away. No scrolling here: the list has not moved,
+# and scrolling could sail past the neighbour.
+wait_text "$NEXT_QUESTION_TEXT" 15 || fail "the answer tap may have left the Questions list instead of answering (neighbour question not shown)"
 # The answer is only written to the outbox when its 4.5-second undo
 # window runs out (app.js: later), so the app stays open past that
 # before it is swiped away: swiping sooner would lose the answer with
