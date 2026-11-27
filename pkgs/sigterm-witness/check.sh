@@ -35,18 +35,37 @@ rc=$?
 
 # (4) SIGCHLD ignored on entry (#15781): the wrapper must still read the
 # child's status, never log a guessed code=0, and leave the child's
-# inherited disposition alone. SigIgn bit 17 (0x10000) is SIGCHLD.
-ilog="$tmp/ign.log"
-sh -c "trap '' CHLD; exec \"\$0\" --log \"\$1\" -- sh -c 'exit 7'" "$bin" "$ilog"
-rc=$?
-[ "$rc" = 7 ] && ok "SIGCHLD ignored: child exit 7 passes through" || bad "SIGCHLD ignored: rc=$rc (want 7)"
-grep -q "child-exit code=7 " "$ilog" 2>/dev/null && ok "SIGCHLD ignored: log records code=7" || bad "SIGCHLD ignored: log lacks code=7: $(cat "$ilog" 2>/dev/null)"
-grep -q "child-exit code=0 " "$ilog" 2>/dev/null && bad "SIGCHLD ignored: log claims code=0" || ok "SIGCHLD ignored: no guessed code=0"
-sigign="$(sh -c "trap '' CHLD; exec \"\$0\" --log \"\$1\" -- sh -c 'sed -n \"s/^SigIgn:[[:space:]]*//p\" /proc/\$\$/status'" "$bin" "$tmp/ign2.log")"
-if [ -n "$sigign" ] && [ $((0x$sigign & 0x10000)) -ne 0 ]; then
-  ok "SIGCHLD ignored: child still inherits SIG_IGN"
+# inherited disposition alone. A shell's `trap '' CHLD` is not a reliable
+# way to start a program with SIGCHLD ignored (bash keeps its own
+# handler), so a tiny helper sets SIG_IGN and execs the wrapper.
+# SigIgn bit 17 (0x10000) is SIGCHLD.
+cat >"$tmp/ign-chld.c" <<'EOF'
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc < 2) return 64;
+  signal(SIGCHLD, SIG_IGN);
+  execvp(argv[1], &argv[1]);
+  perror("execvp");
+  return 127;
+}
+EOF
+if "${CC:-cc}" -O2 -Wall -o "$tmp/ign-chld" "$tmp/ign-chld.c"; then
+  ilog="$tmp/ign.log"
+  "$tmp/ign-chld" "$bin" --log "$ilog" -- sh -c 'exit 7'
+  rc=$?
+  [ "$rc" = 7 ] && ok "SIGCHLD ignored: child exit 7 passes through" || bad "SIGCHLD ignored: rc=$rc (want 7)"
+  grep -q "child-exit code=7 " "$ilog" 2>/dev/null && ok "SIGCHLD ignored: log records code=7" || bad "SIGCHLD ignored: log lacks code=7: $(cat "$ilog" 2>/dev/null)"
+  grep -q "child-exit code=0 " "$ilog" 2>/dev/null && bad "SIGCHLD ignored: log claims code=0" || ok "SIGCHLD ignored: no guessed code=0"
+  sigign="$("$tmp/ign-chld" "$bin" --log "$tmp/ign2.log" -- sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status)"
+  if [ -n "$sigign" ] && [ $((0x$sigign & 0x10000)) -ne 0 ]; then
+    ok "SIGCHLD ignored: child still inherits SIG_IGN"
+  else
+    bad "SIGCHLD ignored: child SigIgn=$sigign lacks SIGCHLD"
+  fi
 else
-  bad "SIGCHLD ignored: child SigIgn=$sigign lacks SIGCHLD"
+  bad "SIGCHLD ignored: could not build the ign-chld helper"
 fi
 
 # (2) unwritable log: diagnostic on stderr, child still runs and gets TERM
