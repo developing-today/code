@@ -91,6 +91,36 @@ class ArtifactReuseTests(unittest.TestCase):
         for forbidden in ("nix develop", "cargo build", "build.sh", "roc build"):
             self.assertNotIn(forbidden, consumer_text)
 
+    def test_all_run_scripts_parse_as_bash(self):
+        # Oracle: the shell, not GitHub availability. Every inline run:
+        # script must survive `bash -n`; an apostrophe inside a
+        # double-quoted ${VAR:-default} word is a parse-time failure
+        # (run 45992760834: "unexpected EOF while looking for
+        # matching `''`" in the verify step).
+        scripts = []
+
+        def collect(node):
+            if isinstance(node, dict):
+                run = node.get("run")
+                if isinstance(run, str):
+                    scripts.append(run)
+                for value in node.values():
+                    collect(value)
+            elif isinstance(node, list):
+                for item in node:
+                    collect(item)
+
+        collect(self.workflow["jobs"])
+        self.assertGreater(len(scripts), 0)
+        for index, script in enumerate(scripts):
+            with self.subTest(script_index=index):
+                result = subprocess.run(
+                    ["bash", "-n", "-c", script],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

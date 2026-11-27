@@ -238,7 +238,7 @@ jobs:
               echo "- $game: $(stat -c%s "$wasm") bytes, sha256 $(sha256sum "$wasm" | cut -d' ' -f1)"
             done
             echo "- source run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}"
-            echo "- source artifact ID: ${SOURCE_ARTIFACT_ID:-current run's SHA-named board-games artifact}"
+            echo "- source artifact ID: ${SOURCE_ARTIFACT_ID:-board-games artifact from the current run SHA}"
             echo "- reused existing artifact: ${REUSE}"
             echo "- verification: downloaded artifact; this job did not build either module"
           } >> "$GITHUB_STEP_SUMMARY"
