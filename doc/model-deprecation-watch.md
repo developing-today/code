@@ -62,9 +62,11 @@ Surface 2b), plus event-driven runs on flagship launches. Registry row in
 
 ## 4. Plan-math review actions
 
-- **A1 (open, from this sweep):** reconcile fleet OpenAI catalog seats against the
-  Dec 11 2026 (`gpt-5` family) and Apr 1 2027 (`gpt-5.3-codex`) shutdowns; confirm
-  free-tier bucket mapping in `openai-payg-free` comments still valid post-shutdown.
+- **A1 (closed 2026-11-27):** no affected live route seat found for
+  `gpt-5.3-codex`; the `openai-payg-free` alias maps only the three GPT-6 models
+  still listed in the complimentary-token large group, so its bucket remains valid
+  after the cited shutdowns. No runtime mapping change required. Review record:
+  [`doc/2026-11-27_openai-plan-math-review-7013-a1.md`](2026-11-27_openai-plan-math-review-7013-a1.md).
 - Cadence rule: every future sweep that touches a model in a fleet pool/route/plan
   files the same kind of action here and links it on #7013.
 
@@ -72,3 +74,6 @@ Surface 2b), plus event-driven runs on flagship launches. Registry row in
 
 - 2026-11-24 (task 22909): all six provider surfaces fetched live; seed records
   updated; D1–D9 recorded; A1 filed. Posted on #7013.
+- 2026-11-27 (task 26108): OpenAI API lifecycle and complimentary-token sources
+  rechecked; A1 closed with no runtime mapping change. See the [plan-math review
+  record](2026-11-27_openai-plan-math-review-7013-a1.md).
