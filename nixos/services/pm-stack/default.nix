@@ -407,6 +407,9 @@ in
               # switching this back to "file" is the rollback.
               "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=pm-aggregator.service"
+              # DNS publication (#14968): D1 identifiers for the DNS snapshot publisher
+              "CLOUDFLARE_ACCOUNT_ID=234b866b99ce2b142d7963d8d139cbfa"
+              "PM_AGG_D1_DATABASE_ID=57d15925-b0b8-4466-a92c-c200a6af4c45"
               # #8570: preserve the old quota-gatherer service's state paths
               # when its main() runs inside pm-aggregator.
               "QUOTA_CURRENT_PATH=${aggState}/quota-current.json"
