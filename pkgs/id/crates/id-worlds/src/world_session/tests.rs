@@ -37,6 +37,22 @@ mod tests {
         }
     }
 
+    struct StalledSendIo {
+        inbound: std::collections::VecDeque<Inbound>,
+        send_calls: usize,
+    }
+
+    impl SessionIo for StalledSendIo {
+        async fn recv(&mut self) -> Inbound {
+            self.inbound.pop_front().unwrap_or(Inbound::Closed)
+        }
+
+        async fn send(&mut self, _frame: String) -> bool {
+            self.send_calls += 1;
+            std::future::pending().await
+        }
+    }
+
     struct Peer {
         to_server: mpsc::Sender<Inbound>,
         from_server: mpsc::Receiver<String>,
@@ -1509,6 +1525,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                send_timeout: Duration::from_secs(1),
                 documents_store: None,
             },
         );
@@ -1517,6 +1534,28 @@ mod tests {
         assert!(frame["message"].as_str().unwrap().contains("timed out"));
         assert!(peer.next().await.is_none());
         peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_outbound_send_closes_the_session_after_its_deadline() {
+        let hub = WorldHub::single(service(None));
+        let mut io = StalledSendIo {
+            inbound: std::collections::VecDeque::from([Inbound::Text("not json".to_owned())]),
+            send_calls: 0,
+        };
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(1),
+            send_timeout: Duration::from_millis(10),
+            documents_store: None,
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_session_with(&hub, &mut io, config),
+        )
+        .await
+        .expect("a stalled transport must not keep a session alive");
+        assert_eq!(io.send_calls, 1, "the session attempts its refusal frame once");
     }
 
     #[tokio::test]
