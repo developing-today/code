@@ -168,25 +168,31 @@
           "GITHUB_PERSONAL_ACCESS_TOKEN" = "";
         };
         "failover" = {
+          # mcpx secret names are environment-variable identifiers; map
+          # these runtime slots from the corresponding Fleet source names:
+          # GITHUB_APP_DEVELOPING_TODAY_FLEET_PRIVATE_KEY <- github-app.developing-today-fleet.private-key
+          # KANEO_GITHUB_APP_PRIVATE_KEY <- kaneo.github-app-private-key
+          # GITHUB_APP_BACKUP_PRIVATE_KEY <- github-app.backup-private-key
+          # GITHUB_CLI_DEZREN39_OAUTH_TOKEN <- github-cli.hosts-yml (users.dezren39.oauth_token)
           "identities" = [
             {
               "name" = "developing-today-fleet";
               "kind" = "app";
-              "secret" = "github-app.developing-today-fleet.private-key";
+              "secret" = "GITHUB_APP_DEVELOPING_TODAY_FLEET_PRIVATE_KEY";
               "appId" = 5612056;
               "installationId" = 178567642;
             }
             {
               "name" = "developing.today";
               "kind" = "app";
-              "secret" = "kaneo.github-app-private-key";
+              "secret" = "KANEO_GITHUB_APP_PRIVATE_KEY";
               "appId" = 5454422;
               "installationId" = 174792676;
             }
             {
               "name" = "developing-today-backup";
               "kind" = "app";
-              "secret" = "github-app.backup-private-key";
+              "secret" = "GITHUB_APP_BACKUP_PRIVATE_KEY";
               "appId" = 5562183;
               "installationId" = 177388707;
             }
@@ -194,9 +200,10 @@
               "name" = "dezren39-oauth";
               "kind" = "token";
               # Derived at activation from the dezren39 oauth_token in
-              # Fleet's github-cli.hosts-yml YAML secret. The mcpx runtime
-              # slot is a raw token, so it has its own in-memory name.
-              "secret" = "github-cli.dezren39-oauth-token";
+              # Fleet's github-cli.hosts-yml YAML secret. mcpx runtime
+              # slots are environment-variable names, so these names map
+              # the Fleet source secrets to raw in-memory credentials.
+              "secret" = "GITHUB_CLI_DEZREN39_OAUTH_TOKEN";
             }
           ];
           "statePath" = "/home/user/.local/state/mcpx/github-failover-state.json";
