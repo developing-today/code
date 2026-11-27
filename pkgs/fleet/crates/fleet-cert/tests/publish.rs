@@ -171,6 +171,39 @@ fn apply_stages_exact_public_bytes_idempotently_and_verifies() {
     );
 }
 
+#[test]
+fn apply_refuses_manifest_path_traversal_before_writing() {
+    // Oracle: even a checksum-valid bundle path cannot escape the staging root.
+    let tmp = TempDir::new("traversal");
+    let bundle = root_bundle(&tmp);
+    let manifest_path = bundle.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let entry = manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|f| f["visibility"] == "public")
+        .unwrap();
+    let bytes = std::fs::read(bundle.join(entry["path"].as_str().unwrap())).unwrap();
+    let escaped_rel = "public/../escaped-public.pem";
+    std::fs::write(bundle.join("escaped-public.pem"), &bytes).unwrap();
+    entry["path"] = escaped_rel.into();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let staging = tmp.path().join("traversal-stage");
+    std::fs::create_dir_all(&staging).unwrap();
+    let marker = staging.join("keep.txt");
+    std::fs::write(&marker, b"unchanged").unwrap();
+    assert!(fleet_cert::publish::apply_staging(&bundle, &staging).is_err());
+    assert_eq!(std::fs::read(&marker).unwrap(), b"unchanged");
+    assert!(!tmp.path().join("escaped-public.pem").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_refuses_symlink_escape_before_writing_any_artifacts() {
