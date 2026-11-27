@@ -189,7 +189,7 @@ fleet queue — Repo work queue: enqueue, claim, and complete tasks through the 
 
 Usage: fleet queue <command> [args...]
 Aliases (argv0): repo-queue
-Commands: validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
+Commands: validate, enqueue, list, meta, claim, release, lane, bind, heartbeat, checkpoint, reprioritize, park, wake, block, unblock, dep-recheck, quarantine-recheck, repair, resolution-backfill, cancel, revive, fail, complete, verify-disposition, timeline, history, staleness, needs-user, show, note, link, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
 Status: included in this build
 ```
 

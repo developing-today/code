@@ -185,6 +185,9 @@ type Server struct {
 	calls    *execsvc.CallRegistry
 
 	tokenStore *logstore.TokenStore
+	// keys is the per-user key store (#13659), consulted per request
+	// when auth.mode is permissive or required.
+	keys *KeyStore
 
 	// consumer holds the policy and the schema history behind the things
 	// mcpx asks for itself. See internal/daemon/consumer.go.
@@ -284,6 +287,7 @@ func NewServer(opts Options) (*Server, error) {
 		Events:        events.New(opts.Settings.Int("events.history")),
 		httpErr:       make(chan error, 4),
 		handedOff:     make(chan struct{}),
+		keys:          OpenKeyStore(opts.Paths.State),
 	}
 	// The broker is optional: a daemon whose state directory cannot hold a
 	// database still serves tools, and answers every server question with

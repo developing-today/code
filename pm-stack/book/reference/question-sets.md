@@ -18,7 +18,7 @@ A question set is any surface where the stack asks the owner a question and writ
 - **Where it surfaces:** The push notification itself, and the per-question answer page. The push's first two options become notification actions (`src/sw-source.ts`).
 - **Who answers:** The owner, by tapping a notification action or by using the answer page. On a tap, the service worker posts directly to the answer endpoint with no page open; errors in the service worker are silent, and the answer page remains the fallback.
 - **Where the answer writes back:** `POST /api/needs-drew/&lt;ledgerId&gt;/answer` with `{token, optionId}`; the per-question token in the answer-page URL is the authority. The write-back is the same decisions-ledger resolution machinery as F1: the ledger item's question resolves.
-- **Open point:** D9 — `decisions.ts` states that sets and the per-question store in `needs-drew.ts` are explicitly not the same store. UNVERIFIED: the exact file the single-question answer writes, beyond `src/needs-drew.ts` being named "the question store" there.
+- **Single-question store (D9, settled in source):** `decisions.ts` states that sets and the per-question store in `needs-drew.ts` are not the same store. `recordAnswer` in `pm-stack/aggregator/src/needs-drew.ts` writes it to the needs-Drew question store, the file at `cfg.needsDrewFile`. That path is `PM_AGG_NEEDS_USER_FILE`, else the legacy `PM_AGG_NEEDS_DREW_FILE`, else `needs-user.json` (or the legacy `needs-drew.json` where only that exists) under `~/.local/state/pm-aggregator/`, resolved by `needs-user-state-path.ts`. Decision sets keep their own store, `decisions.json`.
 
 ## F3. Needs-Drew census sets (console `#needs`)
 

@@ -13,11 +13,14 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::*;
 use crate::directory_auth::Caller;
 use crate::directory_view::DirectoryAction;
+use crate::host_opener::{HostedOpener, RootOpener};
 use crate::world::{Authority, Isolation, JoinCapability, WorldScopes};
+use crate::world_hub::{HubLimits, ResolveError, WorldHub, WorldOpener};
 use tempfile::TempDir;
 
 const WORLD: &str = "parity";
@@ -456,5 +459,310 @@ async fn a_program_world_replays_identically_on_a_local_host_and_a_hosted_node()
                 .starts_with(&journal),
             "replay never rewrites the journal"
         );
+    }
+}
+
+/// The names a client may ask a hub for, with the admin token each
+/// carries: the default, the fixture, a missing world with no token and
+/// with a wrong one, two names no world may have, a create, and the
+/// created world asked for again.
+const NAME_PROBES: [(Option<&str>, Option<&str>); 8] = [
+    (None, None),
+    (Some(WORLD), None),
+    (Some("nobody"), None),
+    (Some("nobody"), Some("wrong")),
+    (Some("Not A Name"), None),
+    (Some(".."), Some("admin")),
+    (Some("fresh"), Some("admin")),
+    (Some("fresh"), None),
+];
+
+/// How a hub resolves each of [`NAME_PROBES`].
+async fn resolve_all(hub: &WorldHub) -> Vec<Result<(), ResolveError>> {
+    let mut outcomes = Vec::new();
+    for (name, admin) in NAME_PROBES {
+        outcomes.push(hub.lease(name, admin).await.map(drop));
+    }
+    outcomes
+}
+
+fn root_hub(opener: Arc<dyn WorldOpener>) -> WorldHub {
+    WorldHub::new(
+        opener,
+        Some("admin".to_owned()),
+        WORLD,
+        HubLimits::default(),
+    )
+}
+
+#[tokio::test]
+async fn a_local_host_and_a_hosted_node_resolve_names_alike() {
+    let fixture = TempDir::new().unwrap();
+    let source = fixture.path().join(WORLD);
+    write_fixture(&source).await;
+
+    let local_root = TempDir::new().unwrap();
+    copy_tree(&source, &local_root.path().join(WORLD));
+    let local = root_hub(Arc::new(RootOpener {
+        root: local_root.path().to_path_buf(),
+    }));
+    let local_seen = resolve_all(&local).await;
+    local.shutdown_all().await;
+    assert_eq!(
+        local_seen,
+        vec![
+            Ok(()),
+            Ok(()),
+            Err(ResolveError::UnknownWorld),
+            Err(ResolveError::UnknownWorld),
+            Err(ResolveError::InvalidName),
+            Err(ResolveError::InvalidName),
+            Ok(()),
+            Ok(()),
+        ]
+    );
+
+    // The hosted node runs the admission rule `id serve --world-host`
+    // runs; with host-only settings the operator has started the world.
+    for backend in [false, true] {
+        let root = TempDir::new().unwrap();
+        copy_tree(&source, &root.path().join(WORLD));
+        let host = Arc::new(HostLifecycle::open(root.path()).unwrap());
+        if backend {
+            host.set_pinned(WORLD, true).unwrap();
+            host.set_wake(WORLD, WakeMode::Operator).unwrap();
+            host.operator_transition(
+                WORLD,
+                LifecycleState::Asleep,
+                LifecycleState::Live,
+                "parity-suite",
+            )
+            .unwrap();
+        }
+        let hub = root_hub(Arc::new(HostedOpener::new(
+            RootOpener {
+                root: root.path().to_path_buf(),
+            },
+            Arc::clone(&host),
+        )));
+        assert_eq!(
+            resolve_all(&hub).await,
+            local_seen,
+            "hosted (backend settings: {backend}) resolved names differently"
+        );
+        hub.shutdown_all().await;
+        let created = &host.snapshot().worlds["fresh"];
+        assert_eq!(created.state, LifecycleState::Live);
+        assert_eq!(created.history[0].actor, ADMIN_CREATE);
+        assert!(!host.snapshot().worlds.contains_key("nobody"));
+    }
+
+    // The one difference the design names: a world an operator keeps
+    // asleep does not wake for a client, where a local host opens it.
+    let root = TempDir::new().unwrap();
+    copy_tree(&source, &root.path().join(WORLD));
+    let host = Arc::new(HostLifecycle::open(root.path()).unwrap());
+    host.set_wake(WORLD, WakeMode::Operator).unwrap();
+    let hub = root_hub(Arc::new(HostedOpener::new(
+        RootOpener {
+            root: root.path().to_path_buf(),
+        },
+        Arc::clone(&host),
+    )));
+    assert_eq!(
+        hub.lease(Some(WORLD), None).await.map(drop),
+        Err(ResolveError::Unavailable)
+    );
+    assert_eq!(host.state(WORLD), Some(LifecycleState::Asleep));
+    hub.shutdown_all().await;
+}
+
+/// A program world on both sides: a real Wasm module, content-addressed
+/// under `modules/`, replayed to the same state, and held to the same
+/// ceilings (#10698, the program half of the P6 checklist).
+#[cfg(feature = "sandbox")]
+mod runaway {
+    use super::*;
+    use crate::world_session::module_hash;
+
+    const SPINNER: &str = "spinner";
+
+    /// A guest that accepts its install and spins forever on any input,
+    /// so only the fuel ceiling ends the call.
+    fn spinner_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1 1)
+              (data (i32.const 32) "{}")
+              (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+              (func (export "plaza_free") (param i32 i32))
+              (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+                (loop $spin (br $spin))
+                (i32.const 0))
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 32))
+              (func (export "plaza_records") (param i32) (result i32) (i32.const 32))
+              (func (export "plaza_wants") (param i32) (result i32) (i32.const 32))
+              (func (export "plaza_out_len") (result i32) (i32.const 2)))
+            "#,
+        )
+        .unwrap()
+    }
+
+    /// Write a world running `wasm`, with a member who has sent `inputs`.
+    async fn write_program_fixture(
+        dir: &Path,
+        name: &str,
+        wasm: Vec<u8>,
+        inputs: &[&[u8]],
+    ) -> (String, JoinCapability) {
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let (service, _) = open_world(
+            dir,
+            name,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            move |handle: WorldHandle| {
+                WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
+            },
+        )
+        .await
+        .unwrap();
+        let hash = module_hash(&wasm);
+        service
+            .install_wasm(Some("admin"), wasm, 42, &hash)
+            .await
+            .unwrap();
+        let world = service.world();
+        let (_, member) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        for input in inputs {
+            world.input(member.clone(), input.to_vec()).await.unwrap();
+        }
+        world.shutdown().await.unwrap();
+        (hash, member)
+    }
+
+    /// What one side gives for a program world: the open report, the
+    /// module files, the member's view, and the outcome of each probe.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ProgramObservation {
+        module_hash: Option<String>,
+        replayed_inputs: usize,
+        program_error: Option<String>,
+        modules: Vec<String>,
+        view_before: Result<Option<String>, String>,
+        probes: Vec<Result<(), String>>,
+        view_after: Result<Option<String>, String>,
+    }
+
+    async fn observe_program(
+        service: &WorldService,
+        report: &OpenReport,
+        dir: &Path,
+        member: &JoinCapability,
+        probes: &[Vec<u8>],
+    ) -> ProgramObservation {
+        let world = service.world();
+        let view_before = world
+            .view(member.clone())
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let mut outcomes = Vec::new();
+        for probe in probes {
+            outcomes.push(
+                world
+                    .input(member.clone(), probe.clone())
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:#}")),
+            );
+        }
+        let view_after = world
+            .view(member.clone())
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let mut modules: Vec<String> = std::fs::read_dir(dir.join("modules"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        modules.sort();
+        ProgramObservation {
+            module_hash: report.module_hash.clone(),
+            replayed_inputs: report.replayed_inputs,
+            program_error: report.program_error.clone(),
+            modules,
+            view_before,
+            probes: outcomes,
+            view_after,
+        }
+    }
+
+    /// Open `name` locally and on two host roots (one with host-only
+    /// settings), probe each, and require one answer.
+    async fn agree(
+        source: &Path,
+        name: &str,
+        member: &JoinCapability,
+        probes: &[Vec<u8>],
+    ) -> ProgramObservation {
+        let journal = std::fs::read(source.join(JOURNAL_FILE)).unwrap();
+        let local_root = TempDir::new().unwrap();
+        let local_dir = local_root.path().join(name);
+        copy_tree(source, &local_dir);
+        let (local, report) = open_world(
+            &local_dir,
+            name,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |handle: WorldHandle| WorldService::new(handle, None),
+        )
+        .await
+        .unwrap();
+        let local_seen = observe_program(&local, &report, &local_dir, member, probes).await;
+        local.world().shutdown().await.unwrap();
+
+        for backend in [false, true] {
+            let root = TempDir::new().unwrap();
+            let dir = root.path().join(name);
+            copy_tree(source, &dir);
+            let mut sup = Supervisor::open(root.path()).await.unwrap();
+            if backend {
+                sup.set_pinned(name, true).unwrap();
+                sup.set_wake(name, WakeMode::Operator).unwrap();
+            }
+            sup.start(name, "parity-suite").await.unwrap();
+            let held = &sup.live[name];
+            let seen = observe_program(&held.service, &held.report, &dir, member, probes).await;
+            assert_eq!(
+                seen, local_seen,
+                "{name}: hosted (backend settings: {backend}) diverged"
+            );
+            drop(sup);
+            let replayed = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
+            assert!(
+                replayed.starts_with(&journal),
+                "{name}: the hosted side kept the fixture journal as its prefix"
+            );
+        }
+        local_seen
+    }
+
+    #[tokio::test]
+    async fn a_runaway_program_meets_the_same_fuel_ceiling_on_both_sides() {
+        let fixture = TempDir::new().unwrap();
+        let source = fixture.path().join(SPINNER);
+        let (hash, member) = write_program_fixture(&source, SPINNER, spinner_wasm(), &[]).await;
+        let seen = agree(&source, SPINNER, &member, &[b"go".to_vec()]).await;
+        assert_eq!(seen.module_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(seen.program_error, None);
+        let refusal = seen.probes[0].as_ref().unwrap_err();
+        assert!(
+            refusal.contains("fuel"),
+            "the fuel ceiling ends the call: {refusal}"
+        );
+        // Both sides then hold the runaway program out of service alike.
+        let after = seen.view_after.as_ref().unwrap_err();
+        assert!(after.contains("unavailable"), "{after}");
     }
 }

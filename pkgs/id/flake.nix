@@ -610,7 +610,7 @@
             individualChecks =
               {
                 # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
-                # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
+                # NixOS VM integration tests (Linux only): nixos-serve nixos-world-host nixos-e2e
                 # Nix flake check builds all named checks as well as default.
                 # Use a link farm so the aggregate depends on those same results
                 # instead of rerunning the full CI recipe in a second derivation.
@@ -1153,6 +1153,9 @@
                 pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
                   nixos-serve = pkgs.testers.runNixOSTest (
                     import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
+                  );
+                  nixos-world-host = pkgs.testers.runNixOSTest (
+                    import ./nix/tests/world-host-test.nix { idPackage = self.packages.${system}.id-web; }
                   );
                   nixos-e2e = pkgs.testers.runNixOSTest (
                     import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }

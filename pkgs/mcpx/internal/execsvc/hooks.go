@@ -72,14 +72,16 @@ var hookTimeout = defaults.ExecHookTimeout
 //
 // `Prompt` is prompt text with @placeholders, sent to the configured model
 // provider (prompt_hooks.go). Its implemented effects are advise (any
-// phase) and propose (the outcome phases only; #11141).
+// phase), propose (the outcome phases only; #11141) and ask (the
+// before phase only, fail-closed; #15809).
 type Hook struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
 	// Prompt is the prompt action's text. Mutually exclusive with Script.
 	Prompt string `json:"prompt,omitempty"`
 	// Effect declares what the hook's output may do. For a prompt hook it
-	// must be empty (advise), advise, or propose at an outcome phase;
+	// must be empty (advise), advise, propose at an outcome phase, or
+	// ask at the before phase;
 	// for a script hook it must agree with the phase's fixed effect when
 	// set. Anything else is refused at validation rather than silently
 	// ignored.
@@ -114,7 +116,12 @@ type HookFrame struct {
 	// propose), carried beside the original result or error and
 	// never applied by mcpx (0002). Empty for every other hook.
 	Propose json.RawMessage `json:"propose,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	// Ask is an ask prompt hook's question, raised through the
+	// broker (effect ask, #15809). Refuse is its structured refusal
+	// reason. Empty for every other hook.
+	Ask    string `json:"ask,omitempty"`
+	Refuse string `json:"refuse,omitempty"`
+	Error  string `json:"error,omitempty"`
 	// Model and Provider name what answered a prompt hook, as the model
 	// layer reports them. Empty for script hooks.
 	Model    string `json:"model,omitempty"`
@@ -184,12 +191,16 @@ func validateHooks(hooks []Hook, origin string) error {
 		if hasPrompt {
 			switch h.Effect {
 			case "", hookEffectAdvise:
+			case hookEffectAsk:
+				if h.Phase != HookBefore {
+					return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is only available at %s: asking is a gate on an operation that has not run, and at %s the operation is already complete (0002)", origin, i, h.Phase, h.Effect, HookBefore, h.Phase)
+				}
 			case hookEffectPropose:
 				if h.Phase != HookOnSuccess && h.Phase != HookOnError {
 					return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is only available at %s and %s: a proposal needs a result or an error to propose against, and %s is clamped to at most %q (0001)", origin, i, h.Phase, h.Effect, HookOnSuccess, HookOnError, h.Phase, hookEffectAdvise)
 				}
 			default:
-				return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q and %q are implemented for prompt hooks; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise, hookEffectPropose)
+				return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q, %q and %q are implemented for prompt hooks; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise, hookEffectPropose, hookEffectAsk)
 			}
 		}
 		if hasScript && h.Effect != "" && h.Effect != effectFor(h.Phase) {
@@ -233,6 +244,10 @@ type hookRun struct {
 	// Failed is true when the hook itself did not run or did not produce a
 	// JSON object. It is a result, not an error: the run carries on.
 	Failed bool
+	// Refusal is non-empty only for an ask prompt hook that refused
+	// the run (#15809): RunWith honours it at the before phase by
+	// never starting the script, with this text as the run's error.
+	Refusal string
 }
 
 // runHooks executes every hook of one phase and returns what they produced.
@@ -262,7 +277,9 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 			// A prompt hook never transforms the outcome: advise and
 			// propose both ride in its frame, and applyHookResult is
 			// never consulted for it, so it cannot change the outcome
-			// whatever phase it runs in.
+			// whatever phase it runs in. An ask hook's refusal rides
+			// on the hookRun instead: RunWith honours it at the
+			// before phase by never starting the script.
 			run = s.runPromptHook(ctx, phase, h, hctx, ropts, res)
 		} else {
 			run = s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)

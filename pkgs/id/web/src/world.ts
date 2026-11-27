@@ -196,6 +196,7 @@ function initWorld(): void {
   // accumulated snapshot belongs to.
   let offlineSnapshot: StoredWorldSnapshot | null = null;
   let offlineWorld: string | null = null;
+  let notificationResyncPending = new URLSearchParams(location.search).has("client-notify");
   const persistOfflineSnapshot = () => {
     if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
   };
@@ -885,6 +886,14 @@ function initWorld(): void {
     // snapshot belongs to restores that world's stored snapshot first
     // (which also seeds the resume cursor sent as `after` on open).
     if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
+    if (notificationResyncPending) {
+      notificationResyncPending = false;
+      cursor = 0;
+      dropResumeUnit();
+      const url = new URL(location.href);
+      url.searchParams.delete("client-notify");
+      history.replaceState(null, "", url);
+    }
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
@@ -1240,6 +1249,28 @@ function initWorld(): void {
     }
     intentionalClose = false;
     connect();
+  });
+
+  // #10930: the service worker forwards a notification click as a
+  // hint-only message. Sequence numbers do not prove journal identity:
+  // even a hint at the current head may follow a restore/rewrite. Always
+  // discard the resume base and ask the host for a fresh snapshot; the
+  // normal snapshot + records + view frames rebuild the projection and
+  // rendered view. The notification carries no world data.
+  navigator.serviceWorker?.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const hint = event.data;
+    if (!isRecord(hint) || hint.type !== "client.notify") return;
+    if (
+      hint.head !== undefined &&
+      hint.head !== null &&
+      (!Number.isSafeInteger(hint.head) || (hint.head as number) < 0)
+    ) {
+      return;
+    }
+    cursor = 0;
+    dropResumeUnit();
+    notificationResyncPending = true;
+    joinButton.click();
   });
 
   chatForm.addEventListener("submit", (event) => {

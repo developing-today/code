@@ -1969,10 +1969,49 @@ fn split_position(key: &[u8]) -> Result<(AuthorKey, SeqNum), StoreError> {
     Ok((author, seq_num(be_u64(&key[32..])?)?))
 }
 
+/// How many verified stored events [`decode_stored`] keeps. A full decode costs
+/// a signature check (about 7 ms at the test profile's opt-level 0, #15328); a
+/// hit costs a BLAKE3 digest of the row and a clone. Past this many entries the
+/// memo starts over, which bounds its memory at a few megabytes.
+const VERIFIED_CAPACITY: usize = 4096;
+
+/// Stored events that already passed the full decode, keyed by the BLAKE3
+/// digest of their bytes. Shared by every store in the process: the key is the
+/// content, so two stores holding the same bytes hold the same verified event.
+static VERIFIED: std::sync::OnceLock<Mutex<HashMap<[u8; 32], Event>>> = std::sync::OnceLock::new();
+
 /// Decodes a stored event. A stored event decoded when it was accepted, so a
 /// failure here means the file changed underneath the store.
+///
+/// The full decode ([`chain::decode`]) is a pure function of the bytes, so it
+/// is memoized on their digest (#15328, folding the fold and
+/// `check_invariants` reads that the ID-only path in `stored_id_at` could not
+/// reach). Bytes received from a peer never come through here; they keep the
+/// full decode at ingest.
+///
+/// Threat model, as for `stored_id_at`: the digest is recomputed from the
+/// bytes actually read on every call, so a row rewritten underneath the store
+/// has a digest the memo has never seen and goes through the full decode,
+/// which refuses it as [`StoreError::Corrupt`]. A hit would need a second byte
+/// string with the same BLAKE3 digest. Only successful decodes are kept, so a
+/// refusal is never remembered as a pass.
 fn decode_stored(bytes: &[u8]) -> Result<Event, StoreError> {
-    chain::decode(bytes).map_err(|err| corrupt(format!("a stored event does not decode: {err}")))
+    let digest = *Hash::digest(bytes).as_bytes();
+    let memo = VERIFIED.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(verified) = memo.lock()
+        && let Some(event) = verified.get(&digest)
+    {
+        return Ok(event.clone());
+    }
+    let event = chain::decode(bytes)
+        .map_err(|err| corrupt(format!("a stored event does not decode: {err}")))?;
+    if let Ok(mut verified) = memo.lock() {
+        if verified.len() >= VERIFIED_CAPACITY {
+            verified.clear();
+        }
+        verified.insert(digest, event.clone());
+    }
+    Ok(event)
 }
 
 /// Decodes a row's event, and checks that the row names it: its ID, its author, and its sequence
@@ -2240,6 +2279,28 @@ mod tests {
             events.push(event);
         }
         events
+    }
+
+    #[test]
+    fn test_decode_stored_memo_returns_the_verified_event_and_refuses_tampering() {
+        let events = chain_of(&key(91), 1);
+        let bytes = events[0].bytes.clone();
+        let first = decode_stored(&bytes).unwrap();
+        let again = decode_stored(&bytes).unwrap();
+        assert_eq!(first, events[0]);
+        assert_eq!(again, first);
+
+        // A row rewritten after its bytes were memoized has another digest, so
+        // it misses the memo and the full decode refuses it by name.
+        let mut tampered = bytes;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        for _ in 0..2 {
+            assert!(matches!(
+                decode_stored(&tampered),
+                Err(StoreError::Corrupt(_))
+            ));
+        }
     }
 
     fn open_temp() -> (tempfile::TempDir, EventStore) {

@@ -428,12 +428,15 @@ describe("needs-drew census rendering", () => {
   test("an agent-parked item renders as fleet work, not in the owner's count", () => {
     // `base` holds one user/escalated item with no hands marker.
     const html = needsDrewCensusHtml(base);
-    expect(html).toContain("Needs Drew — GitHub label census (0)");
+    expect(html).toContain("Needs User — GitHub label census (0)");
+    expect(html).toContain('id="needs-user-census"');
+    expect(html).toContain('id="needs-drew-census"');
     expect(html).toContain("Parked on the owner by an agent — fleet work (1)");
     expect(html).toContain("Needs a person's hands (0)");
     expect(html).toContain("Review requested (0)");
     expect(html).toContain(`${REPO}#7`);
     expect(html).toContain("no reason recorded on the item");
+    expect(html).toContain("/api/needs-user.json");
     expect(html).toContain("/api/needs-drew.json");
     expect(html).not.toContain("incomplete");
     // The parked item sits under the fleet-work heading, after it.
@@ -465,7 +468,7 @@ describe("needs-drew census rendering", () => {
         },
       ],
     });
-    expect(html).toContain("Needs Drew — GitHub label census (2)");
+    expect(html).toContain("Needs User — GitHub label census (2)");
     expect(html).toContain("Needs a person's hands (1)");
     expect(html).toContain("Review requested (1)");
     expect(html).toContain("Parked on the owner by an agent — fleet work (1)");
