@@ -20,7 +20,8 @@ Issue #16096's module-scope-fixture evidence predates #15456. The existing
   the production D1 client against SQLite through the documented binding API;
   it is not evidence from Cloudflare's live D1 service.
 - **Recovery fix:** a failed first-use schema operation no longer caches a
-  rejected promise forever. Tests force both schema and INSERT failure: GitHub
+  rejected promise forever. Tests force schema creation, asynchronous index creation after partial
+  DDL success, and INSERT failures: GitHub
   create remains 201 with `metadata_inserted: false`, then the same Worker
   heals through backfill after database recovery, without a second GitHub
   create. The healed JSON survives a connection close/reopen.
@@ -51,7 +52,7 @@ readback is claimed.
 The parent lane's live probe (2026-11-27, reported into this session)
 found the deployed Worker at adapter PR #15459 (`c3add690`),
 release `45781053761`, version `0fd14383` at 100% with D1 bound;
-public `/healthz` returned 200 with `rp_configured: false` /
+public `/health` returned 200 with `rp_configured: false` /
 `tenancy_configured: false`, and the query door returned
 503 `auth_not_configured`. The lane's Cloudflare deployment GET and
 read-only D1 `SELECT` with its local token/account also returned
