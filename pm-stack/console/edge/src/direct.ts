@@ -1625,7 +1625,11 @@ export async function queueTaskAct(
       const store = new ActStore(before ? decode(before) : null);
       const response = await executeQueueVerb(store, verb, request, env);
       if (response.ok !== true) {
-        return { code: Number(response.exit ?? 2), stdout: "", stderr: String(response.error ?? `queue ${verb} refused`) };
+        return {
+          code: Number(response.exit ?? 2),
+          stdout: "",
+          stderr: String(response.error ?? `queue ${verb} refused`),
+        };
       }
       const answer = JSON.stringify({ task: taskId, action: verb });
       if (!store.touched) return { code: 0, stdout: answer, stderr: "" };

@@ -141,7 +141,9 @@ class QueueWire {
       return { ...result([]), affected_row_count: 1 };
     }
     if (sql.startsWith("UPDATE tasks SET ")) {
-      const names = list(/^UPDATE tasks SET (.*?) WHERE id = \?/s.exec(sql)![1]).map((set) => set.replace(/ = \?$/, ""));
+      const names = list(/^UPDATE tasks SET (.*?) WHERE id = \?/s.exec(sql)![1]).map((set) =>
+        set.replace(/ = \?$/, ""),
+      );
       const id = args[names.length];
       const guard = args.slice(names.length + 1);
       const row = this.tasks.find((candidate) => candidate.id === id);

@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7847 | #2841 (item 3 of #1858) | `audit:partial` | Adds the v2 daemon-picker tool as the supported substitute for v1 TUI `select()`. The five-item tracker remains open; item (5), v1 plugin retirement, is still outstanding. |
-| #7848 | #5874 | `audit:complete` | Records signed resolution/proposal event types and derived folds, edit-linked acceptance, authorization/no-leak rules, invariants and implementation split. This is the requested decision record. |
-| #7850 | #5884 | `audit:complete` | Records the native identity-creation ceremony, OS-CSPRNG custody, signed setup commitment, first artifacts, validation and failure invariants, consuming the recovery interface without changing its parent decision. |
-| #7851 | #6012 | `audit:complete` | Delivers the visual-feature cost metrics/ranks, three gate layers, fallback substitution and viewer-facing downgrade policy. The #7019 ownership/fallback conflict is explicitly escalated rather than silently decided; the ranking design issue is closed. |
-| #7853 | #5814 | `audit:completed-later` | Provides the initial adapter-conformance design skeleton and marks fixture/matrix rows as remainder. Later #13734 settles the harness, oracles and generated matrix; #5814 closes on that later record. |
+| Payload number |          Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                                      |
+| -------------: | ----------------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7847 | #2841 (item 3 of #1858) | `audit:partial`         | Adds the v2 daemon-picker tool as the supported substitute for v1 TUI `select()`. The five-item tracker remains open; item (5), v1 plugin retirement, is still outstanding.                                                                                  |
+|          #7848 |                   #5874 | `audit:complete`        | Records signed resolution/proposal event types and derived folds, edit-linked acceptance, authorization/no-leak rules, invariants and implementation split. This is the requested decision record.                                                           |
+|          #7850 |                   #5884 | `audit:complete`        | Records the native identity-creation ceremony, OS-CSPRNG custody, signed setup commitment, first artifacts, validation and failure invariants, consuming the recovery interface without changing its parent decision.                                        |
+|          #7851 |                   #6012 | `audit:complete`        | Delivers the visual-feature cost metrics/ranks, three gate layers, fallback substitution and viewer-facing downgrade policy. The #7019 ownership/fallback conflict is explicitly escalated rather than silently decided; the ranking design issue is closed. |
+|          #7853 |                   #5814 | `audit:completed-later` | Provides the initial adapter-conformance design skeleton and marks fixture/matrix rows as remainder. Later #13734 settles the harness, oracles and generated matrix; #5814 closes on that later record.                                                      |
 
 ## Slice state
 

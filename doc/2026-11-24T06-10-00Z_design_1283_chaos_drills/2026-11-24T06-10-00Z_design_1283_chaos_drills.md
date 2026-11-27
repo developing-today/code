@@ -59,12 +59,12 @@ Each drill is a declarative entry. Fields:
 
 Minimum set:
 
-| Drill | Fault | Expected signals | Restore |
-|---|---|---|---|
-| D1 collector-kill | Stop the fleet-feed collector process for one cycle | Staleness or degraded banner on `/today`, `/attention`, `/program`; health page shows collector down or stale; watchdog entry in NEEDS ORCHESTRATOR | Restart the collector; confirm next publish |
-| D2 feed-aging | Serve or pin a feed copy whose timestamp is older than the freshness threshold | Aged banner on the affected pages; health page shows feed age over threshold; watchdog entry | Release the pin; confirm feed timestamp advances |
-| D3 service-drop | Stop one component service (for example the aggregator or one dependency container) | Down state on the health page for that service; degraded banner on every page that reads it; watchdog entry | Start the service; confirm health endpoint green |
-| D4 section-reject (optional, second wave) | Corrupt one orchestration section field so the aggregator rejects it, using a copy, not the publisher | "Section rejected" state on the orchestration freshness card and `/attention`; watchdog entry | Remove the corrupt copy; confirm section accepted |
+| Drill                                     | Fault                                                                                                 | Expected signals                                                                                                                                    | Restore                                           |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| D1 collector-kill                         | Stop the fleet-feed collector process for one cycle                                                   | Staleness or degraded banner on `/today`, `/attention`, `/program`; health page shows collector down or stale; watchdog entry in NEEDS ORCHESTRATOR | Restart the collector; confirm next publish       |
+| D2 feed-aging                             | Serve or pin a feed copy whose timestamp is older than the freshness threshold                        | Aged banner on the affected pages; health page shows feed age over threshold; watchdog entry                                                        | Release the pin; confirm feed timestamp advances  |
+| D3 service-drop                           | Stop one component service (for example the aggregator or one dependency container)                   | Down state on the health page for that service; degraded banner on every page that reads it; watchdog entry                                         | Start the service; confirm health endpoint green  |
+| D4 section-reject (optional, second wave) | Corrupt one orchestration section field so the aggregator rejects it, using a copy, not the publisher | "Section rejected" state on the orchestration freshness card and `/attention`; watchdog entry                                                       | Remove the corrupt copy; confirm section accepted |
 
 D4 directly targets the #1110 failure shape and is in scope for the catalogue, but is scheduled after D1–D3 are proven, because it needs a copy path that does not alter the publisher.
 

@@ -13,15 +13,15 @@ no tests, so it is reported as gated and never counted as passing.
 Moving a family to `landed` is a fixture-and-manifest change in the
 same PR that lands its implementation.
 
-| Family | Directory | Contract owner |
-| --- | --- | --- |
-| `command` | `command/` | DST-01 / CLI-01 (#9451) |
-| `acceptance` | `acceptance/` | DSP-01 (#9445) |
-| `selector` | `selector/` | PRI-01 (#9478) |
-| `authority.managed_section` | `authority/managed_section/` | AUTH-04 (#9431) |
-| `receipt` | gated on REL-03 (#9513) | |
-| `cursor` | gated on HYD-06 (#9508) | |
-| `authority.field_ownership` | gated on AUTH-01 (#9429) | |
+| Family                      | Directory                    | Contract owner          |
+| --------------------------- | ---------------------------- | ----------------------- |
+| `command`                   | `command/`                   | DST-01 / CLI-01 (#9451) |
+| `acceptance`                | `acceptance/`                | DSP-01 (#9445)          |
+| `selector`                  | `selector/`                  | PRI-01 (#9478)          |
+| `authority.managed_section` | `authority/managed_section/` | AUTH-04 (#9431)         |
+| `receipt`                   | gated on REL-03 (#9513)      |                         |
+| `cursor`                    | gated on HYD-06 (#9508)      |                         |
+| `authority.field_ownership` | gated on AUTH-01 (#9429)     |                         |
 
 The fixtures are synthetic: no credentials, tokens, real comment
 bodies or production identifiers. Expected digests were computed

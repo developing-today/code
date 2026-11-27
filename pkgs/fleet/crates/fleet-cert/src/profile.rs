@@ -666,39 +666,49 @@ mod tests {
 
         let mut invalid = profile.clone();
         invalid.key_usages = vec!["not-a-usage".into()];
-        assert!(invalid
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported key usage"));
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported key usage")
+        );
         let mut invalid = profile.clone();
         invalid.extended_key_usages = vec!["unknown-purpose".into()];
-        assert!(invalid
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported extended key usage"));
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported extended key usage")
+        );
         let mut invalid = profile.clone();
         invalid.max_validity_days = MAX_CUSTOM_VALIDITY_DAYS + 1;
-        assert!(invalid
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("policy ceiling"));
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("policy ceiling")
+        );
         let mut invalid = profile;
         invalid.schema = "fleet-cert-profile/v99".into();
-        assert!(invalid
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported profile schema"));
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported profile schema")
+        );
 
         let mut invalid = CustomProfile::scaffold("ca-usage");
         invalid.key_usages = vec!["key-cert-sign".into()];
-        assert!(invalid
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("leaf profiles"));
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("leaf profiles")
+        );
     }
 }

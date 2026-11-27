@@ -7,7 +7,7 @@
 # process environment.
 set -euo pipefail
 
-if [[ "$#" -ne 0 ]]; then
+if [[ $# -ne 0 ]]; then
   echo "usage: alignment-handler" >&2
   exit 2
 fi
@@ -16,7 +16,7 @@ if ! SLACK_BOT_TOKEN="$(fleet secrets get slack.archer-bot-token)"; then
   echo "alignment-handler: fleet secrets get slack.archer-bot-token failed; refusing to start" >&2
   exit 78
 fi
-if [[ -z "${SLACK_BOT_TOKEN}" ]]; then
+if [[ -z ${SLACK_BOT_TOKEN} ]]; then
   echo "alignment-handler: slack.archer-bot-token resolved empty; refusing to start" >&2
   exit 78
 fi

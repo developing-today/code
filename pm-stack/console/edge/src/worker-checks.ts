@@ -80,10 +80,7 @@ function commitOf(body: unknown): string | null {
 /** Ask one Worker. `/version` first; a 404 there means it has no
  * version route, so its health answer is asked instead. A fetch that
  * throws settles it at once: not answering. */
-export async function probeWorker(
-  target: WorkerCheckTarget,
-  askedAt: number,
-): Promise<WorkerCheck> {
+export async function probeWorker(target: WorkerCheckTarget, askedAt: number): Promise<WorkerCheck> {
   const base = { name: target.name, askedAt };
   for (const path of ["/version", "/health"]) {
     let res: Response;
@@ -108,10 +105,7 @@ export async function probeWorker(
 
 /** Ask every target, in parallel; the set is sorted by name so two
  * rounds read alike. */
-export async function probeWorkers(
-  targets: WorkerCheckTarget[],
-  askedAt: number,
-): Promise<WorkerCheckSet> {
+export async function probeWorkers(targets: WorkerCheckTarget[], askedAt: number): Promise<WorkerCheckSet> {
   const checks = await Promise.all(targets.map((target) => probeWorker(target, askedAt)));
   checks.sort((a, b) => a.name.localeCompare(b.name));
   return { askedAt, checks };

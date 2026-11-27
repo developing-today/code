@@ -72,12 +72,7 @@
         "checked_at": "2026-11-25T06:50:00Z",
         "basis": "No existing issue for present-empty event bodies in range sync was found; PR #11265 tests a non-empty body and current main retains the None/Some(empty) ambiguity."
       },
-      "labels": [
-        "app/id",
-        "priority/normal",
-        "queue/queued",
-        "task/fix"
-      ]
+      "labels": ["app/id", "priority/normal", "queue/queued", "task/fix"]
     },
     "blocked_deps": null,
     "dep_next_recheck_at": null,

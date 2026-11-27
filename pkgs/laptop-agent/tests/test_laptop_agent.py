@@ -453,7 +453,10 @@ class JobsListShapeTest(unittest.TestCase):
             quiet_id = call(
                 "POST",
                 "/jobs",
-                {"cwd": "/", "argv": [sys.executable, "-c", "import time; time.sleep(2)"]},
+                {
+                    "cwd": "/",
+                    "argv": [sys.executable, "-c", "import time; time.sleep(2)"],
+                },
             )["job_id"]
             started = time.monotonic()
             quiet = call("GET", f"/jobs/{quiet_id}?wait_s=1")

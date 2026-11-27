@@ -447,7 +447,12 @@ export async function boardRender() {
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
   const orchestrationStatus = source.diagnostics?.().orchestration.state;
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
+  const briefs = buildBriefs(pool, {
+    comments,
+    orchestration,
+    orchestrationStatus,
+    ruling: await projectTrustRuling(),
+  });
   const act = {
     actionsByObject,
     poolByRef,
@@ -475,7 +480,12 @@ export async function attentionRender() {
     ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state, ruling: await projectTrustRuling() });
+  const briefs = buildBriefs(pool, {
+    comments,
+    orchestration,
+    orchestrationStatus: diagnosis?.state,
+    ruling: await projectTrustRuling(),
+  });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -559,7 +569,17 @@ export async function loadOverviewContext() {
     source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject, ruling: await projectTrustRuling() };
+  return {
+    attention: view,
+    pool,
+    quota,
+    health,
+    board,
+    items,
+    orchestration,
+    actionsByObject,
+    ruling: await projectTrustRuling(),
+  };
 }
 
 // #5082: same contract as the board assembly above — the overview

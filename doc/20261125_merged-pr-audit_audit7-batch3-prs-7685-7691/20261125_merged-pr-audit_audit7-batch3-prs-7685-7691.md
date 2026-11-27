@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-PR ledger
 
-| PR | Merged | Spawning issue | Verdict | Finding |
-|---:|---|---:|---|---|
-| #7685 | 2026-11-09 | #5443 | `audit:complete` | The NixOS configuration declares `users.users.user.linger = true` and documents the keyring boundary. This is the exact declarative change requested by #5443. |
-| #7687 | 2026-11-08 | #5785 | `audit:complete` | The design record settles markup encoding contexts, safe-plain as a per-client rendering mode, no-evaluation on ingest, and ANSI/OSC sequence handling, with the surface inventory and compatibility boundary requested by the issue. |
-| #7689 | 2026-11-09 | #5847 | `audit:complete` | The Logseq importer design covers pages/blocks, stable identity and manifest, references/assets, round-trip expectations, lossy cases, invariants, and the synthetic/real corpus plan. The design issue later closed after its linked splits landed. |
-| #7690 | 2026-11-08 | #1949 | `audit:complete` | A UUIDv7 run seed now reaches every Go test process through a wrapper and CI seed job; local replay, fail-closed CI, shuffle derivation, artifact collection and wrapper regressions are implemented as requested. The noted #7686 failure is explicitly pre-existing and separately filed. |
-| #7691 | 2026-11-10 | #6004 | `audit:complete` | The design note provides the reserved/delegable authority table, platform invariants, the LambdaMOO governance rationale, quota treatment and the checklist requested by #6004. |
+|    PR | Merged     | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                                     |
+| ----: | ---------- | -------------: | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #7685 | 2026-11-09 |          #5443 | `audit:complete` | The NixOS configuration declares `users.users.user.linger = true` and documents the keyring boundary. This is the exact declarative change requested by #5443.                                                                                                                              |
+| #7687 | 2026-11-08 |          #5785 | `audit:complete` | The design record settles markup encoding contexts, safe-plain as a per-client rendering mode, no-evaluation on ingest, and ANSI/OSC sequence handling, with the surface inventory and compatibility boundary requested by the issue.                                                       |
+| #7689 | 2026-11-09 |          #5847 | `audit:complete` | The Logseq importer design covers pages/blocks, stable identity and manifest, references/assets, round-trip expectations, lossy cases, invariants, and the synthetic/real corpus plan. The design issue later closed after its linked splits landed.                                        |
+| #7690 | 2026-11-08 |          #1949 | `audit:complete` | A UUIDv7 run seed now reaches every Go test process through a wrapper and CI seed job; local replay, fail-closed CI, shuffle derivation, artifact collection and wrapper regressions are implemented as requested. The noted #7686 failure is explicitly pre-existing and separately filed. |
+| #7691 | 2026-11-10 |          #6004 | `audit:complete` | The design note provides the reserved/delegable authority table, platform invariants, the LambdaMOO governance rationale, quota treatment and the checklist requested by #6004.                                                                                                             |
 
 ## Slice state
 

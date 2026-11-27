@@ -1654,7 +1654,8 @@ def main():
             while True:
                 wait_s = max(0, min(10, math.ceil(deadline - time.time())))
                 out = request(
-                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}"
+                    "GET",
+                    f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}",
                 )
                 sys.stdout.write(out.get("stdout", ""))
                 sys.stdout.flush()

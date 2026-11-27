@@ -704,8 +704,14 @@ pub fn rebuild_agent_memory_index(
             ))
         })?;
     let staged_changed = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, entries, now)?;
-    let promote =
-        embed_unit_into_shard(registry, AGENT_MEMORY_UNIT, shard_dir, "agent-memory", embedder, now)?;
+    let promote = embed_unit_into_shard(
+        registry,
+        AGENT_MEMORY_UNIT,
+        shard_dir,
+        "agent-memory",
+        embedder,
+        now,
+    )?;
     let fingerprints = shard_chunk_fingerprints(&promote.shard_path)?;
     Ok(RebuildReport {
         unit_id: promote.unit_id,

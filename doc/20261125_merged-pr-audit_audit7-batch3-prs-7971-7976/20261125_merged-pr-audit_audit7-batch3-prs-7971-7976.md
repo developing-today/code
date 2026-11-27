@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7971 | #4593 | `audit:complete` | States the replication-admission contract and inventories restore preconditions against accept. Files the confirmed entry-version gap as #7970; later PR #10944 fixes that follow-up. The audit issue's own deliverable is complete. |
-| #7973 | #5612 | `audit:completed-later` | Applies the formatting-only remainder. The clippy leg was left to #7199, which merged later and completed the issue. The issue closed before that slice landed; Lane 2 pointer: #13871 comment 7160938580. PR note: #7160942654. |
-| #7974 | #6045 | `audit:complete` | Specifies the in-toto statement shape, storage, emission points, rejection-path behavior, verification and decision gates; the design issue closes with the record. |
-| #7975 | #2832 | `audit:complete` | Validates root/provider/model shapes after JSONC parsing and refuses malformed intermediate tree-edit paths with file and key diagnostics; missing provider is safely treated as nothing to sync. |
-| #7976 | #2343 | `audit:complete` | Delivers the MQTT topic/schema specification and labelled fake-broker/device PoC with fail-closed auth, retained-wants guard, wire bounds, journaling, tick floor and backoff; the source issue closes with the scoped prototype. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                              |
+| -------------: | -------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7971 |          #4593 | `audit:complete`        | States the replication-admission contract and inventories restore preconditions against accept. Files the confirmed entry-version gap as #7970; later PR #10944 fixes that follow-up. The audit issue's own deliverable is complete. |
+|          #7973 |          #5612 | `audit:completed-later` | Applies the formatting-only remainder. The clippy leg was left to #7199, which merged later and completed the issue. The issue closed before that slice landed; Lane 2 pointer: #13871 comment 7160938580. PR note: #7160942654.     |
+|          #7974 |          #6045 | `audit:complete`        | Specifies the in-toto statement shape, storage, emission points, rejection-path behavior, verification and decision gates; the design issue closes with the record.                                                                  |
+|          #7975 |          #2832 | `audit:complete`        | Validates root/provider/model shapes after JSONC parsing and refuses malformed intermediate tree-edit paths with file and key diagnostics; missing provider is safely treated as nothing to sync.                                    |
+|          #7976 |          #2343 | `audit:complete`        | Delivers the MQTT topic/schema specification and labelled fake-broker/device PoC with fail-closed auth, retained-wants guard, wire bounds, journaling, tick floor and backoff; the source issue closes with the scoped prototype.    |
 
 ## Slice state
 

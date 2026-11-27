@@ -16,13 +16,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7905 | #5345 | `audit:complete` | Implements server-to-server file transfer over the existing blob and metadata paths, with source authorization, destination write policy, safe retry, conflict handling, archive-on-replacement and a two-server integration test. Web UI is explicitly a separate issue. |
-| #7906 | #5844 | `audit:completed-later` | Delivers the attachments/media decision record, but its invariant incorrectly groups user-authored annotations with regenerable derivatives. The accepted P2 was corrected by later PR #7910. PR note: #7160181884. |
-| #7910 | #5844 | `audit:completed-later` | Fixes #7906's annotation durability invariant: only computed derivatives may be discarded or regenerated; authored annotations remain durable. The shared design issue is complete after this fix-forward. PR note: #7160182277. |
-| #7911 | #6300 | `audit:completed-later` | Delivers the v1 MCP bridge design and five-step implementation breakdown. Later PRs complete the spike; #13236 provides the end-to-end run and the issue's completion check. PR note: #7160182858. |
-| #7912 | #5852 | `audit:complete` | Settles OS-standard controls, assertion mapping, platform conflict behavior, and explicit assumptions against unsettled parent issues. The design issue closes with the record. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                                                   |
+| -------------: | -------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7905 |          #5345 | `audit:complete`        | Implements server-to-server file transfer over the existing blob and metadata paths, with source authorization, destination write policy, safe retry, conflict handling, archive-on-replacement and a two-server integration test. Web UI is explicitly a separate issue. |
+|          #7906 |          #5844 | `audit:completed-later` | Delivers the attachments/media decision record, but its invariant incorrectly groups user-authored annotations with regenerable derivatives. The accepted P2 was corrected by later PR #7910. PR note: #7160181884.                                                       |
+|          #7910 |          #5844 | `audit:completed-later` | Fixes #7906's annotation durability invariant: only computed derivatives may be discarded or regenerated; authored annotations remain durable. The shared design issue is complete after this fix-forward. PR note: #7160182277.                                          |
+|          #7911 |          #6300 | `audit:completed-later` | Delivers the v1 MCP bridge design and five-step implementation breakdown. Later PRs complete the spike; #13236 provides the end-to-end run and the issue's completion check. PR note: #7160182858.                                                                        |
+|          #7912 |          #5852 | `audit:complete`        | Settles OS-standard controls, assertion mapping, platform conflict behavior, and explicit assumptions against unsettled parent issues. The design issue closes with the record.                                                                                           |
 
 ## Slice state
 

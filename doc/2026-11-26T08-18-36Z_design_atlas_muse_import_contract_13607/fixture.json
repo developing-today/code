@@ -5,16 +5,11 @@
   "callers": {
     "agent": {
       "ceiling": "internal",
-      "scopes": [
-        "S1"
-      ]
+      "scopes": ["S1"]
     },
     "owner": {
       "ceiling": "private",
-      "scopes": [
-        "S1",
-        "S2"
-      ]
+      "scopes": ["S1", "S2"]
     }
   },
   "steps": [
@@ -290,32 +285,22 @@
           {
             "as": "agent",
             "related": "a1",
-            "result": [
-              "m1"
-            ]
+            "result": ["m1"]
           },
           {
             "as": "owner",
             "related": "a1",
-            "result": [
-              "m1",
-              "m3"
-            ]
+            "result": ["m1", "m3"]
           },
           {
             "as": "agent",
             "related": "m1",
-            "result": [
-              "a1"
-            ]
+            "result": ["a1"]
           },
           {
             "as": "owner",
             "related": "m1",
-            "result": [
-              "a1",
-              "c2"
-            ]
+            "result": ["a1", "c2"]
           }
         ]
       }
@@ -392,10 +377,7 @@
           {
             "as": "owner",
             "related": "a1",
-            "result": [
-              "m1",
-              "m3"
-            ]
+            "result": ["m1", "m3"]
           }
         ]
       }
@@ -486,9 +468,7 @@
       },
       "expect": {
         "outcome": "published",
-        "stale": [
-          "m2"
-        ],
+        "stale": ["m2"],
         "effects": {},
         "checkpoint": {},
         "reads": [
@@ -1139,10 +1119,7 @@
           {
             "as": "owner",
             "related": "a1",
-            "result": [
-              "m1",
-              "m3"
-            ]
+            "result": ["m1", "m3"]
           }
         ]
       }

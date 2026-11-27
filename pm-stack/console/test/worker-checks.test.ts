@@ -43,10 +43,7 @@ function byPath(routes: Record<string, { body?: unknown; status?: number; text?:
 
 describe("probeWorker", () => {
   test("a /version answer naming its commit is the check", async () => {
-    const check = await probeWorker(
-      { name: "pm-service", fetcher: answering({ commit: "abc123" }) },
-      AT,
-    );
+    const check = await probeWorker({ name: "pm-service", fetcher: answering({ commit: "abc123" }) }, AT);
     expect(check).toEqual({
       name: "pm-service",
       answering: true,
@@ -156,9 +153,7 @@ describe("the Edge keeps a round", () => {
 
   const set: WorkerCheckSet = {
     askedAt: AT,
-    checks: [
-      { name: "pm-service", answering: true, commit: "abc123", askedAt: AT, via: "/health", status: 200 },
-    ],
+    checks: [{ name: "pm-service", answering: true, commit: "abc123", askedAt: AT, via: "/health", status: 200 }],
   };
 
   test("what the stateless part hands over is what is kept", async () => {

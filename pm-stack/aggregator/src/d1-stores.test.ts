@@ -20,9 +20,7 @@ describe("D1 store client", () => {
     );
 
     expect(client.ref).toBe(`d1:${DATABASE}`);
-    expect(request?.url).toBe(
-      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/query`,
-    );
+    expect(request?.url).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/query`);
     expect(request?.method).toBe("POST");
     expect(request?.headers.get("authorization")).toBe("Bearer test-token");
     expect(await request?.json()).toEqual({
@@ -33,8 +31,11 @@ describe("D1 store client", () => {
   });
 
   test("keeps a failed HTTP response and malformed API result fail-closed", async () => {
-    const unavailable = createD1StoreClient(ACCOUNT, DATABASE, "test-token", async () =>
-      new Response("private error body", { status: 403 }),
+    const unavailable = createD1StoreClient(
+      ACCOUNT,
+      DATABASE,
+      "test-token",
+      async () => new Response("private error body", { status: 403 }),
     );
     const malformed = createD1StoreClient(ACCOUNT, DATABASE, "test-token", async () =>
       Response.json({ success: true, result: [{ success: false, results: [] }] }),

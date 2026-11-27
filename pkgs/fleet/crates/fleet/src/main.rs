@@ -74,6 +74,8 @@ mod gh_guard;
 mod gh_metadata;
 #[cfg(feature = "gh")]
 mod gh_sync;
+#[cfg(feature = "host")]
+mod host;
 #[cfg(feature = "http")]
 mod http;
 #[cfg(feature = "id")]
@@ -85,8 +87,6 @@ mod invocation_ledger;
 mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
-#[cfg(feature = "host")]
-mod host;
 mod session_state;
 #[cfg(feature = "ssh")]
 mod ssh;
