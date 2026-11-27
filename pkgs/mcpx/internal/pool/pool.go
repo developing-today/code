@@ -1074,6 +1074,13 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scop
 	return p.dialMode(ctx, eff, root, dialSpawn, scopeKey)
 }
 
+// SupervisedLaneKey maps a pool lane to its supervisor socket instance:
+// the legacy follow lane runs its own supervisor and child beside the
+// modern one, so the two era sessions never share a process. Both lanes
+// share the pool's scope key, so without this the legacy lane's attach
+// hits the modern lane's supervisor ("already attached"), fails, sets
+// noLegacy, and serves legacy callers from the modern session.
+//
 // dialMode is dial with the supervised variation selected by kind:
 // dialAttachOnly never spawns a supervisor, dialRestart restarts the
 // child through its supervisor. Unsupervised paths ignore the kind.
@@ -1081,12 +1088,6 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scop
 // supervisor socket per instance (#9963), so two scoped instances of
 // one server never share a supervisor. Callers with no instance being
 // spawned (HTTP session adoption) pass "" — the primary instance.
-// SupervisedLaneKey maps a pool lane to its supervisor socket instance:
-// the legacy follow lane runs its own supervisor and child beside the
-// modern one, so the two era sessions never share a process. Both lanes
-// share the pool's scope key, so without this the legacy lane's attach
-// hits the modern lane's supervisor ("already attached"), fails, sets
-// noLegacy, and serves legacy callers from the modern session.
 func SupervisedLaneKey(key string, legacy bool) string {
 	if !legacy {
 		return key
