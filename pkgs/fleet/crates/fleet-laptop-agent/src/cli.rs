@@ -10,6 +10,7 @@ pub const USAGE: &str = "usage: fleet laptop-agent <command>
   health
   jobs
   kill JOB
+  exec-batch FILE.json
   exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
   run  [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
   poll JOB [--wait SECS]
@@ -23,6 +24,9 @@ pub enum Command {
     Jobs,
     Kill {
         job: String,
+    },
+    ExecBatch {
+        file: String,
     },
     Exec {
         cwd: Option<String>,
@@ -117,6 +121,16 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "kill" => match rest {
             [job] if valid_job(job) => Ok(Command::Kill { job: job.clone() }),
             _ => Err("kill takes one job id".into()),
+        },
+        "exec-batch" => match rest {
+            // Exactly one positional, like the selector's
+            // `ap.add_argument("file")`: argparse rejects zero, two,
+            // or option-like spellings, so the binary refuses a
+            // leading dash here too rather than opening `--bogus`.
+            [file] if !file.is_empty() && !file.starts_with('-') => {
+                Ok(Command::ExecBatch { file: file.clone() })
+            }
+            _ => Err("exec-batch takes a FILE.json".into()),
         },
         "exec" | "run" => {
             let (opts, cmd) = split_cmd(rest);
@@ -233,6 +247,7 @@ pub fn run(config: &fleet_config::Config, args: &[String]) -> i32 {
         Command::Health => client::health(&ladder),
         Command::Jobs => client::jobs(&ladder),
         Command::Kill { job } => client::kill(&ladder, &job),
+        Command::ExecBatch { file } => client::exec_batch(&ladder, std::path::Path::new(&file)),
         Command::Exec {
             cwd,
             timeout,
@@ -368,6 +383,7 @@ mod tests {
         assert!(!wants_help(&v("exec --cwd --help -- ls")));
         assert!(!wants_help(&v("exec -- ls --help")));
         assert!(!wants_help(&v("poll job1 --wait 30")));
+        assert!(wants_help(&v("exec-batch --help")));
         assert!(!wants_help(&v("health")));
     }
 
@@ -389,5 +405,24 @@ mod tests {
         );
         assert!(parse(&v("fetch /a")).is_err());
         assert!(parse(&v("fetch /a /b /c")).is_err());
+    }
+
+    #[test]
+    fn exec_batch_takes_exactly_one_file() {
+        // Oracle: laptop-agent.py validate() declares exactly one
+        // positional `file` for exec-batch; argparse rejects zero,
+        // two, or option-like spellings before any transport. The
+        // binary refuses the same shapes (exit 2) rather than
+        // treating `--bogus` as a filename.
+        assert_eq!(
+            parse(&v("exec-batch batch.json")).unwrap(),
+            Command::ExecBatch {
+                file: "batch.json".into()
+            }
+        );
+        assert!(parse(&v("exec-batch")).is_err());
+        assert!(parse(&v("exec-batch a.json b.json")).is_err());
+        assert!(parse(&v("exec-batch --bogus")).is_err());
+        assert!(parse(&v("exec-batch -x")).is_err());
     }
 }
