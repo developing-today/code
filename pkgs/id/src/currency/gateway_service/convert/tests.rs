@@ -12,7 +12,9 @@ use super::super::{
     FileIntentStore, GatewayService, InMemoryIntentStore, IntentFinding, IntentState, IntentStore,
     ServiceError,
 };
-use super::{ConversionLegRole, ConversionOutcome, ConversionPresentation, leg_ids};
+use super::{
+    ConversionLegRole, ConversionOutcome, ConversionPresentation, ConversionResponse, leg_ids,
+};
 use crate::chain::Event;
 use crate::currency::conversion::{FailedPreSubmit, PresentedObject};
 use crate::currency::gateway::{
