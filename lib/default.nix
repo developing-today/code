@@ -1730,7 +1730,11 @@ let
               grep -q "pm-aggregator" list.txt
               grep -q "pm-projector" list.txt
               grep -q "pm-tunnel" list.txt
-              grep -q "ready-for-agent" list.txt
+              if [ "${system}" = x86_64-linux ]; then
+                grep -q "ready-for-agent" list.txt
+              else
+                ! grep -q "ready-for-agent" list.txt
+              fi
               grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt
