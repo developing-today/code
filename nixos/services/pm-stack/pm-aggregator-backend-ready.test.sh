@@ -26,7 +26,7 @@ expect_present() { # expect_present <file> <literal> <description>
 
 expect_present "$module" 'ExecStartPost = lib.optional cfg.aggregatorSocketActivation' \
   "socket-activated aggregator service gates start-complete on backend readiness"
-expect_present "$module" 'pm-aggregator-backend-ready.sh ${toString cfg.aggregatorBackendPort} 30' \
+expect_present "$module" 'pm-aggregator-backend-ready.sh} ${toString cfg.aggregatorBackendPort} 30' \
   "readiness gate probes the private backend port with a bounded timeout"
 expect_present "$module" 'Requires = [ "pm-aggregator.service" ];' \
   "proxy remains ordered after the backend service"
