@@ -45,6 +45,8 @@
   callPackage,
   craneLib ? null,
   doCheck ? true,
+  openssl,
+  pkgconfig,
   sourceRev ? "unknown",
   # The derived per-app version (#8566), computed by the release
   # tooling where the git history exists (the nix build source has
@@ -195,6 +197,14 @@ let
           # buildDepsOnly also builds test targets unless this is forwarded.
           # Runtime NixOS packages skip those; checked package outputs keep them.
           inherit doCheck;
+          # fleet-queue pulls fleet-cert, whose `openssl` crate needs
+          # openssl-sys to find a system OpenSSL (#16152: the PKCS#12
+          # slice 9344ea8b282 put openssl-sys in every variant's
+          # graph). The sandbox has no system OpenSSL, so provide
+          # nixpkgs' (pkg-config discovery via the standard hooks),
+          # following the pkgs/id/default.nix pattern.
+          buildInputs = [ openssl ];
+          nativeBuildInputs = [ pkgconfig ];
           env = envAttrs;
         };
 
