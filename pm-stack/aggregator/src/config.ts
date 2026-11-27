@@ -134,6 +134,9 @@ export interface Config {
   notificationsFile: string;
   /** Needs-Drew question store (#8568): fleet workers blocked on Drew. */
   needsDrewFile: string;
+  /** Applier ledger (#14043 S3): one row per answer_id carried to the
+   *  queue broker's decide verb, so no answer is applied twice. */
+  actionsExecApplyFile: string;
   /** Decision-set store (#8766): batched decisions-page sets. */
   decisionsFile: string;
   /** Decision-set event log (#9335 v2): append-only JSONL of every
@@ -324,6 +327,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       fromHome("PM_AGG_NOTIFICATIONS_FILE", ...AGG_STATE, "notifications.jsonl"),
     ),
     needsDrewFile: needsUserStatePath(env, fromHome("PM_AGG_NEEDS_USER_FILE", ...AGG_STATE)),
+    actionsExecApplyFile: s(
+      env.PM_AGG_ACTIONS_EXEC_APPLY_FILE,
+      fromHome("PM_AGG_ACTIONS_EXEC_APPLY_FILE", ...AGG_STATE, "actions-exec-apply.json"),
+    ),
     decisionsFile: s(env.PM_AGG_DECISIONS_FILE, fromHome("PM_AGG_DECISIONS_FILE", ...AGG_STATE, "decisions.json")),
     decisionsEventsFile: s(
       env.PM_AGG_DECISION_EVENTS_FILE,
