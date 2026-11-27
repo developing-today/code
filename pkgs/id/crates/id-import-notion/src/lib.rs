@@ -624,6 +624,9 @@ pub struct Manifest {
     /// provenance when a source moves or changes schema (§6.1).
     #[serde(default)]
     pub schema_claim_history: Vec<crate::databases::SchemaClaimRecord>,
+    /// Data-source parent changes observed during re-import (§6.1).
+    #[serde(default)]
+    pub moved_data_sources: Vec<crate::reimport::MovedDataSource>,
     /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
     /// §2.6), recorded by [`content::convert_page`]. Absent from
     /// pre-slice-4 manifests, so it defaults empty when an older
@@ -727,6 +730,7 @@ impl Manifest {
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
             schema_claim_history: Vec::new(),
+            moved_data_sources: Vec::new(),
             page_losses: BTreeMap::new(),
             export_matches: BTreeMap::new(),
             acquisition,

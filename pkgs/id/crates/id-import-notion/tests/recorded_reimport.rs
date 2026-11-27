@@ -54,7 +54,7 @@ fn inventory_for(state: &str) -> Inventory {
     inventory
 }
 
-fn manifest_for(state: &str, prefix: &str) -> Manifest {
+fn manifest_for(state: &str) -> Manifest {
     Manifest::new(
         "workspace-1".into(),
         vec!["api".into()],
@@ -74,52 +74,60 @@ fn assign_all_identities(manifest: &mut Manifest, prefix: &str) {
 }
 
 fn prepare_previous() -> Manifest {
-    let mut manifest = manifest_for("previous", "old");
+    let mut manifest = manifest_for("previous");
     assign_all_identities(&mut manifest, "old");
     convert_database(&mut manifest, "db-old").unwrap();
+    let claim_count = manifest.schema_claim_history.len();
+    convert_database(&mut manifest, "db-old").unwrap();
+    assert_eq!(manifest.schema_claim_history.len(), claim_count);
     for id in ["row-time", "row-hash", "row-missing"] {
         convert_row(&mut manifest, id).unwrap();
     }
     manifest
 }
 
+/// Oracle: the frozen previous/current inventories in `fixtures/reimport.json`
+/// specify the four exact ID buckets; unchanged IDs must yield no import actions.
 #[test]
 fn recorded_inventory_diff_is_deterministic_and_unchanged_is_a_noop() {
     let previous = inventory_for("previous");
     let current = inventory_for("current");
     let plan = plan_reimport(&previous, &current).unwrap();
-    let by_kind = |kind| -> BTreeSet<&str> {
+    let by_kind = |kind| -> BTreeSet<String> {
         plan.changes
             .iter()
             .filter(|change| change.kind == kind)
-            .map(|change| change.object_id.as_str())
+            .map(|change| change.object_id.clone())
             .collect()
     };
 
     assert_eq!(
         by_kind(ChangeKind::New),
-        BTreeSet::from(["db-new", "row-new"])
+        BTreeSet::from(["db-new".into(), "row-new".into()])
     );
     assert_eq!(
         by_kind(ChangeKind::Changed),
-        BTreeSet::from(["db-old", "ds-move", "row-hash", "row-time"])
+        BTreeSet::from([
+            "db-old".into(),
+            "ds-move".into(),
+            "row-hash".into(),
+            "row-time".into()
+        ])
     );
     assert_eq!(
         by_kind(ChangeKind::Unchanged),
-        BTreeSet::from(["ds-stay", "page-unchanged"])
+        BTreeSet::from(["ds-stay".into(), "page-unchanged".into()])
     );
     assert_eq!(
         by_kind(ChangeKind::MissingFromSource),
-        BTreeSet::from(["row-missing"])
+        BTreeSet::from(["row-missing".into()])
     );
     assert_eq!(
         plan.import_ids(),
-        vec![
-            "db-new", "db-old", "ds-move", "row-hash", "row-new", "row-time"
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>()
+        vec!["db-new", "db-old", "row-hash", "row-new", "row-time"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
     );
 
     let unchanged = plan_reimport(&previous, &previous).unwrap();
@@ -130,6 +138,8 @@ fn recorded_inventory_diff_is_deterministic_and_unchanged_is_a_noop() {
     );
 }
 
+/// Oracle: the same fixture preserves `ds-move`'s UUID and row page UUIDs
+/// while changing only parent database membership and claim supersession.
 #[test]
 fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacing_identity() {
     let previous = prepare_previous();
@@ -141,7 +151,7 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
         "the prior schema claims are recorded in the manifest"
     );
 
-    let mut current = manifest_for("current", "new");
+    let mut current = manifest_for("current");
     current
         .assign_database_identities(&mut |id| Ok(format!("new-database-{id}")))
         .unwrap();
@@ -151,6 +161,7 @@ fn recorded_moved_data_source_rehomes_schema_and_row_membership_without_replacin
     assert_eq!(moves[0].data_source_id, "ds-move");
     assert_eq!(moves[0].from_database_id, "db-old");
     assert_eq!(moves[0].to_database_id, "db-new");
+    assert_eq!(current.moved_data_sources, moves);
     assert_eq!(current.data_source_id_to_identity["ds-move"].0, "db-new");
     assert_eq!(current.page_id_to_note_id["row-time"], old_note_id);
     assert_eq!(

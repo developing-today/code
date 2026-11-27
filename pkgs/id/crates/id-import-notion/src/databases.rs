@@ -88,10 +88,44 @@ pub fn convert_database(manifest: &mut Manifest, database_id: &str) -> Result<Da
         .data_sources
         .get(database_id)
         .with_context(|| format!("database {database_id} has no enumerated data sources"))?;
+    let source_ids: BTreeSet<String> = sources.iter().map(|source| source.id.clone()).collect();
+    let schema_claims = schema_claims_for_database(manifest, database_id)?;
+    advance(manifest, database_id, Stage::Content, Outcome::Clean, None)?;
+    record_schema_claims(manifest, database_id, &note_id, &source_ids, &schema_claims);
+    Ok(DatabaseConversion {
+        database_id: database_id.to_owned(),
+        note_id,
+        schema_claims,
+    })
+}
+
+/// Build the current schema claims for one database without changing
+/// progress or history. Re-import uses this to recover current claims from
+/// manifests written before claim history was persisted.
+pub(crate) fn schema_claims_for_database(
+    manifest: &Manifest,
+    database_id: &str,
+) -> Result<Vec<SchemaClaim>> {
+    let object = manifest
+        .inventory
+        .objects
+        .get(database_id)
+        .with_context(|| format!("database {database_id} is not in the inventory"))?;
+    if object.kind != "database" {
+        bail!(
+            "inventory object {database_id} is a {}, not a database",
+            object.kind
+        );
+    }
+    let sources = manifest
+        .inventory
+        .data_sources
+        .get(database_id)
+        .with_context(|| format!("database {database_id} has no enumerated data sources"))?;
     if sources.is_empty() {
         bail!("database {database_id} has no data sources");
     }
-    let mut schema_claims = Vec::new();
+    let mut claims = Vec::new();
     for source in sources {
         let properties = source
             .source
@@ -128,7 +162,7 @@ pub fn convert_database(manifest: &mut Manifest, database_id: &str) -> Result<Da
                     source.id
                 );
             }
-            schema_claims.push(SchemaClaim {
+            claims.push(SchemaClaim {
                 data_source_id: source.id.clone(),
                 property_id,
                 property_name: name.clone(),
@@ -137,12 +171,44 @@ pub fn convert_database(manifest: &mut Manifest, database_id: &str) -> Result<Da
             });
         }
     }
-    advance(manifest, database_id, Stage::Content, Outcome::Clean, None)?;
-    Ok(DatabaseConversion {
-        database_id: database_id.to_owned(),
-        note_id,
-        schema_claims,
-    })
+    Ok(claims)
+}
+
+fn record_schema_claims(
+    manifest: &mut Manifest,
+    database_id: &str,
+    database_note_id: &str,
+    source_ids: &BTreeSet<String>,
+    claims: &[SchemaClaim],
+) {
+    for record in &mut manifest.schema_claim_history {
+        if !record.superseded && source_ids.contains(&record.claim.data_source_id) {
+            let still_current = record.database_id == database_id
+                && record.database_note_id == database_note_id
+                && claims.iter().any(|claim| claim == &record.claim);
+            if !still_current {
+                record.superseded = true;
+            }
+        }
+    }
+    for claim in claims {
+        let already_current = manifest.schema_claim_history.iter().any(|record| {
+            !record.superseded
+                && record.database_id == database_id
+                && record.database_note_id == database_note_id
+                && record.claim == *claim
+        });
+        if !already_current {
+            manifest
+                .schema_claim_history
+                .push(crate::databases::SchemaClaimRecord {
+                    database_id: database_id.to_owned(),
+                    database_note_id: database_note_id.to_owned(),
+                    claim: claim.clone(),
+                    superseded: false,
+                });
+        }
+    }
 }
 
 /// Record staged progress without rewinding it (§6.3): re-converting a
