@@ -449,7 +449,7 @@
         # Linux first per the Q1 platform order on #6297. A separate output
         # so the default `id` packages never acquire Bevy. Tests stay in the
         # test-native-shell check; this derivation only builds and wraps.
-        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           id-native-shell = pkgs.rustPlatform.buildRustPackage {
             pname = "id-native-shell";
             version = "0.1.0";
@@ -610,7 +610,7 @@
             individualChecks =
               {
                 # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
-                # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
+                # NixOS VM integration tests (Linux only): nixos-serve nixos-world-host nixos-e2e
                 # Nix flake check builds all named checks as well as default.
                 # Use a link farm so the aggregate depends on those same results
                 # instead of rerunning the full CI recipe in a second derivation.
@@ -705,7 +705,24 @@
                   "test-web-unit"
                   "test-web-typecheck"
                 ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+                # The keyboard parity test reads the kitty corpus from
+                # doc/, a symlink to the repo-root doc/ that dangles in
+                # the check sandbox; materialize that one file as
+                # roc-test does (#14665).
+                test-web-unit = mkCheckWith {
+                  name = "test-web-unit";
+                  justCmd = "test-web-unit";
+                  needsCargoSetup = false;
+                  needsRustToolchain = false;
+                  needsBuildInputs = false;
+                  buildWebAssets = false;
+                  compileRocWorldHost = false;
+                  beforeCheck = ''
+                    rm doc
+                    mkdir doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
+                };
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
                 # recipe with the pinned nightly from nix/roc.nix (already in
@@ -1136,6 +1153,9 @@
                 pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
                   nixos-serve = pkgs.testers.runNixOSTest (
                     import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
+                  );
+                  nixos-world-host = pkgs.testers.runNixOSTest (
+                    import ./nix/tests/world-host-test.nix { idPackage = self.packages.${system}.id-web; }
                   );
                   nixos-e2e = pkgs.testers.runNixOSTest (
                     import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }

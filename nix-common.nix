@@ -25,7 +25,7 @@ let
   # mcpx (MCP gateway / Code Mode runner) is built from this repository. It is
   # callPackaged here so `nix develop` and `nix-shell` both get the same build,
   # the same way nixos/environment/default.nix pulls it in system-wide.
-  mcpx = pkgs.callPackage ./pkgs/mcpx/package.nix { };
+  mcpx = pkgs.callPackage ./pkgs/mcpx/package.nix { doCheck = true; };
 
   # Android SDK for building Android projects (notably the OpenChamber mobile
   # app) from either shell. Mirrors nixos/environment/default.nix exactly, so

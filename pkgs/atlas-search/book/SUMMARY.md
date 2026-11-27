@@ -28,6 +28,7 @@
 - [fleet search and fleet serve search](reference/fleet-search.md)
 - [The service HTTP API](reference/service-api.md)
 - [The Worker HTTP API](reference/worker-api.md)
+- [Retained objects and retention classes](reference/retained-objects.md)
 - [The Atlas MCP server](reference/mcp.md)
 - [Configuration and environment](reference/configuration.md)
 - [Data stores and schemas](reference/data-stores.md)

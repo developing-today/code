@@ -27,7 +27,10 @@
   makeBinaryWrapper,
   installShellFiles,
   tini,
-  doCheck ? true,
+  # Packages included by other applications or system profiles should not
+  # repeat this expensive Go/e2e suite. CI and this repo's standalone
+  # mcpx package output enable it explicitly.
+  doCheck ? false,
   # The OCI image runs exactly this binary plus its explicitly selected
   # JavaScript runtime; it must not inherit the workstation wrapper's full
   # runtime PATH (Deno, Node and git).

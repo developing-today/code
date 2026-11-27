@@ -88,6 +88,11 @@ import {
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
+import {
+  parseWorkerCheckSet,
+  WORKER_CHECKS_KEY,
+  type WorkerCheckSet,
+} from "./worker-checks.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -1387,6 +1392,13 @@ export class Edge {
     return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
   }
 
+  /** Whether this side holds where the decision-events Worker is and
+   * the secret its reads take (#13491): the two together make the
+   * Questions discovery section this side's. */
+  private decisionEventsReady(): boolean {
+    return Boolean(this.direct?.decisionEvents?.url) && Boolean(this.direct?.decisionEvents?.secret);
+  }
+
   /** The kinds this side does itself when it does the core. The
    * composer's kinds — a message, its broaden, its offer (#14375) —
    * are this side's only with the bridge held (bridgeReady): without
@@ -1444,7 +1456,12 @@ export class Edge {
         // machine goes on reporting the list, as it did before.
         (name !== "agents" || this.bridgeReady()) &&
         // The pipeline count is the bridge's the same way (#14377).
-        (name !== "pipeline" || this.bridgeReady()),
+        (name !== "pipeline" || this.bridgeReady()) &&
+        // The Questions discovery section is the decision-events
+        // Worker's: read here only while this side holds where it is
+        // and the secret its reads take (#13491). Without them a
+        // machine goes on reporting the section, as it did before.
+        (name !== "questionSets" || this.decisionEventsReady()),
     );
   }
 
@@ -1468,6 +1485,7 @@ export class Edge {
         queueToken: this.direct?.queueToken,
         bridgeToken: this.direct?.bridgeToken,
         bridgeFetch: this.direct?.bridgeFetch as never,
+        decisionEvents: this.direct?.decisionEvents,
         githubApi: this.direct?.githubApi,
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
@@ -1485,7 +1503,7 @@ export class Edge {
       this.kept = {
         ...made,
         cfg,
-        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan),
+        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan, made.queueEnqueue),
         recalled: false,
       };
     }
@@ -1514,7 +1532,7 @@ export class Edge {
     const from = this.outwardN;
     let data: unknown;
     try {
-      data = await directRead(name, mine.ops, mine.work);
+      data = await directRead(name, mine.ops, mine.work, mine.questionSets);
     } catch (error) {
       // This side's token may not read this. For the next hour (or, if
       // it was only calling too often, a few minutes) it is a machine's
@@ -1650,8 +1668,12 @@ export class Edge {
       // being refused: the check is how this side finds it can read
       // the section itself again.
       if ((name === "agents" || name === "pipeline") && !this.bridgeReady()) continue;
+      // The Questions discovery section is the decision-events
+      // Worker's the same way (#13491): with no source held there is
+      // no path here to prove, and the section is a machine's.
+      if (name === "questionSets" && !this.decisionEventsReady()) continue;
       try {
-        await directRead(name, direct.ops, direct.work);
+        await directRead(name, direct.ops, direct.work, direct.questionSets);
         kinds[name] = { ok: true };
       } catch (error) {
         kinds[name] = { ok: false, error: (error as Error).message.slice(0, 200) };
@@ -1704,21 +1726,31 @@ export class Edge {
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
-    const prompt = (packet: unknown, intent?: string) =>
-      this.holdLater(
+    const prompt = async (packet: unknown, intent?: string) => {
+      let queued: { code: number; stdout: string; stderr: string };
+      try {
+        queued = await direct.queueEnqueue(packet);
+      } catch {
+        // A store that cannot be reached is the same as one that refused:
+        // the issue is filed, and its task goes to the machine instead.
+        queued = { code: 1, stdout: "", stderr: "queue store unreachable" };
+      }
+      if (queued.code === 0) return queued;
+      // Keep the established machine fallback if the direct store is
+      // unavailable; a filed issue must never be left without its task.
+      return this.holdLater(
         {
           kind: "prompt.enqueue",
           args: {
             issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
             text: String(args.text ?? ""),
             at: new Date(this.now()).toISOString(),
-            // What kind of prompt it is, where it is not simply something
-            // to do: the machine files the task for that kind.
             ...(intent !== undefined && intent !== "task" ? { intent } : {}),
           },
         },
         by,
       );
+    };
     const from = this.outwardN;
     try {
       let result: unknown;
@@ -1758,6 +1790,24 @@ export class Edge {
     if (!key) return json({ error: "not a key" }, 400);
     await this.kv.put("key", { kid: await keyId(key), jwk: key });
     return json({ ok: true });
+  }
+
+  /** The stateless part's round of Worker checks (#15793): it asks
+   * each bound Worker by its service binding and hands the set here
+   * to keep. Only a set in the shape worker-checks.ts writes is
+   * kept; anything else is refused, so the health answer never
+   * shows a shape it cannot vouch for. */
+  private async workerChecksStore(req: Request): Promise<Response> {
+    const set = parseWorkerCheckSet(await req.json().catch(() => null));
+    if (!set) return json({ error: "not a worker-check set" }, 400);
+    await this.kv.put(WORKER_CHECKS_KEY, set);
+    return json({ ok: true });
+  }
+
+  /** The last set of Worker checks kept, or null before the first
+   * round has run (or when what is stored is not a set). */
+  async lastWorkerChecks(): Promise<WorkerCheckSet | null> {
+    return parseWorkerCheckSet(await this.kv.get(WORKER_CHECKS_KEY));
   }
 
   private async sync(req: Request): Promise<Response> {
@@ -2175,6 +2225,7 @@ export class Edge {
       if (path === "/internal/hold") return this.hold(req);
       if (path === "/internal/relayed") return this.relayed(req);
       if (path === "/internal/route") return this.routeFlip(req);
+      if (path === "/internal/worker-checks") return this.workerChecksStore(req);
       return json({ error: "not found" }, 404);
     }
 
@@ -2243,6 +2294,11 @@ export class Edge {
         // automatic fall — the front door's flips are visible here,
         // never a silent setting. Empty until a surface is flipped.
         routes: healthRoutes(await this.routes()),
+        // The edge's own checks of the platform's Workers (#15793):
+        // the last round it ran by service binding — each Worker it
+        // checks, answering or not, the commit it named, when it was
+        // asked. Null until the first scheduled round has run.
+        workerChecks: await this.lastWorkerChecks(),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,

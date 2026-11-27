@@ -895,6 +895,48 @@ fn rotation_with_config(
     out
 }
 
+/// Add a hinted installation that exists live but is not present in
+/// that App's configured owner set. The configured rotation remains
+/// the fallback if an App's installation list could not be read.
+fn add_dynamic_hint_sources(
+    mut sources: Vec<TokenSource>,
+    args: &[String],
+    installations: &[(GhApp, Vec<String>)],
+) -> Vec<TokenSource> {
+    let Some(hint) = owner_hint(args) else {
+        return sources;
+    };
+    for (app, owners) in installations {
+        if sources.iter().any(|source| {
+            matches!(source, TokenSource::AppInstallation { app: source_app, owner }
+                if source_app == app && owner.eq_ignore_ascii_case(&hint))
+        }) {
+            continue;
+        }
+        let Some(owner) = owners
+            .iter()
+            .find(|owner| owner.eq_ignore_ascii_case(&hint))
+        else {
+            continue;
+        };
+        let source = TokenSource::app(app.clone(), owner);
+        let insert_at = sources
+            .iter()
+            .position(|existing| {
+                matches!(existing, TokenSource::AppInstallation { app: source_app, .. }
+                    if source_app == app)
+            })
+            .or_else(|| {
+                sources
+                    .iter()
+                    .position(|s| matches!(s, TokenSource::Personal))
+            })
+            .unwrap_or(sources.len());
+        sources.insert(insert_at, source);
+    }
+    sources
+}
+
 /// May this failed attempt be repeated under the next token?
 /// The #8887 retry-safety rule: pre-execution refusals (rate limit,
 /// permission) may repeat anything; other failures may repeat only
@@ -921,6 +963,13 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
 /// with fake identities and a fake `gh` (the oracle tests below).
 trait TokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String>;
+
+    /// Owners with a live installation for this App. The runner uses
+    /// this only when an explicit owner hint is absent from the
+    /// configured owner list; failures leave the existing rotation intact.
+    fn installation_owners(&mut self, _app: &GhApp) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Raw credential operations, with no caching: the
@@ -1176,6 +1225,11 @@ impl FleetTokenProvider {
 }
 
 impl TokenProvider for FleetTokenProvider {
+    fn installation_owners(&mut self, app: &GhApp) -> Result<Vec<String>, String> {
+        FleetTokenProvider::installations(self, app)
+            .map(|pairs| pairs.into_iter().map(|(owner, _)| owner).collect())
+    }
+
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
@@ -1354,6 +1408,26 @@ struct Attempt {
     code: i32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+/// Remedy for a `gh` spawn failure (#10311 (d)): the binary is
+/// missing or not executable. Names the fix so the caller is not
+/// left guessing: install `gh`, or point FLEET_GH_BIN at it.
+fn spawn_failure_message(gh_bin: &str, e: &std::io::Error) -> String {
+    format!("failed to run '{gh_bin}': {e} (install gh, or set FLEET_GH_BIN to the gh binary)")
+}
+
+/// Distinct provider errors, first-seen order (#10311 (d)): every
+/// source that fails the same way (e.g. the same broker outage)
+/// reports once, then the summary line.
+fn distinct_errors(errors: &[String]) -> Vec<&str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for e in errors {
+        if !seen.contains(&e.as_str()) {
+            seen.push(e.as_str());
+        }
+    }
+    seen
 }
 
 /// The gh-fleet shim's recursion guard (pkgs/gh-fleet): a child
@@ -1585,7 +1659,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         let attempt = match run_gh_once_with_stdin(gh_bin, args, &token, stdin_bytes) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
+                eprintln!("fleet gh: {}", spawn_failure_message(gh_bin, &e));
                 return (EXIT_UNRESOLVED, None);
             }
         };
@@ -1630,7 +1704,7 @@ fn run_with_provider_capturing<P: TokenProvider>(
         emit(&attempt);
         return (code, captured);
     }
-    for e in &provider_errors {
+    for e in distinct_errors(&provider_errors) {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
@@ -1719,7 +1793,7 @@ fn run_tiers(config: &Config, addrs: Vec<String>, all: bool) -> i32 {
                 any_down = true;
             }
             Err(e) => {
-                println!("{label}\tDOWN\tfailed to run '{gh_bin}': {e}");
+                println!("{label}\tDOWN\t{}", spawn_failure_message(&gh_bin, &e));
                 any_down = true;
             }
         }
@@ -1824,7 +1898,7 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("fleet gh --raw: failed to run '{gh_bin}': {e}");
+            eprintln!("fleet gh --raw: {}", spawn_failure_message(gh_bin, &e));
             EXIT_UNRESOLVED
         }
     }
@@ -1995,9 +2069,35 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&call_args, config);
-    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
+    let mut sources = rotation(&call_args, config);
+    // An explicit rotation is authoritative. Otherwise, when a call
+    // names an owner outside an App's configured set, consult that
+    // App's cached live installations and add its leg if present.
+    if std::env::var("FLEET_GH_ORDER").is_err() {
+        if let Some(hint) = owner_hint(&call_args) {
+            let owners_env = Owners::from_env();
+            let mut discovered = Vec::new();
+            for app in all_apps(config) {
+                if owners_env
+                    .for_app(&app, config)
+                    .iter()
+                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
+                {
+                    continue;
+                }
+                match provider.installation_owners(&app) {
+                    Ok(owners) => discovered.push((app, owners)),
+                    Err(error) => eprintln!(
+                        "fleet gh: could not check {} installations for owner hint: {error}",
+                        app.slug()
+                    ),
+                }
+            }
+            sources = add_dynamic_hint_sources(sources, &call_args, &discovered);
+        }
+    }
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let (code, final_stdout) = run_with_provider_capturing(
         &mut provider,
         &gh_bin,
@@ -2801,6 +2901,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dynamic_owner_hint_adds_only_apps_with_a_live_installation() {
+        // Oracle: a hinted owner gets an App leg exactly when the
+        // provider's live-installation list contains that owner; the
+        // personal token remains the final fallback.
+        let args: Vec<String> = ["api", "repos/layercloud/private-repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let base = rotation_with_config(&args, None, &Owners::default(), &Config::default());
+        let with_live = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[
+                (GhApp::Fleet, vec!["LayerCloud".to_string()]),
+                (GhApp::DevToday, vec!["another-org".to_string()]),
+                (GhApp::Backup, vec!["layercloud".to_string()]),
+            ],
+        );
+        assert_eq!(with_live[0], TokenSource::app(GhApp::Fleet, "LayerCloud"));
+        assert!(with_live.contains(&TokenSource::app(GhApp::Backup, "layercloud")));
+        assert!(!with_live.contains(&TokenSource::app(GhApp::DevToday, "layercloud")));
+        assert_eq!(with_live.last(), Some(&TokenSource::Personal));
+
+        let no_match = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[(GhApp::Fleet, vec!["other-org".to_string()])],
+        );
+        assert_eq!(no_match, base);
+        assert_eq!(
+            add_dynamic_hint_sources(base.clone(), &["api".to_string()], &[]),
+            base
+        );
+    }
+
     fn configured_apps_fixture() -> Config {
         let mut config = Config::default();
         config.gh.apps = vec![
@@ -3528,6 +3664,52 @@ mod tests {
             format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
+    }
+
+    // oracle: #10311 (d) — a missing `gh` binary must name the
+    // remedy (install gh, or set FLEET_GH_BIN); the spawn-error
+    // path returns exit 3 with no attempt made.
+    #[test]
+    fn missing_gh_error_names_the_remedy() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let msg = spawn_failure_message("gh", &e);
+        assert!(msg.contains("install gh"), "no install remedy: {msg}");
+        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
+        assert!(msg.contains("'gh'"), "binary name lost: {msg}");
+    }
+
+    #[test]
+    fn missing_gh_spawn_returns_unresolved() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let sources = vec![TokenSource::Personal];
+        let code = run_with_provider(
+            &mut provider,
+            "/nonexistent/fleet-gh-test-gh",
+            &args,
+            &sources,
+            false,
+        );
+        assert_eq!(code, EXIT_UNRESOLVED, "spawn failure must exit 3");
+    }
+
+    // oracle: #10311 (d) — the no-credentials path prints each
+    // distinct provider error once, first-seen order.
+    #[test]
+    fn provider_errors_printed_once() {
+        let errors = vec![
+            "broker unreachable".to_string(),
+            "broker unreachable".to_string(),
+            "cache daemon down".to_string(),
+            "broker unreachable".to_string(),
+        ];
+        assert_eq!(
+            distinct_errors(&errors),
+            vec!["broker unreachable", "cache daemon down"]
+        );
+        assert!(distinct_errors(&[]).is_empty());
     }
 }
 

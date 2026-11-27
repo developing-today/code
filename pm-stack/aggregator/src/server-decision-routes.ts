@@ -51,6 +51,7 @@ import {
   type DecisionEventInput,
 } from "./decision-events.ts";
 import { getAlertsStore, requestAlertTick } from "./alerts.ts";
+import { requestActionsExecApplyTick } from "./actions-exec-apply.ts";
 import { readJsonBody } from "./request-body.ts";
 import { cfg, source } from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
@@ -80,6 +81,14 @@ import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
  * to review; any other answer resolves it, keyed on the recorded
  * (first) answer. */
 export async function afterNeedsDrewAnswered(item: NeedsDrewQuestion, answered: NeedsDrewQuestion): Promise<void> {
+  // #14043 S3: a recorded broker-sourced answer is carried to the
+  // decide verb by the applier; kick it now rather than waiting for
+  // the periodic pass.
+  try {
+    requestActionsExecApplyTick();
+  } catch (err) {
+    console.error(`needs-drew answer: applier kick failed (${err instanceof Error ? err.message : "error"})`);
+  }
   try {
     const store = await getAlertsStore();
     if (store) {
@@ -99,7 +108,7 @@ export async function afterNeedsDrewAnswered(item: NeedsDrewQuestion, answered: 
 
 export async function handleDecisionRoutes(req: Request, url: URL, path: string): Promise<Response | null> {
   // --- Needs-Drew answers (#8568) --------------------------------------
-  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  const needsDrewAnswerMatch = /^\/api\/needs-(?:drew|user)\/([^/]+)\/answer$/.exec(path);
   if (req.method === "POST" && needsDrewAnswerMatch) {
     const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
     if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);

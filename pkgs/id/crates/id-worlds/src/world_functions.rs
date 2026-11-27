@@ -34,10 +34,15 @@
 //! no version. Swap-time rejections (superseded, stale expectation, failed
 //! restore) name the version they discarded.
 //!
-//! Not here, and arriving with later slices: the real instantiation, init
-//! and snapshot/restore wiring through `sandbox.rs`, per-function instances
-//! and their fuel budgets inside the world's per-tick budget (§4), draining
-//! in-flight calls on the old instance, and persistence of this state.
+//! The real instantiation, init and snapshot/restore wiring through
+//! `sandbox.rs`, with one instance (and so one fuel budget) per function
+//! version, is the host half in `world_function_host` (`FunctionHost`,
+//! under the `sandbox` feature), which owns a registry and drives it with
+//! real outcomes.
+//!
+//! Not here, and arriving with later slices: the per-function budgets
+//! inside the world's per-tick budget (§4), draining in-flight calls on the
+//! old instance, and persistence of this state.
 
 use std::collections::BTreeMap;
 

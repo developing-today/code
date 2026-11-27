@@ -232,9 +232,12 @@ export function decodeBatch(bytes: Uint8Array, limits: BridgeLimits): Uint8Array
   return events;
 }
 
-/** Decodes raw event bytes into ingest entries, in order: a verified
- * event, or the refusal recorded in its place (the native
- * ingest_batch shape). */
+/** Hosted signed-event ingress gate for the existing LogSync/range-sync
+ * representation: every event is structurally/semantically decoded and its
+ * author signature verified before BridgeStore can admit it. The enclosing
+ * bridge session separately authenticates the bound peer key and tenant; the
+ * store then enforces replay, chain order and fork evidence. Invalid events
+ * become explicit refusals, never partially admitted data. */
 export async function decodeEntries(
   rawEvents: Uint8Array[],
 ): Promise<(Awaited<ReturnType<typeof decodeEvent>> | { malformed: string })[]> {
@@ -593,7 +596,12 @@ export class BridgeSessionServer {
       if (verdict !== true) return this.fail(verdict.code, verdict.message);
     }
     const outcomes = this.opts.store.ingestBatch(entries, this.now());
-    this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));
+    this.send(
+      jsonFrame(TAG.ack, {
+        ...summarizeOutcomes(outcomes),
+        conflicts: this.opts.store.conflictReports(),
+      }),
+    );
   }
 
   private onClientWantEnd(): void {

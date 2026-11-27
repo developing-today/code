@@ -279,6 +279,19 @@ class CoverageReconcileTest(unittest.TestCase):
         self.assertFalse(Path(paths[0]).exists())
         self.assertFalse(Path(paths[1]).exists())
 
+    def test_terminal_status_classifier_matches_queue_terminal_states(self):
+        """Done, failed, and cancelled rows trigger retry; live states do not."""
+        for status in ("done", "failed", "cancelled"):
+            with self.subTest(status=status):
+                self.assertTrue(
+                    check_coverage._is_terminal_dedupe_response({"status": status})
+                )
+        for status in ("queued", "claimed", "parked", "blocked"):
+            with self.subTest(status=status):
+                self.assertFalse(
+                    check_coverage._is_terminal_dedupe_response({"status": status})
+                )
+
     def test_terminal_dedupe_hit_retries_with_dispatch_suffix(self):
         """A completed key is not live coverage; retry once with a valid suffix."""
         import unittest.mock
@@ -294,9 +307,9 @@ class CoverageReconcileTest(unittest.TestCase):
             calls.append(submitted)
             if len(calls) == 1:
                 stdout = (
-                    "not filed: dedupe key already belongs to completed task 7\n"
+                    "dedupe hit: existing task 7 (queue repo-health-code-pilot, status done)\n"
                     + json.dumps(
-                        {"dedupe_match": {"rule": "dedupe_key_terminal"}}
+                        {"id": 7, "status": "done", "dedupe_key": original_key}
                     )
                 )
             else:
@@ -321,7 +334,17 @@ class CoverageReconcileTest(unittest.TestCase):
         suffix = retry_key.rsplit(":dispatch:", 1)[1]
         self.assertEqual(len(suffix), 8)
         self.assertTrue(all(ch in "0123456789abcdef" for ch in suffix))
-        self.assertEqual(calls[1]["payload"], calls[0]["payload"])
+        self.assertEqual(
+            calls[1]["payload"]["dedupe_override"],
+            "Coverage reconciliation retried this still-open item after its previous "
+            "queue task reached a terminal state.",
+        )
+        retry_payload = {
+            key: value
+            for key, value in calls[1]["payload"].items()
+            if key != "dedupe_override"
+        }
+        self.assertEqual(retry_payload, calls[0]["payload"])
 
     def test_terminal_pr_dedupe_hit_retries_with_dispatch_suffix(self):
         """Ready-PR coverage also suffixes a completed shepherd key."""

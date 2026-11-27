@@ -33,10 +33,15 @@
   // from it, instead of waiting for a machine's fleet binary.
   // Read-only decision activity comes from the authenticated D1 service;
   // its shared credential is a Worker secret, never a variable or URL.
+  // The edge also checks PM service deployment version on schedule (#15793).
   "services": [
     { "binding": "BRIDGE", "service": "message-bridge" },
+    { "binding": "PM_SERVICE", "service": "pm-service" },
     { "binding": "DECISION_EVENTS", "service": "decision-events" }
   ],
+  // The Worker checks above run on this trigger (#15793); registered
+  // in doc/fleet-schedule-registry.md (Surface 7).
+  "triggers": { "crons": ["*/15 * * * *"] }
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
   // linked phones. Three secrets are optional, put there by

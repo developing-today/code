@@ -59,6 +59,14 @@ The unix socket stays filesystem-permission authentication: 0600, owner-only. A 
 4. Slice 5: client migration. Auto-provisioned `local-cli` key, client library and exec forwarding, and the `auth.mode` default flip to `permissive`.
 5. Slice 6: door mapping. The bridge presents per-client and per-machine daemon keys, selector-as-narrowing at the door, the `auth.mode` default flip to `required`, and removal of the legacy token import.
 
+### 2.7.1 Implementation status
+
+- The key store and the HTTP gate have landed (the gate half of slice 3 together with the store half of slice 2). `auth.json` holds only SHA-256 hashes, mode 0600, in the state directory; a key's public ID is the first 12 hex digits of its hash. The store is re-read whenever the file changes, so a revocation takes effect on the next request.
+- `auth.mode` is registered with `off` as the default. `off` is the #1975 gate unchanged and does not consult keys. `permissive` and `required` resolve `Bearer mcpx_key_...` against the store and refuse an unknown or revoked key with 401 in either mode. `required` refuses every HTTP caller with no valid credential. The unix socket needs no key in either mode (section 2.4). `transport.bearerToken`, when set, is honoured in every mode as the virtual key `legacy-transport-token` (owner, ceiling `full`), resolved in memory rather than written into the store.
+- An authenticated request carries its (key ID, user, label, ceiling, `capability_ref`) on the request context. The chat-completions proxy never forwards a keyed request's Authorization header upstream.
+- The local CLI supports `mcpx auth key create|list|revoke`. Create requires a user and label, defaults to the `discovery` ceiling, and prints the raw key only once; `auth.json` stores only the hash. List exposes public metadata without the secret or hash. Keys are managed through the local state directory, never over unauthenticated HTTP. A lost key cannot be recovered: create a replacement, update its caller, then revoke the old key by its public ID.
+- Still open: audit stamping with the key ID, ceilings (slice 4), client migration (slice 5) and the door mapping (slice 6).
+
 ### 2.8 Non-goals
 
 No daemon code changes in slice 1. No OAuth inside the daemon; the door remains the OAuth terminus. No change to decision 0007's elicitation binding. No third quota axis. Door-side response filtering is not retired by this record.

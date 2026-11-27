@@ -4,7 +4,7 @@ Source: `pkgs/atlas-search/crates/atlas-search/src/bin/atlas-stage.rs`, with the
 
 `atlas-stage` provisions Atlas _staging units_ and reads the _staging registry_. A staging unit is one writer's isolated staging database: artifacts are staged into it first, classified there, and only later promoted into the core corpus. The registry is the store file that records every unit, its owner and its lifecycle state. The staging schema version is 1 (`STAGE_SCHEMA_VERSION`). The place of staging in the ingest flow is described in [Ingest today: staging, classification, promotion](../concepts/ingest.md).
 
-**Where the source header disagrees with the source, the source wins.** The binary's own source header opens by describing "two verbs" and later says all of them are offline. Both framings are stale. The binary has **six** verbs — `provision`, `lookup`, `ingest`, `items`, `promote`, `units` — and `promote` is not offline in the header's sense: it needs the embedding model and the ONNX runtime, resolved over the filesystem (and potentially a local virtualenv path; see `promote` below). The header's verb list itself is complete; only its counts and framing are wrong. This chapter documents the six real verbs.
+**Where the source header disagrees with the source, the source wins.** The binary has **seven** verbs — `provision`, `lookup`, `ingest`, `ingest-memory-lancedb`, `items`, `promote`, `units`. `promote` needs the embedding model and ONNX runtime (see below); `ingest-memory-lancedb` is limited to the `agent-memory` unit. This chapter documents the actual CLI.
 
 ## Invocation
 
@@ -15,6 +15,7 @@ Commands:
   provision  Create a staging DB, apply the v1 schema, and register the unit
   lookup     Print one unit's registry record as JSON
   ingest     Stage one code/config artifact file as an embedding entry
+  ingest-memory-lancedb  Stage records from an agent-memory LanceDB store
   items      List the items staged in a unit's staging DB
   promote    Embed a unit's staged chunks into a new core scan shard and promote the unit to merged
   units      List units in a lifecycle state (open|closing|merged)
@@ -77,6 +78,12 @@ Stages one code/config artifact file as an embedding entry in an already-provisi
 | `--language`    | string                     | `""` (see note) | The artifact language (yaml, toml, rust, …). An empty language is replaced by the staged file's extension before the entry is built, as the help states.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `--sensitivity` | `public\|internal\|secret` | `internal`      | Staging tier vocabulary, as in `provision`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `--segments`    | path                       | — (none)        | Optional JSON file declaring the artifact's source-native classification segments: an array of `{"start": &lt;byte&gt;, "end": &lt;byte&gt;, "sensitivity": shareable\|personal\|local-only\|secret-bearing, "certain": &lt;bool, default true&gt;}` — note the segment sensitivities use the four-level ladder, not the tier vocabulary. When given, the artifact is staged classified: boundary-safe chunks plus one persisted classification record per chunk. Segment files are parsed strictly — missing or mistyped fields, or an unknown sensitivity name, are errors, never defaults. |
+
+## `ingest-memory-lancedb`
+
+This command reads the native agent-memory LanceDB store and stages its records in the specified staging unit. It needs `atlas-stage` built with the `lancedb` feature (`cargo build -p atlas-search --features lancedb`, which needs `protoc`); a default build reports that and points at `ingest-memory --export`, which reads the JSON export instead. It is intentionally restricted to the `agent-memory` unit; other unit IDs are rejected. Source provenance and rebuild metadata are retained, and repeating an ingest updates changed records without duplicating unchanged records.
+
+Consult `atlas-stage ingest-memory-lancedb --help` for the exact required flags and defaults; the CLI is the source of truth for the store, database and registry paths.
 
 ## `items`
 

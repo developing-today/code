@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { requireHome } from "./home.ts";
+import { needsUserStatePath } from "./needs-user-state-path.ts";
 
 export const NEEDS_DREW_LABELS = ["user/review", "user/escalated"] as const;
 export type NeedsDrewLabel = (typeof NEEDS_DREW_LABELS)[number];
@@ -448,8 +449,7 @@ export const NEEDS_DREW_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 /** Default question-store path (mirrors src/config.ts needsDrewFile). */
 export function defaultNeedsDrewFile(env: Record<string, string | undefined> = process.env): string {
-  const v = env.PM_AGG_NEEDS_DREW_FILE?.trim();
-  return v ? v : join(requireHome("PM_AGG_NEEDS_DREW_FILE"), ".local", "state", "pm-aggregator", "needs-drew.json");
+  return needsUserStatePath(env, () => join(requireHome("PM_AGG_NEEDS_USER_FILE"), ".local", "state", "pm-aggregator"));
 }
 
 /** Validate the intake `needsDrew` extension object (#8568 wire contract). */
@@ -626,7 +626,12 @@ function actionsExecMapping(source: string, key: string | undefined): NeedsDrewB
   const normalizedKey = key?.trim() ?? "";
   const prefix = "actions-exec-ext:";
   if (source !== "fleet-actions-exec" || !normalizedKey.startsWith(prefix)) return null;
-  const handle = normalizedKey.slice(prefix.length).trim();
+  // The broker's alert key is actions-exec-ext:<handle>:<ordinal>; the
+  // session handle is the middle part, so the trailing ordinal goes.
+  const handle = normalizedKey
+    .slice(prefix.length)
+    .replace(/:\d+$/, "")
+    .trim();
   if (!handle) return null;
   return { source: "fleet-actions-exec", key: normalizedKey, handle };
 }

@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { probeWorkers, selfCheck, type WorkerCheckTarget } from "./worker-checks.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -31,9 +32,21 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
-  /** Server-side credential for the decision-events authenticated GET routes. */
-  DECISION_EVENTS_SECRET?: string;
+  /** The platform's other Workers, by service binding, for the
+   * scheduled checks (#15793): the edge asks each for the commit it
+   * was deployed from and keeps the answers in the object. A binding
+   * that is not configured simply leaves that Worker out of the
+   * round; the bindings are declared in wrangler.jsonc. */
+  PM_SERVICE?: { fetch(request: Request): Promise<Response> };
   DECISION_EVENTS?: { fetch(request: Request): Promise<Response> };
+  /** The decision-events Worker (#13491): its address and the shared
+   * secret its reads take, the secret a Worker secret like the two
+   * tokens. With both, the edge reads the Questions discovery section
+   * (the sets the Worker holds, and each set's state) itself, with no
+   * machine; without either, that section stays a machine's. */
+  DECISION_EVENTS_URL?: string;
+  /** Server-side credential for authenticated decision page/read routes. */
+  DECISION_EVENTS_SECRET?: string;
   /** Opt-in only after the #14865 cutover gate and credential read probe. */
   DECISION_PAGES?: string;
   /** The fleet-platform ledger the hosted M4 ledger surfaces read
@@ -122,6 +135,10 @@ export class PmEdge extends DurableObject<Env> {
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
         bridgeToken: env.BRIDGE_TOKEN,
+        decisionEvents:
+          env.DECISION_EVENTS_URL && env.DECISION_EVENTS_SECRET
+            ? { url: env.DECISION_EVENTS_URL, secret: env.DECISION_EVENTS_SECRET }
+            : undefined,
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
         bridgeFetch: bridge
@@ -270,5 +287,40 @@ export default {
       later: (work) => ctx.waitUntil(work),
       now: Date.now,
     });
+  },
+
+  /** The scheduled Worker checks (#15793, steps 1–2 of #13494): ask
+   * each bound Worker, by its service binding — no public hop, no
+   * setting changed — for the commit it was deployed from, and hand
+   * the set to the object to keep. The cron trigger is declared in
+   * wrangler.jsonc and registered in doc/fleet-schedule-registry.md.
+   * A Worker with no binding configured is left out of the round;
+   * one that does not answer is recorded as not answering. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const askedAt = Date.now();
+    const bound: [string, Env["BRIDGE"]][] = [
+      ["message-bridge", env.BRIDGE],
+      ["pm-service", env.PM_SERVICE],
+      ["decision-events", env.DECISION_EVENTS],
+    ];
+    const targets: WorkerCheckTarget[] = bound
+      .filter((entry): entry is [string, NonNullable<Env["BRIDGE"]>] => entry[1] !== undefined)
+      .map(([name, binding]) => ({
+        name,
+        fetcher: (request: Request) => binding.fetch(request),
+      }));
+    const set = await probeWorkers(targets, askedAt);
+    set.checks.push(selfCheck("pm-console-edge", env.VERSION, askedAt));
+    set.checks.sort((a, b) => a.name.localeCompare(b.name));
+    const stub = env.PM.get(env.PM.idFromName("pm"));
+    ctx.waitUntil(
+      stub.fetch(
+        new Request("https://pm.internal/internal/worker-checks", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(set),
+        }),
+      ),
+    );
   },
 };

@@ -11,20 +11,316 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Debug;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use futures_lite::{Stream, StreamExt};
 use p2panda_core::{AnyOperation, Hash, SeqNum, SigningKey, VerifyingKey};
 use p2panda_store::logs::{LogEntry, LogStore};
 use p2panda_store::topics::TopicStore;
 
-use id::event_store::EventStore;
+use base64::Engine as _;
+use id::event_store::{EventStore, TenantEventStore};
 use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, sign};
 use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Ingest, StoreError,
 };
-use id_store::store_traits::{ChainLog, LogEntries, SharedEventStore, TraitStoreError};
+use id_store::store_traits::{
+    ChainLog, EventStoreBackend, LogEntries, SharedEventStore, TraitStoreError,
+};
+use id_store::turso::{PipelineTransport, TursoError};
+use rusqlite::types::Value as SqlValue;
+use serde_json::{Value as Json, json};
+
+#[derive(Clone, Debug)]
+struct SqliteEndpoint(Arc<Mutex<rusqlite::Connection>>);
+
+impl SqliteEndpoint {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )))
+    }
+}
+
+impl PipelineTransport for SqliteEndpoint {
+    fn pipeline(&self, body: &[u8]) -> Result<Vec<u8>, TursoError> {
+        let request: Json =
+            serde_json::from_slice(body).map_err(|err| TursoError::Protocol(err.to_string()))?;
+        let db = self.0.lock().unwrap();
+        let mut results = Vec::new();
+        for request in request["requests"].as_array().unwrap() {
+            if request["type"] == "close" {
+                if !db.is_autocommit() {
+                    db.execute_batch("ROLLBACK")
+                        .map_err(|err| TursoError::Sql {
+                            message: err.to_string(),
+                            code: None,
+                        })?;
+                }
+                results.push(json!({"type":"ok","response":{"type":"close"}}));
+                continue;
+            }
+            let statement = &request["stmt"];
+            let args: Vec<SqlValue> = statement["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|arg| match arg["type"].as_str().unwrap() {
+                    "text" => SqlValue::Text(arg["value"].as_str().unwrap().to_owned()),
+                    "blob" => SqlValue::Blob(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(arg["value"].as_str().unwrap())
+                            .unwrap(),
+                    ),
+                    "integer" => SqlValue::Integer(arg["value"].as_str().unwrap().parse().unwrap()),
+                    other => unreachable!("unexpected SQLite test argument {other}"),
+                })
+                .collect();
+            let mut prepared = db
+                .prepare(statement["sql"].as_str().unwrap())
+                .map_err(sql_error)?;
+            let columns: Vec<String> = prepared
+                .column_names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let mut rows = Vec::new();
+            let affected = if columns.is_empty() {
+                prepared
+                    .execute(rusqlite::params_from_iter(args))
+                    .map_err(sql_error)?
+            } else {
+                let mut query = prepared
+                    .query(rusqlite::params_from_iter(args))
+                    .map_err(sql_error)?;
+                while let Some(row) = query.next().map_err(sql_error)? {
+                    let values: Vec<Json> = (0..columns.len())
+                        .map(|index| match row.get::<_, SqlValue>(index).unwrap() {
+                            SqlValue::Blob(bytes) => json!({"type":"blob","value":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                            SqlValue::Text(text) => json!({"type":"text","value":text}),
+                            other => unreachable!("unexpected SQLite test result {other:?}"),
+                        })
+                        .collect();
+                    rows.push(values);
+                }
+                0
+            };
+            results.push(json!({"type":"ok","response":{"type":"execute","result":{
+                "cols":columns.iter().map(|name| json!({"name":name})).collect::<Vec<_>>(),
+                "rows":rows,"affected_row_count":affected,"last_insert_rowid":null
+            }}}));
+        }
+        serde_json::to_vec(&json!({"baton":"store-traits-test","results":results}))
+            .map_err(|err| TursoError::Protocol(err.to_string()))
+    }
+}
+
+fn sql_error(error: rusqlite::Error) -> TursoError {
+    TursoError::Sql {
+        message: error.to_string(),
+        code: None,
+    }
+}
+
+fn same<T: Debug + PartialEq>(
+    native: Result<T, StoreError>,
+    tenant: Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    assert_eq!(format!("{native:?}"), format!("{tenant:?}"));
+    native
+}
+
+#[derive(Debug)]
+struct BothBackends {
+    native: EventStore,
+    tenant: TenantEventStore<SqliteEndpoint>,
+}
+
+impl BothBackends {
+    fn open(storage: &tempfile::TempDir) -> Self {
+        let limits = WaitingLimits::default();
+        Self {
+            native: EventStore::open(storage.path(), limits, 0).unwrap(),
+            tenant: TenantEventStore::open_tenant(SqliteEndpoint::new(), limits, 0).unwrap(),
+        }
+    }
+
+    fn add_block(&self, block: &Block) {
+        same(self.native.add_block(block), self.tenant.add_block(block)).unwrap();
+    }
+}
+
+impl EventStoreBackend for BothBackends {
+    fn ingest_with_body(
+        &mut self,
+        bytes: &[u8],
+        body: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<Ingest, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::ingest_with_body(
+                &mut self.native,
+                bytes,
+                body,
+                now_ms,
+            ),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::ingest_with_body(
+                &mut self.tenant,
+                bytes,
+                body,
+                now_ms,
+            ),
+        )
+    }
+    fn ingest_batch(&mut self, batch: &[Vec<u8>], now_ms: u64) -> Result<Vec<Ingest>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::ingest_batch(&mut self.native, batch, now_ms),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::ingest_batch(
+                &mut self.tenant,
+                batch,
+                now_ms,
+            ),
+        )
+    }
+    fn ingest_events(
+        &mut self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::ingest_events(
+                &mut self.native,
+                events.clone(),
+                now_ms,
+            ),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::ingest_events(
+                &mut self.tenant,
+                events,
+                now_ms,
+            ),
+        )
+    }
+    fn ingest_events_with_bodies(
+        &mut self,
+        events: Vec<(Event, Option<Vec<u8>>)>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::ingest_events_with_bodies(
+                &mut self.native,
+                events.clone(),
+                now_ms,
+            ),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::ingest_events_with_bodies(
+                &mut self.tenant,
+                events,
+                now_ms,
+            ),
+        )
+    }
+    fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::stored_body(&self.native, id),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::stored_body(&self.tenant, id),
+        )
+    }
+    fn sync_entries(&self) -> Result<Vec<(id_store::range::Key, id_store::range::Id)>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::sync_entries(&self.native),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::sync_entries(&self.tenant),
+        )
+    }
+    fn sync_bytes(&self, id: &id_store::range::Id) -> Result<Option<Vec<u8>>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::sync_bytes(&self.native, id),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::sync_bytes(&self.tenant, id),
+        )
+    }
+    fn check_invariants(&self) -> Result<(), StoreError> {
+        same(
+            EventStoreBackend::check_invariants(&self.native),
+            EventStoreBackend::check_invariants(&self.tenant),
+        )
+    }
+    fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::event(&self.native, author, seq),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::event(
+                &self.tenant,
+                author,
+                seq,
+            ),
+        )
+    }
+    fn applied_events(
+        &self,
+        author: &AuthorKey,
+        after: Option<SeqNum>,
+        until: Option<SeqNum>,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::applied_events(
+                &self.native,
+                author,
+                after,
+                until,
+                limit,
+            ),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::applied_events(
+                &self.tenant,
+                author,
+                after,
+                until,
+                limit,
+            ),
+        )
+    }
+    fn group_members(&self, group: &Hash) -> Result<Vec<(AuthorKey, SeqNum)>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::group_members(&self.native, group),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::group_members(
+                &self.tenant,
+                group,
+            ),
+        )
+    }
+    fn chain(
+        &self,
+        author: &AuthorKey,
+    ) -> Result<Option<id_store::event_types::Chain>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::chain(&self.native, author),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::chain(&self.tenant, author),
+        )
+    }
+    fn is_blocked_at(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<bool, StoreError> {
+        same(
+            EventStoreBackend::is_blocked_at(&self.native, kind, value, now_ms),
+            EventStoreBackend::is_blocked_at(&self.tenant, kind, value, now_ms),
+        )
+    }
+    fn tag_claims(&self) -> Result<Vec<id_store::tag_claims::Claim>, StoreError> {
+        same(
+            EventStoreBackend::tag_claims(&self.native),
+            EventStoreBackend::tag_claims(&self.tenant),
+        )
+    }
+    fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
+        same(
+            <EventStore as EventStoreBackend>::event_by_id(&self.native, id),
+            <TenantEventStore<SqliteEndpoint> as EventStoreBackend>::event_by_id(&self.tenant, id),
+        )
+    }
+}
 
 /// One `[[package]]` entry of the lock: its name and the names it
 /// depends on. Dependency entries are `"name"`, `"name version"` or
@@ -196,6 +492,22 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
              the shipped build (see vendor/README.md)"
         );
     }
+    // The shared tenant-backend regression fixture lives in id-events, where
+    // SQLite is permitted only as a dev-dependency. Its lockfile edge is not a
+    // shipped dependency; cargo tree below verifies the facade's active graph.
+    let events_manifest =
+        std::fs::read_to_string(format!("{root_dir}/crates/id-events/Cargo.toml")).unwrap();
+    let events = manifest_package_name(&events_manifest).unwrap();
+    let events_shipped = manifest_dep_names(&events_manifest, false);
+    for name in SQLITE {
+        assert!(
+            !events_shipped
+                .iter()
+                .any(|declared| declared.as_str() == name),
+            "{events}/Cargo.toml declares {name} outside dev-dependencies: SQLite is back in \
+             the shipped build (see vendor/README.md)"
+        );
+    }
     // Cargo.lock includes optional dependency edges. p2panda-store declares optional `sqlx`,
     // which is inactive in the shipped default-feature graph checked below.
     for (name, deps) in &packages {
@@ -205,6 +517,7 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
                     SQLITE.contains(&name.as_str())
                         || name == &root
                         || name == &own
+                        || name == &events
                         || (name == "p2panda-store" && dep == "sqlx")
                         // Cargo.lock records sqlx-sqlite's optional backend edge even
                         // when it is inactive; cargo tree below checks the shipped graph.
@@ -313,13 +626,13 @@ fn chain_of(signer: &SigningKey, count: SeqNum, group: Option<Hash>) -> Vec<Even
     events
 }
 
-fn open() -> (tempfile::TempDir, SharedEventStore<EventStore>) {
+fn open() -> (tempfile::TempDir, SharedEventStore<BothBackends>) {
     let dir = tempfile::tempdir().unwrap();
-    let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+    let store = BothBackends::open(&dir);
     (dir, SharedEventStore::new(store))
 }
 
-fn ingest_all(store: &SharedEventStore<EventStore>, events: &[Event]) {
+fn ingest_all<S: EventStoreBackend>(store: &SharedEventStore<S>, events: &[Event]) {
     for event in events {
         let outcome = store.ingest(&event.bytes, None, 0).unwrap();
         assert_eq!(
@@ -354,8 +667,8 @@ where
     entries
 }
 
-async fn entries_of(
-    store: &SharedEventStore<EventStore>,
+async fn entries_of<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     who: &VerifyingKey,
     after: Option<SeqNum>,
     until: Option<SeqNum>,
@@ -723,16 +1036,14 @@ async fn test_a_poisoned_lock_is_reported_not_unwrapped() {
 #[allow(clippy::panic)]
 fn test_shared_store_block_lookup_distinguishes_blocked_unblocked_and_unavailable() {
     let dir = tempfile::tempdir().unwrap();
-    let backend = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
-    backend
-        .add_block(&Block {
-            kind: BlockKind::PeerKey,
-            value: vec![7u8; 32],
-            added_at_ms: 1_000,
-            reason: "test block".to_owned(),
-            expires_at_ms: None,
-        })
-        .unwrap();
+    let backend = BothBackends::open(&dir);
+    backend.add_block(&Block {
+        kind: BlockKind::PeerKey,
+        value: vec![7u8; 32],
+        added_at_ms: 1_000,
+        reason: "test block".to_owned(),
+        expires_at_ms: None,
+    });
     let store = SharedEventStore::new(backend);
     let list: &dyn BlockList = &store;
     assert_eq!(

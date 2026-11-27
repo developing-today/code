@@ -246,6 +246,14 @@ in
       description = "Port pm-dispatch listens on (its DISPATCH_PORT default; the deployed env files may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
     };
 
+    dispatchBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14879;
+      description = "Private loopback port for pm-dispatch behind its socket-activated proxy.";
+    };
+
+    dispatchSocketActivation = lib.mkEnableOption "the pm-dispatch socket-proxy listeners";
+
     tailnetAddress = lib.mkOption {
       type = lib.types.str;
       default = "100.99.113.103";
@@ -456,7 +464,19 @@ in
             # (the witness log's home); the app keeps no state
             # there itself.
             StateDirectory = "pm-dispatch";
-            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener.
+            # Preserve the direct public binds until the socket is
+            # explicitly enabled; with dispatchSocketActivation the
+            # env wrapper pins the app to the private loopback backend
+            # port and the socket + socket-proxyd own the public
+            # addresses (#1822, same pattern as the aggregator). The
+            # wrapper is needed because DISPATCH_HOSTS/DISPATCH_PORT
+            # also live in the env files (EnvironmentFile), which must
+            # not win over the backend pin.
+            ExecStart =
+              "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log "
+              + (lib.optionalString cfg.dispatchSocketActivation "${pkgs.coreutils}/bin/env DISPATCH_HOSTS=127.0.0.1 DISPATCH_PORT=${toString cfg.dispatchBackendPort} ")
+              + "${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
             # (GitHub App + queue broker URL), and the operator file is
@@ -696,6 +716,32 @@ in
           };
         };
 
+        # The independent watchdog heartbeat checker (#14388, #14005
+        # item 1): a separate oneshot process on its own timer, never
+        # part of the aggregator process, so it still runs — and still
+        # pages — while the aggregator is down. It reads only the SLO
+        # journal. Its stdout IS the delivered report: systemd appends
+        # it to the report file under the aggregator state dir (the
+        # PAGE_DREW / NEEDS_ORCHESTRATOR lines the main-chat report
+        # surfaces), instead of losing it in the journal.
+        pm-watchdog-heartbeat-check = {
+          Unit = {
+            Description = "PM-stack watchdog heartbeat checker — independent five-minute check of the SLO journal (#14388)";
+            After = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 120;
+            WorkingDirectory = aggState;
+            Environment = [
+              "PM_AGG_SLO_JOURNAL_FILE=${aggState}/slo-journal.jsonl"
+            ];
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-check-watchdog-heartbeat";
+            StandardOutput = "append:${aggState}/watchdog-heartbeat-report.log";
+            StandardError = "append:${aggState}/watchdog-heartbeat-report.log";
+          };
+        };
+
         # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
         # the env, pulls the images, and (re)creates the containers,
         # which then run under docker's own restart policy. A user unit
@@ -804,6 +850,16 @@ in
           };
           Install.WantedBy = [ "timers.target" ];
         };
+
+        pm-watchdog-heartbeat-check = {
+          Unit.Description = "Run the independent watchdog heartbeat checker every 5 minutes (#14388)";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "5min";
+            Unit = "pm-watchdog-heartbeat-check.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
       };
 
       # Socket activation for the PM HTTP services (#1822, task 15848):
@@ -814,8 +870,8 @@ in
       # Bun 1.4.4 cannot consume LISTEN_FDS. pm-aggregator follows the
       # same arrangement behind aggregatorSocketActivation (its freshness
       # publisher listener gets a separate socket + proxy because it
-      # forwards to a different backend port). pm-dispatch's socket
-      # stays inactive until its slice adds the same adapter.
+      # forwards to a different backend port). pm-dispatch follows
+      # the same arrangement behind dispatchSocketActivation.
       # Listen
       # addresses mirror the services' live binds, verified on the
       # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
@@ -859,14 +915,15 @@ in
         };
 
         pm-dispatch = {
-          Unit.Description = "pm-dispatch listeners (#1822; inactive until slice 3)";
+          Unit.Description = "pm-dispatch listeners (#1822; inactive unless dispatchSocketActivation)";
           Socket = {
             ListenStream = [
               "127.0.0.1:${toString cfg.dispatchPort}"
               "${cfg.tailnetAddress}:${toString cfg.dispatchPort}"
             ];
-            Service = "pm-dispatch.service";
+            Service = "pm-dispatch-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.dispatchSocketActivation [ "sockets.target" ];
         };
       };
 
@@ -900,6 +957,17 @@ in
         };
         Service = {
           ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.aggregatorFreshnessBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-dispatch-proxy = {
+        Unit = {
+          Description = "PM dispatch socket proxy (#1822)";
+          Requires = [ "pm-dispatch.service" ];
+          After = [ "pm-dispatch.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.dispatchBackendPort}";
         };
       };
     };

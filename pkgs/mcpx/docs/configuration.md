@@ -688,6 +688,12 @@ skipped launcher phases).
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold | `TestArtifactsQuotaBoundsTheStore` |
 | `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected | `TestArtifactsTTLExpiresAnArtifactFromTheEnvironment` |
 
+### auth
+
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `auth.mode` | enum | `off` | daemon | no | `--auth-mode` | `MCPX_AUTH_MODE` | whether the daemon's HTTP surface honours or requires per-user keys | `TestAuthModeRequiredGatesTCPButNotTheSocket` |
+
 ### autonomy
 
 | setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |

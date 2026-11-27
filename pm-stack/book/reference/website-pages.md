@@ -44,7 +44,7 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 - **What it is:** Review report versions and resolve prose conflicts without overwriting stored text. Manifest group Work, `nav: dropdown`.
 - **Inputs:** Machine twin: `/api/reports.json`. Writes: `POST /api/reports/resolve` and `POST /api/reports/late-update`.
-- **Behaviour:** A conflict resolves by choosing a stored version; the stored text itself is not overwritten.
+- **Behaviour:** A conflict resolves by choosing a stored version; the stored text itself is not overwritten. This is the aggregator's `/reports` route, distinct from the console's on-demand prose reports at `#more/reports` (see [The console, view by view](console-views.md)).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/board` — Board

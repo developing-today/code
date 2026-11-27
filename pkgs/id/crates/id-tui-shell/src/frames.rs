@@ -94,7 +94,11 @@ pub fn join(
 /// # Errors
 ///
 /// [`FrameError::OutOfContract`] on a contract refusal.
-pub fn records(capability: &str, prefix: Option<&str>, after: Option<&str>) -> Result<Value, FrameError> {
+pub fn records(
+    capability: &str,
+    prefix: Option<&str>,
+    after: Option<&str>,
+) -> Result<Value, FrameError> {
     checked(
         json!({
             "type": "records",
@@ -207,8 +211,10 @@ pub fn resize(width: u16, height: u16) -> Result<Value, FrameError> {
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }

@@ -109,6 +109,7 @@ import {
   eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { startActionsExecApplier } from "./actions-exec-apply.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
 import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
@@ -160,6 +161,7 @@ import {
   emptyUsageView,
 } from "./server-wiring.ts";
 import { json, jsonCompact, html, serviceWorkerResponse } from "./server-respond.ts";
+import { paginateSearchResults, parseSearchPagination, SEARCH_DEFAULT_LIMIT } from "./search-view.ts";
 import { questionsHtml, PWA_MANIFEST } from "./server-pages.ts";
 import {
   boardContext,
@@ -981,8 +983,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/search") {
     const started = performance.now();
     const { query, results, items, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    // #14060 slice 2: render one bounded page (default cap), with the
+    // true total in the heading — a common-word query rendered every
+    // match (941 KB HTML measured).
+    const page = paginateSearchResults(results, { limit: SEARCH_DEFAULT_LIMIT, offset: 0 });
     const body = await withSearchTiming(timings, "render", () =>
-      renderSearch(query, results, items, prov(), provDetail()),
+      renderSearch(query, page.page, items, prov(), provDetail(), page.total),
     );
     timings.total = performance.now() - started;
     return withSearchTimings(html(body), timings);
@@ -990,8 +996,18 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/api/search.json") {
     const started = performance.now();
     const { query, results, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    // #14060 slice 2: paginate + cap the payload (limit/offset params,
+    // default 50, max 200); `total` stays the full match count.
+    const searchPage = paginateSearchResults(results, parseSearchPagination(url.searchParams));
     const response = await withSearchTiming(timings, "serialize", () =>
-      json({ query: query.trim(), total: results.length, results }),
+      json({
+        query: query.trim(),
+        total: searchPage.total,
+        results: searchPage.page,
+        limit: searchPage.limit,
+        offset: searchPage.offset,
+        remainingAfterPage: searchPage.remainingAfterPage,
+      }),
     );
     timings.total = performance.now() - started;
     return withSearchTimings(response, timings);
@@ -1002,7 +1018,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
     return json({
       records: view.records,
-      identities: identitiesFromRecords(records),
+      // #14060 slice 2: identities are one entry PER RECORD, so scoping
+      // them to the whole store shipped ~28k entries (the bulk of the
+      // measured 6.7 MB twin) beside a 100-record page. The page's own
+      // identities are what a consumer of this page can act on; the
+      // full list stays available from /api/author-identities.
+      identities: identitiesFromRecords(view.records),
       total: view.matched,
       totalAll: view.totalAll,
       hiddenByWindow: view.hiddenByWindow,
@@ -1433,13 +1454,17 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
-  if (path === "/api/needs-drew.json") {
-    // #1226: the Needs-Drew label census as data — open user/review +
+  if (path === "/api/needs-user.json" || path === "/api/needs-drew.json") {
+    // #1226: the Needs User label census as data — open user/review +
     // user/escalated items across the four repos with per-source
-    // status and freshness. 503 when this source cannot census, so a
-    // consumer never mistakes "unavailable" for "nothing waiting".
+    // status and freshness. Keep the old path as an alias for deployed
+    // clients; both names return the same response shape.
+    const legacyPath = path === "/api/needs-drew.json";
     const census = (await source.needsDrew?.().catch(() => null)) ?? null;
-    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    if (!census) {
+      const name = legacyPath ? "needs-drew" : "needs-user";
+      return json({ error: `${name} census unavailable from this source` }, 503);
+    }
     return json(census);
   }
   if (path === "/api/attention.json") {
@@ -1975,6 +2000,17 @@ if (cfg.source === "live") {
 // Shutdown is tied to process signals inside the wiring.
 if (cfg.source === "live") {
   startPmCoreSchedulers({ feedFile: cfg.feedFile });
+}
+
+// #14043 S3: the answer applier carries recorded broker answers to the
+// queue broker's signed decide verb (live mode only).
+if (cfg.source === "live") {
+  startActionsExecApplier({
+    needsDrewFile: cfg.needsDrewFile,
+    applyFile: cfg.actionsExecApplyFile,
+    brokerUrl: cfg.queueBrokerUrl,
+    brokerTokenFile: cfg.queueBrokerTokenFile,
+  });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their

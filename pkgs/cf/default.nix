@@ -70,7 +70,7 @@ buildNpmPackage {
   # npmDepsFetcherVersion 2 caches packuments: required because the
   # undici override below forces `npm ci` to re-resolve metadata offline.
   npmDepsFetcherVersion = 2;
-  npmDepsHash = "sha256-dy7Y2eB9buAhL+BUj+vd7ezAltSyYpbw8VHm5eV451c=";
+  npmDepsHash = "sha256-a4CfteF6NCsFBTXZ3js66de0wYLi4kWh5WXNlpe2UAc=";
 
   npmFlags = [
     "--ignore-scripts"

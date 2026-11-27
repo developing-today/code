@@ -27,6 +27,7 @@ export const SECTIONS: Record<string, number> = {
   asks: 45_000,
   questionCount: 45_000,
   questions: 45_000,
+  questionSets: 45_000,
   prs: 90_000,
   priorities: 180_000,
   done: 120_000,
@@ -194,6 +195,11 @@ export interface EdgeOptions {
      * as service:pm-stack. Either missing, they stay a machine's. */
     bridgeToken?: string;
     bridgeFetch?: unknown;
+    /** The decision-events Worker (#13491): where it is and the
+     * shared secret its reads take. With both, the Questions
+     * discovery section is this side's; without either, it stays a
+     * machine's. The secret is never logged or returned. */
+    decisionEvents?: { url: string; secret: string };
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */

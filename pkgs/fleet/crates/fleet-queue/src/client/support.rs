@@ -193,7 +193,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   meta <get|set|unset|keys> ...\n\
   staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
   needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
-  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
+  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
   release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
@@ -206,6 +206,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
+  time-recheck [--task <id>] [--limit <n>]\n\
   repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
   resolution-backfill\n\
   cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\
@@ -250,7 +251,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\nThe stewardship needs-user read: blocked/parked tasks carrying a question metadata entry, oldest last transition first, with the question object and a blocked-by count read from the blocked_deps cache (superseded by task_deps counts when Q6 lands)."
         }
         "claim" => {
-            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
+            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch."
         }
         "release" => {
             "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
@@ -287,6 +288,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "quarantine-recheck" => {
             "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
+        }
+        "time-recheck" => {
+            "usage: repo-queue time-recheck [--task <id>] [--limit <n>]\n\nRechecks tasks blocked until a time; requeues the ones whose time has passed."
         }
         "repair" => {
             "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
@@ -820,7 +824,7 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
     if queue_scope.is_some() || args.has("handoff") || args.has("bind") {
         return None;
     }
-    const INTENT_FLAGS: [&str; 10] = [
+    const INTENT_FLAGS: [&str; 11] = [
         "task",
         "filter",
         "queue",
@@ -831,6 +835,7 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
         "pool",
         "platform",
         "from-session",
+        "manual-override",
     ];
     if INTENT_FLAGS.iter().any(|name| args.get(name).is_some()) {
         return None;
