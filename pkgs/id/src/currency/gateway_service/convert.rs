@@ -274,7 +274,7 @@ pub struct ConversionReceipt {
 
 /// The response to a conversion request: the unchanged generic
 /// signed gateway receipt plus the conversion-specific audit body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ConversionResponse {
     /// The generic gateway receipt, signed with the gateway key.
     pub signed_receipt: SignedReceipt,
