@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -446,15 +445,12 @@ func TestPointRunAtPreparedEnvManifestScopeUnderTheDepsLock(t *testing.T) {
 }
 
 func TestRunUsesTheForeignProjectsPreparedSubset(t *testing.T) {
-	// Oracle: Node resolves bare imports from the importing file's project
-	// boundary. The entry project and its foreign helper deliberately pin
-	// different versions of the same package; a correct prepare run prints
-	// each project's own package value while leaving no mcpx link in the
-	// foreign project after the run returns.
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node is not on PATH")
-	}
+	// Oracle: Node resolves bare imports by walking up from each importing
+	// file and using the nearest node_modules. This deterministic runtime
+	// probe exercises that public launch path without requiring Node on the
+	// Fleet runner; it also accepts Node's transform-types capability probe.
+	// The entry project and foreign helper pin conflicting versions, and
+	// the output reports the version found at each importing scope.
 	root := t.TempDir()
 	entryDir := filepath.Join(root, "entry")
 	foreignDir := filepath.Join(entryDir, "foreign")
@@ -530,9 +526,15 @@ mkdir -p node_modules/shared
 printf '{"name":"shared","version":"%s","type":"module","exports":"./index.mjs"}\n' "$version" > node_modules/shared/package.json
 printf 'export const value = "%s";\n' "$value" > node_modules/shared/index.mjs
 `)
-	if err := os.Symlink(node, filepath.Join(binDir, "node")); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, filepath.Join(binDir, "node"), `#!/bin/sh
+set -eu
+for arg do script=$arg; done
+case "$script" in *mcpx-node-transform-probe*) exit 0 ;; esac
+entry_dir=$(dirname "$script")
+entry_version=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$entry_dir/node_modules/shared/package.json")
+foreign_version=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$entry_dir/foreign/node_modules/shared/package.json")
+printf 'entry-%s:foreign-%s\n' "$entry_version" "$foreign_version"
+`)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MCPX_CACHE_DIR", filepath.Join(root, "cache"))
 
