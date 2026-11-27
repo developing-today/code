@@ -10,6 +10,7 @@
 import { queryKey } from "./key";
 import { CONTEXT } from "./space";
 import { tryServeFromHotCache, type HotCacheReader, type SkipLog } from "./read_path";
+import { ContentMiss, fetchContentByHash, type ServiceEnv } from "./service";
 import type { WatermarkSource } from "./freshness";
 
 export const DEFAULT_K = 10;
@@ -106,4 +107,76 @@ export async function executeSearch(env: SearchEnv, query: string, k: number): P
   const { outcome, ...rest } = payload;
   if (outcome !== "hit" && outcome !== "miss") return { status: 502, payload: malformedDoPayload("query") };
   return { status: 200, payload: { cache: outcome, key, query, ...rest } };
+}
+
+/** The slice of the Worker environment the Class A path needs. */
+export interface ClassAContentEnv {
+  /** The service client: the seam call reuses its auth headers. */
+  service: ServiceEnv;
+  /**
+   * The tenant this read is attributed to in the skip log.
+   * Tenant provisioning is follow-on work; the caller threads
+   * the identity through, this path never resolves it.
+   */
+  tenantId: string;
+  /** Skip-measurement sink; called only on a serve. */
+  onSkip?: (log: SkipLog) => void;
+}
+
+/** Why a Class A read was not served from the seam. */
+export type ClassAContentMissReason =
+  /** The named hash is not 64 lowercase hex: never fetched. */
+  | "malformed-hash"
+  /**
+   * The seam answered 404. Absent and undisclosed share the
+   * server's 404 shape by contract, so the caller learns which
+   * of the two it was from neither the reason nor the outcome.
+   */
+  | "content-miss"
+  /**
+   * The seam errored, answered unparseable bytes, or returned
+   * bytes that do not hash back to the named hash: degrade to
+   * the pre-cache search path with no error-surface change.
+   */
+  | "seam-unavailable";
+
+export type ClassAContentOutcome =
+  | { served: true; payload: Record<string, unknown>; log: SkipLog }
+  | { served: false; reason: ClassAContentMissReason };
+
+/**
+ * The Class A hydration path (#13105 slice 3): consult the
+ * content-by-hash seam first, record skip evidence on a serve,
+ * and report a miss otherwise so the caller keeps the existing
+ * /v1/search path exactly. This is the caller only — no route
+ * changes, no D1 fill, no admission change.
+ *
+ * Class A entries are addressed by their hash by construction
+ * (freshness.ts: the hash is the version, no TTL, no watermark
+ * check), so a seam serve is fresh by definition and the skip
+ * log carries the hash as both key and version. The seam
+ * payload carries no fill time; the serve happens at read time,
+ * so the logged age is 0.
+ */
+export async function fetchClassAContent(env: ClassAContentEnv, hash: string): Promise<ClassAContentOutcome> {
+  let payload: Record<string, unknown>;
+  try {
+    ({ payload } = await fetchContentByHash(env.service, hash));
+  } catch (e) {
+    if (e instanceof ContentMiss) {
+      return { served: false, reason: e.status === 400 ? "malformed-hash" : "content-miss" };
+    }
+    return { served: false, reason: "seam-unavailable" };
+  }
+  const log: SkipLog = {
+    tenant: env.tenantId,
+    key: hash,
+    dataClass: "A",
+    entryWatermark: hash,
+    entryAge: 0,
+    reason: "content-hash-match",
+    degraded: false,
+  };
+  env.onSkip?.(log);
+  return { served: true, payload, log };
 }
