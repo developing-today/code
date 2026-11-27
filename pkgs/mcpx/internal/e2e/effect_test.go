@@ -3562,6 +3562,24 @@ func TestDaemonWarmTimeoutBoundsTheStartupWarm(t *testing.T) {
 		e := newEnv(t, oneServer)
 		e.setenv(env...)
 		e.run("ls")
+		// The startup warm runs in the background: stopping the daemon
+		// immediately can win the race and leave no "warm complete"
+		// line in the log. Poll for it before stopping, so the
+		// assertion reads the warm's result instead of its absence.
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
+			for _, line := range strings.Split(string(b), "\n") {
+				if strings.Contains(line, "warm complete") {
+					_, _ = e.try("daemon", "stop")
+					return line
+				}
+			}
+			if !time.Now().Before(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		_, _ = e.try("daemon", "stop")
 		b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
 		for _, line := range strings.Split(string(b), "\n") {

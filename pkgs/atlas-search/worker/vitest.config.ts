@@ -12,6 +12,7 @@ export default defineConfig({
       miniflare: {
         bindings: {
           GATE_TOKEN: "test-gate",
+          AGENT_POLICY: "{}",
           SERVICE_BASE: "https://service.test",
           SERVICE_TOKEN: "test-service-token",
           ACCESS_CLIENT_ID: "test-access-id",

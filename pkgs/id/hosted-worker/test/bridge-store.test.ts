@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { BRIDGE_SCHEMA, BridgeStore, type WaitingLimits } from "../src/bridge-store.ts";
 import { importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 function fakeSql() {
   const db = new DatabaseSync(":memory:");

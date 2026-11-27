@@ -303,6 +303,8 @@ let
         claude-code
         latestCli.codex
         pkgs.antigravity-cli
+        # GitHub MCP stdio server for the mcpx failover pool (#8017).
+        pkgs.github-mcp-server
         pkgs.git
         pkgs.openssh
       ]
@@ -1013,19 +1015,23 @@ in
     };
     Service = {
       Type = "oneshot";
-      # The revalidator lands in observe-only mode (C3,
-      # doc/fleet/agent-events-turso.md): it logs would-releases
-      # without mutating tasks. Flip it live by writing "enabled" to
-      # ~/.config/queue-broker/revalidator-mode once the first daily
-      # observe cycle has been reviewed on #6803.
+      # The revalidator landed in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logged would-releases
+      # without mutating tasks. #16006 activates it by default:
+      # the scheduled sweep now releases satisfied broker-condition
+      # parks (task_terminal, task_status, event_seen) to queued,
+      # while person_answer parks still wait for the person's
+      # /wake. To run a non-mutating observe cycle instead, write
+      # "observe" to ~/.config/queue-broker/revalidator-mode;
+      # "enabled" (or no file at all) keeps the live default.
       ExecStart = toString (
         pkgs.writeShellScript "fleet-queue-sweeper" ''
           token="$(cat "$HOME/.config/queue-broker/token")"
-          mode="observe"
+          obs=false
           if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
             mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+            if [ "$mode" = "observe" ]; then obs=true; fi
           fi
-          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
           ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
             -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
             -d '{"prune":true,"keep_days":30}'
@@ -1856,6 +1862,8 @@ in
         # carries the newest agy on PATH ahead of the system profile
         # copy; both resolve to the same overlaid package.
         antigravity-cli
+        # GitHub MCP server used by the mcpx failover pool (#8017).
+        github-mcp-server
         libnotify
         # On-screen keyboard (wvkbd-mobintl) for touch use over the
         # Sunshine/Moonlight stream: launched only while a stream is

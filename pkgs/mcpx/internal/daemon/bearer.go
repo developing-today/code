@@ -85,6 +85,7 @@ func AuthMode(set *settings.Set) string {
 }
 
 type keyIdentityCtx struct{}
+type keyCredentialCtx struct{}
 
 // WithKeyIdentity records the authenticated key on a request context.
 func WithKeyIdentity(ctx context.Context, id KeyIdentity) context.Context {
@@ -97,6 +98,20 @@ func WithKeyIdentity(ctx context.Context, id KeyIdentity) context.Context {
 func KeyIdentityFrom(ctx context.Context) (KeyIdentity, bool) {
 	id, ok := ctx.Value(keyIdentityCtx{}).(KeyIdentity)
 	return id, ok
+}
+
+// WithKeyCredential carries an already-validated key through mcpx's local
+// MCP-to-daemon call path so the nested daemon request resolves the same
+// identity and ceiling. The value is never logged or returned to a caller.
+func WithKeyCredential(ctx context.Context, credential string) context.Context {
+	return context.WithValue(ctx, keyCredentialCtx{}, credential)
+}
+
+// KeyCredentialFrom returns the credential carried by a daemon-authenticated
+// request, if the request presented a valid per-user key.
+func KeyCredentialFrom(ctx context.Context) (string, bool) {
+	credential, ok := ctx.Value(keyCredentialCtx{}).(string)
+	return credential, ok
 }
 
 // legacyIdentity is the virtual key transport.bearerToken resolves to:
@@ -151,10 +166,12 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 
 		if presented && strings.HasPrefix(got, KeyPrefix) {
 			if rec, ok := s.keyStore().Lookup(got); ok {
-				next.ServeHTTP(w, r.WithContext(WithKeyIdentity(r.Context(), KeyIdentity{
+				ctx := WithKeyIdentity(r.Context(), KeyIdentity{
 					KeyID: rec.ID, User: rec.User, Label: rec.Label,
 					Ceiling: rec.Ceiling, CapabilityRef: rec.CapabilityRef,
-				})))
+				})
+				ctx = WithKeyCredential(ctx, got)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 			// A daemon key that does not resolve is refused in every

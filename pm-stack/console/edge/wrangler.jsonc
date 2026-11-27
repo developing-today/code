@@ -60,7 +60,7 @@
   ],
   // The Worker checks above run on this trigger (#15793); registered
   // in doc/fleet-schedule-registry.md (Surface 7).
-  "triggers": { "crons": ["*/15 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
   // linked phones. Three secrets are optional, put there by

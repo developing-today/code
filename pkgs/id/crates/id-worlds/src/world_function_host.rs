@@ -33,10 +33,9 @@
 //! limit per guest call; no function shares a store or a fuel pool with
 //! another function.
 //!
-//! Not here, and arriving with later slices: the call path (later slices
-//! reach the active instance through [`FunctionHost::active_instance_mut`]),
-//! crash recovery after a trapping call (the sandbox already poisons an
-//! instance whose call trapped; re-instantiating from the last good version
+//! Not here, and arriving with later slices: crash recovery after a
+//! trapping call (the sandbox already poisons an instance whose call
+//! trapped; re-instantiating from the last good version
 //! and its last good snapshot is §4's next step), draining in-flight calls
 //! before the old instance is dropped (calls are synchronous here, so none
 //! are in flight at a boundary), per-function limits and the world's
@@ -219,6 +218,23 @@ impl FunctionHost {
         outcome
     }
 
+    /// Call the active version of (user, name) with `input` and return its
+    /// rendered output. A pending candidate is not callable until a tick
+    /// boundary activates it. A guest trap is returned by the sandbox and
+    /// poisons only this function instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no active instance exists or when the guest
+    /// update or view traps or otherwise fails.
+    pub fn call(&mut self, user: &str, name: &str, input: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let instance = self
+            .active_instance_mut(user, name)
+            .ok_or_else(|| anyhow::anyhow!("no active function instance for ({user}, {name})"))?;
+        instance.update(0, input)?;
+        instance.view()
+    }
+
     /// The active version's instance of (user, name), if any.
     #[must_use]
     pub fn active_instance(&self, user: &str, name: &str) -> Option<&WorldInstance> {
@@ -320,6 +336,8 @@ mod tests {
         Healthy,
         InitTraps,
         RestoreTraps,
+        UpdateTraps,
+        UseInputByte,
     }
 
     /// A counter guest built without the Roc compiler: the model is a
@@ -335,6 +353,16 @@ mod tests {
             "unreachable"
         } else {
             ""
+        };
+        let update_fault = if matches!(fault, Fault::UpdateTraps) {
+            "unreachable"
+        } else {
+            ""
+        };
+        let input_step = if matches!(fault, Fault::UseInputByte) {
+            "(i32.load8_u (local.get $input))"
+        } else {
+            "(i32.const 0)"
         };
         let wat = format!(
             r#"
@@ -352,9 +380,11 @@ mod tests {
                 {init_fault}
                 (i32.store (i32.const 16) (i32.wrap_i64 (local.get $seed)))
                 (i32.const 16))
-              (func (export "plaza_update") (param $m i32) (param i32 i32 i32) (result i32)
+              (func (export "plaza_update") (param $m i32) (param i32) (param $input i32) (param i32) (result i32)
+                {update_fault}
                 (i32.store (local.get $m)
-                  (i32.add (i32.load (local.get $m)) (i32.const {step})))
+                  (i32.add (i32.load (local.get $m))
+                    (i32.add (i32.const {step}) {input_step})))
                 (local.get $m))
               (func (export "plaza_view") (param $m i32) (result i32)
                 (global.set $out (i32.const 4))
@@ -463,6 +493,75 @@ mod tests {
             host.tick_boundary(USER, NAME),
             BoundaryOutcome::NothingPending
         );
+    }
+
+    #[test]
+    fn call_requires_an_active_instance_and_returns_its_view() {
+        // Oracle: design #5964 §1.1 and §3.1 — calls go to the active
+        // mapping, and a published candidate is invisible until the tick
+        // boundary. The guest adds its one-byte input to its state and the
+        // host returns the guest's rendered state.
+        let v1 = interface("counter-u32");
+        let mut host = host_expecting(&v1);
+        assert_eq!(
+            host.call(USER, NAME, b"A").unwrap_err().to_string(),
+            "no active function instance for (alice, counter)"
+        );
+        host.publish(
+            USER,
+            NAME,
+            &artifact(v1, counter(1, Fault::UseInputByte)),
+            7,
+        )
+        .unwrap();
+        assert_eq!(
+            host.call(USER, NAME, b"A").unwrap_err().to_string(),
+            "no active function instance for (alice, counter)"
+        );
+        assert!(matches!(
+            host.tick_boundary(USER, NAME),
+            BoundaryOutcome::Activated { version: 1, .. }
+        ));
+        assert_eq!(host.call(USER, NAME, b"A").unwrap(), 73_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn trapping_call_is_contained_to_its_user_instance() {
+        // Oracle: design #5964 §4 — a trapping function loses its call and
+        // poisons only its own instance; another user's active instance can
+        // still answer calls.
+        let v1 = interface("counter-u32");
+        let mut host = host_expecting(&v1);
+        host.set_expectation("bob", FunctionBinding::expecting(&v1));
+        host.publish(
+            USER,
+            NAME,
+            &artifact(v1.clone(), counter(1, Fault::UpdateTraps)),
+            3,
+        )
+        .unwrap();
+        host.publish("bob", NAME, &artifact(v1, counter(1, Fault::Healthy)), 3)
+            .unwrap();
+        assert!(matches!(
+            host.tick_boundary(USER, NAME),
+            BoundaryOutcome::Activated { .. }
+        ));
+        assert!(matches!(
+            host.tick_boundary("bob", NAME),
+            BoundaryOutcome::Activated { .. }
+        ));
+
+        let error = host.call(USER, NAME, b"event").unwrap_err().to_string();
+        assert!(error.contains("plaza_update"), "{error}");
+        assert!(host.call("bob", NAME, b"event").is_ok());
+        assert!(
+            host.call(USER, NAME, b"event")
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned")
+        );
+        assert_eq!(host.registry().resolve(USER, NAME).unwrap().version, 1);
+        assert_eq!(host.registry().resolve("bob", NAME).unwrap().version, 1);
     }
 
     #[test]

@@ -15,6 +15,11 @@
 // child, exits with the child's exit code, and if the child dies by a
 // signal it re-raises that signal on itself so the supervisor sees the
 // identical death (code=killed, signal=N) it would have seen unwrapped.
+// The wrapper never reports an exit code it did not read: it takes the
+// default SIGCHLD disposition for itself (an inherited SIG_IGN would let
+// the kernel reap the child and lose its status) and hands the child the
+// disposition it inherited. If waitpid() still fails, it logs
+// child-status-unknown and exits 70 instead of a made-up 0 (#15781).
 //
 // Known limit: a signal addressed directly to the child's pid is
 // delivered only to the child, and no userspace mechanism short of
@@ -321,6 +326,16 @@ int main(int argc, char **argv) {
   for (size_t k = 0; k < sizeof caught / sizeof caught[0]; k++)
     sigaction(caught[k], &sa, NULL);
 
+  /* #15781: an inherited SIGCHLD of SIG_IGN (or SA_NOCLDWAIT) makes the
+   * kernel reap the child itself, so waitpid() fails with ECHILD and the
+   * exit status is lost. Take the default disposition for the wrapper,
+   * and give the child back what it would have inherited without us. */
+  struct sigaction chld_dfl, chld_orig;
+  memset(&chld_dfl, 0, sizeof chld_dfl);
+  chld_dfl.sa_handler = SIG_DFL;
+  sigemptyset(&chld_dfl.sa_mask);
+  if (sigaction(SIGCHLD, &chld_dfl, &chld_orig) != 0) { perror("sigaction"); return 70; }
+
   pid_t child = fork();
   if (child < 0) { perror("fork"); return 70; }
   if (child == 0) {
@@ -331,6 +346,7 @@ int main(int argc, char **argv) {
     sigemptyset(&dfl.sa_mask);
     for (size_t k = 0; k < sizeof caught / sizeof caught[0]; k++)
       sigaction(caught[k], &dfl, NULL);
+    sigaction(SIGCHLD, &chld_orig, NULL);
     close(selfpipe[0]); close(selfpipe[1]);
     execvp(argv[i], &argv[i]);
     _exit(127);
@@ -344,6 +360,7 @@ int main(int argc, char **argv) {
 
   int status = 0;
   int child_done = 0;
+  int wait_errno = 0; /* non-zero: waitpid failed and status is unknown */
   sig_atomic_t dropped_reported = 0;
   char rbuf[sizeof(struct evt) * 8];
   while (!child_done) {
@@ -372,7 +389,7 @@ int main(int argc, char **argv) {
     }
     pid_t w = waitpid(child, &status, WNOHANG);
     if (w == child) { child_done = 1; break; }
-    if (w < 0 && errno != EINTR) break;
+    if (w < 0 && errno != EINTR) { wait_errno = errno; break; }
     struct timespec ts = {0, 20 * 1000 * 1000}; /* 20ms */
     nanosleep(&ts, NULL);
   }
@@ -393,6 +410,13 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (wait_errno != 0) {
+    /* Never report a code we did not read: a guessed 0 would make a
+     * failed service look clean to its supervisor (#15781). */
+    logline(logpath, "child-status-unknown reason=\"%s\" child_pid=%d",
+            strerror(wait_errno), (int)child);
+    return 70;
+  }
   if (WIFEXITED(status)) {
     logline(logpath, "child-exit code=%d child_pid=%d", WEXITSTATUS(status), (int)child);
     return WEXITSTATUS(status);

@@ -41,7 +41,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   format   convert | verify
   inventory list | show | search | audit
   key      generate | inspect
-  publish  plan | verify (apply | status deferred, production-gated)
+  publish  plan | apply --bundle <dir> --staging-dir <dir> | verify (status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
@@ -53,6 +53,11 @@ Groups and verbs (spec §6.1 tree; status as built):
 Format conversion:
   Certificates retain the original PEM/DER behavior. Private keys use
   --algorithm <id>; conversion requires --out and creates an owner-only file.
+  PKCS#12 identity archives (encrypted, password via --password-file):
+    export: convert --to pkcs12 --bundle <bundle-with-one-identity> --password-file <f> --out <archive.p12>
+    import: convert --from pkcs12 --in <archive.p12> --password-file <f> --out <new-dir>
+            (writes certificate.der, private-key.pk8 owner-only, chain-NN.der)
+    verify: verify --in <archive.p12> --password-file <f> (redacts key material)
 
 Common options:
   --json                  Emit one JSON value instead of text.
@@ -1550,10 +1555,35 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let code = emit(json_out, text, value);
             Ok(if report.valid { code } else { 1 })
         }
-        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+        "apply" => {
+            let p = parse_args(rest, &["bundle", "staging-dir"], &["json"])?;
+            if !p.positionals.is_empty() {
+                return Err(CertError::usage(
+                    "publish apply accepts only --bundle <dir> and --staging-dir <local-dir>; live endpoint targets are not supported",
+                ));
+            }
+            let bundle = p
+                .get("bundle")
+                .map(PathBuf::from)
+                .ok_or_else(|| CertError::usage("publish apply needs --bundle <dir>"))?;
+            let staging = p.get("staging-dir").map(PathBuf::from).ok_or_else(|| {
+                CertError::usage("publish apply requires --staging-dir <local-dir>")
+            })?;
+            let report = crate::publish::apply_staging(&bundle, &staging)?;
+            let text = format!(
+                "Publish staging apply: {} -> {}\\n  wrote {} public artifacts\\n",
+                report.bundle,
+                report.staging_dir,
+                report.written.len()
+            );
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            Ok(emit(json_out, text, value))
+        }
+        "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
             Err(CertError::policy(format!(
                 "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
-                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+                 live endpoint publication remains unavailable; local staging apply has no network path"
             )))
         }
         other => Err(CertError::usage(format!(
@@ -1881,10 +1911,179 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = &args[1.min(args.len())..];
     match verb {
         "convert" => {
-            let p = parse_args(rest, &["in", "to", "out", "algorithm"], &["json"])?;
-            let input = p.require("in", "format convert")?;
-            let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let p = parse_args(
+                rest,
+                &[
+                    "in",
+                    "to",
+                    "from",
+                    "out",
+                    "bundle",
+                    "password-file",
+                    "algorithm",
+                ],
+                &["json"],
+            )?;
+            if let Some(from) = p.get("from") {
+                if from != "pkcs12" {
+                    return Err(CertError::usage(format!(
+                        "unknown format convert --from '{from}' (pkcs12)"
+                    )));
+                }
+                if p.get("to").is_some() {
+                    return Err(CertError::usage(
+                        "format convert --from pkcs12 takes no --to; output is DER files in --out",
+                    ));
+                }
+                if p.get("bundle").is_some() || p.get("algorithm").is_some() {
+                    return Err(CertError::usage(
+                        "format convert --from pkcs12 takes no --bundle or --algorithm",
+                    ));
+                }
+                let input = p.require("in", "format convert --from pkcs12")?;
+                let password_path =
+                    PathBuf::from(p.require("password-file", "format convert --from pkcs12")?);
+                let out_dir = PathBuf::from(p.require("out", "format convert --from pkcs12")?);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let bytes = std::fs::read(&input)
+                    .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+                let imported = crate::pkcs12::import(&bytes, password)?;
+                std::fs::create_dir(&out_dir).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot create PKCS#12 import directory {}: {e}",
+                        out_dir.display()
+                    ))
+                })?;
+                let mut created: Vec<PathBuf> = Vec::new();
+                let cert_path = out_dir.join("certificate.der");
+                if let Err(e) = write_new_file(
+                    &cert_path,
+                    &imported.certificate_der,
+                    false,
+                    "imported certificate",
+                ) {
+                    for path in created.iter().rev() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    let _ = std::fs::remove_dir(&out_dir);
+                    return Err(e);
+                }
+                created.push(cert_path.clone());
+                let key_path = out_dir.join("private-key.pk8");
+                if let Err(e) = write_new_file(
+                    &key_path,
+                    &imported.private_key_pkcs8_der,
+                    true,
+                    "imported private key",
+                ) {
+                    for path in created.iter().rev() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    let _ = std::fs::remove_dir(&out_dir);
+                    return Err(e);
+                }
+                created.push(key_path.clone());
+                let mut chain_paths: Vec<PathBuf> = Vec::new();
+                for (index, der) in imported.chain_der.iter().enumerate() {
+                    let path = out_dir.join(format!("chain-{index:02}.der"));
+                    match write_new_file(&path, der, false, "imported chain certificate") {
+                        Ok(()) => {
+                            created.push(path.clone());
+                            chain_paths.push(path);
+                        }
+                        Err(e) => {
+                            for path in created.iter().rev() {
+                                let _ = std::fs::remove_file(path);
+                            }
+                            let _ = std::fs::remove_dir(&out_dir);
+                            return Err(e);
+                        }
+                    }
+                }
+                let fingerprint = crate::bundle::sha256_hex(&imported.certificate_der);
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "imported PKCS#12 identity to {} (leaf sha256 {}, {} chain certificates; private key owner-only)\n",
+                        out_dir.display(),
+                        fingerprint,
+                        imported.chain_der.len()
+                    ),
+                    json!({
+                        "out": out_dir,
+                        "format": "pkcs12",
+                        "from": "pkcs12",
+                        "certificate": cert_path,
+                        "private_key": key_path,
+                        "chain": chain_paths,
+                        "certificate_sha256": fingerprint,
+                        "chain_certificates": imported.chain_der.len(),
+                        "private_material_emitted": true,
+                    }),
+                ));
+            }
+            let target = p.require("to", "format convert")?;
             let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
+            if target == "pkcs12" {
+                let bundle_dir = p.require("bundle", "format convert --to pkcs12")?;
+                let password_path =
+                    PathBuf::from(p.require("password-file", "format convert --to pkcs12")?);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let bundle = load_bundle(&PathBuf::from(&bundle_dir))?;
+                let identities: Vec<_> = bundle
+                    .manifest
+                    .certificates
+                    .iter()
+                    .filter(|c| c.key_path.is_some())
+                    .collect();
+                if identities.len() != 1 {
+                    return Err(CertError::validation(format!(
+                        "PKCS#12 export requires exactly one private-key identity in bundle; found {}",
+                        identities.len()
+                    )));
+                }
+                let identity = identities[0];
+                let certificate_bytes = read_artifact(&bundle, &identity.cert_path)?;
+                let certificate_der = crate::format::certificate_der(&certificate_bytes)?;
+                let key_path = identity.key_path.as_deref().expect("filtered key path");
+                let key_der = read_artifact(&bundle, key_path)?;
+                let chain_der = bundle
+                    .manifest
+                    .certificates
+                    .iter()
+                    .filter(|c| c.cert_path != identity.cert_path)
+                    .map(|c| {
+                        read_artifact(&bundle, &c.cert_path)
+                            .and_then(|bytes| crate::format::certificate_der(&bytes))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let archive =
+                    crate::pkcs12::export(&certificate_der, &key_der, &chain_der, password)?;
+                let path = PathBuf::from(p.require("out", "format convert --to pkcs12")?);
+                write_new_file(&path, &archive, true, "PKCS#12 archive")?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "wrote password-protected PKCS#12 identity to {}\n",
+                        path.display()
+                    ),
+                    json!({"out": path, "format": "pkcs12", "bundle": bundle_dir, "bytes": archive.len(), "private_material_emitted": true}),
+                ));
+            }
+            let input = p.require("in", "format convert")?;
+            let to = crate::format::Encoding::parse(&target)?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
 
@@ -1936,11 +2135,30 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
         }
         "verify" => {
-            let p = parse_args(rest, &["in", "algorithm"], &["json"])?;
+            let p = parse_args(rest, &["in", "password-file", "algorithm"], &["json"])?;
             let input = p.require("in", "format verify")?;
             let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            if let Some(password_path) = p.get("password-file") {
+                let password_path = PathBuf::from(password_path);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let verified = crate::pkcs12::verify(&bytes, password)?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "{input}: valid password-protected PKCS#12 identity (leaf sha256 {}, {} chain certificates); key material redacted\n",
+                        verified.certificate_sha256, verified.chain_certificates
+                    ),
+                    json!({"in": input, "format": "pkcs12", "certificate_sha256": verified.certificate_sha256, "chain_certificates": verified.chain_certificates, "private_material_emitted": false}),
+                ));
+            }
 
             if let Some(algorithm) = algorithm {
                 let verified = crate::format::verify_private_key(&bytes, algorithm)?;
@@ -1961,7 +2179,6 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
                     }),
                 ));
             }
-
             let v = crate::format::verify(&bytes)?;
             Ok(emit(
                 json_out,
@@ -2676,8 +2893,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish apply/status",
-        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
+        "publish status",
+        "live AIA/CDP publication status (production-gated; local staging apply is supported)",
     ),
     (
         "key import/export/escrow/restore/rotate",
@@ -2806,7 +3023,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only, apply to local staging), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2814,7 +3031,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/apply-staging/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);

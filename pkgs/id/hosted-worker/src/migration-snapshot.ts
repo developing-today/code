@@ -71,22 +71,9 @@ interface SqlLike {
   exec(query: string, ...params: (string | number | null | Uint8Array)[]): { toArray(): Record<string, unknown>[] };
 }
 
+import { base64ToBytes, bytesToBase64 } from "../../../hosted-primitives/src/encoding.ts";
+
 const COLUMN = /^[a-z_][a-z0-9_]{0,63}$/;
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-  return btoa(s);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const s = atob(b64);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
-}
 
 function encodeCell(value: unknown): SnapshotCell {
   if (value === null || typeof value === "string") return value;
