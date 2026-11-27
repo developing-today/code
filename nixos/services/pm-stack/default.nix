@@ -344,6 +344,13 @@ in
               "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log "
               + (lib.optionalString cfg.aggregatorSocketActivation "${pkgs.coreutils}/bin/env PM_AGG_HOSTS=127.0.0.1 PM_AGG_PORT=${toString cfg.aggregatorBackendPort} PM_AGG_FRESHNESS_PORT=${toString cfg.aggregatorFreshnessBackendPort} ")
               + "${pmAggregator}/bin/pm-aggregator";
+            # Type=simple becomes active before pm-aggregator binds its
+            # private listener. The public socket stays open across a
+            # restart, so keep the proxy's After dependency pending until
+            # the backend accepts; otherwise its first cold connection is
+            # reset by socket-proxyd (observed on #10383).
+            ExecStartPost = lib.optional cfg.aggregatorSocketActivation
+              "${pkgs.bash}/bin/bash ${./pm-aggregator-backend-ready.sh} ${toString cfg.aggregatorBackendPort} 30";
             # The in-process quota job also needs the optional Antigravity
             # credential file previously loaded by quota-gatherer.service.
             EnvironmentFile = [
