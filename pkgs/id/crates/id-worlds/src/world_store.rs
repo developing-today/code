@@ -841,6 +841,20 @@ impl ModuleDir {
     ///
     /// I/O failures.
     pub fn save(&self, wasm: &[u8]) -> Result<String> {
+        self.save_with_directory_sync(wasm, Self::sync_directory)
+    }
+
+    /// Sync a directory so a renamed entry in it is durable.
+    fn sync_directory(dir: &Path) -> Result<()> {
+        File::open(dir).and_then(|dir| dir.sync_all())?;
+        Ok(())
+    }
+
+    fn save_with_directory_sync(
+        &self,
+        wasm: &[u8],
+        sync_directory: fn(&Path) -> Result<()>,
+    ) -> Result<String> {
         let hash = module_hash(wasm);
         let path = self.path(&hash)?;
         if path.exists() {
@@ -855,9 +869,11 @@ impl ModuleDir {
             file.sync_all()?;
         }
         std::fs::rename(&tmp, &path)?;
-        if let Ok(dir) = File::open(&self.dir) {
-            let _ = dir.sync_all();
-        }
+        // The rename is only durable once the directory entry is synced:
+        // a crash before that can drop the module while the journal
+        // already references its hash, so a sync failure fails the save
+        // instead of reporting a hash that may not survive a crash.
+        sync_directory(&self.dir).context("sync world directory")?;
         Ok(hash)
     }
 
@@ -4640,6 +4656,30 @@ mod tests {
         .unwrap();
         assert!(modules.load(&hash).is_err());
         assert!(modules.load("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn module_dir_save_fails_when_directory_sync_fails() {
+        // Oracle (#16058): a save that reports success must have durably
+        // synced the directory entry for the renamed module, so an
+        // injected directory-sync failure must surface as Err from save
+        // rather than Ok(hash) -- an Ok would let the journal record an
+        // install that a crash could then lose.
+        let dir = TempDir::new().unwrap();
+        let modules = ModuleDir::new(dir.path().join("modules"));
+        let err = modules
+            .save_with_directory_sync(b"\0asm\x01\0\0\0", |_| {
+                Err(anyhow::anyhow!("injected directory-sync failure"))
+            })
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("sync world directory"),
+            "{err:#}"
+        );
+        assert!(
+            format!("{err:#}").contains("injected directory-sync failure"),
+            "{err:#}"
+        );
     }
 
     #[cfg(feature = "sandbox")]
