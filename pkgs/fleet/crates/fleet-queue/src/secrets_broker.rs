@@ -253,6 +253,46 @@ fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
 }
 
+/// Parse and verify a peer's full-set payload. Project metadata is kept
+/// beside the cache (S3), so a full S4 adoption must move it with the
+/// corresponding names and values when project-scoped listings are enabled.
+fn parse_peer_secrets(
+    token: &str,
+    rows: &[Value],
+    expected_count: u64,
+    expected_hash: &str,
+) -> Result<(HashMap<String, CachedSecret>, HashMap<String, String>), String> {
+    if rows.len() as u64 != expected_count {
+        return Err("peer payload count does not match status".into());
+    }
+    let mut adopted = HashMap::with_capacity(rows.len());
+    let mut projects = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let name = row["name"].as_str().ok_or("peer secret missing name")?;
+        let value = row["value"].as_str().ok_or("peer secret missing value")?;
+        let id = row["id"].as_str().unwrap_or("");
+        adopted.insert(
+            name.to_string(),
+            CachedSecret {
+                id: id.to_string(),
+                value: value.to_string(),
+                fetched_at_unix: now_unix(),
+            },
+        );
+        if let Some(project) = row["projectId"].as_str().filter(|p| !p.is_empty()) {
+            projects.insert(name.to_string(), project.to_string());
+        }
+    }
+    let (verified_hash, count) = keyed_set_hash(token, &adopted);
+    if count as u64 != expected_count {
+        return Err("peer payload contains duplicate secret names".into());
+    }
+    if verified_hash != expected_hash {
+        return Err("peer payload hash did not match advertised status".into());
+    }
+    Ok((adopted, projects))
+}
+
 /// Ask the trusted peer for its keyed status, then pull its complete set
 /// only when it is newer and differs. `Ok(None)` means use the upstream
 /// delta/full fallback; `Ok(Some(n))` means the peer served this cycle.
@@ -346,28 +386,16 @@ fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
     let rows = payload["secrets"]
         .as_array()
         .ok_or("peer secrets payload missing list")?;
-    let mut adopted = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let name = row["name"].as_str().ok_or("peer secret missing name")?;
-        let value = row["value"].as_str().ok_or("peer secret missing value")?;
-        let id = row["id"].as_str().unwrap_or("");
-        adopted.insert(
-            name.to_string(),
-            CachedSecret {
-                id: id.to_string(),
-                value: value.to_string(),
-                fetched_at_unix: now_unix(),
-            },
-        );
-    }
-    if rows.len() as u64 != peer_count {
-        return Err("peer payload count does not match status".into());
-    }
-    let (verified_hash, count) = keyed_set_hash(&state.peer_token, &adopted);
-    if verified_hash != peer_hash {
-        return Err("peer payload hash did not match advertised status".into());
-    }
-    *state.secrets.write().unwrap() = adopted;
+    let (adopted, adopted_projects) =
+        parse_peer_secrets(&state.peer_token, rows, peer_count, peer_hash)?;
+    // Match the lock order used by upstream refresh and project-scoped
+    // listing: project metadata first, then the cache itself.
+    let mut projects = state.projects.write().unwrap();
+    let mut secrets = state.secrets.write().unwrap();
+    *projects = adopted_projects;
+    *secrets = adopted;
+    drop(secrets);
+    drop(projects);
     let watermark = peer_watermark.unwrap();
     *state.last_refresh.write().unwrap() = Some(watermark);
     if let Err(e) = persist_watermark(watermark) {
@@ -1101,6 +1129,7 @@ fn handle_request(
         names.sort();
         (200, json!({"names": names}))
     } else if method == "GET" && path == "/peer/secrets" && state.peer_status_enabled {
+        let projects = state.projects.read().unwrap();
         let secrets = state.secrets.read().unwrap();
         let mut entries: Vec<_> = secrets
             .iter()
@@ -1110,6 +1139,7 @@ fn handle_request(
                     "id": cached.id,
                     "value": cached.value,
                     "fetched_at_unix": cached.fetched_at_unix,
+                    "projectId": projects.get(name),
                 })
             })
             .collect();
@@ -2554,6 +2584,10 @@ mod tests {
     fn peer_full_set_is_authenticated_and_contains_the_complete_cache() {
         let state = empty_state();
         *state.secrets.write().unwrap() = set_of(&[("alpha", "one"), ("beta", "two")]);
+        state.projects.write().unwrap().extend([
+            ("alpha".into(), "project-a".into()),
+            ("beta".into(), "project-b".into()),
+        ]);
         let (status, body) = handle_request(&state, "tok", "GET", "/peer/secrets", Some("tok"));
         assert_eq!(status, 200);
         let rows = body["secrets"].as_array().unwrap();
@@ -2562,6 +2596,24 @@ mod tests {
         assert_eq!(rows[1]["name"], "beta");
         assert_eq!(rows[0]["id"], "id-alpha");
         assert_eq!(rows[1]["id"], "id-beta");
+        assert_eq!(rows[0]["projectId"], "project-a");
+        assert_eq!(rows[1]["projectId"], "project-b");
+    }
+
+    #[test]
+    fn peer_full_set_adoption_preserves_project_metadata() {
+        let secrets = set_of(&[("alpha", "one"), ("beta", "two")]);
+        let (set_hash, count) = keyed_set_hash("tok", &secrets);
+        let rows = vec![
+            json!({"name":"alpha","id":"id-alpha","value":"one","projectId":"project-a"}),
+            json!({"name":"beta","id":"id-beta","value":"two","projectId":"project-b"}),
+        ];
+
+        let (adopted, projects) = parse_peer_secrets("tok", &rows, count as u64, &set_hash)
+            .expect("the advertised hash and count match the complete peer set");
+        assert_eq!(keyed_set_hash("tok", &adopted).0, set_hash);
+        assert_eq!(projects.get("alpha").map(String::as_str), Some("project-a"));
+        assert_eq!(projects.get("beta").map(String::as_str), Some("project-b"));
     }
 
     #[test]
