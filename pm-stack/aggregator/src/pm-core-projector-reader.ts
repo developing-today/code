@@ -10,9 +10,8 @@ export interface PmCoreProjectorReaderEnv extends Record<string, string | undefi
 
 /**
  * Construct a store-backed reader when pm-core has been given the
- * projector database location. The import is lazy so ordinary aggregator
- * installs do not need the projector runtime unless the in-process path
- * is configured.
+ * projector database location. The import is lazy so standalone runs that
+ * stay on the HTTP reader do not load projector runtime modules.
  */
 export function createPmCoreProjectorReader(
   env: PmCoreProjectorReaderEnv = process.env,
