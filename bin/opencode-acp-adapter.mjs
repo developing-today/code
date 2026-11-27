@@ -72,6 +72,9 @@
 //                             service-prod.json — the server's own
 //                             state file, #4615). The value is never
 //                             logged or baked into tracked config.
+//   OPENCODE_ACP_SERVE_TIMEOUT_MS
+//                             per-call deadline for serve REST calls
+//                             (default 30000; see SERVE_REQUEST_TIMEOUT_MS)
 //   OPENCODE_ACP_ADAPTER_DEBUG=1 -> diagnostics on stderr (stdout is
 //                             the protocol channel and stays clean)
 //
@@ -211,12 +214,40 @@ function authHeaders(extra = {}) {
   return headers;
 }
 
-async function serveJson(pathname, { method = 'GET', body } = {}) {
-  const res = await fetch(`${serverBase}${pathname}`, {
-    method,
-    headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+// #15982: bound every serve REST call. Node/undici fetch has no
+// default timeout, so a hung serve (or a stalled loopback socket)
+// would otherwise wedge every serveJson await forever — prompts,
+// interrupts, permission replies, and the reconnect reconciliation
+// that reads /api/session/active through this same path (a hang is
+// not an error, so reconciliation's catch never fired and pending
+// prompts stayed in flight forever). The default is generous (30s:
+// healthy serve calls are loopback and fast) but finite. Tests
+// override it via OPENCODE_ACP_SERVE_TIMEOUT_MS.
+const SERVE_REQUEST_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_SERVE_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
+})();
+
+async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQUEST_TIMEOUT_MS } = {}) {
+  let res;
+  try {
+    res = await fetch(`${serverBase}${pathname}`, {
+      method,
+      headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    // AbortSignal.timeout aborts with a TimeoutError; surface it in
+    // the same `serve METHOD pathname -> …` shape as HTTP errors so
+    // callers log/retry consistently. Reconciliation's existing
+    // catch on fetchActiveSessionIds now also sees timeouts, so a
+    // hung active-set read fails pending prompts explicitly (#15982).
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`serve ${method} ${pathname} -> timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`serve ${method} ${pathname} -> ${res.status} ${text.slice(0, 200)}`);
