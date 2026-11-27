@@ -175,27 +175,10 @@ test.describe("Navigation", () => {
     // Go back to file list
     await page.goto("/files");
 
-    // File should appear as a visible primary row in the rendered list.
+    // File should appear as a visible primary row with a visible link.
+    // Regression (#15146): the row anchor collapsed to zero width when
+    // crowded metadata left no flex space (truncate implies min-width 0).
     const row = page.locator(`.file-item[data-name="${fileName}"]`);
-    console.log(
-      "created-file row layout:",
-      await row.evaluate((element) => {
-        const chain: Array<Record<string, string>> = [];
-        for (let node: HTMLElement | null = element as HTMLElement; node; node = node.parentElement) {
-          const style = getComputedStyle(node);
-          const rect = node.getBoundingClientRect();
-          chain.push({
-            tag: node.tagName,
-            id: node.id,
-            className: String(node.className),
-            display: style.display,
-            visibility: style.visibility,
-            rect: `${rect.x},${rect.y},${rect.width},${rect.height}`,
-          });
-        }
-        return { kind: element.getAttribute("data-kind"), chain };
-      }),
-    );
     await expect(row).toHaveAttribute("data-kind", "primary");
     await expect(row).toBeVisible();
     await expect(row.locator("a")).toBeVisible();
