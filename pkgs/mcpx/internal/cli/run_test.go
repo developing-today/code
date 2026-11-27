@@ -33,6 +33,28 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestReportFinalResultNamesSelectedRuntime(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	(&App{}).reportFinalResult(&execsvc.Result{Runtime: "bun"})
+	os.Stderr = old
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "mcpx: JavaScript runtime: bun\n"; string(got) != want {
+		t.Fatalf("runtime notice = %q, want %q", got, want)
+	}
+}
+
 func TestRunGlobalFlagThenVersion(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{"--json", "--version"}, Env{}, Stdio{Out: &out, Err: &errOut})
