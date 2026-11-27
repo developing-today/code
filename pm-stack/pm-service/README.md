@@ -239,17 +239,18 @@ the synchronous path's behaviour:
   async store; `test/read-api-async.test.ts` pins every route's
   status and body byte-identical to the synchronous handler's.
 - `src/worker.ts` + `wrangler.toml` — the Worker entry. `/health`
-  reports `{ ok, service, version }` with the VERSION var the
+  reports `{ ok, service, version, deployedAt, ageSeconds }` with
+  the VERSION and DEPLOYED_AT vars the
   deploy workflow stamps per deploy; until the
   `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set, the
   API routes answer a structured 503 (an unconfigured store is an
   honest state, never invented data).
 - `.github/workflows/pm-service-deploy.yml` — the design §4
   versions standard: test, `wrangler versions upload` stamped
-  with the full commit SHA, health gate against the version's
-  preview URL (`scripts/check-health.mjs`), `versions deploy`
-  promotion, and rollback by promoting a previous version id
-  (the `rollback_version` dispatch input).
+  with the full commit SHA and timestamp, health gate after
+  promotion (`scripts/check-health.mjs`), and rollback by promoting
+  the prior version if the exact-SHA or age check fails. Cloudflare
+  does not provide Version URLs for Workers with Durable Objects.
 
 ```sh
 cd pm-stack/pm-service && bun test && bun run typecheck
