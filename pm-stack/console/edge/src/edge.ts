@@ -96,12 +96,19 @@ import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
 import { parseWorkerCheckSet, WORKER_CHECKS_KEY, type WorkerCheckSet } from "./worker-checks.ts";
 import {
+  makeIncidentGitHub,
+  parseProbeState,
   parseQueueTransport,
+  probeBroker,
   QUEUE_TRANSPORT_KEY,
+  QUEUE_TRANSPORT_PROBE_KEY,
+  QUEUE_TRANSPORT_REPO,
   QUEUE_TRANSPORT_TOLD_KEY,
+  runTransportPass,
   transportMessage,
   transportNotifyDecision,
   transportToldMarker,
+  transportVerdict,
   type QueueTransport,
 } from "./queue-transport.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
@@ -244,6 +251,7 @@ export class Edge {
   private direct?: EdgeOptions["direct"];
   private ledgerPages?: EdgeOptions["ledgerPages"];
   private dnsPages?: EdgeOptions["dnsPages"];
+  private transport?: EdgeOptions["transport"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -409,6 +417,7 @@ export class Edge {
     this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
+    this.transport = options.transport;
     this.ledgerPages = options.ledgerPages;
     this.dnsPages = options.dnsPages;
     if (options.quota?.enabled && options.quota.envelope) {
@@ -2007,22 +2016,50 @@ export class Edge {
     return parseWorkerCheckSet(await this.kv.get(WORKER_CHECKS_KEY));
   }
 
-  /** The stateless part's read of the queue transport's health (#13503
-   * slice 1): what the queue-transport-alert Worker's /status said,
-   * normalized, handed here to keep. Only a verdict in the shape
-   * queue-transport.ts writes is kept; anything else is refused, so
-   * the health answer never shows a shape it cannot vouch for. */
-  private async queueTransportStore(req: Request): Promise<Response> {
-    const verdict = parseQueueTransport(await req.json().catch(() => null));
-    if (!verdict) return json({ error: "not a queue-transport verdict" }, 400);
+  /** One queue-transport probe pass (#13503 slice 2, #16242): the
+   * stateless part's scheduled tick asks this object to probe the
+   * broker itself — the retired queue-transport-alert Worker's job,
+   * taken over. The pass advances the kept probe state, files or
+   * comments the GitHub incident and enqueues the recovery triage
+   * task through this side's own doors (its GitHub token, its queue
+   * door), and leaves the verdict the health answer shows and the
+   * alarm tells the owner from. A probe that cannot authenticate
+   * itself is skipped and keeps nothing new: a watchdog that cannot
+   * ask does not alert. */
+  private async queueTransportProbe(): Promise<Response> {
+    const transport = this.transport;
+    if (!transport) return json({ ok: true, skipped: "queue transport watch not configured" });
+    const probe = await probeBroker(this.fetchImpl, transport);
+    if ("skipped" in probe) return json({ ok: true, skipped: probe.skipped });
+    const now = this.now();
+    const repo = transport.repo ?? QUEUE_TRANSPORT_REPO;
+    const cfg = await this.config();
+    const github =
+      this.direct?.enabled === true && this.direct.githubToken
+        ? makeIncidentGitHub(this.direct.githubToken, repo, this.fetchImpl, this.direct.githubApi)
+        : null;
+    const direct = cfg ? this.mine(cfg) : null;
+    const enqueue = direct
+      ? async (packet: unknown) => {
+          const res = await direct.queueEnqueue(packet);
+          if (res.code !== 0) throw new Error(res.stderr || "the queue store refused the triage task");
+        }
+      : null;
+    const prev = parseProbeState(await this.kv.get(QUEUE_TRANSPORT_PROBE_KEY));
+    const pass = await runTransportPass(prev, probe, { github, enqueue }, now, {
+      repo,
+      probeDesc: `GET ${transport.brokerUrl}/healthz through Cloudflare Access, from the PM console edge`,
+    });
+    await this.kv.put(QUEUE_TRANSPORT_PROBE_KEY, pass.state);
+    const verdict = transportVerdict(pass.state, now, repo);
     await this.kv.put(QUEUE_TRANSPORT_KEY, verdict);
     await this.ready();
-    await this.schedule(await this.config());
-    return json({ ok: true });
+    await this.schedule(cfg);
+    return json({ ok: true, event: pass.event, status: verdict.status, errors: pass.errors });
   }
 
   /** The last queue-transport verdict kept, or null before the first
-   * scheduled read has run (or when what is stored is not one). */
+   * scheduled probe has run (or when what is stored is not one). */
   async lastQueueTransport(): Promise<QueueTransport | null> {
     return parseQueueTransport(await this.kv.get(QUEUE_TRANSPORT_KEY));
   }
@@ -2476,9 +2513,9 @@ export class Edge {
         // Leave the transition pending so a later alarm can retry it.
       }
     }
-    // The queue transport's health, as the alert Worker stated it
-    // (#13503 slice 1): told once per outage, and its ending said too.
-    // The Worker stays the probe; this side is what tells the owner.
+    // The queue transport's health, as this side's own probe stated
+    // it (#13503 slice 2): told once per outage, and its ending said
+    // too. This side is both the probe and what tells the owner.
     const transport = await this.lastQueueTransport();
     if (transport && (await this.transportWanted())) {
       const told = ((await this.kv.get(QUEUE_TRANSPORT_TOLD_KEY)) as string | undefined) ?? null;
@@ -2564,7 +2601,7 @@ export class Edge {
       if (path === "/internal/relayed") return this.relayed(req);
       if (path === "/internal/route") return this.routeFlip(req);
       if (path === "/internal/worker-checks") return this.workerChecksStore(req);
-      if (path === "/internal/queue-transport") return this.queueTransportStore(req);
+      if (path === "/internal/queue-transport-probe") return this.queueTransportProbe();
       return json({ error: "not found" }, 404);
     }
 
@@ -2638,9 +2675,10 @@ export class Edge {
         // checks, answering or not, the commit it named, when it was
         // asked. Null until the first scheduled round has run.
         workerChecks: await this.lastWorkerChecks(),
-        // The queue transport's health as the alert Worker stated it
-        // (#13503 slice 1): the verdict this side tells the owner
-        // about itself. Null until the first scheduled read has run.
+        // The queue transport's health as this side's own probe
+        // stated it (#13503 slice 2): the verdict this side tells
+        // the owner about itself. Null until the first scheduled
+        // probe has run.
         queueTransport: await this.lastQueueTransport(),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.

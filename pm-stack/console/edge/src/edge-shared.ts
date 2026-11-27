@@ -269,6 +269,22 @@ export interface EdgeOptions {
    * it, this side serves /dns and /api/dns.json itself from the
    * snapshot row; without it, those pages stay the host's. */
   dnsPages?: { db?: import("./ledger-pages.ts").LedgerD1Database };
+  /** The queue transport watch (#13503 slice 2, #16242): the broker's
+   * public route and the Cloudflare Access service token that may ask
+   * it, with which this object probes the broker itself on the
+   * Worker's scheduled tick — the retired queue-transport-alert
+   * Worker's job, taken over. The token is a Worker secret, put there
+   * by infra/pm-cloudflare's apply by name from the vault; without it
+   * the probe is skipped, never an alert. Absent entirely on a local
+   * run that does not watch the transport. */
+  transport?: {
+    brokerUrl: string;
+    accessId?: string;
+    accessSecret?: string;
+    /** The repository incidents are filed in; the platform's own
+     * unless a run says another. */
+    repo?: string;
+  };
   /** C6 quota page (#15018): opt-in. Envelope + existing question sets
    * are supplied by the host; dispatchReset is the existing pool-steward
    * machinery. Absent/off: /console/api/quota answers 503. */

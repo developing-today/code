@@ -20,6 +20,21 @@ enqueues one triage task into the queue it watches.
 the address `https://queue-transport-alert.developing-today.workers.dev`,
 and the Worker has filed a real incident (#12414, 2026-11-22, closed).
 
+**Retired 2026-11-27 (#16242, #13503 slice 2).** The Worker, its
+deploy workflow and its platform-registry row are removed. The PM
+console edge now does the probe itself, on its five-minute scheduled
+tick, with the incident semantics below ported into
+`pm-stack/console/edge/src/queue-transport.ts`: find-or-file one
+GitHub incident, comment on recovery, never close (#10136), and
+enqueue the same anchored triage packet on recovery — through the
+console's own GitHub token and queue door, with the broker route's
+Access service token provisioned to the console by name from the
+vault (`infra/pm-cloudflare`). Telling the owner is the console's
+own notifications, as slice 1 made them. This page stands as the
+design record of the contract both implementations share; the local
+script (`scripts/fleet/queue-transport-alert/check_transport.py`)
+still exists and dedupes onto the same incident by title prefix.
+
 ## The probe
 
 The probe is `GET {BROKER_URL}/healthz`, where `BROKER_URL` is

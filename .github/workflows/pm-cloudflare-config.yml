@@ -113,6 +113,8 @@ jobs:
           PMCF_GITHUB_TOKEN: ${{ secrets.PMCF_GITHUB_TOKEN }}
           PMCF_QUEUE_TOKEN: ${{ secrets.PMCF_QUEUE_TOKEN }}
           PMCF_BRIDGE_TOKEN: ${{ secrets.PMCF_BRIDGE_TOKEN }}
+          PMCF_BROKER_ACCESS_ID: ${{ secrets.PMCF_BROKER_ACCESS_ID }}
+          PMCF_BROKER_ACCESS_SECRET: ${{ secrets.PMCF_BROKER_ACCESS_SECRET }}
           PMCF_REFRESH_TOKENS: ${{ inputs.refresh_tokens }}
         run: |
           # The input goes through the env; it is never interpolated into

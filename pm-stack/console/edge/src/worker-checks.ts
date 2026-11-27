@@ -88,7 +88,6 @@ export const WORKER_BINDINGS: WorkerBindingSpec[] = [
   { name: "decision-events", binding: "DECISION_EVENTS" },
   { name: "pm-notify", binding: "PM_NOTIFY" },
   { name: "mcpx", binding: "MCPX" },
-  { name: "queue-transport-alert", binding: "QUEUE_TRANSPORT_ALERT" },
   { name: "github-ci", binding: "GITHUB_CI" },
   { name: "voice-line", binding: "VOICE_LINE" },
   { name: "muse-agent-handoff", binding: "MUSE_AGENT_HANDOFF" },
