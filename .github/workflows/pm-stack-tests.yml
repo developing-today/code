@@ -40,13 +40,15 @@ jobs:
         working-directory: pm-stack/aggregator
         run: bun install --frozen-lockfile
 
-      - name: Test aggregator
-        working-directory: pm-stack/aggregator
-        run: bun test
-
+      # The aggregator's pm-core reader imports the projector store module.
+      # Install its runtime dependency before the aggregator test process.
       - name: Install projector dependencies
         working-directory: pm-stack/projector
         run: bun install --frozen-lockfile
+
+      - name: Test aggregator
+        working-directory: pm-stack/aggregator
+        run: bun test
 
       - name: Test projector
         working-directory: pm-stack/projector
