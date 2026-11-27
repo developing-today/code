@@ -145,6 +145,8 @@ Rules that apply to every frame:
 | `world_state`             | World state request.                                                                                                         |
 | `set_execution_profile`   | Set the execution profile.                                                                                                   |
 | `execution_profile_info`  | Execution profile information request.                                                                                       |
+| `set_presentation_policy` | Set the presentation policy.                                                                                                 |
+| `presentation_policy_info`| Presentation policy request. Needs no token.                                                                                 |
 | `caps`                    | Capability query.                                                                                                            |
 | `chat`                    | Chat post. May carry `screen_revision`, the stale-decision token checked by the policy layer in [The MCP bridge](mcp.md).    |
 | `form_result`             | A submitted form result.                                                                                                     |
@@ -192,6 +194,7 @@ Rules that apply to every frame:
 | `policy`              | Policy state.                                                                   |
 | `caps`                | Capability reply.                                                               |
 | `execution_profile`   | Execution profile reply.                                                        |
+| `presentation_policy` | Presentation policy reply.                                                      |
 | `caps_ceiling`        | Capability ceiling reply.                                                       |
 | `schedules`           | Schedules reply.                                                                |
 | `world_state`         | World state reply.                                                              |

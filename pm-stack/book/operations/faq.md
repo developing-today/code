@@ -52,7 +52,7 @@ UNVERIFIED from the code surveyed. Two service workers exist: the aggregator PWA
 
 ## Where does a single-question answer get written?
 
-To the ledger, through the decisions machinery — and the exact store file is UNVERIFIED (D9). `decisions.ts` calls the store in `needs-drew.ts` the question store and treats decision sets as distinct from it, while the routing code sends single-question answers through the same resolution machinery. This book describes the endpoint, `POST /api/needs-drew/&lt;ledgerId&gt;/answer`, and the ledger application, and names no store file for that path.
+To the needs-Drew question store, then the ledger (D9). The endpoint, `POST /api/needs-drew/&lt;ledgerId&gt;/answer`, calls `recordAnswer` in `pm-stack/aggregator/src/needs-drew.ts` writes it to the needs-Drew question store, the file at `cfg.needsDrewFile`. That path is `PM_AGG_NEEDS_USER_FILE`, else the legacy `PM_AGG_NEEDS_DREW_FILE`, else `needs-user.json` (or the legacy `needs-drew.json` where only that exists) under `~/.local/state/pm-aggregator/`, resolved by `needs-user-state-path.ts`. Decision sets keep their own store, `decisions.json`.
 
 ## An item looks done. Is it done?
 

@@ -4,7 +4,7 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-sweep.rs](https://git
 
 `atlas-sweep` is the operator tool for the ingestion sweep: the periodic pass that walks a source class on a host, filters the candidates it finds, applies guardrails, and records what it did. The binary exposes the complete operator set for that core — pausing and resuming classes, running one sweep from a request file, managing the dead-letter store (items that failed repeatedly), and reading run reports. It creates and enables **no schedule**: cadence is an operator/platform decision, gated on the owner's go-ahead on #7969. State lives in a state directory the operator names on every invocation.
 
-`--help` / `-h` prints the usage text to stdout, exit 0, and `--version` / `-V` prints `atlas-sweep 0.1.0`; the complete surface is otherwise in the source header, and any other unrecognised first token is an `unknown action` error.
+`--help` / `-h` prints the usage text to stdout, exit 0, and `--version` / `-V` prints `atlas-sweep 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history); the complete surface is otherwise in the source header, and any other unrecognised first token is an `unknown action` error.
 
 ## Invocation
 

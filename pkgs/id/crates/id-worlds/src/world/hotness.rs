@@ -295,7 +295,7 @@ mod tests {
         ];
         let report = evaluate(&samples, &HotnessThresholds::default());
         assert_eq!(report.band, HotnessBand::Healthy);
-        assert!(report.fired.is_empty());
+        assert_eq!(report.fired, [] as [FiredSignal; 0]);
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod tests {
         ];
         let report = evaluate(&samples, &HotnessThresholds::default());
         assert_eq!(report.band, HotnessBand::Healthy);
-        assert!(report.fired.is_empty());
+        assert_eq!(report.fired, [] as [FiredSignal; 0]);
         assert_eq!(report.samples, 2);
     }
 }

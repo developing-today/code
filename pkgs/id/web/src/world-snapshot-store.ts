@@ -78,7 +78,10 @@ export function parseStoredWorldSnapshot(raw: string | null): StoredWorldSnapsho
         typeof participant.display_name === "string",
     ) ||
     !isStoredView(parsed.view) ||
-    !(parsed.view_revision === null || (typeof parsed.view_revision === "number" && Number.isFinite(parsed.view_revision))) ||
+    !(
+      parsed.view_revision === null ||
+      (typeof parsed.view_revision === "number" && Number.isFinite(parsed.view_revision))
+    ) ||
     !isRecord(parsed.records)
   ) {
     return null;

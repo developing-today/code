@@ -246,11 +246,11 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 41 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 48 else 1)
 '; then
-  ok "missing-optional: manifest lists all 41 expected members"
+  ok "missing-optional: manifest lists all 48 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 41-member set"
+  fail "missing-optional: manifest expected list is not the full 48-member set"
 fi
 
 # --- decisions ledger is required (#10293) -----------------------------------
@@ -275,6 +275,7 @@ agg="$RUN_HOME/.local/state/pm-aggregator"
 printf '{"id":"e1"}\n' >"$agg/decision-events-outbox.jsonl"
 printf '{"offset":1}\n' >"$agg/decision-events-outbox.jsonl.sync-state.json"
 printf '{}\n' >"$agg/needs-drew.json"
+printf '{}\n' >"$agg/needs-user.json"
 mkdir -p "$agg/digests"
 printf '{}\n' >"$agg/digests/daily-2026-10-27.json"
 printf '{}\n' >"$agg/board.json"          # derived: not archived, not flagged
@@ -291,6 +292,7 @@ assert_member ledger-staged aggregator/decision-events.jsonl required present
 assert_member ledger-staged aggregator/decision-events-outbox.jsonl optional present
 assert_member ledger-staged aggregator/decision-events-outbox.jsonl.sync-state.json optional present
 assert_member ledger-staged aggregator/needs-drew.json optional present
+assert_member ledger-staged aggregator/needs-user.json optional present
 assert_member ledger-staged aggregator/notifications.jsonl optional missing
 assert_member ledger-staged aggregator/digests optional present
 if manifest_json ledger-staged | python3 -c '
@@ -373,7 +375,7 @@ cat >"$EXPORTER" <<'STUBEOF'
 set -eu
 [[ "$1" == --output-dir && $# == 2 ]]
 mkdir -p "$2"
-for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs; do
+for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs push_endpoints push_preferences push_item_stages push_item_stage_events push_registry_meta; do
   printf '[]' >"$2/$table.json"
 done
 STUBEOF
@@ -389,6 +391,7 @@ if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: 
 assert_member turso-export turso/agg_actions.json required present
 assert_member turso-export turso/alerts_push_subscriptions.json required present
 assert_member turso-export turso/orch_runs.json required present
+assert_member turso-export turso/push_endpoints.json optional present
 
 setup_home turso-missing
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \

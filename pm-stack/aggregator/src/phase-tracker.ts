@@ -19,9 +19,11 @@
 // phase-mapping.ts) — researched on 2026-11-14: dedicated F-item
 // issues for most items, the phase-11 status record for the two
 // PR-delivered items (F11.6 -> PR #247, F11.14 -> PR #248), #227 for
-// F11.12, and #783-#790 for F13.1-F13.8. Phases 0-10 have no F-item
-// numbering in any plan, so they render validation state only, with
-// the gap stated rather than a percentage invented.
+// F11.12, and #783-#790 for F13.1-F13.8. Phases 0-10 joined the
+// same table for #13944: the F-numbering mirrors their plans'
+// P-step lists and each item's ref is its phase's validation audit
+// (#1075/#1076/#1077), so their progress derives from live audit
+// state like every other phase.
 //
 // Everything in this module is pure: the derivations join their
 // sources against the aggregator's GhItem states.

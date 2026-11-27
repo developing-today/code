@@ -198,7 +198,7 @@ describe("buildHealth probes", () => {
     });
   });
 
-  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval and degrades after a missed write", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
     // next interval: this tests the worst-case stop without a five-minute wait.
@@ -225,12 +225,23 @@ describe("buildHealth probes", () => {
       const opts = { fetcher, cache: createProbeCache() };
       const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
       expect(service(before, "fleet-feed").state).toBe("up");
+      // #1116: by the next interval the row says a write is overdue.
       const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
-      expect(service(view, "fleet-feed").state).toBe("stale");
-      expect(view.degraded).toBe(true);
+      expect(service(view, "fleet-feed").state).toBe("late");
       const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
-      expect(html).toContain("past the 5m freshness threshold");
-      expect(html).toContain("stale");
+      expect(html).toContain("past the 5m collector cadence, a write is overdue; stale at 10m");
+      // #14062: one late write adds nothing to the degraded verdict (the
+      // view degrades only as much as it did before the stop); a whole
+      // missed write does, and the status says so.
+      expect(service(view, "fleet-feed").ok).toBe(true);
+      expect(view.degraded).toBe(before.degraded);
+      expect(view.status).toBe(view.degraded ? "degraded" : "ok");
+      const missed = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 10 * 60_000 });
+      expect(service(missed, "fleet-feed").state).toBe("stale");
+      expect(missed.degraded).toBe(true);
+      expect(missed.status).toBe("degraded");
+      const missedHtml = renderHealth(missed, {} as Parameters<typeof renderHealth>[1]);
+      expect(missedHtml).toContain("past the 10m freshness threshold");
     } finally {
       collector.kill();
       await collector.exited;
@@ -608,6 +619,20 @@ afterAll(() => {
 });
 
 describe("health page + extended /api/health (fixtures boot)", () => {
+  test("needs-user census route works and keeps the legacy route available", async () => {
+    const current = await fetch(`http://127.0.0.1:${port}/api/needs-user.json`);
+    const legacy = await fetch(`http://127.0.0.1:${port}/api/needs-drew.json`);
+    expect(current.status).toBe(legacy.status);
+    expect([200, 503]).toContain(current.status);
+    const body = (await current.json()) as { fetchedAt?: string; items?: unknown[]; error?: string };
+    if (current.status === 200) {
+      expect(typeof body.fetchedAt).toBe("string");
+      expect(Array.isArray(body.items)).toBe(true);
+    } else {
+      expect(body.error).toContain("needs-user census unavailable");
+    }
+  });
+
   test("/health renders the topology table with honest fixture states", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     expect(res.status).toBe(200);

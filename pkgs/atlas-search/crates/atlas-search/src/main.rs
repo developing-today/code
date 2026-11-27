@@ -58,7 +58,6 @@ use serde_json::Value as Json;
 #[derive(Parser)]
 #[command(
     name = "atlas-search",
-    version,
     about = "atlas-search — the Atlas access layer: hybrid search over the corpus."
 )]
 struct Cli {
@@ -373,7 +372,7 @@ struct SearchArgs {
     /// YYYY-MM-DD, on sessions.created_at (inclusive)
     #[arg(long)]
     until: Option<String>,
-    /// ceiling in shareable<personal<local-only<secret-bearing (default personal; secret-bearing must be spelled out)
+    /// ceiling in shareable<personal<local-only<secret-bearing, or the canonical public<internal<private<sensitive (default personal; the top rung must be spelled out)
     #[arg(long, default_value = "personal")]
     max_sensitivity: String,
     /// disclosure context of the destination surface (#12404): fleet-internal (default; this CLI serves fleet surfaces), hosted-per-user, public-surface, or local-owner. The context ceiling intersects --max-sensitivity; neither widens the other, and excluded content is never served
@@ -766,8 +765,9 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             client: split_csv(args.client.as_deref()),
             since: args.since.clone(),
             until: args.until.clone(),
+            dimensions: Default::default(),
         },
-        ceiling: ProtoSensitivity::from_name(&args.max_sensitivity)
+        ceiling: ProtoSensitivity::from_ceiling_name(&args.max_sensitivity)
             .unwrap_or(ProtoSensitivity::Personal),
         k: u(args.k),
         pool: u(args.pool),
@@ -833,7 +833,7 @@ fn try_via_service_search(args: &SearchArgs) -> Result<Option<Json>, String> {
     if !via_requested(&args.backend) {
         return Ok(None);
     }
-    if ProtoSensitivity::from_name(&args.max_sensitivity).is_none() {
+    if ProtoSensitivity::from_ceiling_name(&args.max_sensitivity).is_none() {
         // Let the standalone path produce the Python's exact
         // validation fatal rather than silently clamping here.
         return Ok(None);
@@ -1417,6 +1417,16 @@ fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-search {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = <Cli as clap::Parser>::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

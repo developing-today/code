@@ -152,4 +152,65 @@ describe("PM Metadata schema v1 adapter", () => {
       db.close();
     }
   });
+
+  test("unchanged artifact replays issue no row writes and one changed link updates only its row", () => {
+    const db = new Database(":memory:");
+    try {
+      createPmMetadataStore(db);
+      const source = {
+        pm_meta: 1,
+        links: [
+          { target: { repo: "developing-today/code", number: 123 }, relation: "parent", status: "active" },
+          { target: { repo: "developing-today/code", number: 456 }, relation: "blocks", status: "active" },
+        ],
+      };
+      const parsed = parsePmMetadata(source);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      const record = {
+        artifactId: "sha256:metadata-write-audit",
+        repo: "developing-today/code",
+        itemNumber: 14865,
+        itemKind: "issue",
+        sourceUrl: "https://github.com/developing-today/code/issues/14865",
+        parsed: parsed.value,
+        sourceUpdatedAt: "2026-11-24T00:00:00Z",
+      };
+      upsertPmMetadata(db, record);
+
+      // Oracle: SQL triggers record each persisted row mutation. An exact
+      // replay must mutate zero rows; changing one derived link may update
+      // only its source row and that one indexed link row.
+      db.exec(`
+        CREATE TABLE write_audit (table_name TEXT, operation TEXT);
+        CREATE TRIGGER audit_item_update AFTER UPDATE ON pm_metadata_items
+          BEGIN INSERT INTO write_audit VALUES ('items', 'UPDATE'); END;
+        CREATE TRIGGER audit_link_update AFTER UPDATE ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'UPDATE'); END;
+        CREATE TRIGGER audit_link_delete AFTER DELETE ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'DELETE'); END;
+        CREATE TRIGGER audit_link_insert AFTER INSERT ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'INSERT'); END;
+      `);
+
+      upsertPmMetadata(db, record);
+      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual([]);
+
+      const changedSource = {
+        ...source,
+        links: source.links.map((link, index) => index === 1 ? { ...link, status: "historical" } : link),
+      };
+      const changed = parsePmMetadata(changedSource);
+      expect(changed.ok).toBe(true);
+      if (!changed.ok) return;
+      upsertPmMetadata(db, { ...record, parsed: changed.value, sourceUpdatedAt: "2026-11-24T01:00:00Z" });
+      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual([
+        { table_name: "items", operation: "UPDATE" },
+        { table_name: "links", operation: "UPDATE" },
+      ]);
+      expect(getPmMetadata(db, record.artifactId)?.indexes.links).toEqual(changed.value.indexes.links);
+    } finally {
+      db.close();
+    }
+  });
 });

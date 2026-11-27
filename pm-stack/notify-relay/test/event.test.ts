@@ -77,8 +77,18 @@ describe("POST /mirror/event", () => {
     const { env, values } = fixture();
     const sourceLedger = [
       event({ mirrorId: "incident-1", objectRef: "incident:42", payload: { class: "incident" } }),
-      event({ mirrorId: "needs-drew-1", objectRef: "item:task-7", transition: "raised", payload: { class: "needs-drew" } }),
-      event({ mirrorId: "quota-wall-1", objectRef: "quota:pool-a", transition: "raised", payload: { class: "quota-wall" } }),
+      event({
+        mirrorId: "needs-drew-1",
+        objectRef: "item:task-7",
+        transition: "raised",
+        payload: { class: "needs-drew" },
+      }),
+      event({
+        mirrorId: "quota-wall-1",
+        objectRef: "quota:pool-a",
+        transition: "raised",
+        payload: { class: "quota-wall" },
+      }),
     ];
     const append = (payload: ReturnType<typeof event>) =>
       worker.fetch(

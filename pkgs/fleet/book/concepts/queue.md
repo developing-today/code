@@ -3,7 +3,11 @@
 The queue is the fleet's shared work queue: one queue of _tasks_ (units of
 repo work), served by the queue broker over a dedicated Turso store, with a
 GitHub-issue-comment fallback queue behind it. The client surface is
-`fleet queue` (argv0 alias `repo-queue`) with 32 verbs. Inside the binary,
+`fleet queue` (argv0 alias `repo-queue`) with 40 verbs. The count is one per
+dispatch arm of `run()` in the client, which is also the command list
+`fleet help queue` prints from the registry: `history` (an alias of
+`timeline`) counts as its own verb, and `dispatch`, `session` and
+`surfaces` count as three. Inside the binary,
 every per-verb usage string spells the program `repo-queue`; the two
 spellings are the same code path.
 
@@ -116,6 +120,13 @@ the broker only matches tasks whose `required_budget_minutes` fits, and
 omitting it leaves such tasks unclaimed. No claimable task is
 `{"task": null}`, exit **5**, with counts (`queued`, `at_cap_queued`,
 `queued_not_yet_due`, `parked_due`) explaining why.
+
+An enqueue may set the task's top-level `manual_only` flag. It defaults to
+false and is persisted on the task row with the enqueue audit event. Automatic
+default and handoff picks always skip flagged tasks, regardless of priority or
+queue depth; an explicit by-ID claim can still take one. The task remains in
+listings with a `(manual-only)` status marker, distinct from parked or blocked
+work. Changes to this flag must be audit logged.
 
 ## Leases and heartbeat
 

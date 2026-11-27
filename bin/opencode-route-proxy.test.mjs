@@ -572,6 +572,9 @@ const startProxy = async (arg = {}) => {
       "bad-days-string": { "daysOfWeek": "fri", "start": "00:00", "end": "23:59", "timezone": "UTC" },
       "bad-days-name": { "daysOfWeek": ["wed", "funday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
       "full-day-names": { "daysOfWeek": ["Wednesday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
+      "offpeak-x": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "04:00", "end": "06:00", "timezone": "UTC", "class": "off-peak" },
+      "preburn-overlap": { "daysOfWeek": ["wed"], "start": "02:00", "end": "03:00", "timezone": "UTC", "class": "preburn" },
+      "badclass-x": { "daysOfWeek": ["mon"], "start": "00:00", "end": "23:59", "timezone": "UTC", "class": "spicy" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
@@ -596,6 +599,9 @@ const startProxy = async (arg = {}) => {
       "t-window-bad-days-string": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-string" }, "leafB/m-b" ] },
       "t-window-bad-days-name": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-name" }, "leafB/m-b" ] },
       "t-window-full-day-names": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "full-day-names" }, "leafB/m-b" ] },
+      "t-window-bound": { "selection": "ordered", "windows": ["peak"], "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
+      "t-window-bound-multi": { "selection": "ordered", "windows": ["peak", "offpeak-x"], "targets": [ { "model": "leafA/m-a", "window": "offpeak-x" }, "leafB/m-b" ] },
+      "t-window-badclass": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "badclass-x" }, "leafB/m-b" ] },
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
@@ -1586,6 +1592,152 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-days-string") && log.includes('daysOfWeek="fri"'), `log names a string daysOfWeek:\n${log}`);
     assert.ok(log.includes("bad-days-name") && log.includes("funday"), `log names a bad weekday:\n${log}`);
     assert.ok(!log.includes('model_route_windows["full-day-names"]'), `full weekday names are valid:\n${log}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------- #9378 stage 2: window context on route_attempt
+
+// Read the newest attempt's recorded window context.
+const latestWindowRow = (dbPath) => {
+  const db = new DatabaseSync(dbPath);
+  const row = db
+    .prepare(
+      "SELECT provider_id, window_names, window_class, holiday, priority_band FROM route_attempt ORDER BY id DESC LIMIT 1",
+    )
+    .get();
+  db.close();
+  return { ...row };
+};
+
+test("route_attempt carries window context, flipping with the window switch (#9378)", async () => {
+  // 2026-11-04 is a Wednesday. 02:30 UTC is inside the peak window;
+  // 05:00 UTC is off-peak for the bound route (peak ended at 04:00).
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    const peak = await p.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(peak.status, 200);
+    assert.equal((await peak.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "peak",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+  const q = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 5, 0) });
+  try {
+    const off = await q.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(off.status, 200);
+    assert.equal((await off.json()).choices[0].message.content, "LEAF-B");
+    assert.deepEqual(latestWindowRow(q.dbPath), {
+      provider_id: "leafB",
+      window_names: "",
+      window_class: "neutral",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await q.cleanup();
+  }
+});
+
+test("unbound routes see every window; peak outranks preburn (#9378)", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    // Unbound: every defined window counts. At Wed 02:30 UTC the
+    // full-day fixture window and the preburn overlap join peak;
+    // absent classes record as the peak default.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "peak,full-day-names,preburn-overlap",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("off-peak class records on its own window (#9378)", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 5, 0) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-bound-multi", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "offpeak-x",
+      window_class: "off-peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("unknown window class warns but still gates (#9378)", async () => {
+  // 2026-11-02 is a Monday; badclass-x covers the whole day.
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 2, 12, 0) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-badclass", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    let log = "";
+    for (let i = 0; i < 20; i++) {
+      log = p.log();
+      if (log.includes("badclass-x") && log.includes("unknown class")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(
+      log.includes("badclass-x") && log.includes("unknown class"),
+      `log names the bad class:\n${log}`,
+    );
+    // The recording-label typo records as the peak default; the gate
+    // still follows the window's time rule.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafA",
+      window_names: "badclass-x",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a walled leg stays walled across a window switch (#9378 G2)", async () => {
+  const now = Date.UTC(2026, 10, 4, 2, 30); // Wednesday, inside peak
+  const p = await startProxy({ nowMs: now });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: now - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-window-bound", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the walled peak lead must not be attempted");
+    // The failover attempt still carries the peak switch state.
+    assert.deepEqual(latestWindowRow(p.dbPath), {
+      provider_id: "leafB",
+      window_names: "peak",
+      window_class: "peak",
+      holiday: "unknown",
+      priority_band: "interactive",
+    });
   } finally {
     await p.cleanup();
   }

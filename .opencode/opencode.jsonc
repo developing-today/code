@@ -4638,10 +4638,10 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Scout's edges RULED by Drew 2026-11-14: background first,
-        // then workhorse. Routine work that exhausts the free/cheap
-        // seats escalates to the patient tier, then the standard
-        // tier, rather than erroring.
+        // Route-pool decision #14432 (2026-11-26): background is scout's
+        // only direct fallback; background can then escalate to workhorse.
+        // This keeps the patient-to-standard path without a scout/workhorse
+        // cycle.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -4695,8 +4695,7 @@
           "opencode-route/kilo-free-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
-          "opencode-route/background",
-          "opencode-route/workhorse"
+          "opencode-route/background"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -4827,6 +4826,13 @@
           "opencode-route/kilo-free-plan",
           "opencode-route/workhorse"
         ],
+        // Time-of-day window binding (#9378 stage 2, 2026-11-24):
+        // the two DeepSeek peak windows above are the windows whose
+        // class drives this pool, so route_attempt rows for this
+        // route carry their match state (window_names/window_class).
+        // Recording only: ranking still comes from the gated
+        // positions above, unchanged.
+        "windows": ["deepseek-peak-early", "deepseek-peak-late"],
         "selection": "ordered",
         "autonomy": "rules"
       },
@@ -4893,6 +4899,7 @@
       },
       "workhorse-primary": {
         "name": "Workhorse primary - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
+        // Retired from the workhorse chain on 2026-11-26; historical decisions retained below.
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra kept its specialist-tier seats at that writing (corrected 2026-11-03, task 8486 / issue #4390: Terra #medium was removed from specialist on 2026-10-27 and left the workhorse relief pool on 2026-10-31, so it now holds no specialist or workhorse seat), where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -5039,24 +5046,19 @@
       },
       // 2026-11-16 (Drew): tier-pool names describe performance/speed characteristics, not models;
       // compositions live in comments like this one.
-      // Composition (2026-11-16): beam-plan, workhorse-ordered, workhorse-primary (emptied), workhorse-weighted, workhorse-last-resort, scout, specialist.
+      // Composition (route-pool decision #14432, 2026-11-26): beam-plan, workhorse-ordered, workhorse-weighted, workhorse-last-resort, specialist.
       "workhorse": {
         "name": "Workhorse - standard work: ordered stages with a weighted relief pool, last-resort stage if all else is down",
-        // Class fallback (Drew 2026-11-13): on exhaustion this class
+        // Class fallback (route-pool decision #14432, 2026-11-26): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
-        // re-entry into a route already on the expansion path, so
-        // escalation never re-enters a tried class and always
-        // terminates at specialist, the sink. Full layout:
-        // .opencode/route-fallbacks.md; guard:
+        // re-entry into a route already on the expansion path.
+        // Full layout: .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Workhorse's chain: scout FIRST (its failure mode is
-        // quota exhaustion; scout diversifies onto different
-        // doors - free Beam via CommandCode, DeepSeek #low,
-        // Haiku #low), then specialist (the sink). Reached FROM
-        // speed or scout, the visited-set pruning skips the
-        // scout edge's re-entry and the call lands on
-        // specialist.
+        // Workhorse falls through to specialist after its plan stages.
+        // It does not fall back into scout: that edge formed a cycle with
+        // scout's background -> workhorse path and added retries before the
+        // specialist sink.
         // 2026-10-27 pool redesign (Drew's structure): incremental —
         // DeepSeek Flash #high is the primary every session tries first;
         // the weighted relief pool (workhorse-weighted) absorbs failover
@@ -5098,10 +5100,8 @@
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/workhorse-ordered",
-          "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted",
           "opencode-route/workhorse-last-resort",
-          "opencode-route/scout",
           "opencode-route/specialist"
         ],
         "selection": "ordered",
@@ -5458,7 +5458,7 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
-      // Composition (2026-11-16): deepseek-flash-plan#high, gemini-hydrogen-plan#high, haiku-plan#high, then workhorse/summit/specialist fallbacks; the quality floor is the haiku-plan#high seat.
+      // Composition (route-pool decision #14432, 2026-11-26): DeepSeek Flash #high, Gemini Hydrogen #high, Haiku #high, then the two-door workhorse-last-resort pair and specialist sink; the quality floor is Haiku #high.
       "speed": {
         "name": "Speed - fastest seats above the quality floor, for latency-bound work",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
@@ -5469,8 +5469,8 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Speed's chain: workhorse first (cheaper, more
-        // available), then summit, then specialist (the sink).
+        // Speed's fallback skips workhorse and summit, then tries the
+        // dedicated two-door last-resort route before specialist.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): a latency pool is judged on
         // time-to-first-token as much as decode — Spark contributor #xhigh / TTFT 19.1s /
@@ -5511,8 +5511,7 @@
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
           "opencode-route/haiku-plan#high",
-          "opencode-route/workhorse",
-          "opencode-route/summit",
+          "opencode-route/workhorse-last-resort",
           "opencode-route/specialist"
         ],
         "selection": "ordered",
@@ -5639,17 +5638,22 @@
       // background route leads with MiMo and treats Flash as
       // peak-priced when it is actually off-peak — lost value on
       // those days, never overspend.
+      // Class (#9378 stage 2): both windows are peak-priced ranges,
+      // recorded on route_attempt rows via the background route's
+      // `windows` binding.
       "deepseek-peak-early": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "01:00",
         "end": "04:00",
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "class": "peak"
       },
       "deepseek-peak-late": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "06:00",
         "end": "10:00",
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "class": "peak"
       }
     }
   }

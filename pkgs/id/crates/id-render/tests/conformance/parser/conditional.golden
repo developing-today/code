@@ -1,0 +1,12 @@
+element <document> @1:1
+  @version="1"
+  element <page> @2:3
+    @title="Conditional"
+    element <conditional> @3:5
+      @target="web"
+      element <text> @4:7
+        text "Web only"
+      end <text>
+    end <conditional>
+  end <page>
+end <document>

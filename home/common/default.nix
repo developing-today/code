@@ -134,7 +134,7 @@ let
   t3code = pkgs.callPackage ../../pkgs/t3code-desktop { };
   # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
-  # desktop-commander-remote unit below keeps the device agent online.
+  # bridge unit below runs it for the self-hosted endpoint.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
   # supergateway: the stdio <-> streamable-HTTP bridge that fronts the
   # packaged Desktop Commander for the self-hosted endpoint (#13404).
@@ -1029,62 +1029,17 @@ in
     Install.WantedBy = [ "timers.target" ];
   };
 
-  # Desktop Commander's Remote Device: the local half of OpenAI's "Remote
-  # Desktop Commander" plugin. The hosted Remote MCP at
-  # mcp.desktopcommander.app forwards tool calls to this process, which drives
-  # the local Desktop Commander MCP server under the user's own permissions.
-  # Installing the plugin itself is a ChatGPT/Codex action and cannot be done
-  # by a NixOS unit; what this unit buys is that the device is online whenever
-  # the user session is, rather than living in a stray terminal.
-  #
-  # FIRST RUN IS INTERACTIVE. `remote` starts an OAuth device flow and prints a
-  # verification URL and code, so the unit only pairs unattended once a session
-  # has been stored. Watch it with:
-  #   journalctl --user -u desktop-commander-remote -f
-  # and approve at mcp.desktopcommander.app. The session is saved to
-  # ~/.desktop-commander-device/device.json (0600) and reused on restart.
-  #
-  # PATH matters for the same reason it does in t3code below: a systemd user
-  # unit does not inherit the login shell's PATH, and Desktop Commander exists
-  # to run arbitrary user commands, so it needs the real one. Sourcing the
-  # profiles is deliberately broader than a makeBinPath list -- a curated set
-  # would silently hide most of what the remote shell is meant to reach. The
-  # agent's own ripgrep is already on its wrapped PATH from the derivation.
-  systemd.user.services.desktop-commander-remote = {
-    Unit = {
-      Description = "Desktop Commander Remote MCP device agent";
-      Documentation = "https://mcp.desktopcommander.app";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "desktop-commander-remote-start" ''
-          export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
-          exec ${desktop-commander}/bin/desktop-commander remote
-        ''
-      );
-      # The device reconnects after a network blip on its own, so only a crash
-      # or a revoked authorization should take the unit down: on-failure, with
-      # a slow restart so a failing OAuth flow cannot spin.
-      Restart = "on-failure";
-      RestartSec = 15;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
   # Self-hosted Desktop Commander endpoint (#13404): the local half of
   # commander.security.cab. supergateway wraps the packaged Desktop
   # Commander (stdio) as a streamable-HTTP MCP server on
   # 127.0.0.1:8931/mcp; the sandbox-link Cloudflare Tunnel carries it to
   # the bridge door (commander-link.security.cab, Access service-token
-  # only), where the desktop-commander Worker picks it up. This unit
-  # replaces nothing: the vendor device agent above stays until the
-  # self-hosted endpoint is verified and is stood down separately.
+  # only), where the desktop-commander Worker picks it up. This is the only
+  # Desktop Commander unit: the vendor device agent (desktop-commander-remote)
+  # was stood down once the self-hosted endpoint soaked.
   #
-  # PATH matters for the same reason it does in
-  # desktop-commander-remote above: the wrapped server exists to run
-  # arbitrary user commands, so it needs the real user PATH.
+  # PATH matters because the wrapped server exists to run arbitrary user
+  # commands, so it needs the real user PATH.
   systemd.user.services.desktop-commander-bridge = {
     Unit = {
       Description = "Desktop Commander local MCP bridge (stdio to streamable HTTP, 127.0.0.1:8931)";
@@ -1128,6 +1083,16 @@ in
   # for single-file merges (home/root).
   imports = [ inputs.openchamber.homeManagerModules.openchamber ];
 
+  # Stable deploy entrypoint (code#14187): for the laptop user, the
+  # generated unit's ExecStart is force-overridden to
+  # %h/.local/state/openchamber/start by
+  # nixos/home/stable-entrypoints.nix (wired in
+  # nixos/hosts/default.nix), and Home Manager activation keeps that
+  # link pointing at this module's start wrapper, so the launch
+  # semantics below are unchanged. A deploy app may repoint the link
+  # and restart the service; it must not write the unit file. The
+  # contract: nixos/home/stable-entrypoints.nix and
+  # doc/fleet/services.md; the consumer is dezren39/darwin-nix#1393.
   services.openchamber = {
     enable = true;
     # uiPasswordFile (the browser-UI password the old serve script
@@ -1254,18 +1219,15 @@ in
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # package: deliberately unset. There is one mcpx — the
-    # cascade's (the fork's build, via the module wrapper's
-    # mkDefault) — and this config takes that one (Drew's ruling,
-    # 2026-11-03; code#5027). The former pin to this repo's own
-    # pkgs/mcpx build made two mcpx builds coexist and collided
-    # with the fork package's bin/mcpx in the home profile.
-    #
-    # addPackageToProfile: off. The profile's bin/mcpx comes from
-    # exactly one provider — the opencode package's bundled
-    # symlink. The module also adding cfg.package to home.packages
-    # would put a second mcpx entry in the profile (Drew's ruling,
-    # 2026-11-03; code#5027).
+    # Use the same source and test-disabled derivation already in the
+    # system package set. The mcpx Go/e2e suite runs in CI; running its
+    # 30-minute process tests during every NixOS switch has repeatedly
+    # blocked activation. This changes build checks only, not runtime
+    # code or the profile's binary provider.
+    package = mcpx;
+    # Keep the single profile provider selected in code#5027:
+    # OpenCode's bundled symlink supplies bin/mcpx; this service's
+    # package is executed directly and is not added to home.packages.
     addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
@@ -1286,8 +1248,16 @@ in
 
   # Consumer refinements on the module's mcpx unit: the parts of the
   # hand-rolled unit the module does not express. (Description,
-  # ExecStart, Restart = always and the 20 s stop window are the
-  # module's own.)
+  # Restart = always and the 20 s stop window are the module's own.
+  # ExecStart and ExecReload are the stable entrypoint's, code#14187:
+  # for the laptop user, nixos/home/stable-entrypoints.nix
+  # force-overrides both to %h/.local/state/mcpx/bin/mcpx — ExecStart
+  # with this daemon's rendered --config, ExecReload with `reload` —
+  # and activation keeps that link pointing at the daemon's package.
+  # The ExecReload definition below is the fallback for configs
+  # without the entrypoint module. Contract:
+  # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
+  # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
       After = [ "network-online.target" ];

@@ -83,6 +83,12 @@ class FakeResizeObserver {
   disconnect(): void {}
 }
 
+class FakeServiceWorkerContainer extends EventTarget {
+  notify(data: unknown): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+}
+
 class MemoryStorage {
   private readonly map = new Map<string, string>();
   getItem(key: string): string | null {
@@ -125,9 +131,7 @@ describe("world snapshot store (#10927)", () => {
     expect(parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, sequence: -1 }))).toBeNull();
     expect(parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, sequence: 1.5 }))).toBeNull();
     expect(
-      parseStoredWorldSnapshot(
-        JSON.stringify({ ...sampleSnapshot, participants: [{ id: "1", display_name: "ada" }] }),
-      ),
+      parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, participants: [{ id: "1", display_name: "ada" }] })),
     ).toBeNull();
     expect(
       parseStoredWorldSnapshot(JSON.stringify({ ...sampleSnapshot, view: { kind: "text", text: 42 } })),
@@ -139,6 +143,8 @@ describe("world snapshot store (#10927)", () => {
 describe("world page offline read model (#10927)", () => {
   const realWebSocket = globalThis.WebSocket;
   const realResizeObserver = globalThis.ResizeObserver;
+  const realServiceWorker = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
+  let serviceWorker = new FakeServiceWorkerContainer();
   let root: HTMLElement;
   const q = <T extends HTMLElement>(selector: string): T => {
     const found = root.querySelector<T>(selector);
@@ -150,6 +156,7 @@ describe("world page offline read model (#10927)", () => {
   beforeAll(async () => {
     vi.stubGlobal("WebSocket", FakeSocket);
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: serviceWorker });
     sessionStorage.clear();
     localStorage.clear();
     document.body.innerHTML = worldPageMarkup();
@@ -161,6 +168,8 @@ describe("world page offline read model (#10927)", () => {
   afterAll(() => {
     vi.stubGlobal("WebSocket", realWebSocket);
     vi.stubGlobal("ResizeObserver", realResizeObserver);
+    if (realServiceWorker) Object.defineProperty(navigator, "serviceWorker", realServiceWorker);
+    else Reflect.deleteProperty(navigator, "serviceWorker");
     document.body.innerHTML = "";
   });
 
@@ -201,6 +210,8 @@ describe("world page offline read model (#10927)", () => {
     // page is offline and must read from the store alone.
     vi.resetModules();
     FakeSocket.all.length = 0;
+    serviceWorker = new FakeServiceWorkerContainer();
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: serviceWorker });
     sessionStorage.clear();
     document.body.innerHTML = worldPageMarkup();
     await import("./world");
@@ -215,7 +226,9 @@ describe("world page offline read model (#10927)", () => {
 
     // Offline is a reader, not a writer: a chat submit is refused.
     q<HTMLInputElement>("[data-world-chat]").value = "anyone there?";
-    q<HTMLFormElement>("[data-world-chat-form]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    q<HTMLFormElement>("[data-world-chat-form]").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
     expect(status()).toBe("Join the world before chatting");
     expect(FakeSocket.all).toHaveLength(0);
 
@@ -227,5 +240,42 @@ describe("world page offline read model (#10927)", () => {
     socket.open();
     expect(socket.sent("join")).toHaveLength(1);
     expect(socket.sent("join")[0]?.after).toBe(5);
+  });
+
+  it("treats a notification as a hint and rebuilds from a fresh catch-up snapshot", async () => {
+    // Oracle: the #10930 binding constraint says a sequence alone cannot
+    // prove journal continuity. Even a hint at the same head can refer to
+    // a rewritten journal, so clicking it must discard the resume unit and
+    // accept the host's fresh projection/view rather than trust local data.
+    const previous = FakeSocket.all.at(-1) as FakeSocket;
+    previous.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 5, participants: [{ id: 1, display_name: "old ada" }] },
+    });
+    previous.deliver({ type: "view", data: "old host view" });
+    previous.deliver({ type: "records", records: { note: "old projection" }, next_after: null });
+
+    serviceWorker.notify({ type: "client.notify", head: 5, content: "must not be trusted or rendered" });
+    await vi.waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(1));
+    const resumed = FakeSocket.all.at(-1) as FakeSocket;
+    resumed.open();
+    expect(resumed.sent("join")[0]).toMatchObject({ after: null });
+    expect(resumed.sent("join")[0]?.resume_token).toBeUndefined();
+
+    // Same sequence, different projection and host-rendered view models a
+    // rewritten journal. Fresh host state replaces the local read model.
+    resumed.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 5, participants: [{ id: 2, display_name: "new grace" }] },
+    });
+    resumed.deliver({ type: "view", data: "new host view" });
+    resumed.deliver({ type: "records", records: { note: "new projection" }, next_after: null });
+
+    expect(q("[data-world-participants]").textContent).toContain("new grace");
+    expect(q("[data-world-participants]").textContent).not.toContain("old ada");
+    expect(q("[data-world-view]").textContent).toContain("new host view");
+    expect(q("[data-world-records]").textContent).toContain("new projection");
+    expect(q("[data-world-records]").textContent).not.toContain("old projection");
+    expect(document.body.textContent).not.toContain("must not be trusted or rendered");
   });
 });

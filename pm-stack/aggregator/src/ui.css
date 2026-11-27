@@ -91,6 +91,7 @@ meter { width: 140px; height: 14px; }
 .fchip.invalid { border-color: #f85149; color: #f85149; }
 .fchip.error { border-color: #f85149; color: #f85149; }
 .fchip.absent { border-color: #d29922; color: #e3b341; }
+.fchip.unavailable { border-color: #f85149; color: #f85149; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
 .dot.up, .dot.self { background: #3fb950; }
 .dot.down, .dot.invalid { background: #f85149; }
@@ -283,7 +284,7 @@ body.xp-plan .xpl-costcol { display: none; }
   .hchip button { color: #1f2328; }
   .chips a.active { color: #0969da; }
   .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
-  .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }
+  .fchip.invalid, .fchip.unavailable, .cform .err, .aform .err { color: #cf222e; }
   .dot { background: #59636e; }
   .dot.up, .dot.self { background: #1a7f37; }
   .dot.down, .dot.invalid { background: #cf222e; }
