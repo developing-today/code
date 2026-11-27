@@ -1501,8 +1501,8 @@ pub(super) fn iso_utc(secs: i64) -> String {
 pub(super) fn cmd_placement_load(rest: &[String]) -> i32 {
     let args = parse_verb_args("placement-load", rest, &["worker"], &["json"]);
     reject_extra_pos("placement-load", &args, 0);
-    let (code, out, err) = crate::placement::coordinator::placement_load_report(
-        crate::placement::coordinator::coordinator().load(),
+    let (code, out, err) = crate::placement::placement_load_report(
+        crate::placement::coordinator().load(),
         args.has("json"),
     );
     print!("{out}");
