@@ -33,9 +33,12 @@
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
 //!   The full-size configuration is parameterizable for profiling runs via
 //!   `ID_BENCH_MW_IDLE_WORLDS`, `ID_BENCH_MW_ACTIVE_WORLDS`,
-//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, `ID_BENCH_MW_DURATION_SECS`, and
+//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, `ID_BENCH_MW_DURATION_SECS`,
 //!   `ID_BENCH_MW_MAX_OPEN_WORLDS` (the hub's open-world ceiling, sized to
-//!   the tier being run; defaults are the committed full size). After the
+//!   the tier being run; defaults are the committed full size), and
+//!   `ID_BENCH_MW_MAX_SESSIONS` (the hub's session ceiling, sized to the
+//!   tier being run — the 100x tier holds more concurrent active leases
+//!   than the 1,024 default; see #16266). After the
 //!   timed load it also
 //!   prints one `profile many_worlds ...` line aggregating the world
 //!   actors' own metrics (journal-append and command latency histograms,
@@ -79,6 +82,13 @@
 //!   of the output root and publishes by rename, so an interrupted
 //!   run is recoverable on retry and the output root only ever holds
 //!   a complete generation (#13181).
+//! - `stress_selfcheck` — the `stress_gen` oracle checks without
+//!   materializing fixtures (#16042): the mix-table counts, the
+//!   restored program and replay assertions, and the state-hash
+//!   determinism/divergence checks. Unit-test bodies for these live
+//!   beside the generator, but a `harness = false` bench target
+//!   never builds with `--test`, so this dispatch is how they
+//!   execute; it prints one `selfcheck ... ok` line per oracle.
 //! - `frame_cost` — the scale program's frame-cost slice (#13085):
 //!   view (and layout) fuel and wall time for the Territory-class
 //!   guest at the stress tiers' hot-world event counts (10k / 100k /
@@ -258,6 +268,7 @@ struct ManyWorldsConfig {
     idle_worlds: usize,
     active_worlds: usize,
     max_open_worlds: usize,
+    max_sessions: usize,
     events_per_second: usize,
     duration_secs: u64,
     checkpoint_every: u64,
@@ -287,10 +298,20 @@ impl ManyWorldsConfig {
             "ID_BENCH_MW_MAX_OPEN_WORLDS",
             HubLimits::default().max_open_worlds,
         );
+        // The hub's session ceiling, sized by the operator to the tier
+        // being run (the 100x tier holds 10,000 concurrent active leases,
+        // past the 1,024 default — #16266). Unset keeps the committed
+        // default, so existing runs are unchanged; the effective value is
+        // recorded in the `bench many_worlds` output line.
+        let max_sessions = mw_env(
+            "ID_BENCH_MW_MAX_SESSIONS",
+            HubLimits::default().max_sessions,
+        );
         Self {
             idle_worlds,
             active_worlds,
             max_open_worlds,
+            max_sessions,
             events_per_second,
             duration_secs,
             // Keep checkpoint compaction out of the timed 20 ev/s window;
@@ -306,6 +327,7 @@ impl ManyWorldsConfig {
             idle_worlds: 10,
             active_worlds: 4,
             max_open_worlds: HubLimits::default().max_open_worlds,
+            max_sessions: HubLimits::default().max_sessions,
             events_per_second: 20,
             duration_secs: 1,
             checkpoint_every: 22,
@@ -466,6 +488,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         "lobby",
         HubLimits {
             max_open_worlds: config.max_open_worlds,
+            max_sessions: config.max_sessions,
             ..HubLimits::default()
         },
     );
@@ -724,7 +747,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 journal_ack_mode={ack_mode_name} p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 journal_ack_mode={ack_mode_name} p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={} max_sessions={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,
@@ -735,6 +758,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         evicted,
         expected.len(),
         config.max_open_worlds,
+        config.max_sessions,
     );
     ensure!(
         hub.open_count() == 0,
@@ -2100,7 +2124,7 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 11] = [
+    const BENCHMARKS: [&str; 12] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
@@ -2109,6 +2133,7 @@ fn main() -> Result<()> {
         "fuel_spin_isolation",
         "fuel_spin_persistent",
         "stress_gen",
+        "stress_selfcheck",
         "stress_mem",
         "stress_join",
         "frame_cost",
@@ -2190,6 +2215,10 @@ fn main() -> Result<()> {
 
     if run("stress_gen") {
         stress::bench_stress_gen(quick)?;
+    }
+
+    if run("stress_selfcheck") {
+        stress::bench_stress_selfcheck()?;
     }
 
     if run("stress_mem") {

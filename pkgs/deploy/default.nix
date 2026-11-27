@@ -18,6 +18,7 @@
   runCommand,
   writeText,
   cloudflared,
+  irohRelayPkg,
   sourceRev ? "dirty",
 }:
 let
@@ -73,6 +74,12 @@ let
     pmAggregator = callPackage ../pm-aggregator/package.nix { };
     pmProjector = callPackage ../pm-projector/package.nix { };
     pmTunnel = cloudflared;
+    # Issue #14719, slice 1: the self-hosted iroh relay for the
+    # fleet-transport pilot, tunnel mode. nixpkgs carries the binary
+    # (hyphenated attr, so lib/default.nix passes it explicitly);
+    # iroh-relay.nix bundles the kit's tunnel-mode config so the
+    # generic renderer can deploy the target from the entry alone.
+    irohRelay = callPackage ./iroh-relay.nix { inherit irohRelayPkg; };
     # Issue #12909: ready-for-agent, packaged from its pinned npm
     # tarballs — the last of the four #12768 services to register.
     # (Defined above so the platform gate in #16063 can inspect its

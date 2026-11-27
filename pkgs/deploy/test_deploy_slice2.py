@@ -234,7 +234,9 @@ class PlanTests(unittest.TestCase):
             self.assertIn("nix-env --profile /profiles/svc --set", text)
 
     def test_deploy_plan_refuses_other_classes(self):
-        cf = dict(DEFN, **{"class": "cloudflare"})
+        # #16239 item 1: cloudflare is now a generic activation class
+        # (it has a plan renderer); container still does not.
+        cf = dict(DEFN, **{"class": "container"})
         self.assertIsNone(deploy.plan_deploy("svc", cf, [], base=BASE))
 
     def test_rollback_plan_selects_previous_without_rebuild(self):

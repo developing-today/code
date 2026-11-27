@@ -441,6 +441,18 @@ jobs:
             # image already ships without the listing.
             usermod --append --groups nixbld "$user"
           done
+      - name: Provide native build dependencies
+        run: |
+          set -euo pipefail
+          # Cargo legs across the fleet repos link native libraries
+          # through *-sys build scripts (openssl-sys needs OpenSSL
+          # headers, wayland-sys needs wayland-client). The fleet-build
+          # image does not ship them, so every dispatched command had
+          # to apt-get its own workarounds — and the one that forgot a
+          # library failed opaquely in a build script (#16282). Provide
+          # the common set once, here, instead.
+          apt-get update -qq
+          apt-get install -y -qq pkg-config libssl-dev libwayland-dev
       - name: Run command
         if: ${{ matrix.mode == 'single' }}
         env:

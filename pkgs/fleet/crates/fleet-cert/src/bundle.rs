@@ -184,6 +184,48 @@ pub fn write_bundle(
     Ok(manifest)
 }
 
+/// Add artifacts to an existing bundle: each new file is checksummed
+/// into the manifest's file index and the manifest is rewritten. Paths
+/// already indexed are refused, so an existing artifact is never
+/// silently replaced.
+pub fn append_artifacts(
+    dir: &Path,
+    mut manifest: BundleManifest,
+    artifacts: &[Artifact],
+) -> Result<BundleManifest> {
+    for art in artifacts {
+        if art.rel_path.contains("..") {
+            return Err(CertError::usage(format!(
+                "artifact path '{}' escapes the bundle",
+                art.rel_path
+            )));
+        }
+        if manifest.files.iter().any(|f| f.path == art.rel_path) {
+            return Err(CertError::policy(format!(
+                "{} is already indexed in {}",
+                art.rel_path,
+                dir.display()
+            )));
+        }
+        let path = dir.join(&art.rel_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, &art.bytes)?;
+        manifest.files.push(FileRecord {
+            path: art.rel_path.clone(),
+            kind: art.kind.clone(),
+            sha256: sha256_hex(&art.bytes),
+            bytes: art.bytes.len() as u64,
+            visibility: art.visibility.clone(),
+        });
+    }
+    manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
+    let manifest_json = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(dir.join("manifest.json"), manifest_json + "\n")?;
+    Ok(manifest)
+}
+
 #[cfg(unix)]
 fn set_file_private(path: &Path) {
     use std::os::unix::fs::PermissionsExt;

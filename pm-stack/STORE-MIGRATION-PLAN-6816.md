@@ -197,17 +197,22 @@ so the Grist/Pad syncs are mechanical instead of advisory:
 - `--mode final` (step 5, the gate): refuses (exit 3, REFUSED receipt,
   copies nothing) unless `pm-stack/scripts/fence-check.sh --store <store>`
   reports **FENCED** — per-store, so pad can go final while grist still
-  runs, matching the Pad → Grist → Kaneo stop order — and, for pad, the
-  source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
+  runs, matching the Pad → Grist → Kaneo stop order — the latest backup
+  record (`--backup-record-file`) describes a complete generation with
+  verified local, R2, and Drive copies finished within 36 hours by default
+  (`--max-backup-age-hours` overrides for a documented window decision;
+  the same consumer gate `kaneo-cutover.sh promote` carries since #14034,
+  and the daily pm-stack generation covers these file sets) — and, for pad,
+  the source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
   copies and requires exact parity, including zero unaccounted target
   files under the synced set (exit 4 otherwise; only the operator removes
   them). The driver never deletes target files: target-only files are
   preserved and counted in the receipt (presync tolerates them, final
   refuses on them), and unrelated files elsewhere in the target (sync-tool
   metadata, `grist-sessions.db`) are out of scope.
-- Receipts record the fence verdict, file counts, pre-copy drift, target
-  extras, and the verdict line; paths are local directory paths, no
-  secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
+- Receipts record the fence verdict, the restore-point check output, file
+  counts, pre-copy drift, target extras, and the verdict line; paths are
+  local directory paths, no secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
   `.github/workflows/pm-stack-tests.yml` alongside the fencing suites.
 
 ## 5. Rollback

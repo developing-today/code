@@ -2,9 +2,9 @@
 //! reaches the cannon row. The host supplies every input, including the
 //! logical ticks: this level asks for no timer, so ticks are manual.
 
-use plaza_sdk::json::{self, quote, Value};
-use plaza_sdk::screen::{Screen, Style};
 use plaza_sdk::World;
+use plaza_sdk::json::{self, Value, quote};
+use plaza_sdk::screen::{Screen, Style};
 
 /// Board columns and rows. Row 0 is the top; the cannon row is the last.
 const WIDTH: i64 = 4;

@@ -51,12 +51,17 @@ pub struct WorkIdentity {
     pub repo: String,
     pub issue: i64,
     pub family: String,
+    /// Canonical prompt-store ID; set only for prompt tasks.
+    pub prompt_id: Option<String>,
     /// The shepherded PRs, sorted; empty for other families.
     pub prs: Vec<i64>,
 }
 
 impl WorkIdentity {
     pub fn key(&self) -> String {
+        if let Some(prompt_id) = &self.prompt_id {
+            return format!("{}#{}", self.repo, prompt_id);
+        }
         let mut key = format!("{}#{}:{}", self.repo, self.issue, self.family);
         if !self.prs.is_empty() {
             let prs: Vec<String> = self.prs.iter().map(i64::to_string).collect();
@@ -73,6 +78,7 @@ pub fn kind_family(kind: &str) -> Option<&'static str> {
         "small_fix" => Some("fix"),
         "triage" => Some("triage"),
         "pr_shepherd" => Some("pr_shepherd"),
+        "prompt" => Some("prompt"),
         _ => None,
     }
 }
@@ -87,11 +93,25 @@ pub fn work_identity(row: &Value) -> Option<WorkIdentity> {
     }
     let kind = payload.get("kind").and_then(|v| v.as_str())?;
     let family = kind_family(kind)?;
-    let issue = payload
-        .get("issue")
-        .and_then(|i| i.get("number"))
-        .and_then(|n| n.as_i64())
-        .filter(|n| *n > 0)?;
+    let prompt_id = if kind == "prompt" {
+        Some(
+            payload
+                .pointer("/prompt/id")
+                .and_then(Value::as_str)?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let issue = if kind == "prompt" {
+        0
+    } else {
+        payload
+            .get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(|n| n.as_i64())
+            .filter(|n| *n > 0)?
+    };
     let repo = task_repo_identity(row);
     if !repo.contains('/') {
         return None;
@@ -127,6 +147,7 @@ pub fn work_identity(row: &Value) -> Option<WorkIdentity> {
         repo,
         issue,
         family: family.to_string(),
+        prompt_id,
         prs,
     })
 }
@@ -174,17 +195,30 @@ pub(crate) fn live_identity_holder(
     identity: &WorkIdentity,
     kind: &str,
 ) -> Result<Option<Value>, TErr> {
-    let rows = t.query_objs(
-        &format!(
-            "SELECT {TASK_COLS} FROM tasks \
-             WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
-               AND json_extract(payload, '$.kind') = ? \
-               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
-             ORDER BY id ASC"
-        ),
-        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
-        &TASK_JSON_COLS,
-    )?;
+    let rows = if kind == "prompt" {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
+                   AND json_extract(payload, '$.kind') = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string())],
+            &TASK_JSON_COLS,
+        )?
+    } else {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status IN ('queued', 'claimed', 'parked', 'handed_off', 'blocked') \
+                   AND json_extract(payload, '$.kind') = ? \
+                   AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+            &TASK_JSON_COLS,
+        )?
+    };
     Ok(rows.into_iter().find(|row| holds_identity(row, identity)))
 }
 
@@ -197,17 +231,30 @@ pub(crate) fn done_identity_holder(
     identity: &WorkIdentity,
     kind: &str,
 ) -> Result<Option<Value>, TErr> {
-    let rows = t.query_objs(
-        &format!(
-            "SELECT {TASK_COLS} FROM tasks \
-             WHERE status = 'done' \
-               AND json_extract(payload, '$.kind') = ? \
-               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
-             ORDER BY id ASC"
-        ),
-        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
-        &TASK_JSON_COLS,
-    )?;
+    let rows = if kind == "prompt" {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status = 'done' \
+                   AND json_extract(payload, '$.kind') = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string())],
+            &TASK_JSON_COLS,
+        )?
+    } else {
+        t.query_objs(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks \
+                 WHERE status = 'done' \
+                   AND json_extract(payload, '$.kind') = ? \
+                   AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+                 ORDER BY id ASC"
+            ),
+            &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+            &TASK_JSON_COLS,
+        )?
+    };
     Ok(rows
         .into_iter()
         .find(|row| holds_completed_identity(row, identity)))
@@ -239,6 +286,7 @@ pub(crate) fn triage_follow_on_statuses(
         repo: identity.repo.clone(),
         issue: identity.issue,
         family: "fix".to_string(),
+        prompt_id: None,
         prs: Vec::new(),
     };
     let rows = t.query_objs(
@@ -333,6 +381,40 @@ mod tests {
         // queue that names no owner/repo gives no identity (fail open).
         let bare = json!({"kind": "triage", "issue": {"number": 5}});
         assert!(work_identity(&task("queued", bare)).is_none());
+    }
+
+    #[test]
+    fn prompt_identity_uses_submission_id_not_source_issue() {
+        let prompt = |id: &str| {
+            json!({
+                "kind": "prompt", "repo": "developing-today/code",
+                "issue": {"number": 10032}, "prompt": {"id": id}
+            })
+        };
+        let first = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000001"),
+        ))
+        .unwrap();
+        let repeated = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000001"),
+        ))
+        .unwrap();
+        let distinct = work_identity(&task(
+            "queued",
+            prompt("prompt:00000000-0000-4000-8000-000000000002"),
+        ))
+        .unwrap();
+        assert_eq!(
+            first.key(),
+            "developing-today/code#prompt:00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(first, repeated, "same submission ID must dedupe");
+        assert_ne!(
+            first, distinct,
+            "different submission IDs remain distinct on the same issue"
+        );
     }
 
     #[test]

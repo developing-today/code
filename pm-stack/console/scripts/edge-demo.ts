@@ -94,6 +94,7 @@ const io: Io = {
   act: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : "unreached"),
   publicHost: PUBLIC_HOST,
   version: "demo",
+  deployedAt: null,
   later: (work) => void work.catch(() => {}),
   now: Date.now,
 };

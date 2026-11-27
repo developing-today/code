@@ -26,7 +26,7 @@ const V = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}
 
 describe("what a release decides", () => {
   test("a commit's names", () => {
-    expect(names(SHA)).toEqual({ short: SHORT, tag: `git-${SHORT}`, message: `git ${SHA}` });
+    expect(names(SHA)).toEqual({ short: SHORT, full: SHA, tag: `git-${SHORT}`, message: `git ${SHA}` });
     for (const bad of ["", "abc", SHORT, `${SHA}0`, SHA.toUpperCase(), `${SHA.slice(0, 39)}g`]) {
       expect(() => names(bad)).toThrow();
     }
@@ -160,13 +160,24 @@ describe("what a release decides", () => {
   });
 
   test("what a health answer means", () => {
-    expect(healthSays({ ok: true, edge: true, version: SHORT }, SHORT)).toBe("this");
-    expect(healthSays({ ok: true, edge: true, version: "ffffffffffff" }, SHORT)).toBe("another");
-    expect(healthSays({ ok: false, edge: true, empty: true }, SHORT)).toBe("empty");
+    const now = Date.parse("2026-11-27T10:00:00.000Z");
+    const current = {
+      ok: true,
+      edge: true,
+      version: SHA,
+      deployedAt: "2026-11-27T09:59:48.000Z",
+      ageSeconds: 12,
+    };
+    expect(healthSays(current, SHA, now)).toBe("this");
+    expect(healthSays({ ...current, version: "f".repeat(40) }, SHA, now)).toBe("another");
+    expect(healthSays({ ...current, ageSeconds: 3 }, SHA, now)).toBe("another");
+    expect(healthSays({ ok: true, edge: true, version: SHA }, SHA, now)).toBe("another");
+    expect(healthSays({ ...current, deployedAt: "invalid" }, SHA, now)).toBe("another");
+    expect(healthSays({ ok: false, edge: true, empty: true }, SHA, now)).toBe("empty");
     // Something else answering on that address is not this Worker.
-    expect(healthSays({ ok: true, version: SHORT }, SHORT)).toBe("silent");
-    expect(healthSays(null, SHORT)).toBe("silent");
-    expect(healthSays("<html>", SHORT)).toBe("silent");
+    expect(healthSays({ ok: true, version: SHA }, SHA, now)).toBe("silent");
+    expect(healthSays(null, SHA, now)).toBe("silent");
+    expect(healthSays("<html>", SHA, now)).toBe("silent");
   });
 });
 
@@ -175,7 +186,7 @@ describe("what a release decides", () => {
 interface FakeWorker {
   migrationTag: string | null;
   /** Version id to what that version answers on its health address. */
-  versions: Map<string, { kind: "empty" } | { kind: "app"; short: string }>;
+  versions: Map<string, { kind: "empty" } | { kind: "app"; full: string }>;
   serving: string | null;
 }
 
@@ -208,13 +219,15 @@ describe("a release, run against stand-ins", () => {
   const wrangler = (argv: string[]): { status: number; write?: string } => {
     state.did.push(`wrangler ${argv.join(" ")}`);
     const name = flagValue(argv, "--name");
+    const vars = argv.filter((_, i) => argv[i - 1] === "--var");
+    const versionVar = vars.find((v) => v.startsWith("VERSION:")) ?? "";
     const id = V(state.next++);
     if (argv[0] === "deploy") {
       const config = flagValue(argv, "--config");
       const made = state.workers.get(name) ?? { migrationTag: null, versions: new Map(), serving: null };
       made.migrationTag = "v1";
       if (config === "init/wrangler.jsonc") made.versions.set(id, { kind: "empty" });
-      else made.versions.set(id, { kind: "app", short: flagValue(argv, "--var").replace("VERSION:", "") });
+      else made.versions.set(id, { kind: "app", full: versionVar.replace("VERSION:", "") });
       made.serving = id;
       state.workers.set(name, made);
       // Uploaded, and then wrangler's next question of Cloudflare fails.
@@ -228,7 +241,7 @@ describe("a release, run against stand-ins", () => {
     if (!worker) return { status: 1 };
     if (argv[0] === "versions" && argv[1] === "upload") {
       if (state.uploadFails) return { status: 1 };
-      worker.versions.set(id, { kind: "app", short: flagValue(argv, "--var").replace("VERSION:", "") });
+      worker.versions.set(id, { kind: "app", full: versionVar.replace("VERSION:", "") });
       return {
         status: 0,
         write: JSON.stringify({ type: "version-upload", version: 1, worker_name: name, version_id: id }),
@@ -261,7 +274,8 @@ describe("a release, run against stand-ins", () => {
             return json({ ok: false, edge: true, empty: true }, 503);
           }
           if (state.appNeverAnswers) return new Response("error code: 1101", { status: 500 });
-          return json({ ok: true, edge: true, version: serving.short });
+          const deployedAt = new Date(Date.now() - 2_000).toISOString();
+          return json({ ok: true, edge: true, version: serving.full, deployedAt, ageSeconds: 2 });
         }
         if (req.headers.get("authorization") !== "Bearer cf-test")
           return json({ success: false, errors: [{ code: 10000 }] }, 403);
@@ -330,9 +344,9 @@ process.exit(status);
     state.removeFails = false;
     state.standUpFails = 0;
   };
-  const worker = (short: string, migrationTag: string | null = "v1"): FakeWorker => ({
+  const worker = (full: string, migrationTag: string | null = "v1"): FakeWorker => ({
     migrationTag,
-    versions: new Map([[V(1), { kind: "app", short }]]),
+    versions: new Map([[V(1), { kind: "app", full }]]),
     serving: V(1),
   });
   const release = async (...args: string[]) => {
@@ -348,6 +362,7 @@ process.exit(status);
         PM_RELEASE_HEALTH_TRIES: "3",
         PM_RELEASE_HEALTH_WAIT_MS: "5",
         PM_RELEASE_STAND_UP_WAIT_MS: "5",
+        PM_RELEASE_DEPLOYED_AT: "2026-11-27T10:00:00.000Z",
         FAKE_CONTROL: `${origin}/_wrangler`,
         GITHUB_RUN_ID: "77",
       },
@@ -369,14 +384,14 @@ process.exit(status);
   const SCRATCH = "pm-console-edge-scratch";
 
   test("a Worker that is there gets a new version, uploaded and then promoted", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     const got = await release();
     expect(got.code).toBe(0);
     expect(state.did).toEqual([
-      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z`,
       `wrangler versions deploy ${V(100)}@100% --name ${REAL} --yes --message git ${SHA}`,
     ]);
-    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
     expect(got.out).toContain(`${REAL} is serving ${SHORT}`);
   });
 
@@ -386,21 +401,21 @@ process.exit(status);
     expect(got.code).toBe(0);
     expect(state.did).toEqual([
       `wrangler deploy --config init/wrangler.jsonc --name ${REAL} --message empty Worker, stood up by workflow run 77`,
-      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z`,
       `wrangler versions deploy ${V(101)}@100% --name ${REAL} --yes --message git ${SHA}`,
     ]);
-    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
   });
 
   test("a Worker whose classes differ from the configuration gets one full deploy", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa", "v0") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "v0") });
     const got = await release();
     expect(got.code).toBe(0);
-    expect(state.did).toEqual([`wrangler deploy --name ${REAL} --var VERSION:${SHORT} --message git ${SHA}`]);
-    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    expect(state.did).toEqual([`wrangler deploy --name ${REAL} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z --message git ${SHA}`]);
+    expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
     // If what it deployed does not answer, the run fails. There is no
     // putting back across a change of classes.
-    reset({ [REAL]: worker("aaaaaaaaaaaa", "v0") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "v0") });
     state.appNeverAnswers = true;
     const bad = await release();
     expect(bad.code).toBe(1);
@@ -408,17 +423,17 @@ process.exit(status);
   });
 
   test("a version that does not answer is taken off again, and the run fails", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.appNeverAnswers = true;
     const got = await release();
     expect(got.code).toBe(1);
     expect(state.did).toEqual([
-      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions upload --name ${REAL} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z`,
       `wrangler versions deploy ${V(100)}@100% --name ${REAL} --yes --message git ${SHA}`,
       `wrangler versions deploy ${V(1)}@100% --name ${REAL} --yes --message put back: ${SHORT} did not answer its health check`,
     ]);
     // What was serving before is serving again.
-    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
+    expect(serving(REAL)).toEqual({ kind: "app", full: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
     expect(got.err).toContain(`${REAL} is not serving ${SHORT}`);
     // And the run says what it heard in place of a health answer: an
     // error page is a different fault from no route, and "silent" alone
@@ -428,58 +443,58 @@ process.exit(status);
   });
 
   test("an upload that fails changes nothing that is serving", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.uploadFails = true;
     const got = await release();
     expect(got.code).toBe(1);
     expect(state.did.length).toBe(1);
-    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
+    expect(serving(REAL)).toEqual({ kind: "app", full: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
   });
 
   test("nothing is stood up on an answer that is not plainly 'no such Worker'", async () => {
     // Refused: the token cannot see Workers.
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.existenceStatus = 403;
     let got = await release();
     expect(got.code).toBe(1);
     expect(state.did).toEqual([]);
     // Two answers that disagree: one says it is not there, the list has it.
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.hiddenFromServices = true;
     got = await release();
     expect(got.code).toBe(1);
     expect(state.did).toEqual([]);
     expect(got.err).toContain("doing nothing");
-    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
+    expect(serving(REAL)).toEqual({ kind: "app", full: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
   });
 
   test("the scratch run starts from nothing, shows each step, and leaves nothing behind", async () => {
     // A scratch Worker left by a run that was cut off, and the real one in service.
-    reset({ [REAL]: worker("aaaaaaaaaaaa"), [SCRATCH]: worker("bbbbbbbbbbbb", "v0") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [SCRATCH]: worker("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "v0") });
     const got = await release("--scratch");
     expect(got.code).toBe(0);
     expect(state.did).toEqual([
       `api DELETE ${SCRATCH} force=true`,
       `wrangler deploy --config init/wrangler.jsonc --name ${SCRATCH} --message empty Worker, stood up by workflow run 77`,
-      `wrangler versions upload --name ${SCRATCH} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions upload --name ${SCRATCH} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z`,
       `wrangler versions deploy ${V(101)}@100% --name ${SCRATCH} --yes --message git ${SHA}`,
       `api DELETE ${SCRATCH} force=true`,
     ]);
     expect(state.workers.has(SCRATCH)).toBe(false);
     // The real Worker was never named.
-    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
+    expect(serving(REAL)).toEqual({ kind: "app", full: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
     expect(got.out).toContain("stood up from nothing");
   });
 
   test("the scratch Worker is removed even when its run fails", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.uploadFails = true;
     let got = await release("--scratch");
     expect(got.code).toBe(1);
     expect(state.did.at(-1)).toBe(`api DELETE ${SCRATCH} force=true`);
     expect(state.workers.has(SCRATCH)).toBe(false);
     // And when its version never answers.
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.appNeverAnswers = true;
     got = await release("--scratch");
     expect(got.code).toBe(1);
@@ -488,7 +503,7 @@ process.exit(status);
   });
 
   test("the scratch run waits to hear the empty Worker before it goes on", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.emptyNeverAnswers = true;
     const got = await release("--scratch");
     expect(got.code).toBe(1);
@@ -502,13 +517,13 @@ process.exit(status);
     reset();
     state.emptyNeverAnswers = true;
     expect((await release()).code).toBe(0);
-    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
   });
 
   test("a stand-up Cloudflare is slow to finish is made again, and the run goes on", async () => {
     // The Worker is uploaded, and wrangler's next question is answered
     // "This Worker does not exist": twice, and then it is there.
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.standUpFails = 2;
     const standUp = `wrangler deploy --config init/wrangler.jsonc --name ${SCRATCH} --message empty Worker, stood up by workflow run 77`;
     const got = await release("--scratch");
@@ -518,7 +533,7 @@ process.exit(status);
       standUp,
       standUp,
       standUp,
-      `wrangler versions upload --name ${SCRATCH} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions upload --name ${SCRATCH} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z`,
       `wrangler versions deploy ${V(103)}@100% --name ${SCRATCH} --yes --message git ${SHA}`,
       `api DELETE ${SCRATCH} force=true`,
     ]);
@@ -529,10 +544,10 @@ process.exit(status);
     reset();
     state.standUpFails = 1;
     expect((await release()).code).toBe(0);
-    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
     // One that never goes through fails the run after its tries, and
     // the scratch Worker it left half made is still removed.
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     state.standUpFails = 99;
     const never = await release("--scratch");
     expect(never.code).toBe(1);
@@ -545,11 +560,11 @@ process.exit(status);
       `api DELETE ${SCRATCH} force=true`,
     ]);
     expect(state.workers.has(SCRATCH)).toBe(false);
-    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
+    expect(serving(REAL)).toEqual({ kind: "app", full: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
   });
 
   test("a scratch Worker that cannot be removed fails the run", async () => {
-    reset({ [SCRATCH]: worker("bbbbbbbbbbbb") });
+    reset({ [SCRATCH]: worker("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") });
     state.removeFails = true;
     const got = await release("--scratch");
     expect(got.code).toBe(1);
@@ -558,7 +573,7 @@ process.exit(status);
   });
 
   test("bad arguments stop it before anything is asked or done", async () => {
-    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") });
     const got = await release("--name", "message-bridge");
     expect(got.code).toBe(1);
     expect(got.err).toContain("unknown option --name");

@@ -50,7 +50,11 @@ fn shared_vectors() -> serde_json::Value {
 fn blake3_vectors_agree_with_the_hosted_bridge() {
     let vectors = shared_vectors();
     let cases = vectors["blake3"].as_array().expect("shared BLAKE3 vectors");
-    assert_eq!(cases.len(), 11, "shared BLAKE3 fixture retains every vector");
+    assert_eq!(
+        cases.len(),
+        11,
+        "shared BLAKE3 fixture retains every vector"
+    );
     for case in cases {
         let len = case["input_len"].as_u64().expect("fixture input length") as usize;
         let expected = case["digest_hex"].as_str().expect("fixture digest");
@@ -69,7 +73,11 @@ fn ts_signed_events_decode_and_ingest_natively() {
     let events = fixture["bridge_events"]["typescript_signed"]
         .as_array()
         .expect("shared TypeScript-signed event vectors");
-    assert_eq!(events.len(), 2, "shared bridge fixture retains both TypeScript-signed events");
+    assert_eq!(
+        events.len(),
+        2,
+        "shared bridge fixture retains both TypeScript-signed events"
+    );
     let a_id = events[0]["id_hex"].as_str().expect("event A id");
     let b_id = events[1]["id_hex"].as_str().expect("event B id");
     let a = unhex(events[0]["bytes_hex"].as_str().expect("event A bytes"));
@@ -151,10 +159,20 @@ fn rust_signed_events_for_the_hosted_bridge() {
     let expected = fixture["bridge_events"]["rust_signed"]
         .as_array()
         .expect("shared Rust-signed event vectors");
-    assert_eq!(expected.len(), 3, "shared bridge fixture retains all Rust-signed events");
+    assert_eq!(
+        expected.len(),
+        3,
+        "shared bridge fixture retains all Rust-signed events"
+    );
     for (event, vector) in [&r1, &r2, &r3].into_iter().zip(expected) {
-        assert_eq!(hex(&event.bytes), vector["bytes_hex"].as_str().expect("fixture event bytes"));
-        assert_eq!(hex(event.id.as_bytes()), vector["id_hex"].as_str().expect("fixture event id"));
+        assert_eq!(
+            hex(&event.bytes),
+            vector["bytes_hex"].as_str().expect("fixture event bytes")
+        );
+        assert_eq!(
+            hex(event.id.as_bytes()),
+            vector["id_hex"].as_str().expect("fixture event id")
+        );
     }
 
     let mut store = EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), NOW_MS)

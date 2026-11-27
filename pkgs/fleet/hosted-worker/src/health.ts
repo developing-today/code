@@ -25,5 +25,12 @@ export function buildHealthDocument(config: HostedConfig): Record<string, unknow
     kv: {
       primary_configured: config.kvLibsqlUrl !== null,
     },
+    // Metadata durability (#16096): whether QUEUE_D1 is bound, which
+    // is exactly when buildDeps resolves D1MetadataStore over the
+    // fixture (#15456, #14866). Booleans, never the binding.
+    storage: {
+      d1_bound: config.d1Bound,
+      metadata_durable: config.d1Bound,
+    },
   };
 }

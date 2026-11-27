@@ -233,11 +233,20 @@ proptest! {
                 }
                 "order" => {
                     for term in value.split(',') {
-                        let (column, direction) = term
-                            .rsplit_once('.')
-                            .expect("order term is column.direction");
+                        // The placement suffix is pinned explicitly
+                        // (#16132): `column.direction.placement`.
+                        let mut parts = term.split('.');
+                        let column = parts.next().expect("order term names a column");
+                        let direction = parts.next().expect("order term has a direction");
+                        let placement = parts.next().expect("order term pins null placement");
+                        prop_assert!(parts.next().is_none(), "order term has no extra: {term}");
                         prop_assert!(declared.contains(column));
                         prop_assert!(direction == "asc" || direction == "desc");
+                        prop_assert!(
+                            (direction == "asc" && placement == "nullslast")
+                                || (direction == "desc" && placement == "nullsfirst"),
+                            "placement matches PostgreSQL defaults: {term}"
+                        );
                         order_columns.push(column.to_string());
                     }
                 }

@@ -225,14 +225,14 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["subdomain"])')"
           url="https://pm-console-edge.${sub}.workers.dev/console/health"
-          want="${GITHUB_SHA::12}"
+          want="$GITHUB_SHA"
           for _ in $(seq 1 20); do
-            got="$(curl -fsS --max-time 10 "$url" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version") if d.get("ok") and d.get("edge") else "")' 2>/dev/null || true)"
+            got="$(curl -fsS --max-time 10 "$url" | python3 pm-stack/console/scripts/check-deployed.py "$want" 2>/dev/null || true)"
             if [ "$got" = "$want" ]; then
-              echo "pm-console-edge answers as ${want}." >> "$GITHUB_STEP_SUMMARY"
+              echo "pm-console-edge answers as ${want} with a truthful deployed age." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep 6
           done
-          echo "the deployed Worker did not answer its health check as ${want} (last answer: ${got:-none})" >&2
+          echo "the deployed Worker did not answer its health check as ${want} with a truthful age (last answer: ${got:-none})" >&2
           exit 1

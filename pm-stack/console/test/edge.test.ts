@@ -1241,6 +1241,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     act: async (r) => (!net.hostUp && !net.silent ? "unreached" : askHost(r)),
     publicHost: HOST,
     version: "test",
+    deployedAt: null,
     later: (work) => later.push(work),
     now: clock,
   };
@@ -1508,6 +1509,8 @@ describe("before the host's first report", () => {
       answered: 0,
       deferred: 0,
       version: "test",
+      deployedAt: null,
+      ageSeconds: null,
       woke: w.now.t,
       workerChecks: null,
       clock: { wanted: false, next: null },
@@ -1522,6 +1525,23 @@ describe("before the host's first report", () => {
     // And the host still refuses a stranger itself.
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
+  });
+
+  test("health says when this Worker was deployed, and how long ago that was", async () => {
+    const w = await setup();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    // Nothing stamped this test Worker: no age to report.
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
+    // Stamped twelve seconds ago: the age is said in seconds.
+    w.io.deployedAt = new Date(w.now.t - 12_000).toISOString();
+    expect(await health()).toMatchObject({ deployedAt: w.io.deployedAt, ageSeconds: 12 });
+    // A stamp from the future, or one that is not a time, says nothing.
+    w.now.t += 1_000;
+    w.io.deployedAt = new Date(w.now.t + 60_000).toISOString();
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
+    w.io.deployedAt = "not a time";
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
   });
 
   test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {

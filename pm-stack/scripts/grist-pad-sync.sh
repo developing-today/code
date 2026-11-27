@@ -15,7 +15,12 @@
 #   final    the gate before promotion. Requires the store's writer FENCED
 #            (proven by fence-check.sh --store <store>; per-store so pad
 #            can go final while grist still runs, per the Pad → Grist →
-#            Kaneo stop order) and, for pad, a clean WAL (pad.db-wal
+#            Kaneo stop order), the latest backup record to describe a fresh
+#            verified restore point (complete generation with verified
+#            local, R2, and Drive copies, finished within 36 hours by
+#            default — the same consumer gate kaneo-cutover.sh promote
+#            carries since #14034; the daily pm-stack generation covers
+#            these file sets), and, for pad, a clean WAL (pad.db-wal
 #            absent or zero bytes in the source). Then copies and requires
 #            exact parity. Refusal copies nothing.
 #
@@ -34,15 +39,18 @@
 #   --source-dir DIR         required; must exist and be readable
 #   --target-dir DIR         required; created when missing
 #   --receipt FILE           write the receipt here (default: stdout only)
+#   --backup-record-file FILE  latest pm-stack backup .last-run.json;
+#                              required for final
+#   --max-backup-age-hours N freshness bound for the backup (default 36)
 #   --fence-check PATH       fence checker (default: sibling fence-check.sh)
 #   --units-dir DIR          passed to fence-check (fixture mode)
 #   --containers-file FILE   passed to fence-check (fixture mode)
 #   --unreachable            passed to fence-check: old host unreachable
 #   -h, --help               usage, exit 0
 #
-# Exit codes: 0 pass, 2 usage, 3 final refused (unfenced or dirty WAL),
-# 4 parity failure, 5 command failure (missing required file, copy/hash
-# failure).
+# Exit codes: 0 pass, 2 usage, 3 final refused (unfenced, dirty WAL, or no
+# fresh verified backup restore point), 4 parity failure, 5 command failure
+# (missing required file, copy/hash failure).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +60,8 @@ MODE=""
 SOURCE_DIR=""
 TARGET_DIR=""
 RECEIPT=""
+BACKUP_RECORD_FILE=""
+MAX_BACKUP_AGE_HOURS=36
 FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
 FENCE_ARGS=()
 
@@ -59,14 +69,16 @@ usage() {
   cat <<'USAGE'
 usage: grist-pad-sync.sh --store grist|pad --mode presync|final
                          --source-dir DIR --target-dir DIR
-                         [--receipt FILE] [--fence-check PATH]
+                         [--receipt FILE] [--backup-record-file FILE]
+                         [--max-backup-age-hours N] [--fence-check PATH]
                          [--units-dir DIR] [--containers-file FILE]
                          [--unreachable] [-h|--help]
 
   presync  copy the store's file set while live, require post-copy parity.
-  final    require the store fenced (and a clean pad WAL), copy, require
-           exact parity with no unaccounted target files. Refusal (exit 3)
-           copies nothing. Never deletes target files.
+  final    require the store fenced (and a clean pad WAL) and a fresh
+           verified backup restore point, copy, require exact parity with
+           no unaccounted target files. Refusal (exit 3) copies nothing.
+           Never deletes target files.
 USAGE
 }
 
@@ -86,7 +98,7 @@ while [ "$#" -gt 0 ]; do
     FENCE_ARGS+=("--unreachable")
     shift
     ;;
-  --store | --mode | --source-dir | --target-dir | --receipt | --fence-check | --units-dir | --containers-file)
+  --store | --mode | --source-dir | --target-dir | --receipt | --backup-record-file | --max-backup-age-hours | --fence-check | --units-dir | --containers-file)
     opt="$1"
     [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
     val="$2"
@@ -97,13 +109,15 @@ while [ "$#" -gt 0 ]; do
     --source-dir) SOURCE_DIR="$val" ;;
     --target-dir) TARGET_DIR="$val" ;;
     --receipt) RECEIPT="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
     esac
     shift 2
     ;;
-  --store=* | --mode=* | --source-dir=* | --target-dir=* | --receipt=* | --fence-check=* | --units-dir=* | --containers-file=*)
+  --store=* | --mode=* | --source-dir=* | --target-dir=* | --receipt=* | --backup-record-file=* | --max-backup-age-hours=* | --fence-check=* | --units-dir=* | --containers-file=*)
     opt="${1%%=*}"
     val="${1#*=}"
     [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
@@ -113,6 +127,8 @@ while [ "$#" -gt 0 ]; do
     --source-dir) SOURCE_DIR="$val" ;;
     --target-dir) TARGET_DIR="$val" ;;
     --receipt) RECEIPT="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
@@ -151,6 +167,11 @@ esac
   exit 5
 }
 
+if [ "$MODE" = "final" ]; then
+  [ -n "$BACKUP_RECORD_FILE" ] || fail_usage "--backup-record-file is required for final"
+  [ -r "$BACKUP_RECORD_FILE" ] || fail_usage "backup record file '$BACKUP_RECORD_FILE' is not readable"
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
   HASHER="sha256sum"
 elif command -v shasum >/dev/null 2>&1; then
@@ -178,6 +199,7 @@ write_receipt() {
   RECEIPT_BODY="# Grist/Pad file-store sync receipt — store $STORE — mode $MODE — $NOW
 
 - Fence: ${FENCE_LINE:-not checked (presync)}
+- Restore point: ${RESTORE_POINT_LINE:-not checked (presync)}
 - Files synced: ${SYNCED_COUNT:-0}
 - Pre-copy drift: ${DRIFT_LINE:-unknown}
 - Target extras: ${EXTRAS_LINE:-none}
@@ -239,6 +261,20 @@ if [ "$MODE" = "final" ]; then
       exit 3
     fi
   fi
+  # Reject absent, incomplete, unverified, stale, or future-dated generations
+  # before copying anything. The collector and gate share the same
+  # local/R2/Drive definition of a complete backup restore point.
+  if ! RESTORE_POINT_OUT="$(python3 -I "$SCRIPT_DIR/restore-point-check.py" \
+    --record "$BACKUP_RECORD_FILE" --max-age-hours "$MAX_BACKUP_AGE_HOURS" 2>&1)"; then
+    RESTORE_POINT_LINE="REFUSED — $RESTORE_POINT_OUT"
+    SYNCED_COUNT=0
+    DRIFT_LINE="not run (refused)"
+    EXTRAS_LINE="not run (refused)"
+    write_receipt "REFUSED — final requires a fresh verified backup restore point" "- Restore point: $RESTORE_POINT_LINE"
+    echo "grist-pad-sync: REFUSED — final requires a fresh verified backup restore point; no sync, no copy. $RESTORE_POINT_OUT" >&2
+    exit 3
+  fi
+  RESTORE_POINT_LINE="$RESTORE_POINT_OUT"
 fi
 
 mkdir -p "$TARGET_DIR" || {
@@ -346,10 +382,12 @@ if [ "$MODE" = "final" ] && [ "$n_extras" -gt 0 ]; then
   exit 4
 fi
 
-write_receipt "PASS — $SYNCED_COUNT file(s) synced with exact sha256 parity" "- Detail: ${DIR_NOTE}extras: $EXTRAS_LINE"
 if [ "$MODE" = "final" ]; then
-  echo "grist-pad-sync: FINAL OK — $FENCE_LINE; $SYNCED_COUNT file(s), exact parity"
+  write_receipt "PASS — $SYNCED_COUNT file(s) synced with exact sha256 parity" "- Detail: ${DIR_NOTE}extras: $EXTRAS_LINE
+- Restore point: $RESTORE_POINT_LINE"
+  echo "grist-pad-sync: FINAL OK — $FENCE_LINE; $RESTORE_POINT_OUT; $SYNCED_COUNT file(s), exact parity"
 else
+  write_receipt "PASS — $SYNCED_COUNT file(s) synced with exact sha256 parity" "- Detail: ${DIR_NOTE}extras: $EXTRAS_LINE"
   echo "grist-pad-sync: PRESYNC OK — $SYNCED_COUNT file(s) copied with exact parity"
 fi
 if [ -z "$RECEIPT" ]; then
