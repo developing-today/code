@@ -283,12 +283,15 @@ def split_plan(planned):
     are overflow: the caller reports them in the round record
     and defers them - their episode state carries untouched, so
     they re-plan next round instead of being dropped. The cap
-    considers queue interventions least-served first (lowest
-    nudges_sent, then session id): a session deferred by one
+    considers executable stall work before recovery retries, and then
+    least-served first (lowest nudges_sent, then session id): a session deferred by one
     burst is served before the sessions that consumed budget
     ahead of it, so overflow defers but never starves."""
     queue = [a for a in planned if a["kind"] in ("retry", "nudge", "escalate")]
-    queue.sort(key=lambda a: (a.get("nudges_sent") or 0, a["session_id"]))
+    # Retries may be non-actionable (a live lease, unreadable activity,
+    # or a failed backend recovery). Never let them displace executable
+    # stall work on every round simply because their nudge count is zero.
+    queue.sort(key=lambda a: (a["kind"] == "retry", a.get("nudges_sent") or 0, a["session_id"]))
     overflow_ids = {id(a) for a in queue[MAX_QUEUE_INTERVENTIONS_PER_ROUND:]}
     to_apply = [a for a in planned if id(a) not in overflow_ids]
     overflow = [a for a in planned if id(a) in overflow_ids]

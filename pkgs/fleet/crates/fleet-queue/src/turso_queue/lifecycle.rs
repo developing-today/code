@@ -1462,6 +1462,170 @@ pub(crate) fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Reserved `launched_by` markers the claimant's supervision may use
+/// for guarded lane-session recovery (#16066): the old session was
+/// verified deleted while zero-message, verified absent from the
+/// server, or verified error-stopped and deleted — and the task
+/// lease has expired. The recovery branch compare-clears the prior
+/// session id against BOTH the task progress and the lane ledger
+/// before clearing either, records stage `launch_failed`, and
+/// consumes one attempt, so the next fire relaunches the task
+/// through its recorded route. This is the Turso mirror of
+/// pm-stack/opencode-claimant/migration-0027.sql's Postgres branch.
+pub(crate) const RECOVERY_LAUNCHED_BY: [&str; 3] = [
+    "opencode-claimant-recovery:zero-message-deleted",
+    "opencode-claimant-recovery:gone-session",
+    "opencode-claimant-recovery:error-stopped",
+];
+
+fn recovery_reason(launched_by: &str) -> &'static str {
+    match launched_by {
+        "opencode-claimant-recovery:zero-message-deleted" => {
+            "verified zero-message session deleted before recovery"
+        }
+        "opencode-claimant-recovery:error-stopped" => {
+            "verified error-stopped session deleted before recovery"
+        }
+        _ => "bound session verified absent before recovery",
+    }
+}
+
+/// Guarded recovery half of `verb_bind` (#16066). The initial reads
+/// only provide diagnostics; the transaction's task UPDATE rechecks
+/// every guard against BOTH bindings before clearing either. Keep
+/// COMMIT out of the pipeline: Hrana continues after a statement
+/// error, so any error or failed conditional write must roll back.
+fn verb_bind_recovery(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    session_id: &str,
+    launched_by: &str,
+    task: &Value,
+) -> Result<Value, TErr> {
+    if worker != "opencode-claimant" {
+        return Err(
+            "bind_repo_task_lane_session: recovery must be performed by opencode-claimant"
+                .to_string(),
+        );
+    }
+    let Some(ledger) = get_ledger(t, task_id)? else {
+        return Err(format!(
+            "bind_repo_task_lane_session: no lane ledger row for task {task_id}"
+        ));
+    };
+    let now = now_iso();
+    if let Some(lease) = task.get("lease_until").and_then(|v| v.as_str()) {
+        if lease > now.as_str() {
+            return Err(format!(
+                "bind_repo_task_lane_session: recovery for task {task_id} requires an expired lease (lease_until {lease})"
+            ));
+        }
+    }
+    let progress = task.get("progress").cloned().unwrap_or(json!({}));
+    let progress_lane = progress.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    let progress_session = progress.get("session_id").and_then(|v| v.as_str());
+    let ledger_lane = ledger
+        .get("assigned_lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let ledger_session = ledger.get("session_id").and_then(|v| v.as_str());
+    if task.get("status").and_then(|v| v.as_str()) != Some("claimed")
+        || progress_lane != "opencode"
+        || progress_session != Some(session_id)
+        || ledger_lane != "opencode"
+        || ledger_session != Some(session_id)
+    {
+        return Err(format!(
+            "bind_repo_task_lane_session: recovery binding mismatch for task {task_id}"
+        ));
+    }
+    let attempts = task.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+    if let Some(max) = task.get("max_attempts").and_then(|v| v.as_i64()) {
+        if attempts >= max {
+            return Err(format!(
+                "bind_repo_task_lane_session: recovery attempts exhausted for task {task_id}"
+            ));
+        }
+    }
+    let reason = recovery_reason(launched_by);
+    let detail = with_marks(
+        &json!({"session_id": session_id, "reason": reason,
+                "stage": "launch_failed", "via": "bind_repo_task_lane_session_turso"}),
+        task,
+    );
+    // begin_stream takes BEGIN IMMEDIATE and retains the Hrana baton.
+    // Nothing can change either binding between these conditional writes.
+    let tx = t.begin_stream()?;
+    let work = (|| -> Result<Value, TErr> {
+        let results = tx.exec_batch(&[
+            (
+                "UPDATE tasks SET attempts = COALESCE(attempts, 0) + 1, \
+                 progress = json_set(COALESCE(progress, '{}'), \
+                   '$.session_id', NULL, '$.launched_by', NULL, \
+                   '$.stage', 'launch_failed', '$.launch_failed_session_id', ?, \
+                   '$.launch_failed_at', ?, '$.launch_failed_reason', ?), updated_at = ? \
+               WHERE id = ? AND ? = 'opencode-claimant' AND status = 'claimed' \
+                 AND (lease_until IS NULL OR lease_until <= ?) \
+                 AND (max_attempts IS NULL OR COALESCE(attempts, 0) < max_attempts) \
+                 AND json_extract(progress, '$.lane') = 'opencode' \
+                 AND json_extract(progress, '$.session_id') = ? \
+                 AND EXISTS (SELECT 1 FROM repo_task_lane_ledger \
+                   WHERE task_id = tasks.id AND assigned_lane = 'opencode' AND session_id = ?)",
+                vec![
+                    Arg::Text(session_id.to_owned()),
+                    Arg::Text(now.clone()),
+                    Arg::Text(reason.to_owned()),
+                    Arg::Text(now.clone()),
+                    Arg::Int(task_id),
+                    Arg::Text(worker.to_owned()),
+                    Arg::Text(now.clone()),
+                    Arg::Text(session_id.to_owned()),
+                    Arg::Text(session_id.to_owned()),
+                ],
+            ),
+            (
+                "UPDATE repo_task_lane_ledger SET session_id = NULL, updated_at = ? \
+               WHERE changes() = 1 AND task_id = ? \
+                 AND assigned_lane = 'opencode' AND session_id = ?",
+                vec![
+                    Arg::Text(now.clone()),
+                    Arg::Int(task_id),
+                    Arg::Text(session_id.to_owned()),
+                ],
+            ),
+            (
+                "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+               SELECT ?, ?, 'lane_session_recovered', ?, ? WHERE changes() = 1",
+                vec![
+                    Arg::Text(worker.to_owned()),
+                    Arg::Int(task_id),
+                    Arg::Text(detail.to_string()),
+                    Arg::Text(now.clone()),
+                ],
+            ),
+        ])?;
+        if results.len() != 3 || results.iter().any(|r| r.affected != 1) {
+            return Err(format!(
+                "bind_repo_task_lane_session: recovery binding, lease or attempts changed for task {task_id}; retry"
+            ));
+        }
+        get_ledger(&tx, task_id)?.ok_or_else(|| {
+            format!("bind_repo_task_lane_session: no lane ledger row for task {task_id}")
+        })
+    })();
+    match work {
+        Ok(row) => {
+            tx.end_stream(true)?;
+            Ok(row)
+        }
+        Err(e) => {
+            let _ = tx.end_stream(false);
+            Err(e)
+        }
+    }
+}
+
 pub(crate) fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -1496,6 +1660,13 @@ pub(crate) fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
                 "bind_repo_task_lane_session: task {task_id} does not exist"
             ));
         };
+        // #16066: a reserved recovery marker takes the guarded
+        // compare-and-clear path even though the lease has expired
+        // (that is the point: recovery runs AFTER expiry). The live
+        // guard below still rejects every other expired-lease bind.
+        if RECOVERY_LAUNCHED_BY.contains(&launched_by.as_str()) {
+            return verb_bind_recovery(t, task_id, &worker, &session_id, &launched_by, &task);
+        }
         let now = now_iso();
         let live = task.get("status").and_then(|v| v.as_str()) == Some("claimed")
             && task
@@ -2547,6 +2718,11 @@ pub(crate) fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
 // pending marker) is covered through the rows the verb commits
 // atomically and the broker source pins in queue_broker.rs.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "bind_recovery_tests.rs"]
+#[allow(clippy::unwrap_used)]
+mod bind_recovery_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -4206,12 +4382,24 @@ mod resume_session_storage_tests {
         assert_eq!(enqueued["ok"], true, "{enqueued}");
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         let row = get_task(&t, id).unwrap().expect("task row");
-        assert_eq!(row["resume_session_id"], json!("ses_resume_target"), "{row}");
-        assert_eq!(enqueued["row"]["resume_session_id"], json!("ses_resume_target"), "{enqueued}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_resume_target"),
+            "{row}"
+        );
+        assert_eq!(
+            enqueued["row"]["resume_session_id"],
+            json!("ses_resume_target"),
+            "{enqueued}"
+        );
         let events = events_for(&t, id, "enqueued");
         assert_eq!(events.len(), 1);
         let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
-        assert_eq!(detail["resume_session_id"], json!("ses_resume_target"), "{detail}");
+        assert_eq!(
+            detail["resume_session_id"],
+            json!("ses_resume_target"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -4278,7 +4466,11 @@ mod resume_session_storage_tests {
         }
         let row = get_task(&t, hinted_id).unwrap().expect("claimed row");
         assert_eq!(row["status"], "claimed");
-        assert_eq!(row["resume_session_id"], json!("ses_not_yet_wired"), "{row}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_not_yet_wired"),
+            "{row}"
+        );
         let plain_row = get_task(&t, plain_id).unwrap().expect("claimed row");
         assert!(plain_row["resume_session_id"].is_null(), "{plain_row}");
     }

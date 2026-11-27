@@ -683,7 +683,38 @@ def _recover_error_stopped(session_id, task_id, _binding=None) -> bool:
     """
     if not session_id or task_id is None:
         return False
-    if not _delete_session(session_id):
+    # Babysitter retries call this helper directly, bypassing supervision's
+    # selection. Re-read both activity and the binding/lease here before a
+    # destructive effect; a resumed session's stored outcome is not proof.
+    active_ids = _fetch_active_ids()
+    if active_ids is None or session_id in active_ids:
+        return False
+    poll = _load_poll_module()
+    try:
+        task = next(
+            (row for queue in QUEUES for row in poll.fetch_claimed_rows(queue)
+             if row.get("id") == task_id),
+            None,
+        )
+        if task is None:
+            return False
+        progress = task.get("progress") or {}
+        lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+        if (progress.get("session_id") != session_id
+                or progress.get("lane") != "opencode"
+                or lease_ms is None or lease_ms > int(time.time() * 1000)
+                or task.get("attempts", 0) >= task.get("max_attempts", 5)):
+            return False
+        verdict, session = _get_session(session_id)
+        if verdict != "gone":
+            if verdict != "ok" or not _session_error_outcome(session):
+                return False
+            if not _delete_session(session_id):
+                return False
+        # A prior delete followed by a failed bind is retryable: a verified
+        # 404 plus the unchanged queue binding permits compare-clear again.
+    except Exception as e:
+        print(f"Failed to verify error-stopped task {task_id}: {e}")
         return False
     try:
         result = subprocess.run(
@@ -803,6 +834,12 @@ def supervision_step(mode: str) -> List[Dict]:
                 exhausted = attempts >= max_attempts
                 error_outcome = _session_error_outcome(_session)
                 if error_outcome:
+                    # Stored outcomes survive session resume. Require the
+                    # authoritative server activity read to prove this
+                    # session inactive before deleting it; a failed read
+                    # is unknown and therefore fails closed.
+                    if active_ids is None or session_id in active_ids:
+                        continue
                     # A terminal provider/session error is safe to retry
                     # only after the lease has expired; until then the
                     # owning worker may still be reconciling it.

@@ -522,6 +522,20 @@ class TestInterventionAccounting(unittest.TestCase):
                 {"retries": 0, "nudges": 2, "escalations": 1},
             )
 
+    def test_error_retries_cannot_push_executable_stall_actions_over_cap(self):
+        cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
+        planned = [
+            {"session_id": f"ses_retry_{i:02d}", "kind": "retry", "task_id": i}
+            for i in range(cap)
+        ]
+        planned.append(
+            {"session_id": "ses_zz_real_stall", "kind": "escalate", "task_id": 999, "nudges_sent": 2}
+        )
+        to_apply, overflow = nudges.split_plan(planned)
+        self.assertIn("ses_zz_real_stall", [a["session_id"] for a in to_apply])
+        self.assertEqual(len(overflow), 1)
+        self.assertEqual(overflow[0]["kind"], "retry")
+
     def test_queue_burst_overflows_and_defers_not_drops(self):
         fx = FakeEffects()
         cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND

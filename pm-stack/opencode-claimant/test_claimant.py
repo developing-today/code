@@ -687,10 +687,89 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
 
+    def test_direct_recovery_fails_closed_for_active_or_unreadable_activity(self):
+        # Oracle: authoritative activity overrides persisted terminal outcomes,
+        # including when the babysitter invokes recovery directly.
+        for active_ids in ({"ses_gone"}, None):
+            with (
+                self.subTest(active_ids=active_ids),
+                patch.object(claimant, "_fetch_active_ids", return_value=active_ids),
+                patch.object(claimant, "_delete_session") as delete,
+                patch.object(claimant.subprocess, "run") as run,
+            ):
+                self.assertFalse(claimant._recover_error_stopped("ses_gone", 4242))
+                delete.assert_not_called()
+                run.assert_not_called()
+
+    def test_direct_recovery_rejects_live_lease_or_replacement_binding(self):
+        # Oracle: a stale babysitter record cannot delete a new owner's session.
+        for changed in (
+            dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z"),
+            dict(BOUND_ROW, progress={"lane": "opencode", "session_id": "ses_new"}),
+            dict(BOUND_ROW, attempts=5, max_attempts=5),
+        ):
+            with (
+                stub_claimed_rows([changed]),
+                patch.object(claimant, "_fetch_active_ids", return_value=set()),
+                patch.object(claimant, "_delete_session") as delete,
+                patch.object(claimant.subprocess, "run") as run,
+            ):
+                self.assertFalse(claimant._recover_error_stopped("ses_gone", 4242))
+                delete.assert_not_called()
+                run.assert_not_called()
+
+    def test_direct_recovery_retries_compare_clear_after_prior_delete(self):
+        # Oracle: verified absence plus the unchanged expired binding permits
+        # retrying a failed backend clear without another destructive request.
+        binds = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_get_session", return_value=("gone", None)),
+            patch.object(claimant, "_delete_session") as delete,
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            self.assertTrue(claimant._recover_error_stopped("ses_gone", 4242))
+        delete.assert_not_called()
+        self.assertEqual(len(binds), 1)
+
+    def test_active_error_stopped_session_is_not_deleted(self):
+        # Oracle: active membership forbids deletion and terminal failure even
+        # at the retry cap (a resumed run can retain the previous error).
+        deletes = []
+        error_session = {"id": "ses_gone", "outcome": "failure"}
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_active_ids", return_value={"ses_gone"}),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(claimant, "_delete_session", side_effect=lambda sid: deletes.append(sid) or True),
+            patch.object(claimant.subprocess, "run", make_fake_run([])),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+
+    def test_unreadable_active_ids_fails_closed_for_error_stopped_session(self):
+        deletes = []
+        error_session = {"id": "ses_gone", "outcome": "failure"}
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_active_ids", return_value=None),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(claimant, "_delete_session", side_effect=lambda sid: deletes.append(sid) or True),
+            patch.object(claimant.subprocess, "run", make_fake_run([])),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+
     def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
         binds = []
         deletes = []
         with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_get_session", return_value=("ok", {"outcome": "failure"})),
             patch.object(
                 claimant,
                 "_delete_session",
@@ -700,13 +779,13 @@ class TestSupervisionStep(unittest.TestCase):
                 claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
             ),
         ):
-            recovered = claimant._recover_error_stopped("ses_error", 4242, {})
+            recovered = claimant._recover_error_stopped("ses_gone", 4242, {})
         self.assertTrue(recovered)
-        self.assertEqual(deletes, ["ses_error"])
+        self.assertEqual(deletes, ["ses_gone"])
         self.assertEqual(len(binds), 1)
         bind_argv = [str(part) for part in binds[0]]
         self.assertIn("4242", bind_argv)
-        self.assertIn("ses_error", bind_argv)
+        self.assertIn("ses_gone", bind_argv)
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ERROR_STOPPED, bind_argv)
 
     def test_supervision_requeues_expired_error_stopped_bound_task(self):
