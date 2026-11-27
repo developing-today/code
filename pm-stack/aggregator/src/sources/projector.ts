@@ -313,6 +313,24 @@ export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): 
   return out;
 }
 
+/** Map stored link rows to the read model, applying the shared ref
+ * rule (#4952) at the read boundary (#6211): a ref parseRef rejects -
+ * an unsafe-integer number, or not owner/repo#N at all - must never
+ * reach a renderer, where refUrl would throw on it and 500 the page.
+ * Shared by the HTTP client and the in-process store reader so both
+ * paths drop the same bad rows. */
+export function mapProjectorLinks(rows: ProjectorLinkRow[], subject: string): Link[] {
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(
+        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
+      );
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links.
  * A failed read returns null (fail-soft, like projectorItems and
  * projectorComments) so callers can tell "registry unreachable" apart
@@ -323,20 +341,8 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   if (!r.ok) return null;
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
   // Stored rows bypass the projector's POST /links gate (legacy/seeded
-  // data), so the shared ref rule (#4952) is applied here at the read
-  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
-  // or not owner/repo#N at all - must never reach a renderer, where
-  // refUrl would throw on it and 500 the page. The drop is logged so a
-  // bad registry row stays visible instead of silently vanishing.
-  return rows.flatMap((row) => {
-    if (!isValidRef(row.ref)) {
-      console.error(
-        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
-      );
-      return [];
-    }
-    return [{ ref: row.ref, relation: asRelation(row.relation) }];
-  });
+  // data), so the shared ref rule is applied in mapProjectorLinks.
+  return mapProjectorLinks(rows, subject);
 }
 
 /**
@@ -365,5 +371,73 @@ export function createHttpProjectorReader(baseUrl: string): ProjectorReader {
     comments: (refs) => projectorComments(baseUrl, refs),
     latestComments: (refs) => projectorLatestComments(baseUrl, refs),
     links: (subject) => projectorLinks(baseUrl, subject),
+  };
+}
+
+/** Minimal store contract needed by the in-process reader. Keeping the
+ * store functions injected avoids making the standalone aggregator package
+ * depend on the projector's libSQL runtime; pm-core supplies these methods
+ * when both modules are hosted in one process. */
+export interface ProjectorStoreReaderDeps {
+  getItems(refs: string[], opts: { limit: number }): Promise<ProjectorItemRow[]>;
+  getComments(refs: string[], opts: { limit: number }): Promise<ProjectorCommentRow[]>;
+  getLinks(opts: { subject: string; limit: number; offset: number }): Promise<ProjectorLinkRow[]>;
+}
+
+/** Adapt the projector store to the same fail-soft read contract as HTTP.
+ * Store errors return null, never a partial result. Reads remain chunked at
+ * the same request boundaries as the HTTP implementation. */
+export function createStoreProjectorReader(store: ProjectorStoreReaderDeps): ProjectorReader {
+  return {
+    async items(refs) {
+      if (!refs.length) return new Map();
+      const out = new Map<RefKey, GhItem>();
+      try {
+        for (const chunk of refChunks(refs)) {
+          const rows = await store.getItems(chunk, { limit: 200 });
+          for (const row of rows) out.set(row.ref, mapProjectorItem(row));
+        }
+        return out;
+      } catch {
+        return null;
+      }
+    },
+    async comments(refs) {
+      if (!refs.length) return [];
+      const out: Comment[] = [];
+      try {
+        for (const chunk of refChunks(refs)) {
+          const rows = await store.getComments(chunk, { limit: 500 });
+          out.push(...rows.map(mapProjectorComment).filter((comment) => !comment.deleted));
+        }
+        return out;
+      } catch {
+        return null;
+      }
+    },
+    async latestComments(refs) {
+      if (!refs.length) return [];
+      const out: Comment[] = [];
+      try {
+        const concurrency = 16;
+        for (let i = 0; i < refs.length; i += concurrency) {
+          const rows = await Promise.all(
+            refs.slice(i, i + concurrency).map((ref) => store.getComments([ref], { limit: 1 })),
+          );
+          out.push(...rows.flat().map(mapProjectorComment).filter((comment) => !comment.deleted));
+        }
+        return out;
+      } catch {
+        return null;
+      }
+    },
+    async links(subject) {
+      try {
+        const rows = await store.getLinks({ subject, limit: 500, offset: 0 });
+        return mapProjectorLinks(rows, subject);
+      } catch {
+        return null;
+      }
+    },
   };
 }

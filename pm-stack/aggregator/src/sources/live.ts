@@ -127,6 +127,7 @@ import { getJson } from "./http.ts";
 import {
   LatestCommentsCache,
   createHttpProjectorReader,
+  createStoreProjectorReader,
   mergeLinks,
   type ProjectorReader,
 } from "./projector.ts";
@@ -134,8 +135,10 @@ export {
   LATEST_COMMENTS_TTL_MS,
   LatestCommentsCache,
   createHttpProjectorReader,
+  createStoreProjectorReader,
   latestPerRef,
   mapProjectorComment,
+  mapProjectorLinks,
   mapProjectorItem,
   mergeLinks,
   parseProjectorLabels,
@@ -144,7 +147,13 @@ export {
   projectorLatestComments,
   projectorLinks,
 } from "./projector.ts";
-export type { ProjectorCommentRow, ProjectorItemRow, ProjectorLinkRow, ProjectorReader } from "./projector.ts";
+export type {
+  ProjectorCommentRow,
+  ProjectorItemRow,
+  ProjectorLinkRow,
+  ProjectorReader,
+  ProjectorStoreReaderDeps,
+} from "./projector.ts";
 
 // --- Kaneo --------------------------------------------------------------
 
