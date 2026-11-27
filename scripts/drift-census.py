@@ -7,6 +7,12 @@ Argument contract (#3352): this script declares its whole command line —
 live collection), `--format {json,text}`, `--root PATH`, `--window-s`
 and `--now`. It parses strictly against that declaration before it runs
 any collector. Anything unaccounted for is a usage error with exit 2.
+The snapshot may carry a `cloudflare` plane (the #14107 shape) plus
+`laptop: {"running_revision": ...}` and
+`sandbox: {"running": {name: version}}` observations; a plane named in
+the snapshot is evaluated from it instead of a live probe (the daily
+report wrapper, `scripts/fleet/drift-census-report.py`, reads the
+laptop over fleet shell and hands its revision in this way).
 
 Oracle: the design of record
 `doc/2026-11-24T06-25-30Z_design_auto-update-system/` section 4 —
@@ -205,16 +211,25 @@ def _lag_since(root: Path, rev: str, now: datetime) -> int | None:
     return max(0, int(now.timestamp()) - int(ts))
 
 
-def collect_laptop(root: Path, now: datetime, window_s: int) -> list[Row]:
-    """The running system's configuration revision vs the flake on main (read-only)."""
+def collect_laptop(
+    root: Path, now: datetime, window_s: int, observed_running: str | None = None
+) -> list[Row]:
+    """The running system's configuration revision vs the flake on main (read-only).
+
+    A caller-supplied observation replaces the local `nixos-version`
+    probe (the daily report reads the laptop over fleet shell).
+    """
     pin = laptop_pin(root)
     running = "unreadable"
-    out = _run(["nixos-version", "--json"])
-    if out:
-        try:
-            running = json.loads(out).get("configurationRevision") or "unreadable"
-        except ValueError:
-            pass
+    if observed_running is not None:
+        running = observed_running or "unreadable"
+    else:
+        out = _run(["nixos-version", "--json"])
+        if out:
+            try:
+                running = json.loads(out).get("configurationRevision") or "unreadable"
+            except ValueError:
+                pass
     lag = _lag_since(root, pin, now) if pin != "unreadable" else None
     return [
         evaluate(
@@ -230,14 +245,28 @@ def collect_laptop(root: Path, now: datetime, window_s: int) -> list[Row]:
     ]
 
 
-def collect_sandbox(root: Path, window_s: int) -> list[Row]:
-    """Seat binaries vs the bootstrap pin (read-only --version probes)."""
+def collect_sandbox(
+    root: Path, window_s: int, observed: dict | None = None
+) -> list[Row]:
+    """Seat binaries vs the bootstrap pin (read-only --version probes).
+
+    The census is pinned-vs-running: a binary bootstrap.sh does not pin
+    (today: op) has nothing to compare against and is out of scope, the
+    same way the cloudflare plane reports nothing without a snapshot.
+    A caller-supplied observation replaces the live probe per binary.
+    """
     pinned = sandbox_pins(root)
     rows = []
     for name in SANDBOX_BINARIES:
-        pin = pinned.get(name, "unreadable")
-        running = _version_of(_run([shutil.which(name) or name, "--version"]))
-        rows.append(evaluate("sandbox", name, pin, running, None, window_s, [], []))
+        if name not in pinned:
+            continue
+        if observed is not None and name in observed:
+            running = _version_of(observed[name])
+        else:
+            running = _version_of(_run([shutil.which(name) or name, "--version"]))
+        rows.append(
+            evaluate("sandbox", name, pinned[name], running, None, window_s, [], [])
+        )
     return rows
 
 
@@ -313,14 +342,20 @@ def build(
     planes: list[str], root: Path, fixture: dict | None, now: datetime, window_s: int
 ) -> dict:
     rows: list[Row] = []
+    snapshot = fixture or {}
     if "laptop" in planes:
-        rows += collect_laptop(root, now, window_s)
-    if "sandbox" in planes:
-        rows += collect_sandbox(root, window_s)
-    if "cloudflare" in planes:
-        rows += collect_cloudflare(
-            root, now, (fixture or {}).get("cloudflare"), window_s
+        rows += collect_laptop(
+            root,
+            now,
+            window_s,
+            (snapshot.get("laptop") or {}).get("running_revision"),
         )
+    if "sandbox" in planes:
+        rows += collect_sandbox(
+            root, window_s, (snapshot.get("sandbox") or {}).get("running")
+        )
+    if "cloudflare" in planes:
+        rows += collect_cloudflare(root, now, snapshot.get("cloudflare"), window_s)
     return summary(rows)
 
 
