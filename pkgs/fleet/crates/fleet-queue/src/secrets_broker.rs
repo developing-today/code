@@ -1589,6 +1589,17 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_health_exposes_trust_bundle_observations() {
+        // Oracle: authenticated health includes the BT-2 observation list;
+        // public liveness never publishes peer/version inventory.
+        let state = empty_state();
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", Some("tok"));
+        assert_eq!(body["trust_bundle_clients"], json!([]));
+        let (_, public) = handle_request(&state, "tok", "GET", "/health", None);
+        assert!(public.get("trust_bundle_clients").is_none());
+    }
+
+    #[test]
     fn health_reports_serving_only_after_a_successful_refresh() {
         // oracle (#10868): a live process whose refresh never
         // succeeded (stripped PATH, bws unspawnable) is not serving,
