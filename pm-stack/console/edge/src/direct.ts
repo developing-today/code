@@ -39,6 +39,7 @@ import { Plan } from "../../src/plan.ts";
 import { timed } from "../../src/timed.ts";
 import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
 import { Work } from "../../src/work.ts";
+import { type DecisionEventsSource, type QuestionsDiscovery, readQuestionSets } from "./questions.ts";
 
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
@@ -54,6 +55,7 @@ export const DIRECT_READ_SECTIONS = [
   "done",
   "agents",
   "pipeline",
+  "questionSets",
 ] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
@@ -82,7 +84,7 @@ export const DIRECT_ACTIONS = [
  * before then: it is recorded as the 429 it would have been, and as
  * it was not sent it wrote nothing and GitHub answered nothing. */
 export interface Outward {
-  to: "github" | "queue" | "bridge";
+  to: "github" | "queue" | "bridge" | "worker";
   write: boolean;
   status: number;
   limited?: boolean;
@@ -100,6 +102,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   done: ["queue", "github"],
   agents: ["bridge"],
   pipeline: ["bridge"],
+  questionSets: ["worker"],
 };
 
 export interface DirectSecrets {
@@ -116,6 +119,12 @@ export interface DirectSecrets {
   /** The bridge Worker's fetch: its service binding's, in the Worker.
    * A stand-in in tests. */
   bridgeFetch?: Fetch;
+  /** The decision-events Worker (#13491): where it is and the shared
+   * secret its reads take. With it, the Questions discovery section
+   * (the sets it holds and each set's state) is read here, with no
+   * machine; without it, that section stays a machine's, exactly as
+   * before. The secret is never logged or returned. */
+  decisionEvents?: DecisionEventsSource;
   /** Told of every call made, as it is answered. */
   seen?: (call: Outward) => void;
   /** Where GitHub's API and the queue store are, when a local run puts
@@ -1177,6 +1186,11 @@ export interface DirectClasses {
   plan: Plan;
   trends: Trends;
   queueEnqueue(packet: unknown): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** The Questions discovery section (#13491): the decision sets the
+   * decision-events Worker holds, each with its state, read from the
+   * Worker itself. Throws when this edge holds no decision-events
+   * source: the section is then a machine's, as it was before. */
+  questionSets(): Promise<QuestionsDiscovery>;
 }
 
 /** The console's own classes, wired for the edge. They are made once
@@ -1484,12 +1498,31 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
       };
     }
   };
+  // The Questions discovery read (#13491): the decision-events
+  // Worker, reached with the fetch this side was given, each call
+  // told of like the queue store's.
+  const questionSets = async (): Promise<QuestionsDiscovery> => {
+    const source = options.decisionEvents;
+    if (!source) throw new Error("the decision-events Worker is not configured on this edge");
+    const workerFetch: Fetch = async (url, init) => {
+      try {
+        const res = await fetchImpl(url, init);
+        options.seen?.({ to: "worker", write: false, status: res.status });
+        return res;
+      } catch (error) {
+        options.seen?.({ to: "worker", write: false, status: 0 });
+        throw error;
+      }
+    };
+    return readQuestionSets(source, workerFetch as never);
+  };
   return {
     ops,
     work,
     plan: new Plan(ops, work, clock),
     trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
     queueEnqueue,
+    questionSets,
   };
 }
 
@@ -1506,8 +1539,15 @@ export function queueWrites(body: string | undefined): boolean {
   }
 }
 
-/** One section, read by the class that reads it on the laptop. */
-export async function directRead(section: string, ops: Ops, work: Work): Promise<unknown> {
+/** One section, read by the class that reads it on the laptop. The
+ * Questions discovery section is the one exception: no laptop class
+ * reads it, so its reader is given beside the classes. */
+export async function directRead(
+  section: string,
+  ops: Ops,
+  work: Work,
+  questionSets?: () => Promise<QuestionsDiscovery>,
+): Promise<unknown> {
   switch (section) {
     case "board":
       return work.board();
@@ -1525,6 +1565,9 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return ops.agents();
     case "pipeline":
       return ops.unreadInstructions();
+    case "questionSets":
+      if (!questionSets) throw new Error("the decision-events Worker is not configured on this edge");
+      return questionSets();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }

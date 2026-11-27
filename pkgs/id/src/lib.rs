@@ -257,6 +257,7 @@ pub mod hosted_export;
 pub mod hosted_freeze;
 pub mod hosted_ingest;
 pub mod hosted_migration;
+pub mod hosted_transfer;
 pub mod hosted_world_partition;
 pub use id_directory::invite;
 pub use id_directory::invites;
@@ -272,6 +273,7 @@ pub mod serve_proxy;
 pub mod serve_proxy_keepalive;
 pub mod serve_proxy_leg;
 pub mod serve_proxy_mux;
+pub mod serve_proxy_scheduler;
 pub use id_core::membership;
 pub use id_core::migration_control;
 #[cfg(feature = "world")]

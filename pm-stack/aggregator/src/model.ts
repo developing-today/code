@@ -1136,8 +1136,14 @@ export interface AaPoint {
  * aaCatalogFromConfig() in src/aa.ts.
  */
 export interface AaCatalogEntry {
-  /** Full catalog id, "provider/model…" (model part may contain /). */
+  /** Full catalog id, "provider/model…" (model part may contain /); data-only rows use aa/<provider>/<model>/<effort>. */
   id: string;
+  /** False for ranking-only rows absent from every configured provider catalog. */
+  configured?: boolean;
+  /** AA ranking effort; populated on ranking-only rows. */
+  effort?: string | null;
+  /** True when the source ranking key explicitly marks this row estimated. */
+  estimated?: boolean;
   provider: string;
   /** The provider's display name in the config, else its id. */
   providerName: string;
