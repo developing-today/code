@@ -476,6 +476,9 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 	return nil
 }
 
+// stderrIsTerminal is a seam for tests: the ioctl answer for os.Stderr.
+var stderrIsTerminal = func() bool { return isTerminal(os.Stderr) }
+
 // reportFinalResult prints a run's result for a person at a
 // terminal when the script's own output did not already show it:
 // a snippet whose final expression is its answer (CODE-19) may
@@ -486,8 +489,13 @@ func (a *App) reportFinalResult(res *execsvc.Result) {
 		// A progress notice, not part of the answer: keep it out of
 		// the way of anything parsing the output, the same gate every
 		// other notice goes through (bare/json callers read the
-		// record stream, not stderr hints).
-		a.notice("JavaScript runtime: " + res.Runtime)
+		// record stream, not stderr hints). A piped stderr is a
+		// caller, not a person: the harness captures it together
+		// with stdout, so a trailing line breaks every parse after
+		// the top-level value (run 46042116668).
+		if stderrIsTerminal() {
+			a.notice("JavaScript runtime: " + res.Runtime)
+		}
 	}
 	if !res.ResultPresent && res.Result == nil {
 		return
