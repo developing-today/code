@@ -31,7 +31,7 @@ import {
   foldClaim,
   parseMarker,
 } from "../src/queue-fallback.ts";
-import { iso, type JsonObject } from "../src/queue-validate.ts";
+import { iso, type JsonObject, validatePacket } from "../src/queue-validate.ts";
 import { bearerReq, makeHarness, BINDING_A, BINDING_B, SERVICE_TOKEN } from "./helpers.ts";
 
 const T0 = 1767225600; // 2026-01-01T00:00:00Z
@@ -124,7 +124,7 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   const kindErrors = (await verb(store, nativeEnv(), "validate", { packet: badKind }))["errors"] as string[];
   assert.ok(
     kindErrors.includes(
-      'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "second_pass", "small_fix", "triage"]',
+      'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "prompt", "second_pass", "small_fix", "triage"]',
     ),
   );
 
@@ -139,6 +139,36 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   const badDate = fixPacket(4242, {}, { not_before: "2026-02-30T00:00:00Z" });
   const dateErrors = (await verb(store, nativeEnv(), "validate", { packet: badDate }))["errors"] as string[];
   assert.ok(dateErrors.some((e) => e.includes("is not a valid RFC 3339 timestamp")));
+});
+
+test("prompt validator accepts canonical IDs and rejects missing, malformed, or mismatched identities", () => {
+  const id = "prompt:00000000-0000-4000-8000-000000000001";
+  const packet = fixPacket(10032, {
+    kind: "prompt",
+    prompt: { id, text: "Summarize the current queue health.", target: "pool:auto", mode: "async" },
+  });
+  packet["dedupe_key"] = "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001";
+  assert.deepEqual(validatePacket(packet, T0)[0], []);
+
+  const mismatch = structuredClone(packet);
+  mismatch["dedupe_key"] = "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002";
+  assert.ok(validatePacket(mismatch, T0)[0].some((error) => error.includes("prompt.id")));
+
+  for (const badId of [undefined, "prompt:not-a-uuid"]) {
+    const invalid = structuredClone(packet);
+    if (badId === undefined) delete ((invalid["payload"] as JsonObject)["prompt"] as JsonObject)["id"];
+    else ((invalid["payload"] as JsonObject)["prompt"] as JsonObject)["id"] = badId;
+    assert.ok(validatePacket(invalid, T0)[0].some((error) => error.includes("prompt.id")));
+  }
+
+  // #16005 review parity: prompt-only identity is valid only for kind: prompt.
+  const nonPrompt = structuredClone(packet);
+  (nonPrompt["payload"] as JsonObject)["kind"] = "triage";
+  delete (nonPrompt["payload"] as JsonObject)["issue"];
+  assert.ok(
+    validatePacket(nonPrompt, T0)[0].some((error) => error.includes("payload identity")),
+    "triage with prompt-only identity must fail identity",
+  );
 });
 
 test("validator enforces dedupe-key family, repo and identity agreement", async () => {
@@ -272,6 +302,27 @@ test("enqueue reports a work-identity collision and honours dedupe_override", as
   const events = (await store.allEvents()).filter((e) => e.kind === "dedupe_override");
   assert.equal(events.length, 1);
   assert.equal((events[0].detail as JsonObject)["reason"], "parallel verification lane");
+});
+
+test("prompt work identity dedupes one submission but keeps sibling submissions distinct", async () => {
+  const { store } = setup();
+  const makePrompt = (uuid: string): JsonObject => {
+    const id = `prompt:${uuid}`;
+    const packet = fixPacket(10032, {
+      kind: "prompt",
+      prompt: { id, text: "Summarize the current queue health.", target: "pool:auto", mode: "async" },
+    });
+    packet["dedupe_key"] = `repo-health:v1:prompt:developing-today/code:submission:${uuid}`;
+    return packet;
+  };
+  const first = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000001"));
+  assert.equal(first["ok"], true);
+  const same = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000001"));
+  assert.equal(same["ok"], true);
+  assert.equal((same["row"] as JsonObject)["id"], (first["row"] as JsonObject)["id"]);
+  const sibling = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000002"));
+  assert.equal(sibling["ok"], true);
+  assert.notEqual((sibling["row"] as JsonObject)["id"], (first["row"] as JsonObject)["id"]);
 });
 
 test("enqueue into a shadow queue requires deliberate intent", async () => {
