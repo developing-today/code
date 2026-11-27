@@ -40,10 +40,7 @@ export async function readCursor(q: Turso, kind: string): Promise<number> {
 
 /** Depth of a kind's queue: rows of that kind past the cursor. */
 export async function queueDepth(q: Turso, kind: string, cursor: number): Promise<number> {
-  const raw = await q.queryText("SELECT COUNT(*) FROM events WHERE kind = ? AND id > ?", [
-    tArg(kind),
-    iArg(cursor),
-  ]);
+  const raw = await q.queryText("SELECT COUNT(*) FROM events WHERE kind = ? AND id > ?", [tArg(kind), iArg(cursor)]);
   const n = raw === null ? NaN : Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
@@ -59,9 +56,7 @@ export async function queueOldest(q: Turso, kind: string, cursor: number): Promi
  * its timestamp is when the kind first became due.
  */
 export async function setDrainDue(q: Turso, kind: string, nowIso: string): Promise<boolean> {
-  const existing = await q.queryText("SELECT value FROM agent_watermarks WHERE key = ?", [
-    tArg(`drain-due:${kind}`),
-  ]);
+  const existing = await q.queryText("SELECT value FROM agent_watermarks WHERE key = ?", [tArg(`drain-due:${kind}`)]);
   if (existing !== null) return false;
   await q.execute(
     `INSERT INTO agent_watermarks (key, value, updated_at) VALUES (?, ?, ?)
@@ -106,8 +101,7 @@ export async function ageSweep(env: SinkEnv, now: Date): Promise<AgeSignal[]> {
   for (const kind of QUEUE_KINDS) {
     try {
       const oldest = await queueOldest(q, kind, await readCursor(q, kind));
-      const ageMinutes =
-        oldest === null ? null : Math.floor((now.getTime() - Date.parse(oldest)) / 60000);
+      const ageMinutes = oldest === null ? null : Math.floor((now.getTime() - Date.parse(oldest)) / 60000);
       const signaled =
         ageMinutes !== null && ageMinutes >= QUEUE_THRESHOLDS[kind].ageMinutes
           ? await setDrainDue(q, kind, now.toISOString())

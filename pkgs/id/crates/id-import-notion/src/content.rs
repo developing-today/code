@@ -510,6 +510,14 @@ pub fn convert_page(
     manifest
         .page_losses
         .insert(page_id.to_owned(), losses.clone());
+    // The fidelity report (§6.4) names these per page: entries are
+    // replaced wholesale so re-conversion is idempotent (§8 check 3).
+    manifest
+        .page_externalised
+        .insert(page_id.to_owned(), externalised.clone());
+    manifest
+        .page_missing_files
+        .insert(page_id.to_owned(), missing_files.clone());
 
     let files_outcome = if missing_files.is_empty() {
         Outcome::Clean

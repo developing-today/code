@@ -1558,6 +1558,16 @@ pub(crate) fn claim_by_id(
     if let Some(audit) = manual_audit {
         detail["manual_override"] = audit;
     }
+    // #9178 §1 (FDR-0001), claim-wire slice: when the task carries a
+    // resume hint, the claimed event records both the requested
+    // session and the session actually used (explicit null when the
+    // claim names none), so a silent substitution is impossible.
+    // Unhinted tasks emit no new keys: their event is byte-identical
+    // to before.
+    if let Some(requested) = row.get("resume_session_id").and_then(|v| v.as_str()) {
+        detail["resume_requested_session_id"] = json!(requested);
+        detail["resume_actual_session_id"] = claim_session.map(|s| json!(s)).unwrap_or(Value::Null);
+    }
     event(
         t,
         Some(worker),

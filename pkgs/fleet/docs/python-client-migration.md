@@ -8,9 +8,10 @@ to 2 seconds and 64 KiB. Missing binaries, probe failures, malformed JSON,
 nonzero status, unavailable domains, and old capabilities all retain the frozen
 `laptop-agent-legacy.py` implementation. No domain/version heuristic enables it.
 
-## Pending producer contract — deliberately NOT advertised yet
+## Producer contract — advertised exactly when the domain is available
 
-A future fleet producer must return BOTH:
+`fleet capabilities` returns BOTH (code#16088, slice
+`fleet/oc-code-06/26198-compat-marker`):
 
 ```json
 {
@@ -19,15 +20,21 @@ A future fleet producer must return BOTH:
 }
 ```
 
+The marker is emitted if and only if the laptop-agent domain is `available`
+to that invocation — narrowed profiles (`fleet-serve`, `fleet-connect`) and
+config-disabled domains advertise an empty list. Availability alone never
+advertises, and no version/domain heuristic enables the cutover.```
+
 The marker promises the entire legacy Python CLI's semantics, not just verb
 names: health; exec; exec-batch; run (including accepted `--timeout`); poll;
 kill; jobs; fetch with `--chunk` and resume; command argument boundaries;
 stdout/stderr/exit conventions; deadlines, cancellation and launch guards;
 transport pins, fallback behavior and existing detached-job ownership/cursors.
-Current Rust binaries do **not** produce this marker. Known parity gaps include
-exec-batch, fetch chunk/resume and run's accepted timeout. SSH fallback ownership
-is separately tracked in #16083. Fix and prove parity before adding a producer;
-this patch neither repairs Rust parity nor advertises compatibility.
+The marker rests on the Rust CLI surface in `fleet-laptop-agent`
+(parse + oracle-named crate tests: exec-batch, fetch `--chunk`/resume with
+overshoot refusal, run's accepted `--timeout`) — not on a version or domain
+heuristic. SSH fallback ownership is separately tracked in #16083. Live
+parity against the deployed binary and legacy retirement remain on #16088.
 
 With the exact marker and available domain, the selector replaces itself with
 `<selected fleet> laptop-agent <original arguments...>` using exec, inheriting

@@ -103,10 +103,7 @@ export interface ApplyFailureIncident {
  *  "high"; the throat vocabulary is critical | warning | info and only
  *  critical pushes, so high maps to critical. */
 export function buildApplyFailureIncident(
-  rec: Pick<
-    ApplyRecord,
-    "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt"
-  >,
+  rec: Pick<ApplyRecord, "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt">,
   brokerError: string,
 ): ApplyFailureIncident {
   const verdict = rec.approve ? "approve" : "deny";
@@ -281,13 +278,9 @@ export interface ApplierDeps {
   /** S4: raise one failure incident. Defaults to the alerts throat
    *  (postIncident + alert tick); inject in tests. A throw or a null
    *  store leaves the alert pending for the next tick. */
-  raiseAlertFn?: (
-    incident: ApplyFailureIncident,
-  ) => Promise<{ created: boolean } | void>;
+  raiseAlertFn?: (incident: ApplyFailureIncident) => Promise<{ created: boolean } | void>;
   getAlertsStoreFn?: () => Promise<{
-    postIncident: (
-      incident: ApplyFailureIncident,
-    ) => Promise<unknown>;
+    postIncident: (incident: ApplyFailureIncident) => Promise<unknown>;
   } | null>;
 }
 
@@ -409,10 +402,7 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
    *  or a raiseAlertFn failure returns false and the alert stays
    *  pending in the ledger for the next tick. */
   const raiseApplyAlert = async (
-    rec: Pick<
-      ApplyRecord,
-      "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt"
-    >,
+    rec: Pick<ApplyRecord, "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt">,
     brokerError: string,
   ): Promise<boolean> => {
     const incident = buildApplyFailureIncident(rec, brokerError);
@@ -576,9 +566,7 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
         // pending in this row for the re-raise sweep below.
         const attempts = (existing?.attempts ?? 0) + 1;
         failedRecord.attempts = attempts;
-        failedRecord.nextRetryAt = new Date(
-          tickNowMs + applyRetryDelayMs(attempts),
-        ).toISOString();
+        failedRecord.nextRetryAt = new Date(tickNowMs + applyRetryDelayMs(attempts)).toISOString();
         result.failed += 1;
         result.errors.push(`${answerId}: ${res.error}`);
         // A retry of an already-alerted failure keeps the original
@@ -604,8 +592,7 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
   const pendingIds = new Set(pending.map((r) => r.answerId));
   for (const rec of byAnswer.values()) {
     if (rec.state !== "failed" || rec.alertRaisedAt) continue;
-    if (pendingIds.has(rec.answerId) || alertAttempted.has(rec.answerId))
-      continue;
+    if (pendingIds.has(rec.answerId) || alertAttempted.has(rec.answerId)) continue;
     const stamp = new Date(now()).toISOString();
     if (await raiseApplyAlert(rec, rec.note ?? "unknown broker error")) {
       pending.push({ ...rec, alertRaisedAt: stamp, updatedAt: stamp });
@@ -620,8 +607,7 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
     for (const rec of byAnswer.values()) merged.set(rec.answerId, rec);
     for (const rec of pending) merged.set(rec.answerId, rec);
     for (const rec of merged.values()) {
-      if (rec.state === "failed" && !rec.alertRaisedAt)
-        result.alertsPending += 1;
+      if (rec.state === "failed" && !rec.alertRaisedAt) result.alertsPending += 1;
     }
   }
 

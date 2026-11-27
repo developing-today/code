@@ -12,7 +12,10 @@ import { readFileSync } from "node:fs";
 // Oracle: Cloudflare versions upload/deploy does not apply Cron Triggers;
 // the Actions deploy must explicitly apply the configured schedule afterwards.
 test("the Actions version release also applies the probe's Cron Trigger", () => {
-  const workflow = readFileSync(new URL("../../../.github/workflows/pm-console-edge-deploy.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(
+    new URL("../../../.github/workflows/pm-console-edge-deploy.yml", import.meta.url),
+    "utf8",
+  );
   expect(workflow).toMatch(/node release\.mjs --sha "\$GITHUB_SHA"[\s\S]*npx wrangler triggers deploy/);
 });
 import { Edge } from "../edge/src/edge.ts";
@@ -197,7 +200,13 @@ describe("the Edge keeps a transport verdict", () => {
     } as KV;
     const alarms: number[] = [];
     const now = { at: AT };
-    const edge = new Edge({ kv, now: () => now.at, setAlarm: async (at) => { alarms.push(at); } });
+    const edge = new Edge({
+      kv,
+      now: () => now.at,
+      setAlarm: async (at) => {
+        alarms.push(at);
+      },
+    });
     return { edge, store, alarms, now };
   }
 
@@ -212,13 +221,14 @@ describe("the Edge keeps a transport verdict", () => {
     checkedAt: AT,
   };
 
-  const handOver = (edge: Edge, value: QueueTransport) => edge.fetch(
-    new Request("https://pm.internal/internal/queue-transport", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(value),
-    }),
-  );
+  const handOver = (edge: Edge, value: QueueTransport) =>
+    edge.fetch(
+      new Request("https://pm.internal/internal/queue-transport", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      }),
+    );
 
   // Oracle: a scheduled verdict alone must drive the notification lifecycle;
   // no host report, owned document clock, connected app or other alarm exists.
@@ -232,7 +242,13 @@ describe("the Edge keeps a transport verdict", () => {
       messages.push(message.title);
       return { sent: failed ? 0 : devices, gone: 0, failed: failed ? devices : 0 };
     };
-    return { ...w, messages, fail: (value: boolean) => { failed = value; } };
+    return {
+      ...w,
+      messages,
+      fail: (value: boolean) => {
+        failed = value;
+      },
+    };
   }
 
   test("a scheduled verdict wakes notifications with devices and no unrelated alarms", async () => {

@@ -167,11 +167,7 @@ const compareKeys = (a: WorkKey, b: WorkKey): number =>
           ? 1
           : 0;
 
-export function mobileView(
-  views: readonly WorkView[],
-  id: MobileViewId,
-  ctx: ViewContext,
-): MobileViewResult {
+export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: ViewContext): MobileViewResult {
   const refs: WorkKey[] = [];
   const undecided: UndecidedRow[] = [];
   const unavailable = (fact: MobileFactKey): MobileViewResult => ({
@@ -232,8 +228,7 @@ export function mobileView(
       case "ready":
       case "review":
       case "blocked_parked": {
-        const want: BoardColumn[] =
-          id === "ready" ? ["Ready"] : id === "review" ? ["Review"] : ["Blocked", "Parked"];
+        const want: BoardColumn[] = id === "ready" ? ["Ready"] : id === "review" ? ["Review"] : ["Blocked", "Parked"];
         if (want.includes(column)) {
           refs.push(ref);
         }
@@ -360,11 +355,7 @@ export interface WorkGroup {
 
 const columnRankOf = (view: WorkView): number => COLUMN_ORDER[view.projection.column] ?? 8;
 
-const compareGroupRefs = (
-  a: WorkKey,
-  b: WorkKey,
-  rank: Map<string, number>,
-): number => {
+const compareGroupRefs = (a: WorkKey, b: WorkKey, rank: Map<string, number>): number => {
   const ra = rank.get(a.authority_id + "|" + a.work_id) ?? 8;
   const rb = rank.get(b.authority_id + "|" + b.work_id) ?? 8;
   return ra - rb || compareKeys(a, b);

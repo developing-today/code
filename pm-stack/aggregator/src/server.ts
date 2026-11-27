@@ -41,7 +41,15 @@ import { dismissDecisionSets, listOpenDecisionSets, sweepDecisionSets } from "./
 import { listStackHealthDown, readStackHealthStates } from "./stack-health.ts";
 import { buildHealth, pageRenderHealth, recordRender } from "./health.ts";
 import { resolveBwsSecret } from "./secrets.ts";
-import { buildEpicSlugMap, isConfirmedParentAbsent, openMetadataStore, parseNativeParentResponse, type EpicSlugMap, type IngestionItem, type NativeParentLookup } from "./metadata-ingestion.ts";
+import {
+  buildEpicSlugMap,
+  isConfirmedParentAbsent,
+  openMetadataStore,
+  parseNativeParentResponse,
+  type EpicSlugMap,
+  type IngestionItem,
+  type NativeParentLookup,
+} from "./metadata-ingestion.ts";
 import { fleetMetadataDbPath } from "./metadata-db.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { requireHome } from "./home.ts";
@@ -264,10 +272,7 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     ]);
     const rows: unknown = JSON.parse(output);
     if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
-    return buildEpicSlugMap(
-      rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[],
-      item.repo,
-    );
+    return buildEpicSlugMap(rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[], item.repo);
   },
   resolveNativeParent: async (item: { repo: string; number: number }): Promise<NativeParentLookup> => {
     // #16011: same authoritative contract as the sweeper — a confirmed

@@ -84,6 +84,10 @@ mod id_key;
 mod id_postcard;
 #[cfg(feature = "id")]
 mod id_proxy;
+#[cfg(feature = "id")]
+mod id_serve;
+#[cfg(feature = "id")]
+mod id_stream;
 mod invocation_ledger;
 #[cfg(feature = "kv")]
 mod kv;
@@ -380,6 +384,12 @@ fn print_capabilities(surface: &Surface, invoked_as: &str) {
         },
         "capabilities": surface.usable().iter().map(|c| c.id()).collect::<Vec<_>>(),
         "compiled_capabilities": surface.compiled.iter().map(|c| c.id()).collect::<Vec<_>>(),
+        "compatibility_contracts": fleet_registry::compatibility_contracts_for(
+            fleet_registry::DOMAINS
+                .iter()
+                .find(|d| d.name == "laptop-agent")
+                .is_some_and(|d| surface.domain_state(d) == CapState::Available),
+        ),
         "domains": domains,
     });
     println!(
@@ -1116,11 +1126,14 @@ fn run_domain_with_initializer(
             // for real — session key lifecycle + stamping. Slice 2
             // (#15434, design §4.2) adds the `fleet id proxy` entry
             // point; mode 1 is live and mode 2 currently fails closed.
+            // Slice 5 (#15399, design §4.5) adds the `fleet id
+            // serve-ws` conversion + WebSocket serving socket.
             // Every other id verb remains on the slice-1 key surface.
             #[cfg(feature = "id")]
             if d.name == "id" {
                 return match args.first().map(|s| s.as_str()) {
                     Some("proxy") => id_proxy::run(args),
+                    Some("serve-ws") => id_serve::run(args),
                     _ => id_key::run(args),
                 };
             }
@@ -1865,6 +1878,52 @@ mod tests {
             serve,
             &args(&["queue-broker", "--bind", "--help"])
         ));
+    }
+
+    #[test]
+    fn capabilities_marker_tracks_laptop_agent_availability() {
+        // developing-today/code#16088: the Python selector execs the binary
+        // only on marker AND an available laptop-agent domain.
+        assert_eq!(
+            fleet_registry::compatibility_contracts_for(true),
+            &[fleet_registry::LAPTOP_AGENT_PYTHON_CLI_CONTRACT]
+        );
+        assert!(fleet_registry::compatibility_contracts_for(false).is_empty());
+
+        let full = Surface::new(None, fleet_config::Config::default());
+        let laptop_agent = fleet_registry::DOMAINS
+            .iter()
+            .find(|d| d.name == "laptop-agent")
+            .expect("laptop-agent domain exists");
+        let full_available = full.domain_state(laptop_agent) == CapState::Available;
+        let expected: &[&str] = if cfg!(feature = "laptop-agent") {
+            &[fleet_registry::LAPTOP_AGENT_PYTHON_CLI_CONTRACT]
+        } else {
+            &[]
+        };
+        assert_eq!(
+            fleet_registry::compatibility_contracts_for(full_available),
+            expected,
+            "full build advertises exactly when it compiled the domain in"
+        );
+
+        // A narrowed profile must never advertise: availability alone is
+        // not sufficient, and narrowing removes it.
+        let serve = Surface::new(
+            Some(fleet_registry::Variant::Serve),
+            fleet_config::Config::default(),
+        );
+        assert_ne!(
+            serve.domain_state(laptop_agent),
+            CapState::Available,
+            "serve profile narrows the laptop-agent client surface away"
+        );
+        assert!(
+            fleet_registry::compatibility_contracts_for(
+                serve.domain_state(laptop_agent) == CapState::Available
+            )
+            .is_empty()
+        );
     }
 
     #[cfg(feature = "search-serve")]

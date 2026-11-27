@@ -22,11 +22,16 @@
 //!   document and every accepted step, so an out-of-range position is
 //!   refused even when the step is otherwise well formed.
 //!
+//! Slice nodes are also checked against the content expressions of
+//! `editor.ts`: each container node may hold only the child types its
+//! expression admits (a `paragraph` holds inline nodes, a `table` holds
+//! rows, a row holds cells, a cell holds paragraphs, and so on). Only
+//! child types are checked, never minimum counts or ordering, so the
+//! open, partial nodes a slice legitimately carries stay valid.
+//!
 //! This does not yet prove that a structurally plausible step applies
-//! against the evolving document. Slice validation also remains partial:
-//! `list_item` rejects direct text children, but other content-expression
-//! violations are deferred. Full server-side application is the later
-//! stage of #1618.
+//! against the evolving document. Full server-side application is the
+//! later stage of #1618.
 
 use serde_json::{Map, Value};
 
@@ -369,6 +374,73 @@ fn fragment_size(schema: StepSchema, nodes: &[Value], depth: usize) -> Result<u6
     })
 }
 
+/// Node types in the rich schema's `block` group (`editor.ts`:
+/// `prosemirror-schema-basic`, the list/task/table extensions and the
+/// GFM blocks).
+const BLOCK_NODES: &[&str] = &[
+    "paragraph",
+    "blockquote",
+    "horizontal_rule",
+    "heading",
+    "code_block",
+    "ordered_list",
+    "bullet_list",
+    "task_list",
+    "table",
+    "front_matter",
+    "footnote_definition",
+];
+
+/// Node types in the rich schema's `inline` group.
+const INLINE_NODES: &[&str] = &[
+    "text",
+    "image",
+    "hard_break",
+    "html_inline",
+    "footnote_reference",
+];
+
+/// Check a slice node's children against its content expression in
+/// `editor.ts`: `paragraph`/`heading` are `inline*`, `code_block` is
+/// `text*`, `blockquote`/`footnote_definition` are `block+`,
+/// `ordered_list`/`bullet_list` are `list_item+`, `task_list` is
+/// `task_list_item+`, `list_item`/`task_list_item` are
+/// `paragraph block*`, `table` is `table_row+`, `table_row` is
+/// `(table_cell | table_header)+` and `table_cell`/`table_header` are
+/// `paragraph+`.
+///
+/// Only child types are checked — never minimum counts (`+` vs `*`) or
+/// ordering — because a slice legitimately carries open, partial nodes
+/// (an empty `blockquote` wrapper, a split `paragraph`). A child of the
+/// wrong type, by contrast, can never be produced by the editor's
+/// schema and makes `Node.fromJSON` throw on every receiving client.
+/// Children that are not objects or carry no string `type` are left to
+/// the recursion in [`node_size`], which refuses them.
+fn check_content_expression(kind: &str, children: &[Value]) -> Result<(), String> {
+    let allowed: &[&str] = match kind {
+        "paragraph" | "heading" => INLINE_NODES,
+        "code_block" => &["text"],
+        "blockquote" | "footnote_definition" | "list_item" | "task_list_item" => BLOCK_NODES,
+        "ordered_list" | "bullet_list" => &["list_item"],
+        "task_list" => &["task_list_item"],
+        "table" => &["table_row"],
+        "table_row" => &["table_cell", "table_header"],
+        "table_cell" | "table_header" => &["paragraph"],
+        _ => return Ok(()),
+    };
+    for child in children {
+        let Some(child_kind) = child.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !allowed.contains(&child_kind) {
+            return Err(format!(
+                "`{kind}` content cannot contain a direct `{child_kind}` child"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The size of one node inside a slice, checked against the schema.
 fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, String> {
     if depth >= MAX_NODE_DEPTH {
@@ -401,16 +473,8 @@ fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, Stri
         Some(Value::Array(children)) => Some(children.as_slice()),
         Some(_) => return Err(format!("node `{kind}` has non-array `content`")),
     };
-    // `editor.ts` declares `list_item` content as `paragraph block*`.
-    // A bare text child cannot be produced by a valid rich-schema item.
-    if kind == "list_item"
-        && content.is_some_and(|children| {
-            children
-                .iter()
-                .any(|child| child.get("type").and_then(Value::as_str) == Some("text"))
-        })
-    {
-        return Err("list_item content cannot contain a direct text child".to_owned());
+    if let Some(children) = content {
+        check_content_expression(kind, children)?;
     }
     if kind == "text" {
         if content.is_some_and(|children| !children.is_empty()) {
@@ -604,6 +668,115 @@ mod tests {
         let bold = json!({"stepType": "addMark", "from": 1, "to": 2, "mark": {"type": "strong"}});
         assert!(check_steps(raw(), size, &[bold]).is_err());
         assert!(StepSchema::for_mode(ContentMode::Binary).is_none());
+    }
+
+    #[test]
+    fn slice_content_expressions_are_enforced() {
+        // Oracle: the content expressions declared in `web/src/editor.ts`.
+        // Each step wraps one violating node in a replace slice.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // paragraph / heading are `inline*`: no block children.
+            (
+                json!({"type": "paragraph", "content": [{"type": "paragraph"}]}),
+                "paragraph",
+            ),
+            (
+                json!({"type": "heading", "content": [{"type": "code_block"}]}),
+                "heading",
+            ),
+            // code_block is `text*`.
+            (
+                json!({"type": "code_block", "content": [{"type": "paragraph"}]}),
+                "code_block",
+            ),
+            // blockquote is `block+`: no direct inline children.
+            (
+                json!({"type": "blockquote", "content": [{"type": "text", "text": "x"}]}),
+                "blockquote",
+            ),
+            (
+                json!({"type": "footnote_definition", "content": [{"type": "text", "text": "x"}]}),
+                "footnote_definition",
+            ),
+            // Lists hold only their item type.
+            (
+                json!({"type": "bullet_list", "content": [{"type": "paragraph"}]}),
+                "bullet_list",
+            ),
+            (
+                json!({"type": "ordered_list", "content": [{"type": "task_list_item"}]}),
+                "ordered_list",
+            ),
+            (
+                json!({"type": "task_list", "content": [{"type": "list_item"}]}),
+                "task_list",
+            ),
+            // Items are `paragraph block*`: no direct inline children
+            // (the slice-3 `list_item` case, now via the general rule).
+            (
+                json!({"type": "list_item", "content": [{"type": "text", "text": "x"}]}),
+                "list_item",
+            ),
+            (
+                json!({"type": "task_list_item", "content": [{"type": "image"}]}),
+                "task_list_item",
+            ),
+            // Table structure: table > row > cell/header > paragraph.
+            (
+                json!({"type": "table", "content": [{"type": "table_cell"}]}),
+                "table",
+            ),
+            (
+                json!({"type": "table_row", "content": [{"type": "paragraph"}]}),
+                "table_row",
+            ),
+            (
+                json!({"type": "table_cell", "content": [{"type": "text", "text": "x"}]}),
+                "table_cell",
+            ),
+            (
+                json!({"type": "table_header", "content": [{"type": "blockquote"}]}),
+                "table_header",
+            ),
+        ];
+        for (node, parent) in cases {
+            let reason = refused(node);
+            assert!(reason.contains(parent), "{reason}");
+            assert!(reason.contains("cannot contain"), "{reason}");
+        }
+        // Valid controls: every expression above satisfied, including a
+        // full table nest and a list item mixing paragraph + block.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"}, {"type": "hard_break"},
+                {"type": "image", "attrs": {"src": "y"}}]}),
+            json!({"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}),
+            json!({"type": "blockquote", "content": [{"type": "paragraph"}]}),
+            json!({"type": "list_item", "content": [
+                {"type": "paragraph"}, {"type": "blockquote"}]}),
+            json!({"type": "task_list", "content": [
+                {"type": "task_list_item", "content": [{"type": "paragraph"}]}]}),
+            json!({"type": "table", "content": [{"type": "table_row", "content": [
+                {"type": "table_header", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "h"}]}]},
+                {"type": "table_cell", "content": [{"type": "paragraph"}]}]}]}),
+            // Empty containers stay valid: counts are not checked, so
+            // open/partial slice nodes are unaffected.
+            json!({"type": "table_cell"}),
+            json!({"type": "bullet_list"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
     }
 
     #[test]

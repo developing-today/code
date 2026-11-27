@@ -1696,14 +1696,16 @@ export class Edge {
     const machines: MachineCandidate[] = [];
     for (const key of await this.machineKeys()) {
       const first = await this.isFirstKey(key.kid);
-      const host = first ? null : (await this.kv.get(`mhost:${key.kid}`)) as MachineHost | undefined;
+      const host = first ? null : ((await this.kv.get(`mhost:${key.kid}`)) as MachineHost | undefined);
       const said = first ? this.machine : machineReport(host?.machine);
       if (!said) continue;
       // Reporting proves presence, not a reachable address. Only the
       // tunnel-learned first key has an authenticated relay path today.
       const seen = first ? this.hostSeen : host?.seen;
       machines.push({
-        kid: key.kid, name: said.name, actions: said.actions,
+        kid: key.kid,
+        name: said.name,
+        actions: said.actions,
         connected: first && seen != null && this.now() - seen < HOST_QUIET_MS,
       });
     }
@@ -2168,10 +2170,15 @@ export class Edge {
       const [done] = held.splice(at, 1);
       // Keep a terminal answer when the held row leaves: otherwise a
       // phone retry can choose another machine and execute it twice.
-      await this.kv.put(`a:${done.id}`, { at: now, kind: done.kind, state: "done",
+      await this.kv.put(`a:${done.id}`, {
+        at: now,
+        kind: done.kind,
+        state: "done",
         status: ack.ok ? 200 : 503,
         body: ack.ok ? { ok: true, result: null } : { error: String(ack.error ?? "the machine could not do it") },
-        forKid: kid, for: done.for } satisfies Acted);
+        forKid: kid,
+        for: done.for,
+      } satisfies Acted);
       await this.actedIndex(done.id);
       settled = true;
       if (ack.ok) {
@@ -2335,9 +2342,14 @@ export class Edge {
         bound = true;
         continue;
       }
-      await this.kv.put(`a:${command.id}`, { at: this.now(), kind: command.kind,
-        state: "given", relays: Math.max(1, previous?.relays ?? 0),
-        forKid: kid, for: command.for } satisfies Acted);
+      await this.kv.put(`a:${command.id}`, {
+        at: this.now(),
+        kind: command.kind,
+        state: "given",
+        relays: Math.max(1, previous?.relays ?? 0),
+        forKid: kid,
+        for: command.for,
+      } satisfies Acted);
       await this.actedIndex(command.id);
     }
     if (bound) await this.saveHeld();
@@ -3105,12 +3117,16 @@ export class Edge {
         const about = subjectOf(kind, args as Record<string, unknown>);
         if (about !== null) await this.outstandingRelays(about);
         const known = await this.knownMachines();
-        const previous = id === null ? undefined : (await this.kv.get(`a:${id}`)) as Acted | undefined;
+        const previous = id === null ? undefined : ((await this.kv.get(`a:${id}`)) as Acted | undefined);
         let target = previous?.forKid ? known.find((m) => m.kid === previous.forKid) : undefined;
-        if (!target && previous?.forKid && await this.isFirstKey(previous.forKid) && this.machine === null) {
+        if (!target && previous?.forKid && (await this.isFirstKey(previous.forKid)) && this.machine === null) {
           // An older report still has the same trusted tunnel identity.
-          target = { kid: previous.forKid, name: previous.for ?? "A machine", actions: [],
-            connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS };
+          target = {
+            kid: previous.forKid,
+            name: previous.for ?? "A machine",
+            actions: [],
+            connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS,
+          };
         }
         // A report older than a minute does not mean the tunnel is
         // down, but only the tunnel can be asked blind: once another
@@ -3120,8 +3136,10 @@ export class Edge {
         const firstKid = ((await this.kv.get("key")) as { kid?: string } | undefined)?.kid;
         const soleTunnel = firstKid !== undefined && known.length > 0 && known.every((m) => m.kid === firstKid);
         if (previous?.forKid && (!target || !target.connected) && !soleTunnel) {
-          return this.keep({ id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
-            (previous.relays ?? 1) > 0 ? "unknown" : "nowhere");
+          return this.keep(
+            { id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
+            (previous.relays ?? 1) > 0 ? "unknown" : "nowhere",
+          );
         }
         if (!given && known.length > 0) {
           const selection = selectMachine(known, kind);
@@ -3153,7 +3171,13 @@ export class Edge {
         const relayFor = { forKid: relayKid, for: target?.name ?? previous?.for };
         // Written down as a machine's before it goes anywhere.
         if (id !== null && !given) {
-          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays: 0, ...relayFor } satisfies Acted);
+          await this.kv.put(`a:${id}`, {
+            at: this.now(),
+            kind,
+            state: "given",
+            relays: 0,
+            ...relayFor,
+          } satisfies Acted);
           await this.actedIndex(id);
         }
         // What may be done late goes behind anything already waiting
@@ -3518,7 +3542,8 @@ export class Edge {
     }
     await this.ready();
     const cfg = await this.config();
-    const previous = typeof body?.id === "string" ? (await this.kv.get(`a:${body.id}`)) as Acted | undefined : undefined;
+    const previous =
+      typeof body?.id === "string" ? ((await this.kv.get(`a:${body.id}`)) as Acted | undefined) : undefined;
     if (previous?.state === "done") return json({ ...previous.body, again: true }, previous.status ?? 200);
     const held = await this.heldList();
     // Offered again under a name that is already waiting (the device
@@ -3540,8 +3565,8 @@ export class Edge {
     const picked = known.length > 0 ? selectMachine(known, kind) : null;
     const target = forMachine ?? (picked !== null && picked.state !== "none" ? picked.machine : undefined);
     // A previous asking's identity takes precedence over today's selection.
-    const forKid = typeof body?.forKid === "string" ? body.forKid : previous?.forKid ?? target?.kid;
-    const waitsFor = typeof body?.for === "string" ? body.for : previous?.for ?? target?.name;
+    const forKid = typeof body?.forKid === "string" ? body.forKid : (previous?.forKid ?? target?.kid);
+    const waitsFor = typeof body?.for === "string" ? body.for : (previous?.for ?? target?.name);
     const item: Held = {
       // The name it was relayed under, so the host can tell it has seen it.
       id: typeof body?.id === "string" && ACT_ID.test(body.id) ? body.id : crypto.randomUUID(),
@@ -3556,9 +3581,14 @@ export class Edge {
     insertHeld(held, item);
     await this.saveHeld();
     if (forKid !== undefined) {
-      await this.kv.put(`a:${item.id}`, { at: this.now(), kind, state: "given",
+      await this.kv.put(`a:${item.id}`, {
+        at: this.now(),
+        kind,
+        state: "given",
         relays: previous?.relays ?? (went === "unknown" ? 1 : 0),
-        forKid, for: waitsFor } satisfies Acted);
+        forKid,
+        for: waitsFor,
+      } satisfies Acted);
       await this.actedIndex(item.id);
     }
     const waits = (await this.heldWaits(cfg)).get(item.id) ?? "machine";

@@ -110,12 +110,9 @@ export async function route(request: Request, io: Io): Promise<Response> {
     const hasDeploymentStamp = Number.isFinite(deployedAtMs) && deployedAtMs <= nowMs;
     const deployedAt = hasDeploymentStamp ? new Date(deployedAtMs).toISOString() : null;
     const ageSeconds = deployedAt === null ? null : Math.floor((nowMs - deployedAtMs) / 1_000);
-    return new Response(
-      JSON.stringify({ ...body, version: io.version, deployedAt, ageSeconds, host: io.publicHost }),
-      {
-        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
-      },
-    );
+    return new Response(JSON.stringify({ ...body, version: io.version, deployedAt, ageSeconds, host: io.publicHost }), {
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
+    });
   }
 
   const forHost = request.clone() as Request;

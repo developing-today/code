@@ -996,9 +996,7 @@ def cf_parse_app_output(name, verb, out):
     try:
         data = json.loads(lines[-1])
     except ValueError as exc:
-        raise CloudflareError(
-            f"{name}: {verb} returned invalid JSON: {exc}"
-        ) from exc
+        raise CloudflareError(f"{name}: {verb} returned invalid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise CloudflareError(
             f"{name}: {verb} returned a non-object JSON answer: {lines[-1]}"

@@ -9,18 +9,13 @@ const DELIVERY = "del-1234";
 // raw event's delivery id.
 describe("deriveQueueRows (C2 D3 kind table)", () => {
   it("issues opened/reopened derive issue_new; other actions derive nothing", () => {
-    const opened = deriveQueueRows(
-      "issues",
-      { action: "opened", issue: { number: 42, title: "Bug" } },
-      REPO,
-      DELIVERY,
-    );
+    const opened = deriveQueueRows("issues", { action: "opened", issue: { number: 42, title: "Bug" } }, REPO, DELIVERY);
     expect(opened).toHaveLength(1);
     expect(opened[0].kind).toBe("issue_new");
     expect(opened[0].detail).toMatchObject({ repo: REPO, number: 42, delivery_id: DELIVERY });
-    expect(
-      deriveQueueRows("issues", { action: "reopened", issue: { number: 42 } }, REPO, DELIVERY)[0]?.kind,
-    ).toBe("issue_new");
+    expect(deriveQueueRows("issues", { action: "reopened", issue: { number: 42 } }, REPO, DELIVERY)[0]?.kind).toBe(
+      "issue_new",
+    );
     expect(deriveQueueRows("issues", { action: "closed", issue: { number: 42 } }, REPO, DELIVERY)).toEqual([]);
     expect(deriveQueueRows("issues", { action: "labeled", issue: { number: 42 } }, REPO, DELIVERY)).toEqual([]);
   });
@@ -28,7 +23,10 @@ describe("deriveQueueRows (C2 D3 kind table)", () => {
   it("pull_request opened/reopened/ready_for_review derive pr_open", () => {
     for (const action of ["opened", "reopened", "ready_for_review"]) {
       const rows = deriveQueueRows("pull_request", { action, pull_request: { number: 7 } }, REPO, DELIVERY);
-      expect(rows.map((r) => r.kind), action).toEqual(["pr_open"]);
+      expect(
+        rows.map((r) => r.kind),
+        action,
+      ).toEqual(["pr_open"]);
       expect(rows[0].detail.delivery_id).toBe(DELIVERY);
     }
     expect(

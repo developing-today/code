@@ -151,7 +151,8 @@ test("prompt validator accepts canonical IDs and rejects missing, malformed, or 
   assert.deepEqual(validatePacket(packet, T0)[0], []);
 
   const mismatch = structuredClone(packet);
-  mismatch["dedupe_key"] = "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002";
+  mismatch["dedupe_key"] =
+    "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002";
   assert.ok(validatePacket(mismatch, T0)[0].some((error) => error.includes("prompt.id")));
 
   for (const badId of [undefined, "prompt:not-a-uuid"]) {

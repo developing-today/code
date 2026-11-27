@@ -82,6 +82,12 @@ iroh = { version = "1.5", optional = true }
 # mode-3 initiator. Same major version as id-sync; `alloc` only, no
 # std-dependent features beyond what fleet already links.
 postcard = { version = "1", features = ["alloc"], optional = true }
+# Slice 5 (#15399, design §4.5): BLAKE3 digests on chunked envelope
+# transfers, and SHA-1 for the RFC 6455 Sec-WebSocket-Accept
+# handshake. Both crates are already in this workspace's lock file
+# as transitive dependencies.
+blake3 = { version = "1", optional = true }
+sha1 = { version = "0.11", optional = true }
 serde = { workspace = true, optional = true }
 tokio = { version = "1", features = [
   "io-std",
@@ -229,8 +235,12 @@ id = [
   "dep:iroh",
   "dep:postcard",
   "dep:serde",
+  "dep:sha2",
   "dep:tokio",
   "dep:url",
+  "dep:blake3",
+  "dep:sha1",
+  "dep:base64",
 ]
 
 [dev-dependencies]
