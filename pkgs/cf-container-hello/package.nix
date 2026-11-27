@@ -11,7 +11,7 @@ buildNpmPackage {
   pname = "cf-container-hello";
   version = "0.0.1";
   src = ./.;
-  npmDepsHash = "sha256-oHQc1BK4vl7DxFkA4cwPf4cw7MdyejoiDs4TeC6zOr4=";
+  npmDepsHash = "sha256-XMBwUUIcA48gHt+JS2H7koZ/88UaHwcCtlURABQp6sU=";
   dontNpmBuild = true;
   installPhase = ''
     runHook preInstall

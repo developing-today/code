@@ -360,4 +360,36 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
     let mut tampered = audit.clone();
     tampered[0]["outcome"] = Value::String("tampered".to_owned());
     assert!(!verify_chain(&tampered, &hashes));
+
+    // Golden parity baseline (#15950): the canonical serialized audit
+    // transcript plus the hash-chain head. A hosted-edge run of this
+    // script must reproduce both; record any divergence on #10054.
+    // Regenerate with UPDATE_GOLDEN=1 after an intentional script change
+    // (the fixture is `include_str!`'d, so rebuild after blessing).
+    let head = hashes.last().copied().unwrap_or([0; 32]);
+    let golden_doc = serde_json::json!({
+        "events": audit,
+        "head": head
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+    });
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/shared_worlds_spike_audit.json"
+            ),
+            serde_json::to_string_pretty(&golden_doc).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    let golden: Value =
+        serde_json::from_str(include_str!("fixtures/shared_worlds_spike_audit.json")).unwrap();
+    assert_eq!(
+        golden, golden_doc,
+        "shared-worlds audit transcript or hash-chain head diverged from the #15950 golden baseline; \
+         record hosted-edge divergences on #10054, or re-bless with UPDATE_GOLDEN=1 for an intentional script change"
+    );
 }
