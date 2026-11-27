@@ -384,6 +384,7 @@ mod tests {
                     "pool",
                     "launched-by",
                     "remaining-budget-minutes",
+                    "manual-override",
                 ],
                 &["handoff", "bind"],
             )
@@ -425,6 +426,18 @@ mod tests {
             .is_none()
         );
         assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
+        // #16035: --manual-override is a real claim flag (cmd_claim's
+        // parser accepts it and bare_claim_refusal counts it as
+        // intent); the mk list above must stay in lockstep with
+        // cmd_claim's, which every_verb_usage_matches_its_parser
+        // enforces against the claim usage string.
+        assert!(
+            bare_claim_refusal(
+                &mk(&["--task", "123", "--manual-override", "verified"]),
+                &None
+            )
+            .is_none()
+        );
     }
 
     #[test]
