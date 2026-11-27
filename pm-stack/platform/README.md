@@ -48,10 +48,15 @@ the list being told fails there.
 `state` is not something the repository can know. It was checked from
 outside on the day in `checked` by asking each Worker's address: one
 that is not deployed answers with Cloudflare's own "nothing here"
-(error 1042), and anything else is the Worker's own answer. Checking it
-from the edge itself is part of the work to come (a Worker cannot ask
-another on the same account by its public address without a setting
-the console does not have yet).
+(error 1042), and anything else is the Worker's own answer. The edge
+now checks the Workers it holds a service binding to itself, on a
+schedule (#15793, steps 1–2 of #13494): it asks each by the binding
+for the commit it was deployed from — a Worker cannot ask another on
+the same account by its public address without a setting the console
+does not have — and keeps the answers, shown in its health answer.
+The hand-written `state` here still covers the Workers the edge has
+no binding to yet; the Platform screen drawing the edge's checks in
+its place is step 3 of #13494.
 
 The Platform screen says "last deploy" only for a Worker whose list
 entry has `"runDeploys": true`: its workflow, when it succeeds, has put
