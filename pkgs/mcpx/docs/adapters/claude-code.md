@@ -1,8 +1,10 @@
 # Claude Code adapter feasibility
 
 Research checked 2026-11-27 against the current Claude Code documentation and
-mcpx `main` at `45e834d4896dd2426d653c4a0a0c2e8190ef66d7`. This is a feasibility
-record; it does not add an adapter or change the shared client.
+mcpx `main` at `0c8fdf0bf58fe6322e14427c324cda3956c6beb8`. The referenced mcpx
+contracts were inspected at `45e834d4896dd2426d653c4a0a0c2e8190ef66d7` and
+confirmed unchanged through this `main` tip. This is a feasibility record; it
+does not add an adapter or change the shared client.
 
 ## Recommendation
 
