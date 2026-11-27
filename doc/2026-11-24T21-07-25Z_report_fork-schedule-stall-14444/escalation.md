@@ -20,7 +20,7 @@ event type keeps working).
   run 44826053161, 2026-11-20T22:06Z, conclusion **failure** — died in
   `Dispatch suggestions` on `pm-dispatch POST /v1/sessions` HTTP 502
   (all four attempts). The 502 is real but unrelated to the stall:
-  that run *did* fire.
+  that run _did_ fire.
 - Zero schedule-event runs repo-wide after 2026-11-20 (last: repo-sweeper
   44833661765, 2026-11-20T23:01Z, success; auto-format 22:49Z success;
   models-snapshot 19:35Z success). Per-workflow last-schedule list:
@@ -51,7 +51,7 @@ then `bash .github/scripts/check-fork-schedule-stall.sh --runs-json runs.json`.
 
 ## Effect on parked task 20778
 
-It cannot resume/revalidate until a *scheduled* (not manual) agents run
+It cannot resume/revalidate until a _scheduled_ (not manual) agents run
 succeeds, so it stays parked on this platform blocker. Separately, the
 Nov 18–20 failures show the pm-dispatch 502 (code#6992) must be gone or
 the resumed run will fire and fail in `Dispatch suggestions`.

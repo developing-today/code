@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7896 | #5836 | `audit:complete` | Records the personalized note search ranking decision, including own-edit-first, ordered relevance/evidence/graph/recency signals, explainability and graffiti demotion. The issue closes with this decision record. |
-| #7897 | #6822 | `audit:complete` | Guards malformed E2E timing seeds, including non-object values, non-finite numbers and booleans; the issue's requested CI hardening is covered. |
-| #7898 | #1161 | `audit:complete` | Displays an expired OpenCode Go workspace as lapsed, avoids stale quota percentages, and treats terminal ingest as non-error. |
-| #7900 | #5870 | `audit:complete` | Settles chat-anchor data with typed links, revision-bound part anchors, survival/edit/delete states and parent privacy. The issue closes on the design decision. |
-| #7902 | #6037 | `audit:complete` | Records the structural-first chunk-boundary policy with overlap and migration guidance. The parent #6028 tracked the provisional span-reuse question and is closed. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                              |
+| -------------: | -------------: | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7896 |          #5836 | `audit:complete` | Records the personalized note search ranking decision, including own-edit-first, ordered relevance/evidence/graph/recency signals, explainability and graffiti demotion. The issue closes with this decision record. |
+|          #7897 |          #6822 | `audit:complete` | Guards malformed E2E timing seeds, including non-object values, non-finite numbers and booleans; the issue's requested CI hardening is covered.                                                                      |
+|          #7898 |          #1161 | `audit:complete` | Displays an expired OpenCode Go workspace as lapsed, avoids stale quota percentages, and treats terminal ingest as non-error.                                                                                        |
+|          #7900 |          #5870 | `audit:complete` | Settles chat-anchor data with typed links, revision-bound part anchors, survival/edit/delete states and parent privacy. The issue closes on the design decision.                                                     |
+|          #7902 |          #6037 | `audit:complete` | Records the structural-first chunk-boundary policy with overlap and migration guidance. The parent #6028 tracked the provisional span-reuse question and is closed.                                                  |
 
 ## Slice state
 

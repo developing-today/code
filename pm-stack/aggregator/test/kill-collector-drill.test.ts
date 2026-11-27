@@ -175,7 +175,12 @@ describe("kill-collector drill: pause path agrees with the aggregator (#8570)", 
 
   test("aggregator .env pins a pause file the drill does not match -> refuse", () => {
     const pinned = join(tmpdir(), `pinned-${Date.now()}.pause`);
-    const r = runDrill({ timerActive: false, healthPlan: ["fresh"], aggEnvPauseFile: pinned, pauseOverride: undefined });
+    const r = runDrill({
+      timerActive: false,
+      healthPlan: ["fresh"],
+      aggEnvPauseFile: pinned,
+      pauseOverride: undefined,
+    });
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("disagrees with the aggregator's pause file");
     expect(existsSync(r.pauseFile)).toBe(false);

@@ -30,11 +30,11 @@ usage errors (exit 2); operational, validation and policy failures exit 1.
 
 ## Common options and signing policy
 
-| Option | Meaning |
-| --- | --- |
-| `--json` | Emit one JSON value instead of text. |
-| `--not-before RFC3339` | Set validity start; defaults to now. |
-| `--not-after RFC3339` | Set an exact validity end; mutually exclusive with `--valid-for`. |
+| Option                 | Meaning                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `--json`               | Emit one JSON value instead of text.                                           |
+| `--not-before RFC3339` | Set validity start; defaults to now.                                           |
+| `--not-after RFC3339`  | Set an exact validity end; mutually exclusive with `--valid-for`.              |
 | `--valid-for DURATION` | Set lifetime from not-before (for example `20y`, `90d`, or `15 years 7 days`). |
 
 Signing never discovers keys from ambient locations. Root and issuer creation

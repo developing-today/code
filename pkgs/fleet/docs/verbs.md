@@ -165,13 +165,13 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 `fleet gh <gh args...>` passes normal arguments through to the installed `gh` CLI with Fleet's token rotation and cache. The supported Fleet-specific commands are:
 
-| Command                     | Purpose                                                                    |
-| --------------------------- | -------------------------------------------------------------------------- |
+| Command                     | Purpose                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------- |
 | `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
-| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
-| `cache-status`              | Probe configured token-cache daemons.                                      |
-| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
-| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.   |
+| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                     |
+| `cache-status`              | Probe configured token-cache daemons.                                        |
+| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number.   |
+| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.     |
 
 Leading `--cache-addr ADDR` options and `--no-cache` control the token cache for a call. Normal `gh` flags and subcommands pass through unchanged.
 
@@ -429,13 +429,13 @@ daemon's general client.
 
 ## `ssh` — tier T3 (ssh/fleet)
 
-| Verb                                          | Purpose                                                                                                                                                                                                                           |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
-| `sessions`                                     | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                              |
-| `sweep --idle-for DURATION [--dry-run]`        | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
-| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
-| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+| Verb                                          | Purpose                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                                                                                                                                                                                    |
+| `sessions`                                    | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                                                                                                                                                                                      |
+| `sweep --idle-for DURATION [--dry-run]`       | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
+| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255.                                                                                                                                                        |
+| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                                                                                                                                                                                      |
 
 ## `id` — iroh-native ID transport (design #10391 pass 2)
 

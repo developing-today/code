@@ -1495,7 +1495,11 @@ export async function main(): Promise<number> {
       for (const line of existing.split("\n").slice(-500)) {
         if (!line.trim()) continue;
         try {
-          const parsed = JSON.parse(line) as { kind?: string; id?: string; subject?: { pool?: string; window?: string } };
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; window?: string };
+          };
           if (parsed.kind === "reset_duration" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
             previous.set(resetDurationSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
           }

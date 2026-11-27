@@ -213,7 +213,9 @@ def judge_bundle_result(source_head, bundle, now, slo_hours, lag=None, lagged=Fa
         lag_result = judge_lag(source_head, head, lag, now, slo_hours, evidence)
         if lag_result["status"] != FRESH:
             return lag_result
-        evidence = {k: v for k, v in lag_result.items() if k not in ("status", "detail")}
+        evidence = {
+            k: v for k, v in lag_result.items() if k not in ("status", "detail")
+        }
     age = now - modtime
     if age > timedelta(hours=slo_hours):
         return result(
@@ -403,13 +405,17 @@ def fetch_lag(repo, copy_head, source_head):
     relation = {"ahead": "behind", "behind": "ahead"}.get(status, status)
     behind_by = data.get("ahead_by")
     moved = None
-    if relation == "behind" and isinstance(behind_by, int) and 0 < behind_by <= MAX_LAG_COMMITS:
+    if (
+        relation == "behind"
+        and isinstance(behind_by, int)
+        and 0 < behind_by <= MAX_LAG_COMMITS
+    ):
         listing = _gh_text(
             [
                 "--paginate",
                 f"{path}?per_page=100",
                 "--jq",
-                ".commits[] | [.sha, (.parents[0].sha // \"\"), .commit.committer.date] | @tsv",
+                '.commits[] | [.sha, (.parents[0].sha // ""), .commit.committer.date] | @tsv',
             ]
         )
         rows = []

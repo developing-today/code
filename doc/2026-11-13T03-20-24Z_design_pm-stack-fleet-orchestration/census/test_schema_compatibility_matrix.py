@@ -24,15 +24,30 @@ SOURCE = ROOT / (
 MARKER = "<!-- cen04-schema-mirror -->"
 # §3's named facts, including the distinct absent/projection facts within rows.
 FACT_SECTIONS = {
-    "queue_identity": "3.1", "queue_state": "3.2", "urgency_profile": "3.3",
-    "lease_claim": "3.4", "blocked_dependencies": "3.5", "broker_events": "3.6",
-    "journal": "3.6", "checkpoints": "3.7", "notes": "3.7", "cursors": "3.8",
-    "operation_receipts": "3.9", "creation_outbox": "3.9",
-    "project_fields": "3.10", "metadata_block": "3.10", "metadata_mirror": "3.10",
-    "merge_intent": "3.11", "placement_sessions": "3.12",
-    "coordination_replica": "3.13", "fallback_markers": "3.13",
-    "aggregator_actions": "3.14", "shared_comments": "3.14", "projector": "3.14",
-    "pmp_links": "3.14", "pm_target": "3.14",
+    "queue_identity": "3.1",
+    "queue_state": "3.2",
+    "urgency_profile": "3.3",
+    "lease_claim": "3.4",
+    "blocked_dependencies": "3.5",
+    "broker_events": "3.6",
+    "journal": "3.6",
+    "checkpoints": "3.7",
+    "notes": "3.7",
+    "cursors": "3.8",
+    "operation_receipts": "3.9",
+    "creation_outbox": "3.9",
+    "project_fields": "3.10",
+    "metadata_block": "3.10",
+    "metadata_mirror": "3.10",
+    "merge_intent": "3.11",
+    "placement_sessions": "3.12",
+    "coordination_replica": "3.13",
+    "fallback_markers": "3.13",
+    "aggregator_actions": "3.14",
+    "shared_comments": "3.14",
+    "projector": "3.14",
+    "pmp_links": "3.14",
+    "pm_target": "3.14",
 }
 # Reviewed projection of §3, independently bound below to the actual document.
 # A whole-section quote search alone would let journal steal events' home.
@@ -47,14 +62,22 @@ FACT_SEMANTICS = {
     "checkpoints": ("the queue broker", "checkpoints", "reuse"),
     "notes": ("#9208", "absent as a Fleet-store fact", "absent"),
     "cursors": ("fleet-queue", "none exists", "absent"),
-    "operation_receipts": ("REL-03", "No persisted operation or receipt table exists on main", "absent"),
+    "operation_receipts": (
+        "REL-03",
+        "No persisted operation or receipt table exists on main",
+        "absent",
+    ),
     "creation_outbox": ("broker", "creation_outbox", "reuse"),
     "project_fields": ("GitHub", "GitHub", "reuse"),
     "metadata_block": ("the stamper", "GitHub body", "reuse"),
     "metadata_mirror": ("ingestion", "pm_metadata_items", "reuse"),
     "merge_intent": ("the queue broker", "merge_intents", "reuse"),
     "placement_sessions": ("the placement line", "placement_sessions", "reuse"),
-    "coordination_replica": ("Local coordination replica", "local SQLite file", "reuse"),
+    "coordination_replica": (
+        "Local coordination replica",
+        "local SQLite file",
+        "reuse",
+    ),
     "fallback_markers": ("workers", "GitHub issue comments", "reuse"),
     "aggregator_actions": ("aggregator", "public.agg_actions", "reuse"),
     "shared_comments": ("Aggregator", "public.shared_comments", "reuse"),
@@ -63,8 +86,14 @@ FACT_SEMANTICS = {
     "pm_target": ("PM line", "current homes", "conflict"),
 }
 ROW_GATE_FACTS = {
-    "lease_claim", "blocked_dependencies", "journal", "notes", "cursors",
-    "operation_receipts", "pmp_links", "pm_target",
+    "lease_claim",
+    "blocked_dependencies",
+    "journal",
+    "notes",
+    "cursors",
+    "operation_receipts",
+    "pmp_links",
+    "pm_target",
 }
 
 
@@ -73,11 +102,13 @@ def sections(text):
     headings = list(re.finditer(r"^(#{2,3}) (\d+(?:\.\d+)?)\.? .+$", text, re.M))
     result = {}
     for index, heading in enumerate(headings):
-        end = next((h.start() for h in headings[index + 1:]
-                    if len(h[1]) <= len(heading[1])), len(text))
+        end = next(
+            (h.start() for h in headings[index + 1 :] if len(h[1]) <= len(heading[1])),
+            len(text),
+        )
         if heading[2] in result:
             raise ValueError("duplicate source section")
-        result[heading[2]] = text[heading.start():end].strip()
+        result[heading[2]] = text[heading.start() : end].strip()
     return result
 
 
@@ -86,8 +117,11 @@ def normalized(text):
 
 
 def refusals(section):
-    return [line.split("|")[1].strip() for line in section.splitlines()
-            if line.startswith("| ") and " = " in line.split("|")[1]]
+    return [
+        line.split("|")[1].strip()
+        for line in section.splitlines()
+        if line.startswith("| ") and " = " in line.split("|")[1]
+    ]
 
 
 def load_mirror():
@@ -106,7 +140,13 @@ def validate(mirror, source_text, persisted_facts=()):
     This validates documentation consistency, not live ownership or migration.
     """
     source = sections(source_text)
-    required = {key for key in source if key.startswith("3.")} | {"4", "5", "6", "7", "9"}
+    required = {key for key in source if key.startswith("3.")} | {
+        "4",
+        "5",
+        "6",
+        "7",
+        "9",
+    }
     if set(mirror["sections"]) != required:
         raise ValueError("source section inventory drift")
     for key, digest in mirror["sections"].items():
@@ -130,12 +170,15 @@ def validate(mirror, source_text, persisted_facts=()):
             raise ValueError("unregistered source section")
         covered.add(section)
         for quote in (row["owners"][0], row["home"]):
-            if not quote.strip() or normalized(quote) not in normalized(source[section]):
+            if not quote.strip() or normalized(quote) not in normalized(
+                source[section]
+            ):
                 raise ValueError(f"unsupported owner/home/disposition: {fact}")
         if row["disposition"] not in {"reuse", "extend", "absent", "conflict"}:
             raise ValueError("invalid disposition")
-        if (row["disposition"] not in normalized(source[section])
-                and not (section in {"3.13", "3.14"} and row["disposition"] == "reuse")):
+        if row["disposition"] not in normalized(source[section]) and not (
+            section in {"3.13", "3.14"} and row["disposition"] == "reuse"
+        ):
             raise ValueError("unsupported disposition")
         for field in ("legacy_mapping", "write_read_api", "rollback"):
             if not row[field] or any(ref not in required for ref in row[field]):
@@ -236,14 +279,18 @@ class SchemaCompatibilityMatrixTests(unittest.TestCase):
 
     def test_dead_pm_home_is_rejected(self):
         mutant = copy.deepcopy(self.mirror)
-        next(r for r in mutant["facts"] if r["disposition"] == "conflict")["home"] = "muse-dev2"
+        next(r for r in mutant["facts"] if r["disposition"] == "conflict")["home"] = (
+            "muse-dev2"
+        )
         with self.assertRaisesRegex(ValueError, "PM target conflict"):
             validate(mutant, self.source)
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--list"]:
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(SchemaCompatibilityMatrixTests)
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(
+            SchemaCompatibilityMatrixTests
+        )
         print("\n".join(test.id() for test in suite))
     else:
         unittest.main()

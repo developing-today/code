@@ -137,9 +137,11 @@ owners = ["layercloud"]
   App exactly like a built-in. The whole-order override remains exact;
   it may name an owner outside the App's default owner list. Unknown
   slugs retain the legacy behavior of becoming a personal leg.
-- Owner hints reorder only the configured owners, case-insensitively;
-  they never discover or add installations. The built-in owner and App
-  ID environment overrides remain unchanged and do not affect added Apps.
+- Owner hints reorder configured owners case-insensitively. When no
+  explicit `FLEET_GH_ORDER` is set, an owner absent from an App's
+  configured list is also checked against that App's live installations;
+  a match adds the App leg for that call. The built-in owner and App ID
+  environment overrides remain unchanged and do not affect added Apps.
 
 Cache requests identify Apps by slug, not by credentials. Configure the
 same `[[gh.apps]]` definitions on the invoking host **and every cache
@@ -151,22 +153,27 @@ resolution, signing and installation minting behavior are unchanged.
 
 Environment overrides (per-process, nothing persists):
 
-| Variable                   | Effect (`gh.rs:74-86`, `gh.rs:352-378`)                                                                                                                                                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                   | Effect (`gh.rs:74-86`, `gh.rs:352-378`)                                                                                                                                                                                                                                                   |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FLEET_GH_ORDER`           | Comma list fixing the whole rotation exactly: entries `personal`, `app:<owner>` (fleet App), `devtoday:<owner>`, `backup:<owner>`, or a configured `<slug>:<owner>`. **Gotcha:** an entry matching no known `slug:` prefix silently becomes an extra `personal` leg — typos do not error. |
-| `FLEET_GH_APP_OWNERS`      | Comma list replacing the fleet App's owners.                                                                                                                                                                                                                        |
-| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners.                                                                                                                                                                                                             |
-| `FLEET_GH_BACKUP_OWNERS`   | Comma list replacing the backup App's owners.                                                                                                                                                                                                                       |
-| `FLEET_GH_APP_ID`          | Overrides the fleet App ID constant `5612056`.                                                                                                                                                                                                                      |
+| `FLEET_GH_APP_OWNERS`      | Comma list replacing the fleet App's owners.                                                                                                                                                                                                                                              |
+| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners.                                                                                                                                                                                                                                   |
+| `FLEET_GH_BACKUP_OWNERS`   | Comma list replacing the backup App's owners.                                                                                                                                                                                                                                             |
+| `FLEET_GH_APP_ID`          | Overrides the fleet App ID constant `5612056`.                                                                                                                                                                                                                                            |
 
-### Owner hint: reorder only, never add
+### Owner hint: reorder and discover live installations
 
 When the call names an owner — `--repo`/`-R owner/repo`,
 `--owner org`, an `api repos/<owner>/…` path, or a `github.com/`
 URL — that owner's leg moves to the **front of each App leg that
-already lists it** (`gh.rs:302-341`, `gh.rs:418-427`). A hint for an
-owner no leg lists changes nothing: `fleet gh` **never mints for an
-unconfigured owner** (see [Unknown-org behavior](#unknown-org-behavior)).
+already lists it**. If an App does not list the owner, and no explicit
+`FLEET_GH_ORDER` overrides the rotation, its cached live installation
+list is checked; a match adds that App leg before its configured legs.
+A list lookup error is reported and leaves that App's configured
+rotation intact. Installation data uses the existing paginated cache
+and lifetime. This lets private/scoped calls use an App installed in
+an otherwise unconfigured org without weakening the personal-token-last
+fallback.
 
 ## Retry-safety: what repeats under the next token
 
@@ -194,22 +201,15 @@ attempt's token _source_ (label only, never a value) on stderr
 
 ## Unknown-org behavior
 
-Installation lookup runs only for owners already in the configured
-lists, and the hint never adds one — so for an org no leg is
-configured for, `fleet gh` runs the call under other orgs' legs.
-A scoped/private call under a wrong-org leg fails
-`403 Resource not accessible by integration`, which classifies as a
-permission refusal and fails over to the next leg; if no leg covers
-the org, every leg 403s in turn. This is the #10744 gap: live probes
-(2026-11-14, org `layercloud`, all three Apps installed there but no
-leg configured) confirmed the default rotation 403s while
-`FLEET_GH_ORDER=…,app:layercloud,…` succeeds. In the default
-rotation the App legs 403 first, in order; the **personal token,
-tried last, is the final cover** — while it has headroom it still
-masks the gap, but only after every App leg has refused. Public
-reads also pass under any leg. Additional Apps and their owner lists
-can now be declared without code changes using `[[gh.apps]]` above
-(code#10311); add the needed owner explicitly rather than relying on hints.
+When a call names an owner outside the configured lists, each App's
+paginated installation list is checked. A live installation adds that
+App's leg for the call; an App with no matching installation is not
+added. An installation-list error is reported and does not discard the
+configured rotation. This is the dynamic-hint choice for #10311(e): it
+matches the observed `layercloud` case (all three Apps are installed
+there, but none had a configured owner entry) while retaining the
+personal token as the final fallback. Setting `FLEET_GH_ORDER` remains
+an explicit override and disables discovery.
 
 For an inventory of App installations beyond the configured owner
 lists, use `fleet gh tiers --all`. It lists every installation of each

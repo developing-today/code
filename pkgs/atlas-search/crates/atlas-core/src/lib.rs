@@ -64,6 +64,7 @@ pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod muse;
 pub mod notes;
 pub mod occurrences;
 pub mod owner_inventory;

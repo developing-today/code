@@ -43,10 +43,10 @@ database moving mid-run cannot smear the copy.
 
 ## Legs
 
-| Source (laptop-local)                      | Home                         | Token (Bitwarden name)                      | Schedule                                                                             |
-| ------------------------------------------ | ---------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `~/.local/state/pm-projector/projector.db` | `laptop-backup-pm-projector` | `turso.laptop-backup-pm-projector-rw-token` | `laptop-db-backup-pm-projector.timer`, Sundays 05:40 + up to 30 min randomized delay |
-| `~/.local/state/fleet/metadata.db` | `laptop-backup-fleet-metadata` | `turso.laptop-backup-fleet-metadata-rw-token` | `laptop-db-backup-fleet-metadata.timer`, Sundays 06:20 + up to 30 min randomized delay |
+| Source (laptop-local)                      | Home                           | Token (Bitwarden name)                        | Schedule                                                                               |
+| ------------------------------------------ | ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `~/.local/state/pm-projector/projector.db` | `laptop-backup-pm-projector`   | `turso.laptop-backup-pm-projector-rw-token`   | `laptop-db-backup-pm-projector.timer`, Sundays 05:40 + up to 30 min randomized delay   |
+| `~/.local/state/fleet/metadata.db`         | `laptop-backup-fleet-metadata` | `turso.laptop-backup-fleet-metadata-rw-token` | `laptop-db-backup-fleet-metadata.timer`, Sundays 06:20 + up to 30 min randomized delay |
 
 The remaining qualifying databases from the #13459 inventory
 (user-prompts.db, t3code statev2.sqlite,

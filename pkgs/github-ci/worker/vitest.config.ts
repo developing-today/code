@@ -1,9 +1,8 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
-// Vitest 4 / @cloudflare/vitest-pool-workers 0.23: the pool is registered
-// as a Vite plugin; the old defineWorkersConfig + test.poolOptions.workers
-// shape (and the /config export it came from) no longer exists.
+// Cloudflare's Vitest plugin registers the Workers runtime as a Vite plugin;
+// the legacy defineWorkersConfig + test.poolOptions.workers API is removed.
 export default defineConfig({
   plugins: [
     cloudflareTest({

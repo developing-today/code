@@ -23,12 +23,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RefKey } from "../src/model.ts";
 import { searchWork } from "../src/search-view.ts";
-import {
-  median,
-  parseProfileArgs,
-  summarize,
-  type MeasureRecord,
-} from "../scripts/search-profile.ts";
+import { median, parseProfileArgs, summarize, type MeasureRecord } from "../scripts/search-profile.ts";
 
 describe("search-profile args — strict contract", () => {
   test("requires --query", () => {
@@ -141,7 +136,22 @@ describe("searchWork — stable fixture response", () => {
       links: [],
     },
   ];
-  const items = new Map([[ref, { ref, kind: "issue", url: "https://example.invalid/i", title: "Search latency", state: "open", labels: [], author: "a", updatedAt: "2026-11-01T00:00:00Z", resolution: "projector" }]] as never);
+  const items = new Map([
+    [
+      ref,
+      {
+        ref,
+        kind: "issue",
+        url: "https://example.invalid/i",
+        title: "Search latency",
+        state: "open",
+        labels: [],
+        author: "a",
+        updatedAt: "2026-11-01T00:00:00Z",
+        resolution: "projector",
+      },
+    ],
+  ] as never);
 
   test("same inputs give byte-identical outputs", () => {
     const a = searchWork(board, rows, items, "search", {});
