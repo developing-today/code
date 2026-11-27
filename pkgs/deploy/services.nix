@@ -30,6 +30,7 @@
   pmAggregator,
   pmProjector,
   pmTunnel,
+  irohRelay,
   readyForAgent,
 }:
 {
@@ -526,6 +527,39 @@
     # connection (the pm-tunnel watchdog reads the same endpoint).
     healthCheck = "http://127.0.0.1:20242/ready";
     targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  # Self-hosted iroh relay, tunnel mode - issue #14719, slice 1:
+  # the first deployable service for the fleet-transport pilot
+  # (#13752 §2.5). Tunnel mode (setup A in the connectivity
+  # design): cloudflared terminates TLS at the edge and forwards to
+  # the relay's plain HTTP origin on loopback, so the relay needs no
+  # certificate and no inbound port; QUIC address discovery stays off
+  # (the Tunnel carries no UDP). The tunnel-mode config rides inside
+  # the package (iroh-relay.nix bundles the relay kit's tunnel.toml),
+  # so the generic renderer deploys this target from the entry alone.
+  # Registration only: activation (unit install, the iroh-relay
+  # user, the tunnel hostname) is a later slice, and it must carry
+  # the kit unit's KillSignal=SIGINT — the rendered unit has no field
+  # for it. No live DNS or secret values are touched here: the relay
+  # holds no keys and sees no plaintext (design §2.4).
+  iroh-relay = {
+    package = irohRelay;
+    entryPoint = "bin/iroh-relay";
+    args = [ ];
+    environment = {
+      RUST_LOG = "info"; # the kit unit's Environment
+    };
+    secrets = [ ];
+    user = "iroh-relay"; # the kit unit's User; created at activation time
+    ports = [
+      3340 # relay HTTP origin, loopback (tunnel.toml http_bind_addr)
+      9090 # metrics, loopback (tunnel.toml metrics_bind_addr)
+    ];
+    restart = "always"; # the kit unit's Restart
+    healthCheck = "http://127.0.0.1:3340/ping"; # the relay's own ping route
+    targets = [ "laptop" ]; # the 2a pilot's one host (design §2.5)
     class = "systemd";
   };
 

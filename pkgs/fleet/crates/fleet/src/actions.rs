@@ -273,7 +273,7 @@ fn gh_api(
                     .unwrap_or_default()
                     .as_str(),
             )
-            .map_err(|e| format!("github api {method} {path}: transport: {e}"))?
+            .map_err(|e| gh_transport_err(method, path, &e))?
     } else {
         agent
             .get(&url)
@@ -282,7 +282,7 @@ fn gh_api(
             .header("Authorization", &format!("Bearer {token}"))
             .header("User-Agent", "fleet-actions")
             .call()
-            .map_err(|e| format!("github api {method} {path}: transport: {e}"))?
+            .map_err(|e| gh_transport_err(method, path, &e))?
     };
     let status = resp.status().as_u16();
     let text = resp
@@ -299,6 +299,47 @@ fn gh_api(
         return Ok(json!({}));
     }
     serde_json::from_str(&text).map_err(|e| format!("github api {method} {path}: bad JSON: {e}"))
+}
+
+/// Actionable hint for seat-side GitHub API transport failures that look
+/// like TLS certificate trust (code#15575). Returns `None` for
+/// non-TLS failures so ordinary transport errors stay terse.
+fn tls_trust_hint(err: &str) -> Option<&'static str> {
+    let lower = err.to_lowercase();
+    let looks_like_tls = [
+        "unknownissuer",
+        "unknown issuer",
+        "invalid peer certificate",
+        "certificate verify failed",
+        "certificate has expired",
+        "self-signed",
+        "self signed",
+        "unable to get local issuer",
+        "certificate",
+        "rustls",
+        "x509",
+        "tls handshake",
+        "ssl certificate",
+    ]
+    .iter()
+    .any(|sig| lower.contains(sig));
+    if !looks_like_tls {
+        return None;
+    }
+    Some(
+        "seat TLS trust: the GitHub API TLS handshake failed certificate validation — \
+         seats behind the sandbox TLS-intercepting egress proxy need a fleet binary carrying \
+         code#15575 (platform certificate roots). Re-run scripts/muse/bootstrap.sh to refresh \
+         the binary, then retry",
+    )
+}
+
+fn gh_transport_err(method: &str, path: &str, e: &dyn std::fmt::Display) -> String {
+    let base = format!("github api {method} {path}: transport: {e}");
+    match tls_trust_hint(&e.to_string()) {
+        Some(hint) => format!("{base} ({hint})"),
+        None => base,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1712,5 +1753,63 @@ fn r2_put(
     } else {
         let _ = resp.body_mut().read_to_string();
         Err(format!("HTTP {status}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: golden corpus — the exact seat failure from code#15575
+    /// must name the trust problem and the remedy; non-TLS failures
+    /// must pass through unchanged.
+    #[test]
+    fn tls_failures_name_the_trust_problem() {
+        for err in [
+            "io: invalid peer certificate: UnknownIssuer",
+            "transport: invalid peer certificate: UnknownIssuer",
+            "x509: certificate signed by unknown authority",
+            "TLS handshake failed: certificate verify failed (self signed certificate)",
+        ] {
+            let hint = tls_trust_hint(err);
+            assert!(hint.is_some(), "no hint for TLS failure: {err}");
+            let hint = hint.unwrap();
+            assert!(
+                hint.contains("15575") && hint.contains("bootstrap"),
+                "hint names neither the issue nor the remedy: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_tls_failures_stay_terse() {
+        for err in [
+            "connection refused",
+            "HTTP 403: Resource not accessible by integration",
+            "dns error: no records found",
+            "timed out",
+        ] {
+            assert_eq!(tls_trust_hint(err), None, "false hint for: {err}");
+        }
+    }
+
+    #[test]
+    fn dispatch_error_carries_hint_only_for_tls() {
+        let tls = gh_transport_err(
+            "POST",
+            "/repos/o/r/actions/workflows/fleet-exec.yml/dispatches",
+            &"io: invalid peer certificate: UnknownIssuer",
+        );
+        assert!(tls.contains("transport: "), "{tls}");
+        assert!(tls.contains("15575"), "{tls}");
+        let plain = gh_transport_err(
+            "POST",
+            "/repos/o/r/actions/workflows/fleet-exec.yml/dispatches",
+            &"connection refused",
+        );
+        assert_eq!(
+            plain,
+            "github api POST /repos/o/r/actions/workflows/fleet-exec.yml/dispatches: transport: connection refused"
+        );
     }
 }

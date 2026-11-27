@@ -20,6 +20,12 @@ beforeAll(async () => {
     env: {
       ...Bun.env,
       PM_AGG_PORT: String(port),
+      // The spawned server's freshness IPC listener defaults to the live
+      // port (4871); on any machine running the live aggregator — the
+      // laptop this hub runs on — the bind collides (EADDRINUSE) and the
+      // child dies before readiness. Pin the child to a sibling port the
+      // same way the other server-booting suites do (#1047 slice).
+      PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "fixtures",
       PM_AGG_STORE_BACKEND: "file",
       PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile,

@@ -18,11 +18,11 @@ Features: `default = ["world", "sandbox"]`; `world` adds `rmp-serde` and gates `
 
 Embedding example: the facade binary calls this crate by its direct path at `pkgs/id/src/main.rs:195` — `let provenance = id_core::discovery::defaults_provenance();` — and the integration suite reaches the same modules through facade paths, for example `id::waiting::WaitingLimits` in `pkgs/id/tests/first_app_poc.rs`.
 
-## id-store — 32 public modules
+## id-store — 35 public modules
 
 Purpose (from its `Cargo.toml`): "Store layer of the id crate: store traits, blob store, event headers, documents, tags and search (pkgs/id crate split step 2a, #4405)". Its `lib.rs` records two vocabularies it owns for layering reasons: the event store's own types (`event_types`, `range`) sit below the event-store implementation in `id-events`, and the op vocabularies the signed header embeds (`chat`, `notes`, `note_links`, `session_checkpoint`, `issuer_rotation`, `policy`) live with `chain::ChainExt`, which carries them as fields.
 
-Public modules: `admission`, `chain`, `chat`, `chat_anchor`, `content_store`, `documents`, `event_types`, `graph_index`, `identity`, `issuer_rotation`, `media`, `namespace_registry`, `note_blocks`, `note_checkpoints`, `note_links`, `notes`, `numeric_registry`, `policy`, `range`, `search`, `session_checkpoint`, `store`, `store_traits`, `tag_claims`, `tag_index`, and `tags`; plus `pub use id_core::{port, content_id}` and `pub use store::STORE_PATH`.
+Public modules: `admission`, `chain`, `chat`, `chat_anchor`, `content_store`, `documents`, `event_rows`, `event_types`, `grant_authority`, `graph_index`, `identity`, `issuer_rotation`, `login_binding`, `media`, `namespace_registry`, `note_blocks`, `note_checkpoints`, `note_links`, `note_projections`, `notes`, `numeric_registry`, `policy`, `range`, `read_authority`, `search`, `session_checkpoint`, `store`, `store_traits`, `tag_claims`, `tag_index`, `tags`, `talk_page`, `thread_resolution`, `thread_text`, and `turso`; plus `pub use id_core::{port, content_id}` and `pub use store::STORE_PATH`.
 
 Key types and functions: `store::StoreType` (`Persistent(FsStore)` or `Ephemeral(MemStore)`), `open_store`, and `load_or_create_keypair`, with `STORE_PATH = ".iroh-store"`; `chain::{ChainExt, Event, sign}` — the signed event-header chain; `store_traits`, including `EventStoreBackend`, the consumer seam consumed via `SharedEventStore`; the admission hooks `PrepareHook`, `OutboxHook`, `Reauthorizer`, `OperationLedger`, `MemoryOperationLedger`, `PrepareDecision`, and `OpState`; the tag model in `tags`, `tag_index`, and `tag_claims`; `documents::{DocumentRef, DOCUMENT_KIND}`; and `search`, `media`, and the `notes` family. The `media` module's `MediaStream` assembles streamed content under a credit window and enforces the 256 MiB artifact ceiling (`MAX_MEDIA_BYTES`) cumulatively during assembly: a frame that would take the assembled bytes over the ceiling is refused with the artifact oversize refusal before it consumes credit or extends the buffer, so the total is not only checked when the stream finishes into an artifact.
 
@@ -42,11 +42,11 @@ Features: `default = []` only. Dependents: the facade, `id-cli`, `id-directory`,
 
 Embedding example: `pkgs/id/tests/first_app_poc.rs:33-45` imports `event_store::{EventStore, Ingest}` and the `idset` projection through facade paths in the same import block as the `id-store` modules, and the worked example in `pkgs/id/examples/first-app-poc/README.md` records that the PoC's counted did-it view is an `id-events` / `id-store` composition, not new protocol code.
 
-## id-sync — 27 public modules
+## id-sync — 30 public modules
 
 Purpose (from its `Cargo.toml`): "Sync layer of the id crate: log sync, the meta protocol, file operations and the meta client wire half (pkgs/id crate split step 3, #4406)". Step 3c added the friend-envelope and artifact family (`envelope`, `envelope_net`, `envelope_outbox`, `artifact`), seamed to worlds and the directory through `host::SessionHost` and `artifact::ArtifactSink`.
 
-Public modules: `announcement`, `artifact`, `bridge`, `bridge_http`, `chained_message`, `dht`, `envelope`, `envelope_net`, `envelope_outbox`, `fanout_answer`, `federation` (the module plus `record_join`, `record_store`, `exchange_net`, and slices b01 to b32), `fileops`, `graph_frontier`, `host`, `log_sync`, `meta_client`, `protocol`, `registry`, `relay_gate`, `relay_ingest`, and `transfer`. One further module, `hex`, is `pub(crate)`.
+Public modules: `admission`, `announcement`, `announcement_pkarr`, `announcement_relay`, `artifact`, `bridge`, `bridge_http`, `chained_message`, `dht`, `discovery_client`, `discovery_join`, `discovery_resolver`, `envelope`, `envelope_net`, `envelope_outbox`, `fanout_answer`, `federation` (the module plus `record_join`, `record_store`, `exchange_net`, and slices b01 to b32), `fileops`, `forwarding_sink`, `graph_frontier`, `host`, `log_sync`, `meta_client`, `protocol`, `registry`, `relay_gate`, `relay_ingest`, `serving_limits`, `snapshot_serving`, and `transfer`. One further module, `hex`, is `pub(crate)`.
 
 Key types and functions: `protocol::META_ALPN = b"/iroh-meta/3"` and the `MetaRequest` / `MetaResponse` wire types; `log_sync` (p2panda log-sync sessions and the range-sync bridge; `SyncProtocol`); `transfer` (server-to-server file transfer, #5345, re-exported by the facade at `id::transfer` and exercised by [Tutorial: store, share and fetch a file between two nodes](../tutorials/share-a-file.md)); `artifact` (signed artifacts, push and pull); `envelope_outbox::Outbox` (an append-only journal, replayed on open); `announcement::{Announcement, SignedAnnouncement}` (sign and verify); `dht` (the opt-in mainline lookup policy); and the `federation` family (the #9106 federation exchange).
 
@@ -56,11 +56,11 @@ Features: `default = []`; `dht = ["dep:iroh-mainline-address-lookup"]`, off by d
 
 Embedding example: `id-cli`'s serve code wires this crate's surfaces into the running node, and the facade re-exports `transfer` at `id::transfer`; the `id send` command in [Tutorial: store, share and fetch a file between two nodes](../tutorials/share-a-file.md) is the user-visible end of that module.
 
-## id-directory — 15 public modules
+## id-directory — 16 public modules
 
 Purpose (from its `Cargo.toml`): "Directory layer of the id crate: home-server directory, views, auth, mail, invites and seitan admission (pkgs/id crate split step 6b, #4409)". It depends downward on `id-core`, `id-caps`, `id-events`, and `id-sync`, and never on `id-worlds`; the dependency runs the other way because `WorldCore` holds a `directory::Directory` as persisted state. The directory cluster used to live in `id-worlds`, which now re-exports these modules from this crate (disagreement LIB-8, covered in [Worlds and capabilities as a library](worlds-and-caps.md)).
 
-Public modules: `directory` (with `directory/replica` and `directory/validate`), `directory_auth`, `directory_log`, `directory_mail`, `directory_view`, `invite`, `invites` (with `event` and `invitation`), `keyset`, `keyset_file`, `recovery`, `recovery_flow`, `recovery_relay`, `recovery_view`, `restored_key`, and `seitan` (with `accept`, `admit`, `derive`, `freshness`, and `token`).
+Public modules: `directory` (with `directory/replica` and `directory/validate`), `directory_auth`, `directory_log`, `directory_mail`, `directory_view`, `invite`, `invites` (with `event` and `invitation`), `keyset`, `keyset_file`, `keyset_pairing`, `recovery`, `recovery_flow`, `recovery_relay`, `recovery_view`, `restored_key`, and `seitan` (with `accept`, `admit`, `derive`, `freshness`, and `token`).
 
 Key types and functions: `Directory` (`new`, `open`, `replay`, `replay_read_only`, `append`, `sign_up`, `sign_up_keyed`, `add_key`, `remove_key`, `confirm_email`, `account_for`, `verify_account`), `Account`, `Group`, `Member`, `DirectoryEntry`, `Actor`, and the `BoundaryGate` trait; the seitan V2 admission protocol (HMAC-SHA512 invite derivation with a scrypt stretch, per the facade `Cargo.toml` comments); and the keyset and recovery family (`keyset`, `keyset_file`, `recovery`, `recovery_flow`, `recovery_relay`, `recovery_view`, `restored_key`).
 

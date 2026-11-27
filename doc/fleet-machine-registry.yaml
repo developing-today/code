@@ -95,25 +95,25 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-27T14:24:11Z'
+      last_seen: '2026-11-27T16:24:26Z'
       status: degraded
       checks:
-        reported_at: '2026-11-27T14:24:11Z'
+        reported_at: '2026-11-27T16:24:26Z'
         reachable:
           state: ok
           ssh: true
           opencode_server_http: 200
         load_headroom:
           state: ok
-          load15: 13.37
+          load15: 10.84
           cpu_cores: 16
-          load15_per_core: 0.836
+          load15_per_core: 0.677
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 216
-          free_pct: 6.4
+          free_gb: 95
+          free_pct: 2.8
         sessions:
           state: ok
           listed: 50
@@ -121,8 +121,6 @@ machines:
           max_sessions: 12
           source: openchamber attach api
         last_queue_job:
-          state: ok
-          task_id: '23885'
-          queue: repo-health-code-pilot
-          worker: repo-worker-code
-          completed_at: '2026-11-26T13:18:38Z'
+          state: unknown
+          reason: 'queue store unreachable at token mint: Remote end closed connection without
+            response'

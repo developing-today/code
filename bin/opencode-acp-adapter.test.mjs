@@ -66,6 +66,18 @@ function startStubServe(script) {
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
     },
+    // #16226: write raw bytes (no SSE framing, no delimiter) to every
+    // connected event-stream client, in chunks, so the adapter's
+    // framing buffer accumulates an undelimited prefix.
+    floodEventStreamRaw: async (totalBytes, chunkBytes = 8192) => {
+      const chunk = 'x'.repeat(chunkBytes);
+      let sent = 0;
+      while (sent < totalBytes) {
+        for (const res of sseClients) res.write(chunk);
+        sent += chunkBytes;
+        await sleep(10);
+      }
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -335,6 +347,35 @@ test('an /api/event connect that never answers times out and retries (#16009)', 
   stub.controls.dropEventStreams();
   const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
   await acp.waitFor(() => eventCalls().length >= 3, 'hung connect to time out and retry');
+});
+
+test('an undelimited /api/event flood past the byte cap drops the buffer and reconnects (#16226)', async (t) => {
+  // Oracle: the stub serve streams delimiter-free bytes well past a
+  // small env-set cap (4096). The idle deadline cannot fire (data
+  // keeps arriving), so only the byte cap can save the stream: the
+  // adapter must drop the buffered prefix and reconnect through the
+  // existing path — a second GET /api/event — instead of retaining
+  // the flood; a prompt submitted after the reconnect still
+  // completes via the reconnected stream.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES: '4096',
+    OPENCODE_ACP_ADAPTER_DEBUG: '1',
+  });
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 1, 'initial event stream connect');
+  await stub.controls.floodEventStreamRaw(64 * 1024);
+  await acp.waitFor(() => eventCalls().length >= 2, 'over-cap flood to drop the buffer and reconnect');
+  await acp.waitFor(
+    () => acp.stderr().includes('undelimited buffer grew past 4096 bytes'),
+    'debug line recording the buffer drop',
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the flood');
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
 });
 
 test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {
