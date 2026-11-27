@@ -1328,6 +1328,10 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.reg.authorizeToolCall(r.Context(), req.Server, req.Tool); err != nil {
+		writeErr(w, failureStatus(err), err)
+		return
+	}
 
 	// A caller that asked for a task gets a handle immediately and collects
 	// from /v1/tasks, rather than holding this request open for however long
@@ -1500,6 +1504,16 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 				"error":   "server and tool are required",
 				"isError": true,
 			}, errors.New("server and tool are required")
+		}
+		if err := s.reg.authorizeToolCall(ctx, server, tool); err != nil {
+			return map[string]any{
+				"index":   i,
+				"server":  server,
+				"tool":    tool,
+				"status":  "error",
+				"error":   err.Error(),
+				"isError": true,
+			}, err
 		}
 
 		rawArgs := item.Args

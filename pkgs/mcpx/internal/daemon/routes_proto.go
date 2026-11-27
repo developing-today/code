@@ -570,6 +570,12 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 			"kind is tools/call, prompts/get, resources/read or exec, not %q", req.Kind))
 		return
 	}
+	if req.Kind == "tools/call" {
+		if err := s.reg.authorizeToolCall(r.Context(), req.Server, req.Tool); err != nil {
+			writeErr(w, failureStatus(err), err)
+			return
+		}
+	}
 	cc := callContext(r, req.Context, req.Session)
 	ttl := req.TTL
 	if ttl <= 0 {
