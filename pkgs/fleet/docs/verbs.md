@@ -66,6 +66,7 @@ Client for the repo-queue broker. It supports direct broker transport and the co
 | `dispatch`            | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md). |
 | `session`             | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                 |
 | `surfaces`            | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                               |
+| `placement-load`      | Print the placement coordinator's true load view (broker `/placement-load`): per owner, GitHub running/queued counts, active claims, occupancy vs cap, and the sweep read's time/source; `--json` prints the broker answer verbatim. Read-only; a down or disabled coordinator exits 3. |
 | `outbox`              | Inspect and drain the creation outbox.                                                                                                                                                           |
 | `stack`               | Record and operate on dependent pull-request stacks.                                                                                                                                             |
 
