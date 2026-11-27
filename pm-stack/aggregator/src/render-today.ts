@@ -3,6 +3,7 @@
 
 import { type AttentionView, type TodayObjective, type TodayView, buildQuotaActions, windowPercent } from "./derive.ts";
 import type { DashAction } from "./actions.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { cardState } from "./card-state.ts";
 import { AA_PLAN_FACTS } from "./aa.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";

@@ -49,6 +49,10 @@ export type Fact<T> =
       revision?: string;
       observed_at?: string;
       freshness: "live" | "stale";
+      /** Present facts carry no state marker; the state variants below
+       *  are the ones with something to say. Declared here so `.state`
+       *  is readable on the union without narrowing first. */
+      state?: undefined;
     }
   | { state: "absent"; freshness: "absent" }
   | { state: "error"; source: string; revision?: string; freshness: "error" }
