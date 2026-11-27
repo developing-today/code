@@ -85,6 +85,8 @@ mod id_postcard;
 #[cfg(feature = "id")]
 mod id_proxy;
 #[cfg(feature = "id")]
+mod id_serve;
+#[cfg(feature = "id")]
 mod id_stream;
 mod invocation_ledger;
 #[cfg(feature = "kv")]
@@ -1118,11 +1120,14 @@ fn run_domain_with_initializer(
             // for real — session key lifecycle + stamping. Slice 2
             // (#15434, design §4.2) adds the `fleet id proxy` entry
             // point; mode 1 is live and mode 2 currently fails closed.
+            // Slice 5 (#15399, design §4.5) adds the `fleet id
+            // serve-ws` conversion + WebSocket serving socket.
             // Every other id verb remains on the slice-1 key surface.
             #[cfg(feature = "id")]
             if d.name == "id" {
                 return match args.first().map(|s| s.as_str()) {
                     Some("proxy") => id_proxy::run(args),
+                    Some("serve-ws") => id_serve::run(args),
                     _ => id_key::run(args),
                 };
             }
