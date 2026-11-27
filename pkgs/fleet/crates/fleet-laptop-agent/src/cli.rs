@@ -11,7 +11,7 @@ pub const USAGE: &str = "usage: fleet laptop-agent <command>
   jobs
   kill JOB
   exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
-  run  [--cwd DIR] [--shell] -- CMD...
+  run  [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
   poll JOB [--wait SECS]
   fetch REMOTE_PATH LOCAL_PATH";
 
@@ -67,11 +67,8 @@ fn split_cmd(args: &[String]) -> (&[String], &[String]) {
     }
 }
 
-/// Options for `exec` / `run`: `--cwd`, `--timeout` (exec only), `--shell`.
-fn parse_exec_opts(
-    opts: &[String],
-    allow_timeout: bool,
-) -> Result<(Option<String>, u64, bool), String> {
+/// Shared Python-compatible options for `exec` / `run`.
+fn parse_exec_opts(opts: &[String]) -> Result<(Option<String>, u64, bool), String> {
     let mut cwd = None;
     let mut timeout = 120;
     let mut shell = false;
@@ -85,9 +82,6 @@ fn parse_exec_opts(
         match flag {
             "--shell" if inline.is_none() => shell = true,
             "--cwd" | "--timeout" => {
-                if flag == "--timeout" && !allow_timeout {
-                    return Err(format!("unknown option {arg:?}"));
-                }
                 let value = match inline {
                     Some(v) => v,
                     None => {
@@ -101,6 +95,9 @@ fn parse_exec_opts(
                     cwd = Some(value);
                 } else {
                     timeout = number(flag, &value)?;
+                    if timeout == 0 {
+                        return Err("--timeout must be positive".into());
+                    }
                 }
             }
             _ => return Err(format!("unknown option {arg:?}")),
@@ -126,8 +123,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             if cmd.is_empty() {
                 return Err("no command given (use -- cmd...)".into());
             }
+            let (cwd, timeout, shell) = parse_exec_opts(opts)?;
             if verb == "exec" {
-                let (cwd, timeout, shell) = parse_exec_opts(opts, true)?;
                 Ok(Command::Exec {
                     cwd,
                     timeout,
@@ -135,7 +132,12 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     cmd: cmd.to_vec(),
                 })
             } else {
-                let (cwd, _, shell) = parse_exec_opts(opts, false)?;
+                // `run --timeout` is accepted for Python-selector
+                // compatibility but deliberately ignored: a detached job
+                // submit carries no client-side timeout (legacy oracle:
+                // laptop-agent-legacy.py submits cmd_spec only, with a
+                // fixed 30 s submit deadline).
+                let _ = timeout;
                 Ok(Command::Run {
                     cwd,
                     shell,
@@ -297,9 +299,42 @@ mod tests {
     }
 
     #[test]
+    fn run_timeout_matches_python_legacy_run_submit_oracle() {
+        // Oracle PythonLegacyRunSubmitOracle: laptop-agent-legacy.py
+        // main() accepts `run --timeout N` (positive int, separated or
+        // inline) but the submit path ignores it — the request is
+        // POST /jobs with cmd_spec only and a fixed _set_deadline(30).
+        // Every accepted spelling must therefore parse to the exact
+        // Command::Run the no-timeout spelling produces.
+        for timeout in [1, 5, 120, 3600, u64::MAX] {
+            for option in [
+                format!("--timeout {timeout}"),
+                format!("--timeout={timeout}"),
+            ] {
+                for (flag, shell) in [("", false), ("--shell", true)] {
+                    assert_eq!(
+                        parse(&v(&format!(
+                            "run {option} --cwd /w {flag} -- echo --timeout=0"
+                        )))
+                        .unwrap(),
+                        Command::Run {
+                            cwd: Some("/w".into()),
+                            shell,
+                            cmd: v("echo --timeout=0"),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn undeclared_options_are_usage_errors() {
         assert!(parse(&v("exec --bogus -- ls")).is_err());
-        assert!(parse(&v("run --timeout 5 -- ls")).is_err());
+        assert!(parse(&v("run --timeout 0 -- ls")).is_err());
+        assert!(parse(&v("run --timeout -1 -- ls")).is_err());
+        assert!(parse(&v("run --timeout x -- ls")).is_err());
+        assert!(parse(&v("run --timeout -- ls")).is_err());
         assert!(parse(&v("exec --timeout x -- ls")).is_err());
         assert!(parse(&v("exec --cwd")).is_err());
         assert!(parse(&v("exec --cwd /w")).is_err(), "a command is required");

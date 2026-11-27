@@ -105,7 +105,7 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 ## fleet laptop-agent run
 
 ```
-fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
+fleet laptop-agent run [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
 | Flag        | Argument | Default        | Meaning                                                                                                                                  |
@@ -113,17 +113,17 @@ fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
 | `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
 | `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
 | `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
-| `--timeout` | —        | —              | **Not accepted** — passing it is an unknown-option error. Detached jobs have no client-side timeout; use `poll --wait` to bound waiting. |
+| `--timeout` | `SECS`   | 120 (ignored)  | Accepted for Python-CLI compatibility and ignored: detached jobs have no client-side timeout; use `poll --wait` to bound waiting. Must be positive. |
 
 ### Behaviour
 
-**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure.
+**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure. A passed `--timeout` is not sent to the daemon and does not change the fixed submit deadline, matching the legacy Python client.
 
 ### Exit codes
 
 - `0` — job submitted, `job_id` printed.
 - `1` — transport failure.
-- `2` — usage (including `--timeout`).
+- `2` — usage.
 
 ### Example
 
