@@ -951,13 +951,16 @@ fn remote_sha256(ladder: &Arc<Ladder>, remote: &str) -> Result<String, String> {
         .ok_or_else(|| format!("unexpected shasum output for {remote}"))
 }
 
-/// One `GET /file` range. Raw bytes, so the reply is not parsed as JSON.
-fn fetch_chunk(ladder: &Arc<Ladder>, remote: &str, off: u64) -> Result<Vec<u8>, CallFailure> {
+/// One `GET /file` range of `len` bytes. Raw bytes, so the reply is
+/// not parsed as JSON.
+fn fetch_chunk(
+    ladder: &Arc<Ladder>,
+    remote: &str,
+    off: u64,
+    len: u64,
+) -> Result<Vec<u8>, CallFailure> {
     let trip = crate::new_trip();
-    let path = format!(
-        "/file?path={}&off={off}&len={FILE_CHUNK_MAX}",
-        percent_encode(remote)
-    );
+    let path = format!("/file?path={}&off={off}&len={len}", percent_encode(remote));
     let answer = send_ex(
         ladder,
         &trip,
@@ -990,8 +993,13 @@ fn percent_encode(s: &str) -> String {
 }
 
 /// Copy a remote file to `dest`, hash-checked: the bytes are written only
-/// when their sha256 matches the remote's own.
-pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 {
+/// when their sha256 matches the remote's own. `chunk` is the GET /file
+/// range size (`--chunk`, default 1 MiB); it is clamped to the daemon's
+/// 1 MiB per-request cap. Resume-from-existing-OUT, the overshoot
+/// refusal, and the legacy `N round trip(s)` receipt stay deferred to a
+/// follow-up slice — this transport downloads whole and verifies.
+pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: u64) -> i32 {
+    let len = chunk.clamp(1, FILE_CHUNK_MAX);
     let want = match remote_sha256(ladder, remote) {
         Ok(h) => h,
         Err(message) => {
@@ -1001,7 +1009,7 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
     };
     let mut data = Vec::new();
     loop {
-        match fetch_chunk(ladder, remote, data.len() as u64) {
+        match fetch_chunk(ladder, remote, data.len() as u64, len) {
             Ok(chunk) if chunk.is_empty() => break,
             Ok(chunk) => data.extend_from_slice(&chunk),
             Err(e) => return fail(e),
@@ -1520,5 +1528,37 @@ mod tests {
         std::fs::write(&bad_cmds, r#"{"cmds": {}}"#).unwrap();
         assert!(read_batch_file(&bad_cmds).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// code#16088 fetch --chunk parity slice: the requested chunk size
+    /// rides the GET /file `len` parameter on every range request.
+    #[test]
+    fn fetch_chunk_wires_len_to_the_file_request() {
+        struct Capture {
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+        impl Leg for Capture {
+            fn name(&self) -> &'static str {
+                "tailscale"
+            }
+            fn call(&self, req: &Request) -> Result<LegReply, LegError> {
+                self.seen.lock().unwrap().push(req.path.clone());
+                Ok(LegReply {
+                    status: 200,
+                    body: Vec::new(),
+                })
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ladder = Arc::new(Ladder::new(vec![
+            Box::new(Capture { seen: seen.clone() }) as Box<dyn Leg>
+        ]));
+        fetch_chunk(&ladder, "/remote/a.bin", 0, 64).unwrap();
+        fetch_chunk(&ladder, "/remote/a.bin", 64, 64).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].contains("len=64"), "{}", seen[0]);
+        assert!(seen[0].contains("off=0"), "{}", seen[0]);
+        assert!(seen[1].contains("off=64"), "{}", seen[1]);
     }
 }
