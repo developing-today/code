@@ -342,7 +342,7 @@ test("filters by session, lane, host, queue id, and kind", async () => {
   assert.deepEqual(numbers((await getQuery(tokenA, `session_id=${SES_A}`)).doc), [101, 103]);
   assert.deepEqual(numbers((await getQuery(tokenA, `session_id=${SES_B}`)).doc), [102]);
   assert.deepEqual(numbers((await getQuery(tokenA, "lane=code-a")).doc), [101, 103]);
-  assert.deepEqual(numbers((await getQuery(tokenA, "host=amd-6")).doc), [101, 103, 107, 108, 109]);
+  assert.deepEqual(numbers((await getQuery(tokenA, "host=amd-6")).doc), [101, 103, 107, 108, 109, 110, 111]);
   assert.deepEqual(numbers((await getQuery(tokenA, "queue_id=q-1")).doc), [101]);
   assert.deepEqual(numbers((await getQuery(tokenA, "kind=pr")).doc), [102]);
   // Combined filters AND together.
