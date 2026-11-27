@@ -4,7 +4,9 @@
 # even when receipts are dropped; (2) an unwritable log yields a stderr
 # diagnostic and the child still gets the signal; (3) dash-led tokens
 # before the command are usage errors (exit 64) with no log written;
-# dash-led commands after an explicit -- are exec'd.
+# dash-led commands after an explicit -- are exec'd; (4) with SIGCHLD
+# ignored on entry, the child's real exit code still passes through and
+# the child still inherits the ignored SIGCHLD (#15781).
 set -u
 bin="${1:-}"
 tmp="$(mktemp -d)"
@@ -30,6 +32,41 @@ rc=$?
 "$bin" --log "$tmp/c.log" -- sh -c 'exit 3'
 rc=$?
 [ "$rc" = 3 ] && ok "child exit code passes through" || bad "exit passthrough rc=$rc"
+
+# (4) SIGCHLD ignored on entry (#15781): the wrapper must still read the
+# child's status, never log a guessed code=0, and leave the child's
+# inherited disposition alone. A shell's `trap '' CHLD` is not a reliable
+# way to start a program with SIGCHLD ignored (bash keeps its own
+# handler), so a tiny helper sets SIG_IGN and execs the wrapper.
+# SigIgn bit 17 (0x10000) is SIGCHLD.
+cat >"$tmp/ign-chld.c" <<'EOF'
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc < 2) return 64;
+  signal(SIGCHLD, SIG_IGN);
+  execvp(argv[1], &argv[1]);
+  perror("execvp");
+  return 127;
+}
+EOF
+if "${CC:-cc}" -O2 -Wall -o "$tmp/ign-chld" "$tmp/ign-chld.c"; then
+  ilog="$tmp/ign.log"
+  "$tmp/ign-chld" "$bin" --log "$ilog" -- sh -c 'exit 7'
+  rc=$?
+  [ "$rc" = 7 ] && ok "SIGCHLD ignored: child exit 7 passes through" || bad "SIGCHLD ignored: rc=$rc (want 7)"
+  grep -q "child-exit code=7 " "$ilog" 2>/dev/null && ok "SIGCHLD ignored: log records code=7" || bad "SIGCHLD ignored: log lacks code=7: $(cat "$ilog" 2>/dev/null)"
+  grep -q "child-exit code=0 " "$ilog" 2>/dev/null && bad "SIGCHLD ignored: log claims code=0" || ok "SIGCHLD ignored: no guessed code=0"
+  sigign="$("$tmp/ign-chld" "$bin" --log "$tmp/ign2.log" -- sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status)"
+  if [ -n "$sigign" ] && [ $((0x$sigign & 0x10000)) -ne 0 ]; then
+    ok "SIGCHLD ignored: child still inherits SIG_IGN"
+  else
+    bad "SIGCHLD ignored: child SigIgn=$sigign lacks SIGCHLD"
+  fi
+else
+  bad "SIGCHLD ignored: could not build the ign-chld helper"
+fi
 
 # (2) unwritable log: diagnostic on stderr, child still runs and gets TERM
 marker="$tmp/unwritable.marker"
