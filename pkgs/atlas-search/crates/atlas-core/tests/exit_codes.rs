@@ -38,6 +38,34 @@ fn atlas_classify_exit_codes() {
         )),
         1
     );
+    // Usage wins over an unreadable input when a required flag is absent.
+    // Oracle: the #15766 decision classifies invalid invocations as 2.
+    assert_eq!(
+        code(&run(
+            bin,
+            &[
+                "--db",
+                "x.db",
+                "schema-review",
+                "--old-schema",
+                "/nonexistent-dir-15766/old.json",
+            ]
+        )),
+        2
+    );
+    assert_eq!(
+        code(&run(
+            bin,
+            &[
+                "--db",
+                "x.db",
+                "schema-apply",
+                "--review",
+                "/nonexistent-dir-15766/review.json",
+            ]
+        )),
+        2
+    );
 }
 
 #[test]
