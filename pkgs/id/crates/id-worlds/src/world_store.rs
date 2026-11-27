@@ -1678,6 +1678,79 @@ pub fn template_source_from_dir(
 /// none.
 pub const TEMPLATE_GAPS_FILE: &str = "template-gaps.json";
 
+/// Write `bytes` to the template-gaps file at `path` crash-durably
+/// (#16274): stage in a sibling temp file, sync the file, rename over
+/// the final name, then sync the parent directory — the same idiom as
+/// `program_registry::write_atomically`. A bare `fs::write` reports
+/// success for a record a crash can tear or lose, and the only reader
+/// hard-fails on a torn or absent gaps file.
+#[cfg(feature = "sandbox")]
+fn write_template_gaps(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_template_gaps_with_dir_sync(path, bytes, &sync_directory)
+}
+
+/// [`write_template_gaps`] with the directory-sync step supplied, so a
+/// test can inject the post-rename sync failure that must be reported
+/// instead of acknowledged as durable.
+#[cfg(feature = "sandbox")]
+fn write_template_gaps_with_dir_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_dir: &dyn Fn(&Path) -> Result<()>,
+) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent", path.display()))?;
+    let mut staged = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("stage template gaps in {}", dir.display()))?;
+    staged
+        .write_all(bytes)
+        .with_context(|| format!("write {}", path.display()))?;
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("sync {}", path.display()))?;
+    staged
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("replace {}", path.display()))?;
+    sync_dir(dir).with_context(|| {
+        format!(
+            "{}: sync after rename; the write at {} is not durable",
+            dir.display(),
+            path.display()
+        )
+    })
+}
+
+/// Remove the template-gaps file at `path` and sync its parent
+/// directory (#16274): without the directory sync a crash can
+/// resurrect an already-cleared gaps file.
+#[cfg(feature = "sandbox")]
+fn remove_template_gaps(path: &Path) -> Result<()> {
+    remove_template_gaps_with_dir_sync(path, &sync_directory)
+}
+
+/// [`remove_template_gaps`] with the directory-sync step supplied, for
+/// fault injection in tests.
+#[cfg(feature = "sandbox")]
+fn remove_template_gaps_with_dir_sync(
+    path: &Path,
+    sync_dir: &dyn Fn(&Path) -> Result<()>,
+) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent", path.display()))?;
+    std::fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    sync_dir(dir).with_context(|| {
+        format!(
+            "{}: sync after remove; the removal of {} is not durable",
+            dir.display(),
+            path.display()
+        )
+    })
+}
+
 /// What [`create_world_from_template`] made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemplateWorld {
@@ -1815,7 +1888,7 @@ async fn populate_template_world(
         let path = dir.join(TEMPLATE_GAPS_FILE);
         let mut text = serde_json::to_vec_pretty(&import.gaps)?;
         text.push(b'\n');
-        std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+        write_template_gaps(&path, &text)?;
     }
     Ok(TemplateWorld {
         world_id: import.world_id.clone(),
@@ -1929,15 +2002,11 @@ pub async fn resume_template_world(
         .context("close the world")?;
 
     if import.gaps.is_empty() {
-        std::fs::remove_file(&gaps_path)
-            .with_context(|| format!("remove {}", gaps_path.display()))?;
+        remove_template_gaps(&gaps_path)?;
     } else {
-        let scratch = dir.join(format!("{TEMPLATE_GAPS_FILE}.tmp"));
         let mut text = serde_json::to_vec_pretty(&import.gaps)?;
         text.push(b'\n');
-        std::fs::write(&scratch, text).with_context(|| format!("write {}", scratch.display()))?;
-        std::fs::rename(&scratch, &gaps_path)
-            .with_context(|| format!("replace {}", gaps_path.display()))?;
+        write_template_gaps(&gaps_path, &text)?;
     }
     Ok(TemplateResume {
         installed,
@@ -2105,6 +2174,60 @@ mod tests {
         let failing_sync =
             |_: &Path| -> Result<()> { Err(anyhow::anyhow!("injected directory sync failure")) };
         let error = fork_world_with_dir_sync(&src, &dst, &spec, &failing_sync).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // #16274 oracle: a template-gaps write reported as done installs
+    // the exact bytes under the final name and leaves no staging file.
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn template_gaps_write_installs_exact_bytes_and_leaves_no_staging_file() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join(TEMPLATE_GAPS_FILE);
+        write_template_gaps(&path, b"[\"gap\"]\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"[\"gap\"]\n");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        // A replace over an existing file is the same durable path.
+        write_template_gaps(&path, b"[]\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"[]\n");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    // #16274 oracle: a post-rename directory-sync failure is fatal,
+    // not a successful gaps write — the caller must not be told the
+    // resumable record is durable when a crash can lose the rename.
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn template_gaps_write_propagates_a_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join(TEMPLATE_GAPS_FILE);
+        let failing_sync =
+            |_: &Path| -> Result<()> { Err(anyhow::anyhow!("injected directory sync failure")) };
+        let error =
+            write_template_gaps_with_dir_sync(&path, b"[]\n", &failing_sync).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // #16274 oracle: removing the gaps file syncs the parent, and a
+    // sync failure there is likewise reported instead of success.
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn template_gaps_remove_propagates_a_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join(TEMPLATE_GAPS_FILE);
+        std::fs::write(&path, b"[]\n").unwrap();
+        remove_template_gaps(&path).unwrap();
+        assert!(!path.exists());
+        std::fs::write(&path, b"[]\n").unwrap();
+        let failing_sync =
+            |_: &Path| -> Result<()> { Err(anyhow::anyhow!("injected directory sync failure")) };
+        let error = remove_template_gaps_with_dir_sync(&path, &failing_sync).unwrap_err();
         assert!(
             format!("{error:#}").contains("injected directory sync failure"),
             "unexpected error: {error:#}"
