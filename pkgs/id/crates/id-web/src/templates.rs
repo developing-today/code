@@ -382,7 +382,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
-                    <a class=\"font-bold hover:text-primary truncate flex-1 min-w-0\" href=\"{}\" data-nav>{}</a>\
+                    <a class=\"font-bold hover:text-primary truncate flex-auto min-w-0\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
@@ -1663,7 +1663,7 @@ mod tests {
         // width (#15146): truncate alone gives a flex item an automatic
         // minimum size of zero, so a crowded row collapses the link to
         // zero width and Playwright reports it hidden.
-        assert!(html.contains("truncate flex-1 min-w-0"));
+        assert!(html.contains("truncate flex-auto min-w-0"));
     }
 
     #[test]
