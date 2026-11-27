@@ -253,7 +253,7 @@ export async function searchContext(query: string) {
   // (registry taskRefs, tier-item refs) join the resolution set, or
   // their search badges always render unresolved even when the live
   // pool/projector could resolve them.
-  const extraRefs = [...registrySearchRefs(registry), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const extraRefs = [...registrySearchRefs(registry, query), ...tierItems.map((item) => item.ref)].filter(isValidRef);
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await withSearchTiming(timings, "items", () => source.items(refs));
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
