@@ -29,6 +29,8 @@
 //! rejected or quarantined batch projects exactly like a published
 //! one.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::attestation::{BatchOutcome, BatchStatement};
@@ -75,6 +77,37 @@ pub struct ProjectedRun {
     pub claims: Vec<ProjectedClaim>,
     /// The last claim's subject — the chain head a replayer pins
     /// (§6.1). `None` for an empty run.
+    pub batch_chain_head: Option<String>,
+}
+
+/// Immutable Atlas and publisher inputs needed to reproduce one
+/// projection run (§6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionRunPins {
+    /// Maximum ingested `version_seq` per file at the snapshot boundary.
+    pub atlas_snapshot_marker: BTreeMap<String, u64>,
+    /// Batch-chain head at the start of this run, if the run continues a
+    /// previously published chain.
+    pub batch_chain_head: Option<String>,
+    /// Stable public key identifier used to attribute emitted claims.
+    pub publisher_key_id: String,
+    /// Projection mapping version selected for this run.
+    pub projection_version: String,
+}
+
+/// Replayable record of a projector run. The caller persists this value
+/// atomically with its publication unit; without the pins, output alone
+/// is not sufficient evidence for replay (§6.1, §6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionRunLog {
+    /// Stable identifier assigned by the caller before projection.
+    pub run_id: String,
+    /// Complete input pins used for the run.
+    pub pins: ProjectionRunPins,
+    /// Emissions in source order; a row's document and relations must be
+    /// committed as one unit by the publisher (§6.4).
+    pub claims: Vec<ProjectedClaim>,
+    /// Resulting chain head, distinct from the input head in `pins`.
     pub batch_chain_head: Option<String>,
 }
 
@@ -140,6 +173,47 @@ pub fn project_run(statements: &[BatchStatement]) -> Result<ProjectedRun> {
     Ok(ProjectedRun {
         claims,
         batch_chain_head,
+    })
+}
+
+/// Projects and records a run together with every input needed to replay
+/// it (§6.1). The first statement must continue exactly the pinned batch
+/// chain head; otherwise the snapshot and batch inputs do not describe a
+/// coherent run.
+pub fn project_run_with_pins(
+    run_id: impl Into<String>,
+    statements: &[BatchStatement],
+    pins: ProjectionRunPins,
+) -> Result<ProjectionRunLog> {
+    let run_id = run_id.into();
+    if run_id.trim().is_empty() {
+        return Err(refuse("id_projection: run id must not be empty"));
+    }
+    if pins.publisher_key_id.trim().is_empty() {
+        return Err(refuse("id_projection: publisher key id must not be empty"));
+    }
+    if pins.projection_version != PROJECTION_VERSION {
+        return Err(refuse(format!(
+            "id_projection: unsupported projection version {:?}",
+            pins.projection_version
+        )));
+    }
+    if statements
+        .first()
+        .and_then(|statement| statement.predicate.prior_attestation.as_deref())
+        != pins.batch_chain_head.as_deref()
+    {
+        return Err(refuse(
+            "id_projection: first batch does not continue the pinned batch-chain head",
+        ));
+    }
+
+    let projected = project_run(statements)?;
+    Ok(ProjectionRunLog {
+        run_id,
+        pins,
+        claims: projected.claims,
+        batch_chain_head: projected.batch_chain_head,
     })
 }
 
@@ -401,6 +475,36 @@ mod tests {
         let run = project_run(&[]).unwrap();
         assert!(run.claims.is_empty());
         assert_eq!(run.batch_chain_head, None);
+    }
+
+    /// Oracle: a logged run preserves every replay input pin alongside
+    /// the exact deterministic emissions, so serialization carries the
+    /// same inputs a verifier needs to reproduce the run.
+    #[test]
+    fn logged_run_persists_replay_pins_and_emissions() {
+        let statement = BatchStatement::new(
+            vec![subject("shard-0:chunk-1", 0x11)],
+            vec![material("repo@abc:path", 0x22)],
+            predicate("batch-1", BatchOutcome::Published),
+        );
+        let pins = ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: None,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        };
+
+        let log = project_run_with_pins("run-1", &[statement.clone()], pins.clone()).unwrap();
+        let encoded = serde_json::to_vec(&log).unwrap();
+        let decoded: ProjectionRunLog = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.run_id, "run-1");
+        assert_eq!(decoded.pins, pins);
+        assert_eq!(decoded.claims, project_run(&[statement]).unwrap().claims);
+        assert_eq!(
+            decoded.batch_chain_head,
+            decoded.claims.last().map(|claim| claim.subject.clone())
+        );
     }
 
     proptest! {
