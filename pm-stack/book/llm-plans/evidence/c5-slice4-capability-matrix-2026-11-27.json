@@ -1,0 +1,113 @@
+{
+  "slice": "C5 #9573 slice 4 (queue task 26036, lane 0407-C)",
+  "generatedAt": "2026-11-27T10:32:13Z",
+  "mode": "capability-matrix",
+  "liveCalls": 0,
+  "networkCallsByThisLane": 0,
+  "reason": "No non-Kilo provider credential is provisioned in this lane's environment: an env-var NAME check on 2026-11-27 found zero provider key names (no GROQ_API_KEY, NVIDIA_API_KEY, OPENROUTER_API_KEY, or any *API_KEY name). Values were never read. Per the task, the fallback deliverable is this source-backed capability matrix plus the implemented fail-closed adapter; no context ceiling is inferred and no controlled routing-mode comparison is claimed.",
+  "adapter": {
+    "code": "bin/free-context-probe.mjs (DIRECT_ADAPTERS, resolveDirectAdapter, runDirectProbe, createProbeBudget)",
+    "tests": "bin/free-context-probe.test.mjs — 15/15 pass (7 pre-existing + 8 slice-4); fail-closed oracles assert zero mock-fetch calls on unsupported-provider, unsupported-model, missing-credentials, and pre-call output-cap paths",
+    "hardBounds": { "maxLiveCallsPerRun": 5, "cliLiveCalls": 1, "maxOutputTokens": 64, "responseBodyMaxBytes": 65536 },
+    "failClosedCodes": ["unsupported-provider", "unsupported-model", "missing-credentials", "output-cap-violation", "fail-cap (reported output beyond cap)", "call-budget-violation", "call-budget-exceeded"]
+  },
+  "matrix": [
+    {
+      "provider": "groq",
+      "representativeLeaf": "groq/openai/gpt-oss-120b",
+      "plan": "groq-free-plan",
+      "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+      "credentialEnv": "GROQ_API_KEY",
+      "source": "Groq OpenAI-compatibility docs (console.groq.com/docs): OpenAI-compatible chat completions, Free Plan key; free limits for openai/gpt-oss-120b published per Groq rate-limit docs",
+      "adapterStatus": "implemented-fail-closed",
+      "liveStatus": "not-run-credential-not-provisioned",
+      "prerequisite": "Provision a Groq Free Plan key as GROQ_API_KEY in the probe host environment, then: node bin/free-context-probe.mjs --live --leaf groq/openai/gpt-oss-120b --max-probes 1"
+    },
+    {
+      "provider": "nvidia",
+      "representativeLeaf": "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+      "plan": "nvidia-free-plan",
+      "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "credentialEnv": "NVIDIA_API_KEY",
+      "source": "NVIDIA API Catalog getting started (build.nvidia.com): base https://integrate.api.nvidia.com/v1, Authorization Bearer $NVIDIA_API_KEY, free trial tier with no credit card",
+      "adapterStatus": "implemented-fail-closed",
+      "liveStatus": "not-run-credential-not-provisioned",
+      "prerequisite": "Generate a free key at build.nvidia.com/settings and provision it as NVIDIA_API_KEY in the probe host environment, then: node bin/free-context-probe.mjs --live --leaf nvidia/nvidia/nemotron-3-ultra-550b-a55b --max-probes 1"
+    },
+    {
+      "provider": "openrouter",
+      "representativeLeaf": "openrouter/inclusionai/ling-3.2-flash:free",
+      "plan": "openrouter-free-plan",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "credentialEnv": "OPENROUTER_API_KEY",
+      "source": "OpenRouter docs (openrouter.ai/docs): OpenAI-compatible chat completions, Authorization Bearer key",
+      "adapterStatus": "implemented-fail-closed",
+      "liveStatus": "not-run-credential-not-provisioned",
+      "prerequisite": "Provision an OpenRouter key as OPENROUTER_API_KEY in the probe host environment, then: node bin/free-context-probe.mjs --live --leaf openrouter/inclusionai/ling-3.2-flash:free --max-probes 1. Serving-leaf telemetry caveat (ledger, B6 precedent) still applies: key results by the response-reported model, not the requested route.",
+      "caveat": "OpenRouter is itself a router; a pass measures the served leaf, not a stable model."
+    },
+    {
+      "provider": "kilo",
+      "representativeLeaf": "kilo/kilo-auto/free",
+      "plan": "kilo-free-plan",
+      "endpoint": "https://ai-gateway.kilo.ai/api/v1/chat/completions",
+      "credentialEnv": null,
+      "source": "Slices 1 and 3 of this ledger (PR #15006, PR #15826)",
+      "adapterStatus": "already-live-keyless",
+      "liveStatus": "run-in-prior-slices",
+      "prerequisite": "None. Router, not a stable model; the 2026-11-27 rerun did not reproduce the sentinel pass."
+    },
+    {
+      "provider": "zai",
+      "representativeLeaf": "zai/glm-4.7-flash",
+      "plan": "glm-flash-free-plan",
+      "endpoint": null,
+      "credentialEnv": null,
+      "source": "No source-verified direct endpoint or credential name was recorded in this slice",
+      "adapterStatus": "not-implemented",
+      "liveStatus": "not-run",
+      "prerequisite": "Verify the Z.AI direct API endpoint and credential env name from Z.AI's own docs, then add one DIRECT_ADAPTERS row plus tests; do not guess either value."
+    },
+    {
+      "provider": "google.muse",
+      "representativeLeaf": "google.muse/gemini-4-hydrogen",
+      "plan": "gemini-free-plan",
+      "endpoint": null,
+      "credentialEnv": null,
+      "source": "The wired leaf's provider is an internal route name (target google-free/gemini-4-hydrogen#xhigh), not a direct provider API identity",
+      "adapterStatus": "not-implemented",
+      "liveStatus": "not-run",
+      "prerequisite": "Wire an exact direct Google leaf in the config first (a provider-published OpenAI-compatible Gemini endpoint exists); only then add an adapter row keyed to that exact leaf."
+    },
+    {
+      "provider": "opencode-zen-go-routes",
+      "representativeLeaf": "opencode.drewrypope/* and opencode-go.drewrypope/* (11 of 20 plans)",
+      "plan": "flash-free-plan, beam-plan, and the other zen/go plans",
+      "endpoint": null,
+      "credentialEnv": null,
+      "source": "This ledger's Kilo safety note: router measurements do not transfer across serving leaves",
+      "adapterStatus": "excluded-by-design",
+      "liveStatus": "not-run",
+      "prerequisite": "None planned: these are aggregator routes reached through OpenCode routing; probing them measures the router, and this component is recommendation-only with no routing changes."
+    },
+    {
+      "provider": "_commandcode-free / exaone",
+      "representativeLeaf": "_commandcode-free/poolside/laguna-s-2.1-free; exaone/k-exaone_v2.5",
+      "plan": "commandcode-free-plan, exaone-free-plan",
+      "endpoint": null,
+      "credentialEnv": null,
+      "source": "No source-verified public direct endpoint or credential name was recorded in this slice",
+      "adapterStatus": "not-implemented",
+      "liveStatus": "not-run",
+      "prerequisite": "Source-verify each provider's direct API docs (endpoint + credential name) before adding an adapter row."
+    }
+  ],
+  "acceptanceMapping": {
+    "advances": "Issue #9573 acceptance item 3 precondition: the free-provider inventory now has a credentialed exact-leaf probe path for three provider families (groq, nvidia, openrouter), each fail-closed and bounded.",
+    "notCompleted": [
+      "No live exact-leaf measurement yet (no credential provisioned in this environment), so no context ceiling is promoted; every leaf stays contextSource provider-published.",
+      "No free path wired in front of a production path; fall prevention not demonstrated.",
+      "Controlled routing-mode comparison (acceptance item 2 evidence) still unmeasured; this slice does not claim it."
+    ]
+  }
+}
