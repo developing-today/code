@@ -1646,10 +1646,10 @@ mod tests {
             panic!("expected search command")
         };
         let request = proto_search_request(&args);
-        assert_eq!(request.filters.kind, ["message"]);
-        assert_eq!(request.filters.topic, ["planning"]);
-        assert_eq!(request.filters.project, ["atlas"]);
-        assert_eq!(request.filters.client, ["muse"]);
+        assert_eq!(request.filters.kind, vec!["message".to_string()]);
+        assert_eq!(request.filters.topic, vec!["planning".to_string()]);
+        assert_eq!(request.filters.project, vec!["atlas".to_string()]);
+        assert_eq!(request.filters.client, vec!["muse".to_string()]);
         assert_eq!(
             request.filters.dimensions.get("source_app"),
             Some(&vec!["mail".to_string()])
