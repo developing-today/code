@@ -482,7 +482,7 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 // print nothing at all, and a result that merely repeats the
 // stdout parse must not be printed twice.
 func (a *App) reportFinalResult(res *execsvc.Result) {
-	if res.Runtime != "" {
+	if res.Runtime != "" && a.showRuntimeNotice() {
 		_, _ = fmt.Fprintf(os.Stderr, "mcpx: JavaScript runtime: %s\n", res.Runtime)
 	}
 	if !res.ResultPresent && res.Result == nil {
@@ -508,6 +508,22 @@ func (a *App) reportFinalResult(res *execsvc.Result) {
 	}
 	_, _ = fmt.Fprintln(os.Stdout, string(b))
 }
+
+// showRuntimeNotice says whether the resolved-runtime line may print. It
+// names the runtime for a person at a terminal in the default text
+// rendering; anywhere else -- a pipe or redirect, --json, or a
+// machine-readable log format -- the line is stderr noise that breaks
+// callers parsing combined output (every e2e run captures stderr together
+// with stdout), and the structured forms already carry the runtime.
+func (a *App) showRuntimeNotice() bool {
+	if a.JSON || a.machineOutput {
+		return false
+	}
+	return stderrIsTerminal()
+}
+
+// stderrIsTerminal is a seam for tests: the ioctl answer for os.Stderr.
+var stderrIsTerminal = func() bool { return isTerminal(os.Stderr) }
 
 // fetchArtifacts pulls bodies the daemon did not place for us.
 //
