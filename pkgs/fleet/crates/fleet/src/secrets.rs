@@ -25,7 +25,9 @@
 //! (3 matches the dispatch domain's unresolved-token exit, #5432).
 
 use fleet_config::Config;
-use fleet_secrets::{BrokerSource, BwsStore, Resolver, Scope, SecretError};
+use fleet_secrets::{
+    BrokerSource, BwsStore, OpSource, Resolver, Scope, SecretError, StoreKind, StoreSelection,
+};
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
@@ -76,6 +78,8 @@ fn usage() -> i32 {
     eprintln!(
         "  set <name>   Store a secret in Bitwarden; the value is read from stdin, never argv"
     );
+    eprintln!();
+    eprintln!("get and list accept --store <bitwarden|1password> and --vault <vault>");
     EXIT_USAGE
 }
 
@@ -89,23 +93,32 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
 }
 
 const GET_USAGE: &str = "\
-Usage: fleet secrets get <name>
+Usage: fleet secrets get [--store <store>] [--vault <vault>] <name>
 
 Resolve a secret by name: the secrets-broker first, Bitwarden (`bws`)
 as fallback. The value goes to stdout and nowhere else.
 
 With a prefix configured ($FLEET_SECRETS_PREFIX, else `[secrets] prefix`
 in fleet.toml), a name reads `<prefix>.<name>`; a name that already
-starts with `<prefix>.` is used as is.";
+starts with `<prefix>.` is used as is.
+
+--store (bitwarden|1password) and --vault select the store for this
+call, over $FLEET_SECRETS_STORE/$FLEET_SECRETS_VAULT, over `[secrets]
+store`/`vault` in fleet.toml. A vault with no store, or an unknown
+store, is a usage error (exit 2).";
 
 const LIST_USAGE: &str = "\
-Usage: fleet secrets list
+Usage: fleet secrets list [--store <store>] [--vault <vault>]
 
 List the names in the secrets-broker's cache (names only, never values).
 
 With a prefix configured ($FLEET_SECRETS_PREFIX, else `[secrets] prefix`
 in fleet.toml), only names under `<prefix>.` are listed, shown without
-it. A broker that does not support a scoped list is exit 3.";
+it. A broker that does not support a scoped list is exit 3.
+
+--store/--vault select the store as for `get`. With store
+`bitwarden` and a vault, only that project's names are listed. With
+store `1password`, names come from `op item list` in the vault.";
 
 const SET_USAGE: &str = "\
 Usage: fleet secrets set <name> [--store <store>] [--vault <vault>]
@@ -144,19 +157,75 @@ fn leaf_help_usage(verb: &str, args: &[String]) -> Option<&'static str> {
     }
 }
 
+/// The `--store` / `--vault` flags of a leaf verb (#10358 S3),
+/// separated from its positional arguments. A flag missing its
+/// value, or an unknown flag, is `Err(())` — a usage error.
+#[derive(Debug)]
+struct StoreFlags {
+    store: Option<String>,
+    vault: Option<String>,
+    positional: Vec<String>,
+}
+
+fn parse_store_flags(args: &[String]) -> Result<StoreFlags, ()> {
+    let mut flags = StoreFlags {
+        store: None,
+        vault: None,
+        positional: Vec::new(),
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--store" => {
+                i += 1;
+                flags.store = Some(args.get(i).ok_or(())?.clone());
+            }
+            "--vault" => {
+                i += 1;
+                flags.vault = Some(args.get(i).ok_or(())?.clone());
+            }
+            other if other.starts_with('-') => return Err(()),
+            other => flags.positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+    Ok(flags)
+}
+
+/// The store selection for a call: flags over env over config (D9).
+/// An unusable selection is a usage error (exit 2).
+fn selection_for(config: &Config, flags: &StoreFlags) -> Result<StoreSelection, i32> {
+    StoreSelection::from_flags_and_config(flags.store.as_deref(), flags.vault.as_deref(), config)
+        .map_err(|e| {
+            eprintln!("fleet secrets: {e}");
+            EXIT_USAGE
+        })
+}
+
 fn cmd_get(config: &Config, args: &[String]) -> i32 {
     if let Some(usage_text) = leaf_help_usage("get", args) {
         println!("{usage_text}");
         return EXIT_OK;
     }
+    let flags = match parse_store_flags(args) {
+        Ok(flags) => flags,
+        Err(()) => {
+            eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
+            return EXIT_USAGE;
+        }
+    };
     // Exactly one name, and not a flag: a leading '-' would be a
     // caller bug (help flags are answered above), never a secret
     // name worth resolving.
-    if args.len() != 1 || args[0].starts_with('-') {
-        eprintln!("usage: fleet secrets get <name>");
+    if flags.positional.len() != 1 || flags.positional[0].starts_with('-') {
+        eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
         return EXIT_USAGE;
     }
-    let name = &args[0];
+    let name = &flags.positional[0];
+    let selection = match selection_for(config, &flags) {
+        Ok(selection) => selection,
+        Err(code) => return code,
+    };
     // #10358 S1: a configured prefix maps the name once, before any
     // source sees it; with none configured the scope is the identity.
     let scope = match Scope::from_config(config) {
@@ -166,7 +235,7 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    match Resolver::default_chain(config).resolve_scoped(&scope, name) {
+    match Resolver::chain_for(config, &selection).resolve_scoped(&scope, name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
@@ -390,10 +459,21 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
         println!("{usage_text}");
         return EXIT_OK;
     }
-    if !args.is_empty() {
-        eprintln!("usage: fleet secrets list");
+    let flags = match parse_store_flags(args) {
+        Ok(flags) => flags,
+        Err(()) => {
+            eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
+            return EXIT_USAGE;
+        }
+    };
+    if !flags.positional.is_empty() {
+        eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
         return EXIT_USAGE;
     }
+    let selection = match selection_for(config, &flags) {
+        Ok(selection) => selection,
+        Err(code) => return code,
+    };
     // #6218: on the laptop the broker's own socket answers
     // directly (no session broker exists there); elsewhere the
     // session-broker source reads the same route.
@@ -407,11 +487,48 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
+    // #10358 S3 (D8): a 1password selection lists from `op`, never
+    // the broker. The vault is the selection's, else $FLEET_OP_VAULT;
+    // with no usable vault the listing fails loud (exit 3) rather
+    // than printing an empty success.
+    if selection.store == StoreKind::OnePassword {
+        let vault = selection
+            .vault
+            .clone()
+            .or_else(|| std::env::var(OpSource::VAULT_ENV).ok());
+        let field = std::env::var(OpSource::FIELD_ENV).ok();
+        let names_result = match OpSource::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(fleet_secrets::ProcessRunner::new()),
+        ) {
+            Some(op) => op.list_names(),
+            None => Err(fleet_secrets::SecretError::Unavailable {
+                source: "op",
+                name: "names".to_string(),
+                detail: "list is not supported for 1password yet: no vault is named \
+                         (set --vault, $FLEET_SECRETS_VAULT, [secrets] vault, or \
+                         $FLEET_OP_VAULT)"
+                    .to_string(),
+            }),
+        };
+        return print_listing(names_result, &scope);
+    }
     let names_result = match fleet_secrets::DirectBrokerSource::from_config(config) {
-        Some(direct) => direct.list_names_in(&scope),
+        Some(direct) => direct.list_names_scoped(&scope, &selection),
         None => BrokerSource::new(config.broker_socket(), config.secrets_token_file())
-            .list_names_in(&scope),
+            .list_names_scoped(&scope, &selection),
     };
+    print_listing(names_result, &scope)
+}
+
+/// Print a listing's names through the scope's display filter, or
+/// fail loud: a listing error is stderr + exit 3, never an empty
+/// success.
+fn print_listing(
+    names_result: Result<Vec<String>, fleet_secrets::SecretError>,
+    scope: &Scope,
+) -> i32 {
     match names_result {
         Ok(names) => {
             let mut out = std::io::stdout().lock();
@@ -464,6 +581,30 @@ mod tests {
         assert_eq!(scoped_listing(&scope, &stored), ["alpha", "42.42.x"]);
         // No prefix: every name, in the broker's order.
         assert_eq!(scoped_listing(&Scope::none(), &stored), stored);
+    }
+
+    #[test]
+    fn store_flags_parse_around_the_positional_name() {
+        // #10358 S3: flags may precede or follow the name; values are
+        // consumed, positionals keep their order.
+        let flags = parse_store_flags(&args(&["--store", "bitwarden", "alpha"])).unwrap();
+        assert_eq!(flags.store.as_deref(), Some("bitwarden"));
+        assert_eq!(flags.positional, ["alpha"]);
+        let flags = parse_store_flags(&args(&[
+            "alpha",
+            "--vault",
+            "proj-1",
+            "--store",
+            "1password",
+        ]))
+        .unwrap();
+        assert_eq!(flags.vault.as_deref(), Some("proj-1"));
+        assert_eq!(flags.store.as_deref(), Some("1password"));
+        assert_eq!(flags.positional, ["alpha"]);
+        // A flag without a value, and an unknown flag, are usage errors.
+        assert!(parse_store_flags(&args(&["--store"])).is_err());
+        assert!(parse_store_flags(&args(&["--bogus", "x"])).is_err());
+        assert!(parse_store_flags(&args(&[])).is_ok());
     }
 
     #[test]
