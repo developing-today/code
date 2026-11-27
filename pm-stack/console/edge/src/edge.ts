@@ -2301,8 +2301,15 @@ export class Edge {
     }
     // Persist the key independently of the held queue. A device retry
     // must not choose a different machine after delivery (or after ACK).
-    for (const command of commands) {
+    for (const command of [...commands]) {
       const previous = (await this.kv.get(`a:${command.id}`)) as Acted | undefined;
+      if (previous?.state === "done") {
+        commands.splice(commands.indexOf(command), 1);
+        const at = held.findIndex((h) => h.id === command.id);
+        if (at >= 0) held.splice(at, 1);
+        bound = true;
+        continue;
+      }
       await this.kv.put(`a:${command.id}`, { at: this.now(), kind: command.kind,
         state: "given", relays: Math.max(1, previous?.relays ?? 0),
         forKid: kid, for: command.for } satisfies Acted);
@@ -2884,6 +2891,7 @@ export class Edge {
         // whose answer was lost while the choice changed (this side was
         // turned away for an hour, say) would be done once on each side.
         const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
+        if (before?.state === "done") return json({ ...before.body, again: true }, before.status ?? 200);
         const given = before?.state === "given";
         const here =
           before !== null ? !given : this.does(kind) && this.primary(cfg) && !this.refusedKinds().includes(kind);
@@ -3411,6 +3419,8 @@ export class Edge {
     }
     await this.ready();
     const cfg = await this.config();
+    const previous = typeof body?.id === "string" ? (await this.kv.get(`a:${body.id}`)) as Acted | undefined : undefined;
+    if (previous?.state === "done") return json({ ...previous.body, again: true }, previous.status ?? 200);
     const held = await this.heldList();
     // Offered again under a name that is already waiting (the device
     // never heard that it was kept): it is kept once, as it is. (One
@@ -3431,7 +3441,6 @@ export class Edge {
     const picked = known.length > 0 ? selectMachine(known, kind) : null;
     const target = forMachine ?? (picked !== null && picked.state !== "none" ? picked.machine : undefined);
     // A previous asking's identity takes precedence over today's selection.
-    const previous = typeof body?.id === "string" ? (await this.kv.get(`a:${body.id}`)) as Acted | undefined : undefined;
     const forKid = typeof body?.forKid === "string" ? body.forKid : previous?.forKid ?? target?.kid;
     const waitsFor = typeof body?.for === "string" ? body.for : previous?.for ?? target?.name;
     const item: Held = {
@@ -3447,7 +3456,7 @@ export class Edge {
     };
     insertHeld(held, item);
     await this.saveHeld();
-    if (forKid !== undefined && previous?.state !== "done") {
+    if (forKid !== undefined) {
       await this.kv.put(`a:${item.id}`, { at: this.now(), kind, state: "given",
         relays: previous?.relays ?? (went === "unknown" ? 1 : 0),
         forKid, for: waitsFor } satisfies Acted);

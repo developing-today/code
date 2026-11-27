@@ -196,6 +196,9 @@ describe("key-bound multi-machine routing (#13492 slice 2)", () => {
     expect(await (await sync(first, ["task.move", "issue.comment"])).json()).toMatchObject({ commands: [] });
     expect(await (await sync(second, ["issue.comment"])).json()).toMatchObject({ commands: [{ id: olderId }] });
     await sync(second, ["issue.comment"], { acks: [{ id: olderId, ok: true }] });
+    // Retrying completed work while a newer subject action waits must
+    // return its terminal answer, never enqueue it behind that action.
+    expect(await (await act(olderId, "issue.comment", { issue: 302, text: "older" })).json()).toMatchObject({ ok: true, again: true });
     expect(await (await sync(first, ["task.move", "issue.comment"])).json()).toMatchObject({ commands: [{ id: newerId }] });
     await sync(first, ["task.move"], { acks: [{ id: newerId, ok: true }] });
     // A second machine's fresh report does not revive a stale first tunnel.
