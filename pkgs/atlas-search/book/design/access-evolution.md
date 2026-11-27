@@ -49,7 +49,7 @@ The acceptance is per client, for the four consumers named in the issue: **OpenC
 - **ceiling and corpus scoping enforced in branch queries** — the client's sensitivity ceiling and its permitted corpora are applied inside the retrieval core's branch queries, before ranking, so an out-of-scope chunk cannot surface, be counted, or leak its existence through a result total;
 - **audit-logged** — every query is written to the audit log with its identity, ceiling, corpus scope, and trace identifier.
 
-Today all hosted MCP callers share the one identity `hosted-per-user` at the `personal` ceiling; per-agent identity and scoping are #8625's later slices and are deliberately not improvised in the current Worker code. Closing the remainder means replacing that shared identity with per-client identities on the hosted path and passing the four-client acceptance above. Until then, #8625 stays open and this chapter describes the acceptance as a requirement, not a result.
+The Worker now supports optional token-derived MCP caller ids for audit events, but the laptop mcpx wiring has not yet configured distinct credentials. The outbound service request remains under the shared `cf-worker` client at `personal` and `hosted-per-user`; per-agent ceilings, corpus scoping, and the four-client probe are still open. #8625 therefore remains open, and the acceptance above is a requirement, not a result.
 
 ## The Worker cache fix (#6805)
 
