@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""apply.py against a model of the Cloudflare account, reusing the
-model pm-stack/console/scripts/test_expose.py built for expose.py.
+"""apply.py against an independent model of the Cloudflare account.
 
 Checked: the repository state is valid; a check run changes nothing
 and reports each change it would make; a second apply changes
-nothing; the check run makes exactly the Cloudflare changes expose.py
---check makes for the same hostname and owner, so the workflow and
-the laptop's timer enforce the same account state; refusing states
-(a renamed tunnel, an unknown key, a missing secret) fail before
-anything is asked of Cloudflare.
+nothing; and refusing states fail before anything is asked of Cloudflare.
+Tunnel ingress is tested separately by test_expose.py.
 """
 
 import copy
@@ -23,10 +19,11 @@ from unittest import mock
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parent.parent / "pm-stack" / "console" / "scripts"))
 import apply as applier
-import expose
-import test_expose
+import cloudflare
+import test_model
+
+Account = test_model.Account
 
 HOST = "pm.security.cab"
 OWNER = "owner@example.com"
@@ -56,7 +53,7 @@ def run(account, *args, env=None, state=None):
             return None
         if (
             not account.worker_up
-            or url != f"https://{expose.WORKER}.acct.workers.dev/console/health"
+            or url != f"https://{cloudflare.WORKER}.acct.workers.dev/console/health"
         ):
             return None
         return {"ok": True, "edge": True, "host": account.worker_host}
@@ -95,13 +92,13 @@ class Apply(unittest.TestCase):
         self.home = tempfile.mkdtemp()
 
     def test_the_state_is_valid_and_applies_cleanly_twice(self):
-        account = test_expose.Account()
+        account = Account()
         code = run(account, "--check")
         self.assertEqual(code, 1)
         self.assertTrue(account.changes, "an empty account would change")
         code = run(account, "--apply")
         self.assertEqual(code, 0)
-        second = test_expose.Account()
+        second = Account()
         second.apps = copy.deepcopy(account.apps)
         second.policies = copy.deepcopy(account.policies)
         second.ingress = copy.deepcopy(account.ingress)
@@ -118,7 +115,7 @@ class Apply(unittest.TestCase):
         )
 
     def test_check_reports_and_changes_nothing(self):
-        account = test_expose.Account()
+        account = Account()
         before = (copy.deepcopy(account.apps), copy.deepcopy(account.ingress))
         code = run(account, "--check")
         self.assertEqual(code, 1)
@@ -128,59 +125,42 @@ class Apply(unittest.TestCase):
         self.assertEqual((account.apps, account.ingress), before)
 
     def test_an_up_to_date_account_changes_nothing_and_says_so(self):
-        account = test_expose.Account()
+        account = Account()
         run(account, "--apply")
         account.changes = []
         code = run(account, "--check")
         self.assertEqual(code, 0)
         self.assertTrue(any("is as declared" in line for line in account.printed))
 
-    def test_the_workflow_and_the_laptop_enforce_the_same_account_state(self):
-        """Parity with expose.py: for the same hostname and owner, the
-        check run records exactly the Cloudflare calls the laptop's
-        --check records, in the same order. The workflow and the
-        timer's expose.py then cannot drift apart."""
-        account = test_expose.Account()
-        run(account, "--check")
-        laptop = test_expose.Account()
-        test_expose.run(laptop, self.home, "--check")
-        # Direct-mode secrets now belong only to repository-driven apply;
-        # expose.py must agree on the shared account configuration without
-        # managing the Worker's secrets itself.
-        shared = [
-            change
-            for change in account.changes
-            if not change.startswith("edge direct:")
-        ]
-        self.assertEqual(
-            shared,
-            laptop.changes,
-            f"apply.py changes:\n{shared}\n\nexpose.py changes:\n{laptop.changes}",
+    def test_apply_uses_workflow_owned_cloudflare_module(self):
+        self.assertIs(applier.expose, cloudflare)
+        self.assertNotEqual(
+            pathlib.Path(applier.expose.__file__).resolve(),
+            (HERE.parent.parent / "pm-stack" / "console" / "scripts" / "expose.py").resolve(),
         )
-        self.assertFalse(laptop.worker_secrets)
 
     def test_a_renamed_tunnel_is_refused_before_anything_is_asked(self):
-        account = test_expose.Account()
+        account = Account()
         path = write_state({("tunnel",): "other-tunnel"})
         with self.assertRaises(SystemExit):
             run(account, "--apply", state=path)
         self.assertEqual(account.order, [])
 
     def test_an_unknown_key_is_refused(self):
-        account = test_expose.Account()
+        account = Account()
         path = write_state({("worker", "deploys"): True})
         with self.assertRaises(SystemExit):
             run(account, "--apply", state=path)
         self.assertEqual(account.order, [])
 
     def test_a_missing_secret_fails_before_anything_is_asked(self):
-        account = test_expose.Account()
+        account = Account()
         with self.assertRaises(SystemExit):
             run(account, "--apply", env={"PMCF_GITHUB_TOKEN": ""})
         self.assertEqual(account.order, [])
 
     def test_missing_optional_google_pair_preserves_existing_provider(self):
-        account = test_expose.Account()
+        account = Account()
         google = {
             "id": "idp-google",
             "type": "google",
@@ -203,7 +183,7 @@ class Apply(unittest.TestCase):
         )
 
     def test_partial_optional_google_pair_refuses_before_cloudflare_writes(self):
-        account = test_expose.Account()
+        account = Account()
 
         with self.assertRaises(SystemExit):
             run(account, "--apply", env={"PMCF_GOOGLE_CLIENT_ID": "configured-id"})
@@ -211,7 +191,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(account.order, [])
 
     def test_refresh_tokens_rotates_existing_worker_secrets(self):
-        account = test_expose.Account()
+        account = Account()
         run(account, "--apply")
         account.worker_secrets["GITHUB_TOKEN"] = "old-github"
         account.worker_secrets["QUEUE_TOKEN"] = "old-queue"
@@ -234,14 +214,14 @@ class Apply(unittest.TestCase):
         )
 
     def test_refresh_tokens_is_refused_when_direct_mode_is_off(self):
-        account = test_expose.Account()
+        account = Account()
         state = write_state({("worker", "direct"): "off"})
         with self.assertRaisesRegex(SystemExit, "worker.direct to be on"):
             run(account, "--apply", "--refresh-tokens", state=state)
         self.assertEqual(getattr(account, "asked", 0), 0)
 
     def test_the_bridge_token_rides_along_when_the_state_holds_it(self):
-        account = test_expose.Account()
+        account = Account()
         run(account, "--apply")
         self.assertEqual(
             account.worker_secrets,
@@ -253,11 +233,11 @@ class Apply(unittest.TestCase):
             },
         )
         # A state without it leaves a Worker without it alone, in silence.
-        account2 = test_expose.Account()
+        account2 = Account()
         run(account2, "--apply", env={"PMCF_BRIDGE_TOKEN": ""})
         self.assertNotIn("BRIDGE_TOKEN", account2.worker_secrets)
         self.assertNotIn("bridge", "\n".join(account2.changes))
-        account = test_expose.Account()
+        account = Account()
         run(account, "--apply")
         self.assertIn("GITHUB_TOKEN", account.worker_secrets)
         path = write_state({("worker", "direct"): "off"})

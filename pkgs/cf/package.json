@@ -59,8 +59,8 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@cloudflare/build-output-utils": "0.9.3",
-    "@cloudflare/config": "0.27.0",
+    "@cloudflare/build-output-utils": "0.9.14",
+    "@cloudflare/config": "0.32.1",
     "@cloudflare/runtime-types": "0.1.14",
     "blake3-wasm": "2.1.5",
     "miniflare": "5.20261019.1-beta"
