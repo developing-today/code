@@ -12,6 +12,7 @@
 pub mod chain;
 pub mod ingest;
 pub mod loadgen;
+pub mod stress_mix;
 pub mod stress_output;
 
 /// Every network step in these tests must finish within this, so a stuck

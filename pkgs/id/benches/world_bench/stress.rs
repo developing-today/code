@@ -6,6 +6,9 @@
 //! limit (#1411). Everything here resolves through the parent bench
 //! target (`use super::*`), exactly like the code did inline.
 
+use super::stress_mix::{
+    STRESS_MIX_CHAT, STRESS_MIX_DOC_EDIT, STRESS_MIX_PROGRAM_INSTALL, StressShape, stress_shape_at,
+};
 use super::*;
 
 /// The codified document shape the stress mix's document edits are
@@ -19,42 +22,6 @@ const STRESS_DOC_LIST_ITEMS: u64 = 512;
 /// stated against: 8 files / 256 KiB total per install.
 const STRESS_INSTALL_FILES: u64 = 8;
 const STRESS_INSTALL_BYTES: u64 = 262_144;
-
-/// The stress event mix, as counts per 1,000 events in the same
-/// discipline as the loadgen core's mix tables: the shape at stream
-/// position `i` is a pure function of `i % 1000`, never sampled, so
-/// the same (seed, tier) always produces the same stream.
-const STRESS_MIX_CHAT: u64 = 700;
-const STRESS_MIX_DOC_EDIT: u64 = 200;
-const STRESS_MIX_PROGRAM_INSTALL: u64 = 100;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StressShape {
-    Chat,
-    DocEdit,
-    ProgramInstall,
-}
-
-impl StressShape {
-    fn name(self) -> &'static str {
-        match self {
-            StressShape::Chat => "chat",
-            StressShape::DocEdit => "doc_edit",
-            StressShape::ProgramInstall => "program_install",
-        }
-    }
-}
-
-fn stress_shape_at(index: u64) -> StressShape {
-    let at = index % 1_000;
-    if at < STRESS_MIX_CHAT {
-        StressShape::Chat
-    } else if at < STRESS_MIX_CHAT + STRESS_MIX_DOC_EDIT {
-        StressShape::DocEdit
-    } else {
-        StressShape::ProgramInstall
-    }
-}
 
 /// One `ID_BENCH_STRESS_*` axis override, falling back to the tier's
 /// committed value when the variable is unset or unparseable (the

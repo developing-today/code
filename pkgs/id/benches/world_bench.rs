@@ -172,6 +172,12 @@ mod loadgen;
 #[path = "../tests/common/stress_output.rs"]
 mod stress_output;
 
+// The stress workload's event-shape schedule (#16044): shared with
+// the integration oracle tests, so the generator and its oracles run
+// one schedule, never a copy of it.
+#[path = "../tests/common/stress_mix.rs"]
+mod stress_mix;
+
 // Scale-program stress workloads (split from this file, #13057).
 #[path = "world_bench/stress.rs"]
 mod stress;
