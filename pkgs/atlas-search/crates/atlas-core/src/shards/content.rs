@@ -116,6 +116,22 @@ impl ContentStores {
         Ok(out)
     }
 
+    /// Chunk ids for a canonical content hash, from admitted tier
+    /// stores only. The caller still applies the requester's effective
+    /// disclosure ceiling before hydrating any candidate.
+    pub fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        let stmt = Stmt::new(
+            "SELECT id FROM chunks WHERE content_hash = ?1 ORDER BY id",
+            vec![Value::text(canonical_hash)],
+        );
+        let mut ids = Vec::new();
+        for store in &self.stores {
+            let rows = store.run(&stmt)?;
+            ids.extend(rows.iter().filter_map(|row| row.get_i64("id")));
+        }
+        Ok(ids)
+    }
+
     /// One message row by id, from the first admitted tier store
     /// that holds it (message ids are globally unique).
     pub fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
