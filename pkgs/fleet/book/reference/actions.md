@@ -46,9 +46,9 @@ partitioned from the broker):
 - `fleet actions exec run <ref> [--timeout S] -- <command...>` —
   enqueue one command, stream its output, exit with its code.
 - `fleet actions exec once [--repo OWNER/REPO] [--target-repo
-  OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
-  [--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
-  <command...>` — the one-shot sugar: find a live session for
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar: find a live session for
   `--repo` in the local store or start one (same coordinator
   claim, same handoff), run one command, exit with its code.
   Defaults: `--repo dezren39/fleet`, `--lease 1800`,

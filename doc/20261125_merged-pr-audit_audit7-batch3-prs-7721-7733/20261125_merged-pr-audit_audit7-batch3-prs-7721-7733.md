@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue(s) | Verdict | Finding |
-|---:|---|---|---|
-| #7721 | #6827 | `audit:complete` | Documents `--tursodb` at database creation, known conversion debt, and the safe export/import procedure. The issue's first two criteria are met; it intentionally stays open until Turso provides a rename/mode-convert verb, as its third criterion specifies. |
-| #7722 | #2043, #2296 | `audit:complete` | Adds the requested design extension for Drew's later rulings: double-entry token classes, supply account, pending-token trading tied to #2296, terminology, deferred seams and an explicit unresolved list. The record preserves unsettled wording rather than inventing a ruling. |
-| #7723 | #3238, #3270, #3240, #3283; parent #3282 | `audit:complete` | Completes all four remaining mirror-contract children: resolvable mirror validity, missing-mirror alarm accounting, atomic/tolerant state IO, and generated report handling. The 13-file code/test/doc diff implements the enumerated contracts and the child issues are closed. |
-| #7730 | #7725 | `audit:complete` | Routes all four activity-summary caps through surrogate-safe truncation and adds regression coverage for writer and persistence boundaries. The issue comment confirms the merged fix. |
-| #7733 | #7731 | `audit:complete` | Makes shared author fields and comment bodies surrogate-safe at all four caps, with tests for each straddle and exact-fit controls. The issue comment confirms the merged fix. |
+| Payload number | Spawning issue(s)                        | Verdict          | Finding                                                                                                                                                                                                                                                                            |
+| -------------: | ---------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7721 | #6827                                    | `audit:complete` | Documents `--tursodb` at database creation, known conversion debt, and the safe export/import procedure. The issue's first two criteria are met; it intentionally stays open until Turso provides a rename/mode-convert verb, as its third criterion specifies.                    |
+|          #7722 | #2043, #2296                             | `audit:complete` | Adds the requested design extension for Drew's later rulings: double-entry token classes, supply account, pending-token trading tied to #2296, terminology, deferred seams and an explicit unresolved list. The record preserves unsettled wording rather than inventing a ruling. |
+|          #7723 | #3238, #3270, #3240, #3283; parent #3282 | `audit:complete` | Completes all four remaining mirror-contract children: resolvable mirror validity, missing-mirror alarm accounting, atomic/tolerant state IO, and generated report handling. The 13-file code/test/doc diff implements the enumerated contracts and the child issues are closed.   |
+|          #7730 | #7725                                    | `audit:complete` | Routes all four activity-summary caps through surrogate-safe truncation and adds regression coverage for writer and persistence boundaries. The issue comment confirms the merged fix.                                                                                             |
+|          #7733 | #7731                                    | `audit:complete` | Makes shared author fields and comment bodies surrogate-safe at all four caps, with tests for each straddle and exact-fit controls. The issue comment confirms the merged fix.                                                                                                     |
 
 ## Slice state
 

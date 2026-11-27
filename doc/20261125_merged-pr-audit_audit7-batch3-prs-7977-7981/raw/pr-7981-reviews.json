@@ -1,1 +1,40 @@
-[{"id":5863420460,"node_id":"PRR_kwDOJWP4788AAAABXXyyLA","user":{"login":"copilot-pull-request-reviewer[bot]","id":175728472,"node_id":"BOT_kgDOCnlnWA","avatar_url":"https://avatars.githubusercontent.com/in/946600?v=4","gravatar_id":"","url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D","html_url":"https://github.com/apps/copilot-pull-request-reviewer","followers_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/followers","following_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/following{/other_user}","gists_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/gists{/gist_id}","starred_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/subscriptions","organizations_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/orgs","repos_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/repos","events_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/events{/privacy}","received_events_url":"https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/received_events","type":"Bot","user_view_type":"public","site_admin":false},"body":"> [!WARNING]\n> Copilot couldn't run its full agentic review because it didn't start before the timeout. Make sure your repository has a runner available, or add a `copilot-code-review.yml` file specifying one with the `runs-on` attribute. See the [docs](https://gh.io/AA11tgch) for more details.\n\n<!-- ccr-overview-v2 -->\n\n## Copilot review overview\n\n**No open issues** 🎉\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\nRegisters Mistral as a stable `SHELL_POOL` in quota attribution so it can be overlaid by live quota readings (fail-soft behavior) rather than relying on unmapped-pool synthesis, and updates the pool-order test accordingly.\n\n**Changes:**\n- Add a `mistral` entry to `SHELL_POOLS` for stable pool identity.\n- Update quota pool ordering test expectations to include `mistral`.\n- Update an explanatory comment in the quota test to reflect the new “every pool renders” framing.\n\n| File | Description |\r\n| ---- | ----------- |\r\n| pm-stack/​aggregator/​test/​quota.test.ts | Updates pool-order assertion and adjusts test commentary to include the new `mistral` pool. |\r\n| pm-stack/​aggregator/​src/​quota-extract.ts | Registers `mistral` as a shell pool so live windows can be overlaid onto a stable identity. |\n</details>\n\n<sub>Review effort: Lite</sub>","state":"COMMENTED","html_url":"https://github.com/developing-today/code/pull/7981#pullrequestreview-5863420460","pull_request_url":"https://api.github.com/repos/developing-today/code/pulls/7981","author_association":"NONE","is_copilot_code_review":true,"copilot_code_review_effort":"lite","_links":{"html":{"href":"https://github.com/developing-today/code/pull/7981#pullrequestreview-5863420460"},"pull_request":{"href":"https://api.github.com/repos/developing-today/code/pulls/7981"}},"submitted_at":"2026-11-11T18:13:09Z","commit_id":"90a596bbf57b28356618f5c06efc36b71130b3e6"}]
+[
+  {
+    "id": 5863420460,
+    "node_id": "PRR_kwDOJWP4788AAAABXXyyLA",
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "id": 175728472,
+      "node_id": "BOT_kgDOCnlnWA",
+      "avatar_url": "https://avatars.githubusercontent.com/in/946600?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D",
+      "html_url": "https://github.com/apps/copilot-pull-request-reviewer",
+      "followers_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "> [!WARNING]\n> Copilot couldn't run its full agentic review because it didn't start before the timeout. Make sure your repository has a runner available, or add a `copilot-code-review.yml` file specifying one with the `runs-on` attribute. See the [docs](https://gh.io/AA11tgch) for more details.\n\n<!-- ccr-overview-v2 -->\n\n## Copilot review overview\n\n**No open issues** 🎉\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\nRegisters Mistral as a stable `SHELL_POOL` in quota attribution so it can be overlaid by live quota readings (fail-soft behavior) rather than relying on unmapped-pool synthesis, and updates the pool-order test accordingly.\n\n**Changes:**\n- Add a `mistral` entry to `SHELL_POOLS` for stable pool identity.\n- Update quota pool ordering test expectations to include `mistral`.\n- Update an explanatory comment in the quota test to reflect the new “every pool renders” framing.\n\n| File | Description |\r\n| ---- | ----------- |\r\n| pm-stack/​aggregator/​test/​quota.test.ts | Updates pool-order assertion and adjusts test commentary to include the new `mistral` pool. |\r\n| pm-stack/​aggregator/​src/​quota-extract.ts | Registers `mistral` as a shell pool so live windows can be overlaid onto a stable identity. |\n</details>\n\n<sub>Review effort: Lite</sub>",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/developing-today/code/pull/7981#pullrequestreview-5863420460",
+    "pull_request_url": "https://api.github.com/repos/developing-today/code/pulls/7981",
+    "author_association": "NONE",
+    "is_copilot_code_review": true,
+    "copilot_code_review_effort": "lite",
+    "_links": {
+      "html": { "href": "https://github.com/developing-today/code/pull/7981#pullrequestreview-5863420460" },
+      "pull_request": { "href": "https://api.github.com/repos/developing-today/code/pulls/7981" }
+    },
+    "submitted_at": "2026-11-11T18:13:09Z",
+    "commit_id": "90a596bbf57b28356618f5c06efc36b71130b3e6"
+  }
+]

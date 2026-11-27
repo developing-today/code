@@ -223,10 +223,7 @@ describe("renders apply the ruling (#1282 slice 2)", () => {
   });
 
   test("/conflicts names the ruling, the suppressed count, and the revoke path", () => {
-    const html = renderConflicts(
-      conflictInbox({ pool: clashPool(), now: NOW, rulings: [ruling()] }),
-      PROV,
-    );
+    const html = renderConflicts(conflictInbox({ pool: clashPool(), now: NOW, rulings: [ruling()] }), PROV);
     expect(html).toContain("Trust rulings");
     expect(html).toContain("trusts <strong>derived</strong>");
     expect(html).toContain("suppressed from this queue");

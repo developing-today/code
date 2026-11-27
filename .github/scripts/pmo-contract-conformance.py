@@ -20,6 +20,7 @@ landed and passing, landed and failing, or gated.
       test failed, or either step exited non-zero. Gated families are
       reported with their issue and never counted as passing or failing.
 """
+
 import json
 import os
 import re
@@ -94,7 +95,9 @@ def summary(manifest_path, log_path, rust_rc, projector_rc):
             rows.append((fid, "landed, failing", "; ".join(problems)))
         else:
             count = len(family["tests"])
-            rows.append((fid, "landed, passing", f"{count} test{'' if count == 1 else 's'}"))
+            rows.append(
+                (fid, "landed, passing", f"{count} test{'' if count == 1 else 's'}")
+            )
 
     harness = [t for t in m.get("harness_tests", []) if results.get(t) != "ok"]
     notes = []
@@ -108,8 +111,12 @@ def summary(manifest_path, log_path, rust_rc, projector_rc):
         failed = True
         notes.append(f"The projector step exited {projector_rc}.")
 
-    out = ["## PM orchestration contract conformance", "",
-           "| Family | State | Detail |", "| --- | --- | --- |"]
+    out = [
+        "## PM orchestration contract conformance",
+        "",
+        "| Family | State | Detail |",
+        "| --- | --- | --- |",
+    ]
     out += [f"| `{fid}` | {state} | {detail} |" for fid, state, detail in rows]
     out.append("")
     if failed:

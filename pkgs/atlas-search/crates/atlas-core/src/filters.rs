@@ -660,7 +660,10 @@ mod tests {
         let filters =
             Filters::new(vec![], vec![], vec![], vec![], "internal", None, None).expect("filters");
         assert_eq!(filters.max_sensitivity, Sensitivity::Personal);
-        assert_eq!(filters.max_sensitivity.allowed(), vec!["shareable", "personal"]);
+        assert_eq!(
+            filters.max_sensitivity.allowed(),
+            vec!["shareable", "personal"]
+        );
         assert_eq!(filters.max_sensitivity.name(), "personal");
     }
 
@@ -919,11 +922,14 @@ mod tests {
             );
             let mut stmt = db.prepare(&sql).unwrap();
             let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter().map(|v| match v {
-                    Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
-                    Value::Integer(i) => rusqlite::types::Value::Integer(*i),
-                    _ => panic!("unexpected param"),
-                })), |r| r.get::<_, i64>(0))
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|v| match v {
+                        Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        Value::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        _ => panic!("unexpected param"),
+                    })),
+                    |r| r.get::<_, i64>(0),
+                )
                 .unwrap();
             rows.map(|r| r.unwrap()).collect()
         };
@@ -935,11 +941,14 @@ mod tests {
             );
             let mut stmt = db.prepare(&sql).unwrap();
             let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter().map(|v| match v {
-                    Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
-                    Value::Integer(i) => rusqlite::types::Value::Integer(*i),
-                    _ => panic!("unexpected param"),
-                })), |r| r.get::<_, String>(0))
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|v| match v {
+                        Value::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        Value::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        _ => panic!("unexpected param"),
+                    })),
+                    |r| r.get::<_, String>(0),
+                )
                 .unwrap();
             rows.map(|r| r.unwrap()).collect()
         };

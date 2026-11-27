@@ -520,14 +520,22 @@ struct ChainSecrets<'a>(&'a Config);
 
 impl Secrets for ChainSecrets<'_> {
     fn resolve(&self, name: &str) -> Result<String, String> {
-        fleet_secrets::Resolver::default_chain(self.0)
+        // #10358 S3 (D8/D11): the instance's store selection picks
+        // the chain; with nothing configured it is default_chain.
+        let selection =
+            fleet_secrets::StoreSelection::from_config(self.0).map_err(|e| e.to_string())?;
+        fleet_secrets::Resolver::chain_for(self.0, &selection)
             .resolve(name)
             .map(|v| v.expose().to_string())
             .map_err(|e| e.to_string())
     }
 
     fn store(&self, name: &str, value: &str) -> Result<(), String> {
-        let store = fleet_secrets::BwsStore::from_config(self.0).ok_or_else(|| {
+        // #10358 S3 (D8): a bitwarden selection's vault is the write
+        // project, overriding bws_project_id.
+        let selection =
+            fleet_secrets::StoreSelection::from_config(self.0).map_err(|e| e.to_string())?;
+        let store = fleet_secrets::BwsStore::from_config_for(self.0, &selection).ok_or_else(|| {
             format!(
                 "no bws project is configured for secret writes: set ${} or [secrets] bws_project_id in fleet.toml",
                 fleet_secrets::BwsStore::PROJECT_ID_ENV

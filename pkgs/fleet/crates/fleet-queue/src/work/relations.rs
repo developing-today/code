@@ -21,7 +21,7 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use super::contracts::{
-    is_canonical_decimal, ContractError, Effect, Outcome, ResultError, WorkRef,
+    ContractError, Effect, Outcome, ResultError, WorkRef, is_canonical_decimal,
 };
 
 /// Schema id of the edge record (D4).
@@ -682,7 +682,7 @@ impl EdgeEnd {
             other => {
                 return Err(schema(format!(
                     "{field}.kind: {other:?} is not fleet_work or external"
-                )))
+                )));
             }
         };
         end.validate()?;
@@ -986,7 +986,7 @@ pub fn bind_ref(input: &RefInput, context: &BindContext) -> Result<EdgeEnd, Rela
                         "fleet:{work_id} needs exactly one authority, found {}; write fleet://<authority_id>/work/{work_id}",
                         others.len()
                     ),
-                })
+                });
             }
         },
         RefInput::LinkedRepository { number } => match context.linked_repositories.as_slice() {
@@ -997,7 +997,7 @@ pub fn bind_ref(input: &RefInput, context: &BindContext) -> Result<EdgeEnd, Rela
                         "#{number} needs exactly one linked repository, found {}; write owner/repo#{number}",
                         others.len()
                     ),
-                })
+                });
             }
         },
         RefInput::External {
@@ -1764,7 +1764,7 @@ pub fn from_legacy_dep(dep: &Value) -> Result<EdgeEnd, RelationError> {
         other => {
             return Err(schema(format!(
                 "legacy dep: kind {other:?} is not task, issue, pr or ci"
-            )))
+            )));
         }
     };
     end.validate()?;
@@ -2177,9 +2177,11 @@ mod tests {
             let none = BindContext::default();
             let error = bind_ref(&input, &none).unwrap_err();
             assert_eq!(error.code(), "ambiguous_ref");
-            assert!(error
-                .to_string()
-                .contains("fleet://<authority_id>/work/842"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("fleet://<authority_id>/work/842")
+            );
             let two = BindContext {
                 authorities: vec!["local".to_string(), "peer".to_string()],
                 ..BindContext::default()

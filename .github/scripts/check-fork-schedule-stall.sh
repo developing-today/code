@@ -60,7 +60,7 @@ usage_error() {
 
 require_option_value() {
   local option="$1" value="${2-}"
-  if [ -z "$value" ] || [[ "$value" == --* ]]; then
+  if [ -z "$value" ] || [[ $value == --* ]]; then
     usage_error "$option needs a value"
   fi
 }
@@ -70,23 +70,39 @@ while [ "$#" -gt 0 ]; do
   --runs-json)
     [ "$SEEN_RUNS_JSON" -eq 0 ] || usage_error "--runs-json may only be specified once"
     require_option_value --runs-json "${2-}"
-    SEEN_RUNS_JSON=1; RUNS_JSON="$2"; shift 2 ;;
+    SEEN_RUNS_JSON=1
+    RUNS_JSON="$2"
+    shift 2
+    ;;
   --now)
     [ "$SEEN_NOW" -eq 0 ] || usage_error "--now may only be specified once"
     require_option_value --now "${2-}"
-    SEEN_NOW=1; NOW="$2"; shift 2 ;;
+    SEEN_NOW=1
+    NOW="$2"
+    shift 2
+    ;;
   --min-silent-days)
     [ "$SEEN_MIN_SILENT_DAYS" -eq 0 ] || usage_error "--min-silent-days may only be specified once"
     require_option_value --min-silent-days "${2-}"
-    SEEN_MIN_SILENT_DAYS=1; MIN_SILENT_DAYS="$2"; shift 2 ;;
-  --help | -h) usage; exit 0 ;;
+    SEEN_MIN_SILENT_DAYS=1
+    MIN_SILENT_DAYS="$2"
+    shift 2
+    ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
   *)
-    usage_error "unexpected argument '$1'" ;;
+    usage_error "unexpected argument '$1'"
+    ;;
   esac
 done
 
 [ -n "$RUNS_JSON" ] || usage_error "--runs-json is required"
-[ -r "$RUNS_JSON" ] || { echo "check-fork-schedule-stall: cannot read $RUNS_JSON" >&2; exit 1; }
+[ -r "$RUNS_JSON" ] || {
+  echo "check-fork-schedule-stall: cannot read $RUNS_JSON" >&2
+  exit 1
+}
 case "$MIN_SILENT_DAYS" in
 '' | *[!0-9]*) usage_error "--min-silent-days must be a non-negative integer" ;;
 esac

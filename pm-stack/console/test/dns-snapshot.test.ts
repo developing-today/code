@@ -4,11 +4,7 @@
 // (createD1LedgerQuery), so exact snapshot storage, stale/missing
 // fail-closed behavior, and HTML/JSON parity are all decided here.
 import { describe, expect, test } from "bun:test";
-import {
-  createD1LedgerQuery,
-  type LedgerD1Database,
-  type LedgerPagesIo,
-} from "../edge/src/ledger-pages.ts";
+import { createD1LedgerQuery, type LedgerD1Database, type LedgerPagesIo } from "../edge/src/ledger-pages.ts";
 import {
   DNS_SNAPSHOT_MAX_AGE_MS,
   DNS_SNAPSHOT_SQL,
@@ -96,9 +92,7 @@ describe("dnsSnapshotFromRow", () => {
 
   test("refuses malformed JSON, a gated-out section, and disagreeing provenance", () => {
     expect(dnsSnapshotFromRow({ ...snapshotRow(FRESH), section_json: "{nope" })).toBeNull();
-    expect(
-      dnsSnapshotFromRow(snapshotRow(FRESH, { ...SECTION, entries: [] })),
-    ).toBeNull();
+    expect(dnsSnapshotFromRow(snapshotRow(FRESH, { ...SECTION, entries: [] }))).toBeNull();
     expect(dnsSnapshotFromRow({ ...snapshotRow(FRESH), generated_at: "2026-11-26T11:00:00.000Z" })).toBeNull();
     expect(dnsSnapshotFromRow({ ...snapshotRow(FRESH), received_at: "not a timestamp" })).toBeNull();
   });

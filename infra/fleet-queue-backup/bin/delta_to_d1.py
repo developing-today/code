@@ -109,7 +109,9 @@ def delta(source_url, d1_name, append, lagging=()):
     append = set(append) | guarded
     d1_tables = {
         r["name"]: r["sql"]
-        for r in d1.query(db_id, "SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+        for r in d1.query(
+            db_id, "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
+        )
     }
     # An append table keeps its D1 rows only while its columns still
     # match the source; any drift sends it down the full-copy path.
@@ -172,7 +174,9 @@ def delta(source_url, d1_name, append, lagging=()):
     if len(lines) > 1:
         d1.import_sql(db_id, "\n".join(lines) + "\n")
     for table, col, where, expected in splits:
-        rows = d1.query(db_id, f'SELECT length("{col}") AS n FROM "{table}" WHERE {where}')
+        rows = d1.query(
+            db_id, f'SELECT length("{col}") AS n FROM "{table}" WHERE {where}'
+        )
         if len(rows) != 1 or rows[0].get("n") != expected:
             raise RuntimeError(f"split-row verification failed for {table}.{col}")
     names = [n for n, _ in tables]
@@ -198,7 +202,11 @@ def main(argv=None):
     p.add_argument("--source-url", required=True)
     p.add_argument("--d1-name", required=True)
     p.add_argument("--append", default="", help="comma-separated append-only tables")
-    p.add_argument("--lagging", default="", help="comma-separated tables whose writers keep running; D1 may trail the source there")
+    p.add_argument(
+        "--lagging",
+        default="",
+        help="comma-separated tables whose writers keep running; D1 may trail the source there",
+    )
     a = p.parse_args(argv)
     try:
         report, total = delta(
@@ -210,7 +218,10 @@ def main(argv=None):
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"delta_to_d1: failed: {exc}", file=sys.stderr)
         return 1
-    print(f"delta_to_d1: {a.d1_name} up to date; {total} rows; " + " ".join(f"{k}{v}" for k, v in report.items()))
+    print(
+        f"delta_to_d1: {a.d1_name} up to date; {total} rows; "
+        + " ".join(f"{k}{v}" for k, v in report.items())
+    )
     return 0
 
 

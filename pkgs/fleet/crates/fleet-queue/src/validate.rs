@@ -633,9 +633,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
                 );
             }
         }
-        Some(_) => errs.push(
-            "payload.route: must be an object {platform, reason}".to_string(),
-        ),
+        Some(_) => errs.push("payload.route: must be an object {platform, reason}".to_string()),
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
@@ -2460,7 +2458,10 @@ mod tests {
         );
         assert_eq!(
             route_declaration(&payload),
-            Some(("muse".to_string(), "needs the muse seat's checkout".to_string()))
+            Some((
+                "muse".to_string(),
+                "needs the muse seat's checkout".to_string()
+            ))
         );
         for bad in [
             json!({"route": {"platform": "laptop", "reason": "r"}}),

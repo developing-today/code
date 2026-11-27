@@ -4,12 +4,12 @@
 
 The sensitivity ladder's canonical names are `public < internal < private < sensitive`. The code still spells the rungs `shareable`, `personal`, `local-only` and `secret-bearing`, and those spellings are not only identifiers: they are stored labels in the corpus and staging databases, values in service and user configuration, CLI arguments, and fields on the wire. A one-step rename of the enum variants and their serde spellings would make every existing database, config and script unreadable. The rename therefore moves through four stages, each safe to ship on its own.
 
-| Legacy spelling   | Canonical name |
-| ----------------- | -------------- |
-| `shareable`       | `public`       |
-| `personal`        | `internal`     |
-| `local-only`      | `private`      |
-| `secret-bearing`  | `sensitive`    |
+| Legacy spelling  | Canonical name |
+| ---------------- | -------------- |
+| `shareable`      | `public`       |
+| `personal`       | `internal`     |
+| `local-only`     | `private`      |
+| `secret-bearing` | `sensitive`    |
 
 ## The rule that shapes every stage
 

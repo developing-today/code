@@ -106,7 +106,9 @@ class AlignmentHandlerTests(unittest.TestCase):
         self.assertTrue(self.sender.messages[0][2].startswith("BLOCKED align-18"))
         self.assertIn("Owner: @drew", self.sender.messages[0][2])
         self.assertIn("Scope: (missing)", self.sender.messages[0][2])
-        self.assertIn("Evidence: https://example.invalid/pr/18", self.sender.messages[0][2])
+        self.assertIn(
+            "Evidence: https://example.invalid/pr/18", self.sender.messages[0][2]
+        )
 
     def test_reply_in_participating_thread_is_a_trigger(self):
         first = event(

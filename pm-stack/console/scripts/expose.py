@@ -27,9 +27,13 @@ class Cloudflare:
 
     def call(self, method: str, path: str, body=None):
         req = urllib.request.Request(
-            API + path, method=method,
+            API + path,
+            method=method,
             data=None if body is None else json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            },
         )
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
@@ -37,7 +41,9 @@ class Cloudflare:
         except urllib.error.HTTPError as error:
             result = json.load(error)
         if not result.get("success"):
-            raise SystemExit(f"cloudflare {method} {path.split('?')[0]}: {json.dumps(result.get('errors'))[:300]}")
+            raise SystemExit(
+                f"cloudflare {method} {path.split('?')[0]}: {json.dumps(result.get('errors'))[:300]}"
+            )
         return result
 
     def get(self, path: str):
@@ -59,28 +65,46 @@ def configure(cf: Cloudflare, host: str = "pm.security.cab", console: str = CONS
     if len(tunnels) != 1:
         raise SystemExit(f"expected one tunnel named {TUNNEL}, found {len(tunnels)}")
     tunnel = tunnels[0]["id"]
-    configuration = cf.get(f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations")["config"]
+    configuration = cf.get(f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations")[
+        "config"
+    ]
     ingress = configuration.get("ingress") or []
     wanted = {"hostname": host, "service": console}
-    plain = lambda rule: {key: rule[key] for key in ("hostname", "path", "service") if key in rule}
-    if ingress and plain(ingress[0]) == wanted and all(rule.get("hostname") != host for rule in ingress[1:]):
+    plain = lambda rule: {
+        key: rule[key] for key in ("hostname", "path", "service") if key in rule
+    }
+    if (
+        ingress
+        and plain(ingress[0]) == wanted
+        and all(rule.get("hostname") != host for rule in ingress[1:])
+    ):
         return
     rest = [rule for rule in ingress if rule.get("hostname") != host]
     if not rest or rest[-1].get("hostname") or rest[-1].get("path"):
         rest.append({"service": "http_status:404"})
     configuration["ingress"] = [wanted] + rest
-    cf.change(f"tunnel {TUNNEL}: route {host} to the console", "PUT",
-              f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations", {"config": configuration})
+    cf.change(
+        f"tunnel {TUNNEL}: route {host} to the console",
+        "PUT",
+        f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
+        {"config": configuration},
+    )
 
 
 def main() -> int:
     check = sys.argv[1:] in (["--check"], [])
     if sys.argv[1:] not in ([], ["--check"]):
         raise SystemExit("usage: expose.py [--check]")
-    token = subprocess.run(["fleet", "secrets", "get", "cloudflare.api-token-account-wide"],
-                           capture_output=True, text=True, check=False).stdout.strip()
+    token = subprocess.run(
+        ["fleet", "secrets", "get", "cloudflare.api-token-account-wide"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
     if not token:
-        raise SystemExit("secret cloudflare.api-token-account-wide is not readable here")
+        raise SystemExit(
+            "secret cloudflare.api-token-account-wide is not readable here"
+        )
     cf = Cloudflare(token, check)
     configure(cf)
     for change in cf.changes:

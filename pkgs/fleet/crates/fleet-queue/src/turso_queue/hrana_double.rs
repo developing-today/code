@@ -6,8 +6,8 @@
 
 use super::core::TursoBackend;
 use super::repair::verb_repair;
-use rusqlite::{params_from_iter, types::Value as SqlValue, types::ValueRef, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue, types::ValueRef};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::{Arc, Mutex};
@@ -33,17 +33,10 @@ struct Double {
 }
 
 fn start(name: &str, fault: Fault) -> Double {
-    let path = std::env::temp_dir().join(format!(
-        "hrana-double-{}-{name}.db",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("hrana-double-{}-{name}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let server = tiny_http::Server::http("127.0.0.1:0").expect("bind double");
-    let port = server
-        .server_addr()
-        .to_ip()
-        .expect("ip listener")
-        .port();
+    let port = server.server_addr().to_ip().expect("ip listener").port();
     let log = Arc::new(Mutex::new(Vec::new()));
     let (db, sink) = (path.clone(), log.clone());
     std::thread::spawn(move || {
@@ -53,8 +46,7 @@ fn start(name: &str, fault: Fault) -> Double {
         while let Ok(mut req) = server.recv() {
             let mut body = String::new();
             let _ = req.as_reader().read_to_string(&mut body);
-            let (status, reply) =
-                handle(&db, &mut streams, &mut next, &mut fault, &sink, &body);
+            let (status, reply) = handle(&db, &mut streams, &mut next, &mut fault, &sink, &body);
             let _ = req.respond(
                 tiny_http::Response::from_string(reply.to_string()).with_status_code(status),
             );
@@ -152,7 +144,11 @@ fn run(conn: &Connection, sql: &str, args: &Value) -> Result<Value, String> {
         })
         .unwrap_or_default();
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let cols: Vec<String> = stmt.column_names().into_iter().map(|c| c.to_string()).collect();
+    let cols: Vec<String> = stmt
+        .column_names()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
     let mut rows_out = Vec::new();
     let mut affected = 0usize;
     if cols.is_empty() {
@@ -242,7 +238,11 @@ fn snapshot(d: &Double, id: i64) -> Snapshot {
         )
         .expect("task row");
     let events: i64 = c
-        .query_row("SELECT COUNT(*) FROM events WHERE task_id = ?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE task_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .expect("event count");
     let repaired: i64 = c
         .query_row(
@@ -255,7 +255,9 @@ fn snapshot(d: &Double, id: i64) -> Snapshot {
 }
 
 fn writer_free(d: &Double) -> bool {
-    direct(d).execute_batch("BEGIN IMMEDIATE; ROLLBACK;").is_ok()
+    direct(d)
+        .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+        .is_ok()
 }
 
 fn logged(d: &Double, needle: &str) -> usize {
@@ -287,7 +289,13 @@ fn event_rejection_rolls_back_13579() {
     let before = snapshot(&d, id);
     let out = verb_repair(&backend(&d), &repair_req(id, false));
     assert_eq!(out["ok"], false, "{out}");
-    assert!(out["error"].as_str().unwrap_or("").contains("event rejected"), "{out}");
+    assert!(
+        out["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("event rejected"),
+        "{out}"
+    );
     assert_eq!(snapshot(&d, id), before);
     assert!(writer_free(&d));
 }
@@ -331,7 +339,10 @@ fn refused_commit_reports_unknown_and_writes_nothing_13579() {
     let out = verb_repair(&backend(&d), &repair_req(id, false));
     assert_eq!(out["ok"], false, "{out}");
     assert!(
-        out["error"].as_str().unwrap_or("").contains("commit outcome unknown"),
+        out["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("commit outcome unknown"),
         "{out}"
     );
     assert_eq!(snapshot(&d, id), before);

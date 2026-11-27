@@ -9,6 +9,7 @@ result with the hand-authored `expect` block. Standard library only.
 
 Exits 0 when every step matches, 1 otherwise.
 """
+
 import hashlib
 import json
 import sys
@@ -18,13 +19,29 @@ SCHEMA = "atlas-muse-import/v1"
 RANK = {"public": 0, "internal": 1, "private": 2, "sensitive": 3}
 KINDS = {"conversation", "message", "memory", "artifact"}
 MANIFEST_FIELDS = (
-    "namespace", "export_id", "part", "parts", "scope_id", "scope_seq",
-    "access_epoch", "scope_access", "inventory", "observed_at", "mapper",
+    "namespace",
+    "export_id",
+    "part",
+    "parts",
+    "scope_id",
+    "scope_seq",
+    "access_epoch",
+    "scope_access",
+    "inventory",
+    "observed_at",
+    "mapper",
     "producer_schema",
 )
 ASSEMBLY_FIELDS = (
-    "namespace", "export_id", "parts", "scope_id", "scope_seq",
-    "access_epoch", "scope_access", "inventory", "membership_attested",
+    "namespace",
+    "export_id",
+    "parts",
+    "scope_id",
+    "scope_seq",
+    "access_epoch",
+    "scope_access",
+    "inventory",
+    "membership_attested",
 )
 
 
@@ -35,16 +52,18 @@ class Refused(Exception):
 
 
 def digest(delivery):
-    canon = json.dumps(delivery, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canon = json.dumps(
+        delivery, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
 class Importer:
     def __init__(self):
-        self.objects = {}     # key -> record
+        self.objects = {}  # key -> record
         self.deliveries = {}  # (export_id, part) -> digest
-        self.staged = {}      # export_id -> {part: delivery}
-        self.scopes = {}      # scope_id -> checkpoint
+        self.staged = {}  # export_id -> {part: delivery}
+        self.scopes = {}  # scope_id -> checkpoint
 
     # -- validation, all before any mutation ------------------------------
     def check(self, d):
@@ -63,15 +82,24 @@ class Importer:
         if scope:
             if m["access_epoch"] < scope["access_epoch"]:
                 raise Refused("stale-access")
-            if m["access_epoch"] == scope["access_epoch"] and m["scope_access"] != scope["scope_access"]:
+            if (
+                m["access_epoch"] == scope["access_epoch"]
+                and m["scope_access"] != scope["scope_access"]
+            ):
                 raise Refused("conflict")
         seen = set()
         for o in d.get("objects", []):
             key, rev = o.get("key"), o.get("revision")
-            if (o.get("kind") not in KINDS or not isinstance(key, str) or not key
-                    or not isinstance(rev, int) or isinstance(rev, bool) or rev < 1
-                    or o.get("op") not in ("upsert", "delete")
-                    or ("parent" in o and not isinstance(o["parent"], str))):
+            if (
+                o.get("kind") not in KINDS
+                or not isinstance(key, str)
+                or not key
+                or not isinstance(rev, int)
+                or isinstance(rev, bool)
+                or rev < 1
+                or o.get("op") not in ("upsert", "delete")
+                or ("parent" in o and not isinstance(o["parent"], str))
+            ):
                 raise Refused("unknown-identity")
         for o in d.get("objects", []):
             key = o["key"]
@@ -80,13 +108,19 @@ class Importer:
             seen.add(key)
             if o["op"] == "upsert":
                 content = o.get("content")
-                if not isinstance(content, str) or hashlib.sha256(content.encode()).hexdigest() != o.get("content_sha256"):
+                if not isinstance(content, str) or hashlib.sha256(
+                    content.encode()
+                ).hexdigest() != o.get("content_sha256"):
                     raise Refused("corrupt-member")
             have = self.objects.get(key)
             if have and (have["scope"] != m["scope_id"] or have["kind"] != o["kind"]):
                 raise Refused("conflict")
-            if (have and o["op"] == "upsert" and have["revision"] == o["revision"]
-                    and have["sha"] != o["content_sha256"]):
+            if (
+                have
+                and o["op"] == "upsert"
+                and have["revision"] == o["revision"]
+                and have["sha"] != o["content_sha256"]
+            ):
                 raise Refused("conflict")
 
     # -- one delivery -------------------------------------------------------
@@ -115,8 +149,15 @@ class Importer:
 
     def apply(self, m, parts):
         sid = m["scope_id"]
-        scope = self.scopes.setdefault(sid, {"high_seq": 0, "access_epoch": m["access_epoch"],
-                                             "scope_access": m["scope_access"], "last_complete": None})
+        scope = self.scopes.setdefault(
+            sid,
+            {
+                "high_seq": 0,
+                "access_epoch": m["access_epoch"],
+                "scope_access": m["scope_access"],
+                "last_complete": None,
+            },
+        )
         scope["access_epoch"] = m["access_epoch"]
         scope["scope_access"] = m["scope_access"]
         stale, present = [], set()
@@ -130,8 +171,15 @@ class Importer:
                     if rev <= floor:
                         stale.append(key)
                         continue
-                    rec = have or {"scope": sid, "kind": o["kind"], "revision": 0, "sha": None,
-                                   "access": None, "parent": o.get("parent"), "edges": []}
+                    rec = have or {
+                        "scope": sid,
+                        "kind": o["kind"],
+                        "revision": 0,
+                        "sha": None,
+                        "access": None,
+                        "parent": o.get("parent"),
+                        "edges": [],
+                    }
                     rec.update(state="retired", retired_at=rev, by="delete")
                     self.objects[key] = rec
                     continue
@@ -141,15 +189,27 @@ class Importer:
                     stale.append(key)
                     continue
                 self.objects[key] = {
-                    "scope": sid, "kind": o["kind"], "parent": o.get("parent"),
-                    "revision": rev, "sha": o["content_sha256"], "access": o.get("access"),
+                    "scope": sid,
+                    "kind": o["kind"],
+                    "parent": o.get("parent"),
+                    "revision": rev,
+                    "sha": o["content_sha256"],
+                    "access": o.get("access"),
                     "edges": [(e["rel"], e["to"]) for e in o.get("edges", [])],
-                    "state": "live", "retired_at": 0, "by": None,
+                    "state": "live",
+                    "retired_at": 0,
+                    "by": None,
                 }
         if m["inventory"] == "complete":
             for key, rec in self.objects.items():
-                if rec["scope"] == sid and rec["state"] == "live" and key not in present:
-                    rec.update(state="retired", retired_at=rec["revision"], by="inventory")
+                if (
+                    rec["scope"] == sid
+                    and rec["state"] == "live"
+                    and key not in present
+                ):
+                    rec.update(
+                        state="retired", retired_at=rec["revision"], by="inventory"
+                    )
             scope["last_complete"] = m["export_id"]
         scope["high_seq"] = max(scope["high_seq"], m["scope_seq"])
         return sorted(stale)
@@ -185,8 +245,11 @@ class Importer:
         if not self.visible(key, caller):
             return "not-found"
         out = {to for _, to in self.objects[key]["edges"] if self.visible(to, caller)}
-        out |= {k for k, r in self.objects.items()
-                if any(to == key for _, to in r["edges"]) and self.visible(k, caller)}
+        out |= {
+            k
+            for k, r in self.objects.items()
+            if any(to == key for _, to in r["edges"]) and self.visible(k, caller)
+        }
         return sorted(out)
 
     def project(self):
@@ -195,12 +258,18 @@ class Importer:
             if r["state"] == "live":
                 out[key] = {"state": "live", "revision": r["revision"]}
             else:
-                out[key] = {"state": "retired", "retired_at": r["retired_at"], "by": r["by"]}
+                out[key] = {
+                    "state": "retired",
+                    "retired_at": r["retired_at"],
+                    "by": r["by"],
+                }
         return out
 
 
 def main():
-    path = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).with_name("fixture.json"))
+    path = Path(
+        sys.argv[1] if len(sys.argv) > 1 else Path(__file__).with_name("fixture.json")
+    )
     fx = json.loads(path.read_text())
     steps = {s["id"]: s for s in fx["steps"]}
     imp, want_objects, want_scopes, failures = Importer(), {}, {}, 0
@@ -222,8 +291,10 @@ def main():
             problems.append(f"stale {stale}, expected {exp.get('stale', [])}")
         if imp.project() != want_objects:
             problems.append(f"objects {imp.project()}, expected {want_objects}")
-        got_scopes = {s: {k: v for k, v in c.items() if k in want_scopes.get(s, {})}
-                      for s, c in imp.scopes.items()}
+        got_scopes = {
+            s: {k: v for k, v in c.items() if k in want_scopes.get(s, {})}
+            for s, c in imp.scopes.items()
+        }
         if got_scopes != want_scopes:
             problems.append(f"checkpoint {imp.scopes}, expected {want_scopes}")
         for r in exp["reads"]:
@@ -232,13 +303,19 @@ def main():
                 got = imp.read(r["read"], caller)
                 want = {k: r[k] for k in ("result", "revision") if k in r}
                 if got != want:
-                    problems.append(f"{r['as']} read {r['read']}: {got}, expected {want}")
+                    problems.append(
+                        f"{r['as']} read {r['read']}: {got}, expected {want}"
+                    )
             else:
                 got = imp.related(r["related"], caller)
                 if got != r["result"]:
-                    problems.append(f"{r['as']} related {r['related']}: {got}, expected {r['result']}")
+                    problems.append(
+                        f"{r['as']} related {r['related']}: {got}, expected {r['result']}"
+                    )
         status = "ok  " if not problems else "FAIL"
-        print(f"{status} {step['id']}: {outcome}{' (' + reason + ')' if reason else ''}")
+        print(
+            f"{status} {step['id']}: {outcome}{' (' + reason + ')' if reason else ''}"
+        )
         for p in problems:
             print(f"     {p}")
         failures += bool(problems)

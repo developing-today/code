@@ -701,7 +701,15 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let mut offs = load_offsets(job);
     let fetch = |o: &Offsets| {
         let trip = crate::new_trip();
-        let path = format!("/jobs/{job}?out_off={}&err_off={}", o.out, o.err);
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .as_secs_f64()
+            .ceil() as u64;
+        let wait = wait.min(10);
+        let path = format!(
+            "/jobs/{job}?out_off={}&err_off={}&wait_s={wait}",
+            o.out, o.err
+        );
         call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body)
     };
     let mut out = std::io::stdout();

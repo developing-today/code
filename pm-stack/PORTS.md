@@ -52,6 +52,13 @@ fleet-config default (see the CONNECT-UDP rows).
 | 7801 | pm-projector (+ link registry)           | loopback                               | `pm-stack/projector/src/config.ts:1` (`DEFAULT_PORT 7801`); `nixos/services/pm-stack/default.nix:100`                                                                                                                       | live            |
 | 8484 | Grist (Docker, `pm-grist`)               | loopback + tailnet                     | `pm-stack/grist/compose.yml:30-31`; `nixos/services/pm-apps/default.nix:92-93`                                                                                                                                              | live            |
 
+Port **16056** is reserved for ready-for-agent's private loopback backend
+(`services.pm-apps.readyForAgentBackendPort` in
+`nixos/services/pm-apps/default.nix`). It is used only when
+`readyForAgentSocketActivation` is enabled (default off); public loopback
+and tailnet endpoints remain on **6056**. This is a reservation, not a
+claim of live activation or restart verification (#1822).
+
 ## Fleet (brokers, laptop-agent, CONNECT-UDP)
 
 | Port  | Service                                                                       | Bind                                                          | Source of truth                                                                                                                                                                                                                                                                                                                | Status                                                                         |

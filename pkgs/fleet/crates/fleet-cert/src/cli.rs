@@ -9,7 +9,7 @@
 use crate::algorithm::{self, AlgorithmId};
 use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{parse_cert, CertInfo, TrustSelection};
+use crate::chain::{CertInfo, TrustSelection, parse_cert};
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -2821,37 +2821,41 @@ mod key_ceremony_tests {
         // A wrong algorithm is refused and nothing is written.
         let wrong = dir.join("wrong.pk8");
         let wrong_text = wrong.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "p256",
-                "--in",
-                &pem_text,
-                "--out",
-                &wrong_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &wrong_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
         assert!(!wrong.exists());
 
         // The PEM block imports as the same PKCS#8 DER, owner-only.
         let out = dir.join("imported.pk8");
         let out_text = out.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &pem_text,
-                "--out",
-                &out_text
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &out_text
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&out).unwrap(), der);
         #[cfg(unix)]
         {
@@ -2862,37 +2866,41 @@ mod key_ceremony_tests {
             );
         }
         // An existing destination is never replaced.
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &pem_text,
-                "--out",
-                &out_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &pem_text,
+                    "--out",
+                    &out_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
 
         // Raw DER imports too; a legacy PEM label is refused by name.
         let der_path = dir.join("external.der");
         std::fs::write(&der_path, &der).unwrap();
         let der_out = dir.join("from-der.pk8");
-        assert!(key_cmd(
-            &args(&[
-                "import",
-                "--algorithm",
-                "ed25519",
-                "--in",
-                &der_path.to_string_lossy(),
-                "--out",
-                &der_out.to_string_lossy(),
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "import",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &der_path.to_string_lossy(),
+                    "--out",
+                    &der_out.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&der_out).unwrap(), der);
         let legacy = dir.join("legacy.pem");
         std::fs::write(&legacy, crate::bundle::pem_encode("EC PRIVATE KEY", &der)).unwrap();
@@ -2960,19 +2968,21 @@ mod key_ceremony_tests {
         let ed_path = dir.join("ed-as-p256.pk8");
         std::fs::write(&ed_path, ed.serialize_der()).unwrap();
         let refused = dir.join("never-written.pk8");
-        assert!(key_cmd(
-            &args(&[
-                "rotate",
-                "--algorithm",
-                "p256",
-                "--in",
-                &ed_path.to_string_lossy(),
-                "--out",
-                &refused.to_string_lossy(),
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "rotate",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &ed_path.to_string_lossy(),
+                    "--out",
+                    &refused.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err()
+        );
         assert!(!refused.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
@@ -2990,69 +3000,77 @@ mod key_ceremony_tests {
 
         let pem_out = dir.join("p256.pub.pem");
         let pem_text = pem_out.to_string_lossy().into_owned();
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &pem_text
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &pem_text
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         let written = std::fs::read_to_string(&pem_out).unwrap();
         let blocks = pem_decode_all(&written).unwrap();
         assert_eq!(blocks, vec![("PUBLIC KEY".to_string(), spki.clone())]);
         assert!(!written.contains("PRIVATE"));
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &pem_text
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &pem_text
+                ]),
+                true,
+            )
+            .is_err()
+        );
 
         let der_out = dir.join("p256.pub.der");
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &der_out.to_string_lossy(),
-                "--format",
-                "der",
-            ]),
-            true,
-        )
-        .is_ok());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &der_out.to_string_lossy(),
+                    "--format",
+                    "der",
+                ]),
+                true,
+            )
+            .is_ok()
+        );
         assert_eq!(std::fs::read(&der_out).unwrap(), spki);
-        assert!(key_cmd(
-            &args(&[
-                "export",
-                "--algorithm",
-                "p256",
-                "--in",
-                &key_text,
-                "--out",
-                &dir.join("x").to_string_lossy(),
-                "--format",
-                "jwk",
-            ]),
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &args(&[
+                    "export",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &dir.join("x").to_string_lossy(),
+                    "--format",
+                    "jwk",
+                ]),
+                true,
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
@@ -3081,28 +3099,32 @@ mod key_ceremony_tests {
         let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
         assert!(!bytes.is_empty());
         assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
-        assert!(key_cmd(
-            &[
-                "inspect".into(),
-                "--algorithm".into(),
-                "p256".into(),
-                "--in".into(),
-                path_text.clone(),
-            ],
-            true,
-        )
-        .is_ok());
-        assert!(key_cmd(
-            &[
-                "generate".into(),
-                "--algorithm".into(),
-                "p256".into(),
-                "--out".into(),
-                path_text,
-            ],
-            true,
-        )
-        .is_err());
+        assert!(
+            key_cmd(
+                &[
+                    "inspect".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--in".into(),
+                    path_text.clone(),
+                ],
+                true,
+            )
+            .is_ok()
+        );
+        assert!(
+            key_cmd(
+                &[
+                    "generate".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--out".into(),
+                    path_text,
+                ],
+                true,
+            )
+            .is_err()
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

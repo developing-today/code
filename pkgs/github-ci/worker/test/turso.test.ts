@@ -87,7 +87,12 @@ describe("d1gw:// URLs (Turso -> D1 move)", () => {
     configureTursoGateway({
       async pipeline(db: string, body: unknown) {
         seen.push({ db, body });
-        return { results: [{ type: "ok", response: { type: "execute", result: { rows: [[{ type: "text", value: "v" }]] } } }, { type: "ok" }] };
+        return {
+          results: [
+            { type: "ok", response: { type: "execute", result: { rows: [[{ type: "text", value: "v" }]] } } },
+            { type: "ok" },
+          ],
+        };
       },
     });
     const t = new T("d1gw://fleet-queue", "");
