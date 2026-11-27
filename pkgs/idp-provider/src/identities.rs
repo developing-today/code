@@ -1506,6 +1506,7 @@ mod tests {
             .seed_account(&crate::registry::Account {
                 account_id: "owner".to_string(),
                 display_name: "Owner".to_string(),
+                email: None,
                 roles: strings(&["owner", "read-only"]),
                 identities: vec![],
                 local_credential_hash: String::new(),
@@ -1546,6 +1547,7 @@ mod tests {
             .seed_account(&crate::registry::Account {
                 account_id: "owner".to_string(),
                 display_name: "Owner".to_string(),
+                email: None,
                 roles: strings(&["owner"]),
                 identities: vec![],
                 local_credential_hash: String::new(),
@@ -1793,6 +1795,7 @@ mod tests {
             .seed_account(&crate::registry::Account {
                 account_id: "owner".to_string(),
                 display_name: "Owner".to_string(),
+                email: None,
                 roles: strings(&["owner"]),
                 identities: vec![],
                 local_credential_hash: String::new(),

@@ -55,6 +55,8 @@ struct MockState {
     client_id: String,
     subject: Mutex<String>,
     github_id: Mutex<i64>,
+    email: Mutex<Option<String>>,
+    email_verified: Mutex<bool>,
     last_nonce: Mutex<Option<String>>,
     last_challenge: Mutex<Option<String>>,
 }
@@ -118,6 +120,10 @@ async fn mock_oidc_token(
         "iat": now,
         "exp": now + 600,
     });
+    if let Some(email) = m.email.lock().unwrap().clone() {
+        claims["email"] = serde_json::Value::String(email);
+        claims["email_verified"] = serde_json::Value::Bool(*m.email_verified.lock().unwrap());
+    }
     if let Some(nonce) = m.last_nonce.lock().unwrap().clone() {
         claims["nonce"] = serde_json::Value::String(nonce);
     }
@@ -188,10 +194,15 @@ async fn mock_gh_user(State(m): State<Arc<MockState>>, headers: HeaderMap) -> Re
         )
             .into_response();
     }
-    Json(serde_json::json!({
+    let mut user = serde_json::json!({
         "id": *m.github_id.lock().unwrap(),
         "login": "drew",
-    }))
+    });
+    if let Some(email) = m.email.lock().unwrap().clone() {
+        user["email"] = serde_json::Value::String(email);
+        user["email_verified"] = serde_json::Value::Bool(*m.email_verified.lock().unwrap());
+    }
+    Json(user)
     .into_response()
 }
 
@@ -236,6 +247,8 @@ async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
         client_id: "mock-google-client".to_string(),
         subject: Mutex::new(GOOGLE_SUB.to_string()),
         github_id: Mutex::new(GITHUB_ID),
+        email: Mutex::new(None),
+        email_verified: Mutex::new(false),
         last_nonce: Mutex::new(None),
         last_challenge: Mutex::new(None),
     });
@@ -274,6 +287,7 @@ async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
+            email: Some("owner@example.test".to_string()),
             roles: ROLES.iter().map(|s| s.to_string()).collect(),
             // The owner's declared identity set: these seed active
             // under the owner account. Any OTHER allowlisted
@@ -584,6 +598,41 @@ async fn google_door_full_loop_reaches_same_account() {
         .filter(|e| e.provider == "google")
         .count();
     assert_eq!(google_events, 1, "only the seed event is recorded");
+}
+
+#[tokio::test]
+async fn verified_email_match_registers_unallowlisted_identity_pending_without_code() {
+    const CLAIM_SUB: &str = "email-claim-sub";
+    let h = harness().await;
+    *h.mock.subject.lock().unwrap() = CLAIM_SUB.to_string();
+    *h.mock.email.lock().unwrap() = Some("owner@example.test".to_string());
+    *h.mock.email_verified.lock().unwrap() = true;
+
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(location(&resp).is_empty(), "pending claim must not receive a code");
+    assert_eq!(
+        h.identities.status("google", CLAIM_SUB).unwrap().as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        h.identities.account_id_for("google", CLAIM_SUB).unwrap().as_deref(),
+        Some("drew")
+    );
+    assert!(h.identities.events().unwrap().iter().any(|event| {
+        event.event == "register"
+            && event.provider == "google"
+            && event.subject == CLAIM_SUB
+            && event.account_id == "drew"
+            && event.actor == "email-match"
+    }));
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "identity_pending",
+        &format!("google:{CLAIM_SUB}")
+    ));
 }
 
 #[tokio::test]
