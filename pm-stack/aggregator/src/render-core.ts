@@ -31,7 +31,7 @@ import {
   refUrl,
 } from "./model.ts";
 import { groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
-import { renderPromptDock } from "./prompt-widget.ts";
+import { PRIMARY_PROMPT_PAGES, renderPromptDock } from "./prompt-widget.ts";
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import { CANONICAL_STATUSES } from "./status-taxonomy.ts";
 import type { ItemBrief } from "./brief.ts";

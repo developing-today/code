@@ -67,6 +67,7 @@ import {
   stripHtml,
   briefPanelsForRefs,
 } from "./render-core.ts";
+import { renderSectionPrompt } from "./prompt-widget.ts";
 
 // --- Board view -----------------------------------------------------------
 

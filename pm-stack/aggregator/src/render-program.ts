@@ -86,6 +86,7 @@ import {
   briefPanelHtml,
 } from "./render-core.ts";
 import { forecastSummaryHtml, timelineTable, epicRollupHtml } from "./render-board.ts";
+import { renderSectionPrompt } from "./prompt-widget.ts";
 import { coverageSectionHtml, statusTaxonomyHtml } from "./render-views.ts";
 
 export function projectsBodyHtml(
