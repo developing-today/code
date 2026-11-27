@@ -156,7 +156,7 @@ describe("CF-5d program HTML wave", () => {
     // Oracle: the landed program JSON projection over the exact same seeded DB.
     const db = await seededDb();
     db.run(`INSERT INTO pm_boards (board_id, org, number, node_id, url, role, sibling_order, title, recorded_at)
-      VALUES ('empty<&', 'example', 9, 'empty-node', 'https://example.test', 'project', 2, 'Empty', ?)`, [T1]);
+      VALUES ('empty<&', 'example', 9, 'PVT_empty', 'https://github.com/orgs/example/projects/9', 'project', 2, 'Empty', ?)`, [T1]);
     const deps = { db: asyncFromSync(db), now: () => T2 };
     const program = await programJsonAsync(deps);
     const response = await createDashboardHandler(deps)(new Request("https://pm.test/program"));
@@ -176,6 +176,8 @@ describe("CF-5d program HTML wave", () => {
     }
     expect(html).not.toContain('<script>alert("x")</script>');
     expect(html).toContain("<h2>Unassigned</h2>");
+    expect(html).toContain("empty&lt;&amp;: no snapshot yet");
+    expect(html).toContain("No child items in the tenant pool.");
     expect(html).toContain(`Latest snapshot: ${program.freshness.latestSnapshotAt}`);
     for (const snapshot of program.freshness.snapshots) {
       expect(html).toContain(escapeHtml(snapshot.boardId));
