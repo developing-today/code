@@ -13,11 +13,10 @@
 //!   cross-certificates);
 //! - §13 phase F is the program phase that schedules this work,
 //!   not a competing spec section.
-//! This module implements the read-only half: `plan` renders the
-//! publication plan without touching live points, `verify` checks a
-//! published mirror read-only. `apply`/`status` (live mutation and
-//! live state) are explicitly deferred to a later production-gated
-//! slice per the #9155 gate map and must never execute here.
+//! `plan` renders without touching live points, `verify` checks a
+//! mirror read-only, and `apply_staging` writes public bytes only to
+//! an explicit local staging directory. Live `status` remains deferred
+//! per the #9155 gate map; this module has no network publication path.
 
 use crate::bundle::load_bundle;
 use crate::chain::Check;
@@ -86,6 +85,14 @@ pub struct PublishVerifyReport {
     pub published_dir: String,
     pub valid: bool,
     pub checks: Vec<Check>,
+}
+
+/// Result of applying public artifacts to a local staging mirror.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishApplyReport {
+    pub bundle: String,
+    pub staging_dir: String,
+    pub written: Vec<String>,
 }
 
 /// MIME type for a published object path (§24.7).
@@ -181,6 +188,115 @@ pub fn plan_bundle(req: &PublishPlanRequest) -> Result<PublishPlan> {
         prerequisites,
         generated_at: Rfc3339::now(),
     })
+}
+
+/// Apply only public bundle artifacts to an explicit local staging mirror.
+/// This function has no network or live-endpoint path. Existing symlinks,
+/// path traversal, and non-directory parents are refused before writing.
+pub fn apply_staging(bundle_dir: &Path, staging_dir: &Path) -> Result<PublishApplyReport> {
+    let bundle = load_bundle(bundle_dir)?;
+    ensure_staging_root(staging_dir)?;
+    let canonical_root = std::fs::canonicalize(staging_dir)?;
+    let mut public_files = Vec::new();
+    for file in &bundle.manifest.files {
+        if file.visibility != "public" {
+            continue;
+        }
+        let rel = url_path_for(&file.path);
+        let rel_path = Path::new(rel);
+        if rel_path.as_os_str().is_empty()
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(crate::error::CertError::policy(format!(
+                "unsafe publication path '{}'",
+                file.path
+            )));
+        }
+        let source = bundle_dir.join(&file.path);
+        let bytes = std::fs::read(&source)?;
+        if bytes.len() as u64 != file.bytes || crate::bundle::sha256_hex(&bytes) != file.sha256 {
+            return Err(crate::error::CertError::validation(format!(
+                "bundle artifact checksum/size mismatch: {}",
+                file.path
+            )));
+        }
+        public_files.push((rel_path.to_path_buf(), bytes));
+    }
+
+    // Validate the complete destination tree before any artifact write.
+    for (rel, _) in &public_files {
+        ensure_safe_parents(&canonical_root, rel)?;
+        let target = canonical_root.join(rel);
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+                return Err(crate::error::CertError::policy(format!(
+                    "unsafe staging destination: {}",
+                    target.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut written = Vec::new();
+    for (rel, bytes) in public_files {
+        let target = canonical_root.join(&rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, bytes)?;
+        written.push(rel.display().to_string());
+    }
+    written.sort();
+    Ok(PublishApplyReport {
+        bundle: bundle_dir.display().to_string(),
+        staging_dir: canonical_root.display().to_string(),
+        written,
+    })
+}
+
+fn ensure_staging_root(root: &Path) -> Result<()> {
+    if root.exists() {
+        let meta = std::fs::symlink_metadata(root)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(crate::error::CertError::policy(format!(
+                "staging directory must be a real directory: {}",
+                root.display()
+            )));
+        }
+    } else {
+        std::fs::create_dir_all(root)?;
+    }
+    Ok(())
+}
+
+fn ensure_safe_parents(root: &Path, rel: &Path) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in rel.parent().into_iter().flat_map(Path::components) {
+        match component {
+            std::path::Component::Normal(name) => current.push(name),
+            _ => {
+                return Err(crate::error::CertError::policy(
+                    "unsafe staging path component",
+                ));
+            }
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(crate::error::CertError::policy(format!(
+                    "unsafe staging parent: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Verify a published mirror read-only: every public bundle file
