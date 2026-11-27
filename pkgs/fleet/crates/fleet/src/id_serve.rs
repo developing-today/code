@@ -422,9 +422,11 @@ fn cbor_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, ConvertEr
                 ConvertError::Codec("negative integer underflows i64".to_string())
             })?)
         }
-        2 => CodecValue::Bytes(r.take(usize::try_from(cbor_read_arg(r, info)?).map_err(
-            |_| ConvertError::Codec("byte string too long".to_string()),
-        )?)?.to_vec()),
+        2 => {
+            let len = usize::try_from(cbor_read_arg(r, info)?)
+                .map_err(|_| ConvertError::Codec("byte string too long".to_string()))?;
+            CodecValue::Bytes(r.take(len)?.to_vec())
+        }
         3 => {
             let len = usize::try_from(cbor_read_arg(r, info)?)
                 .map_err(|_| ConvertError::Codec("text string too long".to_string()))?;
