@@ -1801,6 +1801,14 @@ pub(crate) fn program_records(program: &mut dyn WorldProgram) -> Result<Option<R
 /// screen naming the failing call, keeps the program's state, and retries on
 /// the next event (see F11.17).
 pub trait WorldProgram: Send + 'static {
+    /// Set the account used to charge the immediately following
+    /// participant-input update. The actor clears this context before it
+    /// handles another command. Programs without account-aware billing may
+    /// ignore it.
+    fn replace_caller_account(&mut self, _account: Option<&str>) -> Option<String> {
+        None
+    }
+
     /// Apply an opaque participant input. Chat is managed by the host and is
     /// not passed to the game program.
     fn update(&mut self, _event: &WorldEvent) -> Result<()> {

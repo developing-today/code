@@ -26,6 +26,7 @@ mod tests {
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
         outbound: mpsc::Sender<String>,
+        authenticated_caller_account: Option<String>,
     }
 
     impl SessionIo for ChannelIo {
@@ -34,6 +35,10 @@ mod tests {
         }
         async fn send(&mut self, frame: String) -> bool {
             self.outbound.send(frame).await.is_ok()
+        }
+
+        fn authenticated_caller_account(&self) -> Option<&str> {
+            self.authenticated_caller_account.as_deref()
         }
     }
 
@@ -65,10 +70,22 @@ mod tests {
         }
 
         fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
+            Self::connect_hub_with_account(hub, config, None)
+        }
+
+        fn connect_hub_with_account(
+            hub: WorldHub,
+            config: SessionConfig,
+            authenticated_caller_account: Option<String>,
+        ) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
             let task = tokio::spawn(async move {
-                let mut io = ChannelIo { inbound, outbound };
+                let mut io = ChannelIo {
+                    inbound,
+                    outbound,
+                    authenticated_caller_account,
+                };
                 run_session_with(&hub, &mut io, config).await;
             });
             Self {
@@ -146,6 +163,105 @@ mod tests {
     struct NoProgram;
 
     impl crate::world::WorldProgram for NoProgram {}
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_input_update_without_becoming_durable() {
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut instance = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        instance.set_charge_key("lobby".to_owned());
+        instance.set_burn_budget(Arc::clone(&budget));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(instance),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world.clone(), None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        let mut peer = peer;
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "31",
+        }))
+        .await;
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("acct-ada")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("authenticated account receives the guest fuel charge");
+
+        let event = world
+            .events_after(capability.clone(), 0)
+            .await
+            .unwrap()
+            .events
+            .remove(0);
+        let persisted = serde_json::to_value(event).unwrap();
+        assert!(persisted.get("caller_account").is_none());
+        assert!(persisted.get("authenticated_caller_account").is_none());
+        let first = budget.snapshot();
+        let ada_calls = first.accounts["acct-ada"].admitted;
+        assert!(ada_calls > 0);
+        assert!(first.accounts["acct-ada"].settled_fuel > 0);
+        peer.close().await;
+
+        // A capability-only session on the same world charges the world
+        // bucket and does not inherit the previous connection's account.
+        let (_, capability) = world.issue("Grace", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(
+            WorldService::new(world.clone(), None),
+            SessionConfig::default(),
+        );
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "32",
+        }))
+        .await;
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("lobby")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capability-only input charges the world bucket");
+        world.events_after(capability, 1).await.unwrap();
+        let second = budget.snapshot();
+        assert_eq!(second.accounts["acct-ada"].admitted, ada_calls);
+        assert!(second.accounts["lobby"].admitted > 0);
+        peer.close().await;
+    }
 
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).
