@@ -179,7 +179,7 @@ func ProcessStartTime(pid int) (uint64, error) {
 // Detach stops the read loop and gives the transport to the caller. Nothing
 // pending is failed, so the session is intact for whoever resumes it.
 func (c *Client) Detach() (*Handoff, error) {
-	t, ok := c.t.(*StdioTransport)
+	t, ok := c.bareTransport().(*StdioTransport)
 	if !ok {
 		return nil, errors.New("only a stdio session can be handed off")
 	}
@@ -196,7 +196,7 @@ func (c *Client) Detach() (*Handoff, error) {
 // Reattach restarts the read loop after a Detach that was not handed on. The
 // listen stream, if any, never stopped: it was waiting on the loop's answer.
 func (c *Client) Reattach() {
-	c.t.(*StdioTransport).Reattach()
+	c.bareTransport().(*StdioTransport).Reattach()
 	c.detaching.Store(false)
 	c.loopDone = make(chan struct{})
 	go c.recvLoop()
@@ -212,14 +212,14 @@ func (c *Client) Release() {
 // for the successor, so the transport must not send its DELETE.
 func (c *Client) Abandon() {
 	c.fail(errors.New("session handed to a successor process"))
-	if t, ok := c.t.(*HTTPTransport); ok {
+	if t, ok := c.bareTransport().(*HTTPTransport); ok {
 		t.Abandon()
 	}
 }
 
 // HTTPSession is the upstream session this client holds, if it is streamable HTTP.
 func (c *Client) HTTPSession() (HTTPHandoff, bool) {
-	t, ok := c.t.(*HTTPTransport)
+	t, ok := c.bareTransport().(*HTTPTransport)
 	if !ok {
 		return HTTPHandoff{}, false
 	}
