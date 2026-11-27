@@ -3030,7 +3030,14 @@ export class Edge {
           target = { kid: previous.forKid, name: previous.for ?? "A machine", actions: [],
             connected: this.hostSeen != null && this.now() - this.hostSeen < HOST_QUIET_MS };
         }
-        if (previous?.forKid && (!target || !target.connected)) {
+        // A report older than a minute does not mean the tunnel is
+        // down, but only the tunnel can be asked blind: once another
+        // machine is known, the edge holds for the bound machine's
+        // next report instead (#13492 slice 2). A bound key that is
+        // gone at all stays held: it may have been removed.
+        const firstKid = ((await this.kv.get("key")) as { kid?: string } | undefined)?.kid;
+        const soleTunnel = firstKid !== undefined && known.length > 0 && known.every((m) => m.kid === firstKid);
+        if (previous?.forKid && (!target || !target.connected) && !soleTunnel) {
           return this.keep({ id: id ?? undefined, kind, args, who: by, forKid: previous.forKid, for: previous.for },
             (previous.relays ?? 1) > 0 ? "unknown" : "nowhere");
         }
@@ -3047,7 +3054,13 @@ export class Edge {
             );
           }
           target = selection.machine;
-          if (selection.state === "held") {
+          // The lone tunnel machine is relayed optimistically even
+          // when its last report is older than a minute, as before:
+          // quiet is not unreachable on the tunnel, and a tunnel with
+          // nothing behind it reports unreached, which keeps the
+          // action then. Once another machine is known, a stale
+          // machine waits for its next report (#13492 slice 2).
+          if (selection.state === "held" && !soleTunnel) {
             // keep() also answers non-holdable actions without a blind relay.
             return this.keep({ id: id ?? undefined, kind, args, who: by }, "nowhere", undefined, target);
           }
