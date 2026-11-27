@@ -221,6 +221,14 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
     progressing_now = member and not zombie_member
     finished = finished_markers and not progressing_now
 
+    if error_outcome and binding and active_ids is None:
+        # Fail closed (#16214, #16066 design part 4): a resumed
+        # session can carry an error-valued stored outcome while
+        # active, so unreadable activity is not terminal proof -
+        # leave the session unclassified rather than verdict it
+        # error-stopped/retryable.
+        return None
+
     if timing is None and not progressing_now and not finished:
         # No readable clock, no terminal marker, no live membership:
         # poll.py's UNKNOWN - never verdicted on absent evidence.
