@@ -31,9 +31,12 @@ mod signed_envelope;
 #[path = "../src/world_definition.rs"]
 mod world_definition;
 
+#[path = "../src/test_forgeries.rs"]
+mod test_forgeries;
+
 use ed25519_dalek::SigningKey;
+use test_forgeries::{IDENTITY_KEY, identity_forgery};
 use id_shape::{ContentId, HashProfile};
-use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery};
 use world_definition::{
     CoreKind, SignedWorldDefinition, WORLD_DEFINITION_DOMAIN, WorldDefinition, WorldDefinitionError,
 };
