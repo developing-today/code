@@ -1442,6 +1442,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn manifest_cli_filters_round_trip_into_generic_dimensions() {
+        // Oracle: a manifest-declared `generic_list` dimension named
+        // `source_app` exposes `--source-app`; the current static parser
+        // rejects it, so this test fails until parsing is manifest-aware.
+        let parsed = Cli::try_parse_from([
+            "atlas-search",
+            "search",
+            "atlas",
+            "--source-app",
+            "mail",
+        ]);
+        assert!(
+            parsed.is_ok(),
+            "a declared generic filter should be accepted by the search CLI: {parsed:?}"
+        );
+    }
+
+    #[test]
     fn cli_and_raw_request_share_query_parameter_names_and_values() {
         let cli = Cli::try_parse_from([
             "atlas-search",
