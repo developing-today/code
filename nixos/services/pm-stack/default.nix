@@ -366,6 +366,9 @@ in
             # PM_AGG_COVERAGE_SNAPSHOT_FILE for exactly this).
             Environment = [
               "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
+              # #8570: read the same local projection database in-process;
+              # leave PM_PROJECTOR_URL as the fallback for standalone runs.
+              "PM_CORE_PROJECTOR_DATABASE_URL=file:${projState}/projector.db"
               # The Kaneo projects registry used to be reached through
               # the checkout working directory (../kaneo-projects.json
               # from pm-stack/aggregator); the package bundles the

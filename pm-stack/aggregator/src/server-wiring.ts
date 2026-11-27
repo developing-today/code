@@ -11,6 +11,7 @@ import { EventsStore, emitEvent } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
 import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
+import { createPmCoreProjectorReader } from "./pm-core-projector-reader.ts";
 import { IngestionStore, WatchdogEpisodeStabilizer, ingestActivity, type ActivitySourceStatus } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
@@ -338,6 +339,7 @@ export function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        projector: createPmCoreProjectorReader() ?? undefined,
         onLaptopUnreachable: (detail) => {
           fireOpenCodeWorkingHook("aggregator-tick", detail);
         },
