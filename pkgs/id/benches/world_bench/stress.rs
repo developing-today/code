@@ -22,8 +22,15 @@ const STRESS_INSTALL_BYTES: u64 = 262_144;
 
 /// The stress event mix, as counts per 1,000 events in the same
 /// discipline as the loadgen core's mix tables: the shape at stream
-/// position `i` is a pure function of `i % 1000`, never sampled, so
-/// the same (seed, tier) always produces the same stream.
+/// position `i` is a pure function of `i`, never sampled, so the
+/// same (seed, tier) always produces the same stream. The schedule
+/// interleaves the mix with a period of 10 events (7 chat, 2 doc
+/// edits, 1 program install per period, so the per-1,000 counts are
+/// exactly the mix constants) instead of placing each shape in one
+/// block: a blocked schedule left the quick tier's 200-event hot
+/// world and every 100-event active world with no document edits or
+/// program installs at all, while the manifest claimed all three
+/// shapes for them (#16042).
 const STRESS_MIX_CHAT: u64 = 700;
 const STRESS_MIX_DOC_EDIT: u64 = 200;
 const STRESS_MIX_PROGRAM_INSTALL: u64 = 100;
@@ -46,13 +53,15 @@ impl StressShape {
 }
 
 fn stress_shape_at(index: u64) -> StressShape {
-    let at = index % 1_000;
-    if at < STRESS_MIX_CHAT {
-        StressShape::Chat
-    } else if at < STRESS_MIX_CHAT + STRESS_MIX_DOC_EDIT {
-        StressShape::DocEdit
-    } else {
-        StressShape::ProgramInstall
+    // One period of the interleaved schedule: positions 2 and 8 are
+    // document edits, position 5 is a program install, the rest are
+    // chat. Every window of 10 consecutive events — and therefore
+    // every generated fixture, down to the 20-event quick active
+    // worlds — contains all three declared shapes.
+    match index % 10 {
+        2 | 8 => StressShape::DocEdit,
+        5 => StressShape::ProgramInstall,
+        _ => StressShape::Chat,
     }
 }
 
@@ -165,6 +174,85 @@ impl StressTier {
 /// fast-but-wrong replay visible, cheaply and with no dependency.
 struct Fnv1a(u64);
 
+/// What the manifest's `hash.input` records for the state hash, and
+/// the value the join profile requires before reusing a fixture: a
+/// fixture generated under any other hash definition is regenerated,
+/// never verified against the wrong oracle (#16042).
+const STRESS_STATE_HASH_INPUT: &str = "canonical restored semantic state v1: restored     current_sequence, the installed program (module_hash, install seed, snapshot,     provenance), and every replay event (sequence, participant, kind) in order —     never the source journal bytes";
+
+/// The program artifact every stress program install installs: the
+/// checked-in counter guest the many-worlds bench also runs
+/// (`COUNTER_WASM` in the parent bench target), named by the
+/// service's own `module_hash`. A generated install therefore
+/// records a real, runnable artifact whose hash `WorldCore::restore`
+/// surfaces as the restored world's active program (#16042), not
+/// descriptive text about an install that never happened.
+fn stress_program_module_hash() -> String {
+    module_hash(COUNTER_WASM)
+}
+
+/// The expected state hash of one restored stress world: FNV-1a over
+/// a canonical representation of the *restored semantic state* —
+/// the restored sequence, the installed program the restore loaded
+/// (module hash, install seed, snapshot, provenance), and the
+/// replay state (every event the installed program will apply, in
+/// order) — never the source journal bytes. A replay that changes
+/// state while preserving the journal or the sequence therefore
+/// changes the hash (#16042).
+fn stress_state_hash(restored: &RestoredWorld) -> String {
+    let mut hash = Fnv1a::new();
+    hash.write(b"id-stress-state-v1\0");
+    hash.write(&restored.core.current_sequence().to_le_bytes());
+    match &restored.program {
+        Some(program) => {
+            hash.write(b"program\0");
+            hash.write(program.module_hash.as_bytes());
+            hash.write(&program.seed.to_le_bytes());
+            match &program.snapshot {
+                Some(snapshot) => {
+                    hash.write(b"snapshot\0");
+                    hash.write(snapshot.as_bytes());
+                }
+                None => hash.write(b"no-snapshot\0"),
+            }
+            if let Ok(bytes) = serde_json::to_vec(&program.provenance) {
+                hash.write(&bytes);
+            }
+        }
+        None => hash.write(b"no-program\0"),
+    }
+    hash.write(&(restored.replay.len() as u64).to_le_bytes());
+    for event in &restored.replay {
+        hash.write(&event.sequence.to_le_bytes());
+        hash.write(&event.participant_id.to_le_bytes());
+        if let Ok(bytes) = serde_json::to_vec(&event.kind) {
+            hash.write(&bytes);
+            hash.write(b"\n");
+        }
+    }
+    hash.finish()
+}
+
+/// The number of replay inputs a restore of `entries` must hold:
+/// inputs accumulate until a program install replaces the program
+/// and wipes the replay slate (the restore's own semantics), so
+/// only inputs after the last install remain.
+fn stress_expected_replay_len(entries: &[JournalEntry]) -> u64 {
+    let mut replay_len = 0_u64;
+    for entry in entries {
+        if let JournalEntry::Committed { event } = entry {
+            match &event.kind {
+                WorldEventKind::ProgramInstalled { .. } => replay_len = 0,
+                WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                    replay_len += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    replay_len
+}
+
 impl Fnv1a {
     fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
@@ -224,21 +312,22 @@ fn stress_event(
                 .into_bytes(),
             )
         }
-        StressShape::ProgramInstall => {
-            let mut rng = loadgen::SplitMix64::new(
-                seed ^ (u64::from(world_index) << 32)
-                    ^ sequence.wrapping_mul(0xBF58_476D_1CE4_E5B9),
-            );
-            let files = 1 + rng.next_u64() % STRESS_INSTALL_FILES;
-            let total_bytes = files * 4_096 + rng.next_u64() % (STRESS_INSTALL_BYTES / 4);
-            WorldEventKind::Input(
-                format!(
-                    "program-install files={files} total_bytes={total_bytes} bundle={}",
-                    corpus.text(world_index, sequence, 96)
-                )
-                .into_bytes(),
-            )
-        }
+        // A real install (#16042): a host-authored `ProgramInstalled`
+        // event naming the bench's counter-guest artifact (see
+        // `stress_program_module_hash`), installed with the run seed
+        // as its init seed. `stress_world_entries` zeroes the event's
+        // participant id — installs are host-authored, never a
+        // participant's input — and the inputs after it in the stream
+        // are the replay the restored program applies. The codified
+        // compile-input caps the mix states installs against
+        // (`STRESS_INSTALL_FILES` / `STRESS_INSTALL_BYTES`) remain
+        // recorded in the manifest's shape table.
+        StressShape::ProgramInstall => WorldEventKind::ProgramInstalled {
+            module_hash: stress_program_module_hash(),
+            seed,
+            provenance: Some(id::world::ModuleProvenance::Artifact),
+            trust: None,
+        },
     };
     (
         WorldEvent {
@@ -290,7 +379,12 @@ fn stress_world_entries(
     let (mut chat, mut doc_edits, mut program_installs) = (0_u64, 0_u64, 0_u64);
     for sequence in 1..=events {
         let participant_id = (sequence - 1) % members as u64 + 1;
-        let (event, shape) = stress_event(seed, world_index, sequence, participant_id);
+        let (mut event, shape) = stress_event(seed, world_index, sequence, participant_id);
+        if shape == StressShape::ProgramInstall {
+            // Program installs are host-authored: participant zero,
+            // as the world itself records them.
+            event.participant_id = 0;
+        }
         match shape {
             StressShape::Chat => chat += 1,
             StressShape::DocEdit => doc_edits += 1,
@@ -303,11 +397,12 @@ fn stress_world_entries(
 
 /// Generate one measured world directory (`<out>/<name>/journal.jsonl`)
 /// and verify it by restoring the written journal through the real
-/// restore path. The expected state hash is FNV-1a over the journal
-/// file's exact bytes followed by the restored core's current
-/// sequence (u64 little-endian): the journal determines the state,
-/// and the restore proves the journal is one the store accepts, at
-/// the sequence the manifest claims.
+/// restore path. The expected state hash is the canonical
+/// restored-state hash (`stress_state_hash`): it is derived from
+/// what the restore actually rebuilt — sequence, installed program,
+/// and replay state — so a replay that changes state while
+/// preserving the journal bytes or the sequence cannot match the
+/// manifest (#16042).
 fn generate_stress_world(
     out: &Path,
     name: &str,
@@ -352,16 +447,36 @@ fn generate_stress_world(
         "{name}: restored at sequence {}, generated {events} events",
         restored.core.current_sequence()
     );
+    // The installed program is part of the restored state: a world
+    // whose stream installs programs must restore with the bench
+    // artifact active, at the run seed, and its replay must hold
+    // exactly the inputs committed after the last install (an
+    // install replaces the program and wipes the replay slate).
+    if program_installs > 0 {
+        let program = restored.program.as_ref().with_context(|| {
+            format!("{name}: restored world has no program after {program_installs} installs")
+        })?;
+        ensure!(
+            program.module_hash == stress_program_module_hash() && program.seed == seed,
+            "{name}: restored program is {} seed {}, generated installs name {} seed {seed}",
+            program.module_hash,
+            program.seed,
+            stress_program_module_hash(),
+        );
+    } else {
+        ensure!(
+            restored.program.is_none(),
+            "{name}: restored world has a program, generated no installs"
+        );
+    }
+    let expected_replay = stress_expected_replay_len(&read_back);
     ensure!(
-        restored.replay.len() as u64 == doc_edits + program_installs,
-        "{name}: restored replay holds {} inputs, generated {}",
+        restored.replay.len() as u64 == expected_replay,
+        "{name}: restored replay holds {} inputs, generated {} after the last install",
         restored.replay.len(),
-        doc_edits + program_installs
+        expected_replay
     );
 
-    let mut hash = Fnv1a::new();
-    hash.write(&bytes);
-    hash.write(&restored.core.current_sequence().to_le_bytes());
     Ok(StressWorldRecord {
         name: name.to_owned(),
         role,
@@ -370,7 +485,7 @@ fn generate_stress_world(
         chat,
         doc_edits,
         program_installs,
-        expected_state_hash: hash.finish(),
+        expected_state_hash: stress_state_hash(&restored),
     })
 }
 
@@ -503,7 +618,7 @@ pub fn bench_stress_gen(quick: bool) -> Result<()> {
         },
         "hash": {
             "algorithm": "fnv1a64",
-            "input": "journal.jsonl bytes in order, then the restored current_sequence as u64 little-endian",
+            "input": STRESS_STATE_HASH_INPUT,
             "format": "16 lowercase hex digits",
         },
         "idle_worlds": {"count": tier.idle_worlds, "events_per_world": 0},
@@ -933,6 +1048,7 @@ fn ensure_stress_fixture(quick: bool) -> Result<StressFixture> {
                 manifest["seed"].as_u64() == Some(seed)
                     && manifest["tier"].as_str() == Some(tier.name)
                     && manifest["generator_version"].as_u64() == Some(loadgen::GENERATOR_VERSION)
+                    && manifest["hash"]["input"].as_str() == Some(STRESS_STATE_HASH_INPUT)
             });
     if !reusable {
         bench_stress_gen(quick)?;
@@ -994,11 +1110,20 @@ fn join_checkpoint_journal(
     );
     let retained = WorldLimits::default().retained_events;
     let window: Vec<WorldEvent> = events[at.saturating_sub(retained)..at].to_vec();
-    let snapshot = events[..at]
-        .iter()
-        .filter(|event| is_input_event(event))
-        .count()
-        .to_string();
+    // The snapshot is the bench program's input count at the
+    // checkpoint: inputs applied to the currently installed program.
+    // An install replaces the program, so inputs committed before
+    // the latest install at or before the checkpoint are not part of
+    // its state and do not count (#16042).
+    let mut snapshot_inputs = 0_u64;
+    for event in &events[..at] {
+        match &event.kind {
+            WorldEventKind::ProgramInstalled { .. } => snapshot_inputs = 0,
+            _ if is_input_event(event) => snapshot_inputs += 1,
+            _ => {}
+        }
+    }
+    let snapshot = snapshot_inputs.to_string();
     let mut entries = Vec::with_capacity(issued.len() + 2 + (events.len() - at));
     // The header version is the maximum the entries require: the
     // checkpoint's `open_presence` is the binding requirement
@@ -1130,17 +1255,13 @@ fn build_join_world(
         "{name}: restored at sequence {}, manifest records {events}",
         restored.core.current_sequence()
     );
-    // The manifest verification the generator itself defines:
-    // FNV-1a over the journal file's bytes, then the restored
-    // sequence as u64 little-endian.
-    let bytes = std::fs::read(&reference_path)?;
-    let mut hash = Fnv1a::new();
-    hash.write(&bytes);
-    hash.write(&restored.core.current_sequence().to_le_bytes());
+    // The manifest verification the generator itself defines: the
+    // canonical restored-state hash over what this restore rebuilt
+    // (sequence, installed program, replay state).
+    let state_hash = stress_state_hash(&restored);
     ensure!(
-        hash.finish() == expected_hash,
-        "{name}: journal hash {} does not match the manifest's {expected_hash}",
-        hash.finish()
+        state_hash == expected_hash,
+        "{name}: restored state hash {state_hash} does not match the manifest's {expected_hash}"
     );
     ensure!(
         restored
@@ -1451,4 +1572,113 @@ pub fn bench_stress_join(quick: bool) -> Result<()> {
     }
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anyhow::{Context as _, Result};
+    use id::world::{JournalEntry, WorldCore, WorldEvent, WorldEventKind, WorldLimits};
+
+    /// Oracle: the declared mix table itself — 700 chat / 200 doc
+    /// edits / 100 program installs per 1,000 events — plus the
+    /// fixture-size windows the tiers actually generate (20-event
+    /// active worlds, 100-event active worlds, the 200-event quick
+    /// hot world), each of which must contain all three shapes.
+    #[test]
+    fn stress_schedule_interleaves_the_declared_mix() {
+        let counts = |window: u64| {
+            let (mut chat, mut doc, mut install) = (0_u64, 0_u64, 0_u64);
+            for index in 0..window {
+                match stress_shape_at(index) {
+                    StressShape::Chat => chat += 1,
+                    StressShape::DocEdit => doc += 1,
+                    StressShape::ProgramInstall => install += 1,
+                }
+            }
+            (chat, doc, install)
+        };
+        assert_eq!(counts(1_000), (700, 200, 100));
+        assert_eq!(counts(20), (14, 4, 2));
+        assert_eq!(counts(100), (70, 20, 10));
+        assert_eq!(counts(200), (140, 40, 20));
+        // Every aligned 10-event window holds all three shapes.
+        for start in (0..1_000).step_by(10) {
+            let shapes: Vec<StressShape> = (start..start + 10).map(stress_shape_at).collect();
+            assert!(shapes.contains(&StressShape::Chat));
+            assert!(shapes.contains(&StressShape::DocEdit));
+            assert!(shapes.contains(&StressShape::ProgramInstall));
+        }
+    }
+
+    /// Oracle: `WorldCore::restore` over the generated entries — a
+    /// program install must surface as the restored world's active
+    /// program (the bench counter artifact at the run seed), and the
+    /// restored replay must hold exactly the inputs committed after
+    /// the last install.
+    #[test]
+    fn stress_program_install_restores_a_real_program() -> Result<()> {
+        let (entries, chat, doc_edits, program_installs) =
+            stress_world_entries(42, "stress-test-world", 0, 20, 1)?;
+        assert_eq!((chat, doc_edits, program_installs), (14, 4, 2));
+        let installs: Vec<&WorldEvent> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::Committed { event }
+                    if matches!(event.kind, WorldEventKind::ProgramInstalled { .. }) =>
+                {
+                    Some(event)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(installs.len(), 2);
+        for event in &installs {
+            assert_eq!(event.participant_id, 0, "installs are host-authored");
+            match &event.kind {
+                WorldEventKind::ProgramInstalled {
+                    module_hash, seed, ..
+                } => {
+                    assert_eq!(module_hash, &stress_program_module_hash());
+                    assert_eq!(*seed, 42);
+                }
+                _ => unreachable!(),
+            }
+        }
+        let expected_replay = stress_expected_replay_len(&entries);
+        let restored = WorldCore::restore("stress-test-world", WorldLimits::default(), entries)?;
+        let program = restored
+            .program
+            .as_ref()
+            .context("restored stress world has no program")?;
+        assert_eq!(program.module_hash, stress_program_module_hash());
+        assert_eq!(program.seed, 42);
+        // The last install is event 16 of 20; the only doc edit after
+        // it is event 19, so the replay holds exactly that one input.
+        assert_eq!(restored.replay.len(), 1);
+        assert_eq!(restored.replay.len() as u64, expected_replay);
+        Ok(())
+    }
+
+    /// Oracle: the hash definition itself — the same (seed, world)
+    /// restored twice hashes identically; a different seed diverges
+    /// (different program seed and corpus); and a different world at
+    /// the same seed and the same restored sequence diverges too,
+    /// because its replay state differs: the hash is over restored
+    /// semantic state, not over journal bytes and sequence alone.
+    #[test]
+    fn stress_state_hash_tracks_restored_state() -> Result<()> {
+        let hash_of = |seed: u64, world_index: u32, events: u64| -> Result<String> {
+            let (entries, ..) =
+                stress_world_entries(seed, "stress-hash-world", world_index, events, 1)?;
+            let restored =
+                WorldCore::restore("stress-hash-world", WorldLimits::default(), entries)?;
+            Ok(stress_state_hash(&restored))
+        };
+        assert_eq!(hash_of(42, 0, 20)?, hash_of(42, 0, 20)?);
+        assert_ne!(hash_of(42, 0, 20)?, hash_of(43, 0, 20)?);
+        assert_ne!(hash_of(42, 0, 20)?, hash_of(42, 1, 20)?);
+        Ok(())
+    }
 }
