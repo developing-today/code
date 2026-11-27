@@ -131,7 +131,7 @@ All failures print `atlas-classify: &lt;msg&gt;` (or, for usage errors, the usag
 - `--db` missing, or given twice (`--db given twice`): exit 2.
 - A required action flag missing (e.g. `schema-review` without `--new-schema`): exit 2.
 - A malformed numeric value: an error naming the flag (`--window-days must be an integer`, `--window-days must not be negative`), exit 2.
-- A lowering in `schema-apply` with no reviewed disposition naming a reviewer and rationale: refused, exit 1.
+- A lowering in `schema-apply` with no reviewed disposition naming a reviewer and rationale is recorded as `skipped_no_disposition` in the apply report; the command succeeds and exits 0. It is a refused lowering, not a command failure.
 - Runtime and classification failures — an unreadable corpus, a failed classification write: exit 1.
 
 ## Exit codes
@@ -139,5 +139,5 @@ All failures print `atlas-classify: &lt;msg&gt;` (or, for usage errors, the usag
 | Code | Meaning                                                                                                                  |
 | ---- | ------------------------------------------------------------------------------------------------------------------------ |
 | 0    | Success: the manifest, review batch, or apply report was printed (and written to `--manifest-out` when given).           |
-| 1    | Execution failure — runtime and classification failures, including a refused `schema-apply` lowering. |
+| 1    | Execution failure — runtime and classification failures such as an unreadable corpus or failed write. |
 | 2    | Usage / invalid invocation — unknown or duplicated flags, missing flag values, malformed flag values, unknown actions. |
