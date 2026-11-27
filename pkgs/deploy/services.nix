@@ -54,6 +54,15 @@
     user = "user";
     ports = [ 4801 ];
     restart = "on-failure";
+    # #15533: the in-process bind guard (PR #15570) covers the pure
+    # bind path, but a fast exit for any other reason in the boot
+    # window would restart-loop at systemd's 100ms default and hit
+    # the default start limit (5 starts per 10s) — the start-limit-hit
+    # that kept the broker down in the 2026-11-25 outage. Space
+    # restarts 5s apart and disable the start limit entirely so the
+    # manager never gives up on this boot-critical daemon.
+    restartDelaySec = 5;
+    startLimitIntervalSec = 0;
     healthCheck = "http://100.99.113.103:4801/healthz";
     # Release attestation (release-workflow design §3 part 2,
     # #13306): the fleet app's own test workflow sits outside the
@@ -78,6 +87,10 @@
     user = "user";
     ports = [ 4800 ];
     restart = "on-failure";
+    # #15533: same boot-window start-limit guard as queue-broker —
+    # 5s restart spacing, no systemd start limit.
+    restartDelaySec = 5;
+    startLimitIntervalSec = 0;
     healthCheck = "http://100.99.113.103:4800/health";
     # Release attestation (release-workflow design §3 part 2,
     # #13306): the fleet app's own test workflow sits outside the
@@ -105,6 +118,12 @@
     # 2026-11-16 daemon-death episode (code#2879) showed on-failure
     # does not restart a clean (SIGTERM/success) exit.
     restart = "always";
+    # #15533: same boot-window start-limit guard as queue-broker —
+    # 5s restart spacing, no systemd start limit. With Restart=always
+    # the start limit is the only mechanism that can permanently stop
+    # this daemon at boot.
+    restartDelaySec = 5;
+    startLimitIntervalSec = 0;
     # No unauthenticated health endpoint exists: /health requires the
     # daemon token (401 without it), which the deploy probe cannot
     # present, so healthCheck stays null (the session-proxy/mcpx
