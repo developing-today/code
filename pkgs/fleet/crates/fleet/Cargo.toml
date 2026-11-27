@@ -86,7 +86,7 @@ ed25519-dalek = { version = "3", optional = true }
 # from the OS RNG. Both crates are already in this workspace's lock
 # file as transitive dependencies.
 zeroize = { version = "1", optional = true }
-getrandom = { version = "0.3", optional = true }
+getrandom = { version = "0.4", optional = true }
 # The relay-aware ID proxy uses native iroh QUIC and Tokio I/O only in the
 # working-seat id client; connect/serve artifacts do not link this transport.
 iroh = { version = "1.5", optional = true }
