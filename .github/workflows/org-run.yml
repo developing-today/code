@@ -301,6 +301,23 @@ jobs:
                 end
             ]' <<<"$legs") || fail "jobs validation failed (see the error above)"
 
+          # Reject abbreviated commit SHAs as refs (#15768): a hex
+          # ref shorter than 40 chars is not a branch or tag, so
+          # checkout turns it into a wildcard refspec
+          # (+refs/heads/<prefix>*) that matches nothing and the leg
+          # dies at fetch with a bare git exit 1. A full 40-char SHA
+          # is fine (checkout fetches it directly); anything shorter
+          # must fail here, in setup, with the reason stated.
+          bad_refs=$(jq -r '
+            [ .[] |
+              if .mode == "together" then
+                .checkouts[] | select(.ref | test("^[0-9a-fA-F]{7,39}$")) | "\(.repo)@\(.ref)"
+              else
+                select(.ref | test("^[0-9a-fA-F]{7,39}$")) | "\(.repo)@\(.ref)"
+              end
+            ] | join(", ")' <<<"$matrix")
+          [ -z "$bad_refs" ] || fail "ref looks like an abbreviated commit SHA: $bad_refs — pass the full 40-character SHA, or a branch or tag name"
+
           echo "resolved $count leg(s):"
           jq -r '.[] |
             if .mode == "together" then
