@@ -1751,9 +1751,10 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062). Version 16 (#13711) stamps lease positions, and
-        // version 17 (#14731) records the presentation policy.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        // (all #1062). Version 16 (#13711) stamps lease positions,
+        // version 17 (#14731) records the presentation policy, and
+        // version 18 (#8282 slice 6) records template role definitions.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         // A checkpoint whose lease history carries stamped positions
@@ -8376,6 +8377,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8395,6 +8397,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8441,6 +8444,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8456,7 +8460,13 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor.handle(WorldCommand::View { token, reply }).await;
+        actor
+            .handle(WorldCommand::View {
+                token,
+                caller_account: None,
+                reply,
+            })
+            .await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),
@@ -8541,6 +8551,7 @@ mod tests {
                 token: token.clone(),
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8591,6 +8602,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8648,6 +8660,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -10688,6 +10701,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -10793,6 +10807,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -11240,6 +11255,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    caller_account: None,
                     device_input: None,
                     signed_move: None,
                     reply,
@@ -13037,9 +13053,11 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        // Version 17 (#14731, the presentation policy) is the newest
-        // version this binary reads.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        // Version 17 (#14731, the presentation policy) is no longer the
+        // newest: version 18 (#8282 slice 6, template role definitions)
+        // is the newest version this binary reads.
+        assert_eq!(JOURNAL_VERSION_TEMPLATE_ROLES, 18);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
     }
 
     #[tokio::test]
@@ -15637,7 +15655,7 @@ mod presentation_policy_tests {
     }
 
     #[test]
-    fn the_entry_requires_version_17_and_it_is_the_newest() {
+    fn the_entry_requires_version_17() {
         for policy in [PresentationPolicy::default(), opted_in()] {
             assert_eq!(
                 journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
@@ -15645,7 +15663,6 @@ mod presentation_policy_tests {
             );
         }
         assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
     }
 
     #[test]
@@ -15822,6 +15839,135 @@ mod presentation_policy_tests {
         assert!(
             format!("{error:#}").contains("invalid presentation policy"),
             "{error:#}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod template_roles_tests {
+    //! The world's stored D5 template role definitions (#8282 slice 6):
+    //! the journal entry, its version requirement, restore and
+    //! compaction. Membership is never represented here; the export
+    //! projection proves member absence in `world_template` tests.
+    use super::*;
+    use crate::world_template::RoleDefinition;
+
+    fn roles() -> Vec<RoleDefinition> {
+        vec![
+            RoleDefinition {
+                name: "editor".to_owned(),
+                description: "Can edit shared notes".to_owned(),
+            },
+            RoleDefinition {
+                name: "reader".to_owned(),
+                description: "Can read shared notes".to_owned(),
+            },
+        ]
+    }
+
+    fn header(version: u32) -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version,
+        }
+    }
+
+    #[test]
+    fn the_entry_requires_version_18_and_it_is_the_newest() {
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::TemplateRolesSet { roles: roles() }),
+            JOURNAL_VERSION_TEMPLATE_ROLES
+        );
+        assert_eq!(JOURNAL_VERSION_TEMPLATE_ROLES, 18);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_TEMPLATE_ROLES);
+    }
+
+    #[test]
+    fn the_entry_round_trips_in_its_wire_shape() {
+        let entry = JournalEntry::TemplateRolesSet { roles: roles() };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["entry"], "template_roles_set");
+        let back: JournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn restore_applies_the_last_set() {
+        let entries = [
+            header(JOURNAL_VERSION_TEMPLATE_ROLES),
+            JournalEntry::TemplateRolesSet { roles: roles() },
+            JournalEntry::TemplateRolesSet {
+                roles: roles()[..1].to_vec(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.template_roles, roles()[..1].to_vec());
+    }
+
+    #[test]
+    fn restore_refuses_an_empty_or_duplicate_name() {
+        for bad in [
+            vec![RoleDefinition {
+                name: String::new(),
+                description: "nameless".to_owned(),
+            }],
+            vec![
+                RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "first".to_owned(),
+                },
+                RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "second".to_owned(),
+                },
+            ],
+        ] {
+            let entries = [
+                header(JOURNAL_VERSION_TEMPLATE_ROLES),
+                JournalEntry::TemplateRolesSet { roles: bad },
+            ];
+            let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("empty or duplicate name"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_the_set_and_raises_the_header() {
+        let mut core = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        core.template_roles = roles();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_TEMPLATE_ROLES,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::TemplateRolesSet { .. }))
+                .count(),
+            1
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.template_roles, roles());
+    }
+
+    #[test]
+    fn compaction_omits_an_empty_set() {
+        let mut core = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::TemplateRolesSet { .. }))
         );
     }
 }

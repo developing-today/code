@@ -1,6 +1,15 @@
 {
   "comment": "Recorded from the production Python atlas_search.py by gen_core_fixtures.py. atlas-core's parity tests must reproduce every envelope and SQL string here.",
-  "qvec_raw": [0.9, 0.3, 0.1, 0.0, 0.2, 0.0, 0.1, 0.0],
+  "qvec_raw": [
+    0.9,
+    0.3,
+    0.1,
+    0.0,
+    0.2,
+    0.0,
+    0.1,
+    0.0
+  ],
   "search_cases": [
     {
       "name": "hybrid_default",
@@ -26,8 +35,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881
@@ -46,8 +60,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255
@@ -65,8 +84,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.227317
@@ -84,8 +108,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -103,8 +131,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.673401
@@ -122,8 +155,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -163,8 +200,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881
@@ -183,7 +225,9 @@
               "client": "claude-code",
               "created_at": "2026-11-02T03:04:05Z",
               "kind": "chat",
-              "topics": ["plans"],
+              "topics": [
+                "plans"
+              ],
               "projects": [],
               "sensitivity": "secret-bearing"
             },
@@ -203,8 +247,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255
@@ -223,7 +272,9 @@
               "client": "opencode",
               "created_at": "2026-09-15T22:40:10Z",
               "kind": "chat",
-              "topics": ["nixos"],
+              "topics": [
+                "nixos"
+              ],
               "projects": [],
               "sensitivity": "local-only"
             },
@@ -242,8 +293,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.227317
@@ -261,8 +317,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -280,8 +340,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.673401
@@ -299,8 +364,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -339,8 +408,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -358,8 +431,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -398,8 +475,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             }
           },
@@ -416,8 +498,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             }
           }
@@ -447,8 +534,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881
@@ -466,8 +558,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255
@@ -485,8 +582,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.227317
@@ -504,8 +606,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -523,8 +629,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.673401
@@ -542,8 +653,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -567,7 +682,9 @@
         "backend": "local",
         "filters_applied": {
           "max_sensitivity": "personal",
-          "kind": ["code"]
+          "kind": [
+            "code"
+          ]
         },
         "results": [
           {
@@ -583,8 +700,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -602,8 +723,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -627,7 +752,9 @@
         "backend": "local",
         "filters_applied": {
           "max_sensitivity": "personal",
-          "topic": ["nixos"]
+          "topic": [
+            "nixos"
+          ]
         },
         "results": [
           {
@@ -644,8 +771,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881
@@ -664,8 +796,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255
@@ -683,8 +820,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.227317
@@ -702,8 +844,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.673401
@@ -727,7 +874,9 @@
         "backend": "local",
         "filters_applied": {
           "max_sensitivity": "personal",
-          "client": ["codex"],
+          "client": [
+            "codex"
+          ],
           "since": "2026-10-01",
           "until": "2026-10-31"
         },
@@ -745,8 +894,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.377201
@@ -764,8 +917,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "vector_distance": 0.941876
@@ -789,7 +946,9 @@
         "backend": "local",
         "filters_applied": {
           "max_sensitivity": "personal",
-          "client": ["codex"],
+          "client": [
+            "codex"
+          ],
           "until": "2026-10-19"
         },
         "results": [],
@@ -822,8 +981,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "chunks": [
@@ -876,8 +1040,12 @@
               "client": "codex",
               "created_at": "2026-10-20T09:12:00Z",
               "kind": "code",
-              "topics": ["rust"],
-              "projects": ["atlas"],
+              "topics": [
+                "rust"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "shareable"
             },
             "chunks": [
@@ -936,8 +1104,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881,
@@ -971,8 +1144,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255,
@@ -1005,8 +1183,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.227317,
@@ -1061,8 +1244,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.001881
@@ -1081,8 +1269,13 @@
               "client": "claude-code",
               "created_at": "2026-10-05T14:23:00Z",
               "kind": "chat",
-              "topics": ["nixos", "backup"],
-              "projects": ["atlas"],
+              "topics": [
+                "nixos",
+                "backup"
+              ],
+              "projects": [
+                "atlas"
+              ],
               "sensitivity": "personal"
             },
             "vector_distance": 0.056255
@@ -1116,7 +1309,9 @@
           "client": "claude-code",
           "created_at": "2026-11-02T03:04:05Z",
           "kind": "chat",
-          "topics": ["plans"],
+          "topics": [
+            "plans"
+          ],
           "projects": [],
           "sensitivity": "secret-bearing"
         },
@@ -1139,8 +1334,13 @@
           "client": "claude-code",
           "created_at": "2026-10-05T14:23:00Z",
           "kind": "chat",
-          "topics": ["nixos", "backup"],
-          "projects": ["atlas"],
+          "topics": [
+            "nixos",
+            "backup"
+          ],
+          "projects": [
+            "atlas"
+          ],
           "sensitivity": "personal"
         },
         "session_id": "sA",
@@ -1162,12 +1362,26 @@
         "name": "defaults",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": [
+              "\"back\" OR \"database\"",
+              "shareable",
+              "public",
+              "personal",
+              "internal",
+              100
+            ]
           },
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) ORDER BY dist ASC LIMIT ?",
+            "params": [
+              "[0.5, 0.25]",
+              "shareable",
+              "public",
+              "personal",
+              "internal",
+              100
+            ]
           }
         ]
       },
@@ -1175,13 +1389,17 @@
         "name": "all_filters_secret",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?,?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
             "params": [
               "\"back\" OR \"database\"",
               "shareable",
+              "public",
               "personal",
+              "internal",
               "local-only",
+              "private",
               "secret-bearing",
+              "sensitive",
               "code",
               "codex",
               "%\"rust\"%",
@@ -1191,13 +1409,17 @@
             ]
           },
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?,?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
             "params": [
               "[0.5, 0.25]",
               "shareable",
+              "public",
               "personal",
+              "internal",
               "local-only",
+              "private",
               "secret-bearing",
+              "sensitive",
               "code",
               "codex",
               "%\"rust\"%",
@@ -1212,8 +1434,15 @@
         "name": "fts_only",
         "stmts": [
           {
-            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": [
+              "\"back\" OR \"database\"",
+              "shareable",
+              "public",
+              "personal",
+              "internal",
+              100
+            ]
           }
         ]
       },
@@ -1221,8 +1450,15 @@
         "name": "vector_only",
         "stmts": [
           {
-            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) ORDER BY dist ASC LIMIT ?",
+            "params": [
+              "[0.5, 0.25]",
+              "shareable",
+              "public",
+              "personal",
+              "internal",
+              100
+            ]
           }
         ]
       }
@@ -1230,62 +1466,132 @@
     "allowed_ids_plain": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": [
+            "shareable",
+            "public",
+            "personal",
+            "internal"
+          ]
         }
       ],
-      "result": [1, 2, 3, 4, 7, 8]
+      "result": [
+        1,
+        2,
+        3,
+        4,
+        7,
+        8
+      ]
     },
     "allowed_ids_kind": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": [
+            "shareable",
+            "public",
+            "personal",
+            "internal"
+          ]
         },
         {
           "sql": "SELECT c2.id AS cid FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?)",
-          "params": ["code"]
+          "params": [
+            "code"
+          ]
         }
       ],
-      "result": [4, 7]
+      "result": [
+        4,
+        7
+      ]
     },
     "index_fill": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": [
+            "shareable",
+            "public",
+            "personal",
+            "internal"
+          ]
         },
         {
           "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 3]
+          "params": [
+            "vec_snowflake_m_v2_768_f32_idx",
+            "[0.5, 0.25]",
+            3
+          ]
         },
         {
           "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 6]
+          "params": [
+            "vec_snowflake_m_v2_768_f32_idx",
+            "[0.5, 0.25]",
+            6
+          ]
         },
         {
           "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?,?,?)",
-          "params": ["[0.5, 0.25]", 1, 2, 8]
+          "params": [
+            "[0.5, 0.25]",
+            1,
+            2,
+            8
+          ]
         }
       ],
-      "result": [[1, 0.01], [2, 0.3], [8, 0.07]]
+      "result": [
+        [
+          1,
+          0.01
+        ],
+        [
+          2,
+          0.3
+        ],
+        [
+          8,
+          0.07
+        ]
+      ]
     },
     "index_fixed": {
       "calls": [
         {
-          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-          "params": ["shareable", "personal"]
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?,?,?)",
+          "params": [
+            "shareable",
+            "public",
+            "personal",
+            "internal"
+          ]
         },
         {
           "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 3]
+          "params": [
+            "vec_snowflake_m_v2_768_f32_idx",
+            "[0.5, 0.25]",
+            3
+          ]
         },
         {
           "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?)",
-          "params": ["[0.5, 0.25]", 1]
+          "params": [
+            "[0.5, 0.25]",
+            1
+          ]
         }
       ],
-      "result": [[1, 0.01]]
+      "result": [
+        [
+          1,
+          0.01
+        ]
+      ]
     }
   }
 }

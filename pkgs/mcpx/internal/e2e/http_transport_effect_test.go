@@ -315,20 +315,20 @@ func TestHTTPShutdownGraceBoundsHowLongAStopWaits(t *testing.T) {
 			done <- result{st: resp.StatusCode, body: string(b)}
 		}()
 		// The script needs a moment to be in flight inside the
-		// daemon; the stop below is what is being measured, and it
-		// must not begin before the call it may or may not wait for.
-		// The stop command itself returns as soon as the daemon has
-		// accepted the shutdown, so what is timed is the call: cut
-		// at the grace, or answered when the script finishes.
+		// daemon. Measure the stop command itself: it returns only
+		// after the daemon's graceful shutdown has drained or cut
+		// active requests, so measuring after it returns would miss
+		// the grace period entirely.
 		time.Sleep(1 * time.Second)
-		e.run("stop")
 		start := time.Now()
+		e.run("stop")
+		stopTook := time.Since(start)
 		select {
 		case r := <-done:
-			return r.err == nil && r.st == http.StatusOK && strings.Contains(r.body, "exec-done"), time.Since(start)
+			return r.err == nil && r.st == http.StatusOK && strings.Contains(r.body, "exec-done"), stopTook
 		case <-time.After(10 * time.Second):
 			t.Fatal("the exec call neither answered nor was cut within 10s of the stop")
-			return false, time.Since(start)
+			return false, stopTook
 		}
 	}
 

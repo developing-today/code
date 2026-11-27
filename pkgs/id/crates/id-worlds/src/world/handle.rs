@@ -323,6 +323,7 @@ impl WorldHandle {
             stale_wants_at_open,
             acting: None,
             acting_session: None,
+            acting_account: None,
             acting_device_input: None,
             device_manifest,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
@@ -601,7 +602,7 @@ impl WorldHandle {
         &self,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(None, None, result)
+        self.submit_form_result_with_session(None, None, None, result)
             .await
     }
 
@@ -611,9 +612,10 @@ impl WorldHandle {
         &self,
         token: JoinCapability,
         session_id: crate::world::SessionId,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
-        self.submit_form_result_with_session(Some(token), Some(session_id), result)
+        self.submit_form_result_with_session(Some(token), Some(session_id), caller_account, result)
             .await
     }
 
@@ -621,6 +623,7 @@ impl WorldHandle {
         &self,
         token: Option<JoinCapability>,
         session_id: Option<crate::world::SessionId>,
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
     ) -> Result<FormSubmissionStatus> {
         let (reply, response) = oneshot::channel();
@@ -628,6 +631,7 @@ impl WorldHandle {
             .send(WorldCommand::SubmitFormResult {
                 token,
                 session_id,
+                caller_account,
                 result,
                 reply,
             })
@@ -1531,7 +1535,8 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
-        self.input_with_session(token, input, None, None).await
+        self.input_with_session(token, input, None, None, None)
+            .await
     }
 
     /// Submit bounded opaque game input from a live session connection.
@@ -1541,8 +1546,9 @@ impl WorldHandle {
         input: Vec<u8>,
         session_id: SessionId,
         device_input: Option<serde_json::Value>,
+        caller_account: Option<String>,
     ) -> Result<WorldEvent> {
-        self.input_with_session(token, input, Some(session_id), device_input)
+        self.input_with_session(token, input, Some(session_id), device_input, caller_account)
             .await
     }
 
@@ -1552,6 +1558,7 @@ impl WorldHandle {
         input: Vec<u8>,
         session_id: Option<SessionId>,
         device_input: Option<serde_json::Value>,
+        caller_account: Option<String>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -1559,6 +1566,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move: None,
                 reply,
@@ -1606,6 +1614,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: Some(signed_move),
                 reply,
@@ -1886,9 +1895,31 @@ impl WorldHandle {
     /// Render the current world for an authorized participant. A chat-only
     /// world returns `None`.
     pub async fn view(&self, token: JoinCapability) -> Result<Option<String>> {
+        self.view_with_caller(token, None).await
+    }
+
+    /// Render the current world for a joined session using its server supplied
+    /// billing account for the duration of this guest call.
+    pub(crate) async fn view_from_session(
+        &self,
+        token: JoinCapability,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
+        self.view_with_caller(token, caller_account).await
+    }
+
+    async fn view_with_caller(
+        &self,
+        token: JoinCapability,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(WorldCommand::View { token, reply })
+            .send(WorldCommand::View {
+                token,
+                caller_account,
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
@@ -1904,12 +1935,36 @@ impl WorldHandle {
         width: u16,
         height: u16,
     ) -> Result<Option<String>> {
+        self.view_at_with_caller(token, width, height, None).await
+    }
+
+    /// Render a joined session at a viewport using its server supplied billing
+    /// account for the duration of the layout and any fallback view call.
+    pub(crate) async fn view_at_from_session(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
+        self.view_at_with_caller(token, width, height, caller_account)
+            .await
+    }
+
+    async fn view_at_with_caller(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::ViewAt {
                 token,
                 width,
                 height,
+                caller_account,
                 reply,
             })
             .await

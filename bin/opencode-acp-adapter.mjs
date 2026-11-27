@@ -72,6 +72,9 @@
 //                             service-prod.json — the server's own
 //                             state file, #4615). The value is never
 //                             logged or baked into tracked config.
+//   OPENCODE_ACP_SERVE_TIMEOUT_MS
+//                             per-call deadline for serve REST calls
+//                             (default 30000; see SERVE_REQUEST_TIMEOUT_MS)
 //   OPENCODE_ACP_ADAPTER_DEBUG=1 -> diagnostics on stderr (stdout is
 //                             the protocol channel and stays clean)
 //
@@ -211,12 +214,40 @@ function authHeaders(extra = {}) {
   return headers;
 }
 
-async function serveJson(pathname, { method = 'GET', body } = {}) {
-  const res = await fetch(`${serverBase}${pathname}`, {
-    method,
-    headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+// #15982: bound every serve REST call. Node/undici fetch has no
+// default timeout, so a hung serve (or a stalled loopback socket)
+// would otherwise wedge every serveJson await forever — prompts,
+// interrupts, permission replies, and the reconnect reconciliation
+// that reads /api/session/active through this same path (a hang is
+// not an error, so reconciliation's catch never fired and pending
+// prompts stayed in flight forever). The default is generous (30s:
+// healthy serve calls are loopback and fast) but finite. Tests
+// override it via OPENCODE_ACP_SERVE_TIMEOUT_MS.
+const SERVE_REQUEST_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_SERVE_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
+})();
+
+async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQUEST_TIMEOUT_MS } = {}) {
+  let res;
+  try {
+    res = await fetch(`${serverBase}${pathname}`, {
+      method,
+      headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    // AbortSignal.timeout aborts with a TimeoutError; surface it in
+    // the same `serve METHOD pathname -> …` shape as HTTP errors so
+    // callers log/retry consistently. Reconciliation's existing
+    // catch on fetchActiveSessionIds now also sees timeouts, so a
+    // hung active-set read fails pending prompts explicitly (#15982).
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`serve ${method} ${pathname} -> timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`serve ${method} ${pathname} -> ${res.status} ${text.slice(0, 200)}`);
@@ -414,6 +445,55 @@ async function reconcilePendingPrompts() {
   }
 }
 
+// #16009: the event stream is the longest-lived connection in the
+// process, but #15982's deadlines only covered request/response
+// calls. A serve that accepts /api/event and then goes silent (or
+// never answers the connect at all) left reader.read() pending
+// forever: no error, so no reconnect, so reconcilePendingPrompts
+// never ran and pending prompts wedged (#4617 shape). Bound both
+// phases, env-overridable in the OPENCODE_ACP_SERVE_TIMEOUT_MS
+// pattern: the connect deadline aborts a connect that produces no
+// response headers, and the idle deadline cancels a stream that
+// delivers no data within the window. Both failures land in the
+// existing catch below, which reconnects after 1s and reconciles.
+// The idle default is generous (a healthy serve emits session
+// activity and heartbeats far more often); firing during legitimate
+// quiet costs one reconnect, never an event — the reconnected
+// stream replays nothing, but reconciliation covers completions
+// that happened during the gap.
+const EVENT_STREAM_CONNECT_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_EVENT_STREAM_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
+})();
+const EVENT_STREAM_IDLE_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_EVENT_STREAM_IDLE_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 60_000;
+})();
+
+// Read one chunk with an idle deadline: resolves like reader.read(),
+// rejects with a stall error (after cancelling the reader) when no
+// data arrives within EVENT_STREAM_IDLE_TIMEOUT_MS.
+async function readWithIdleDeadline(reader) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          void reader.cancel().catch(() => {});
+          reject(
+            new Error(
+              `serve GET /api/event -> timed out after ${EVENT_STREAM_IDLE_TIMEOUT_MS}ms without data`,
+            ),
+          );
+        }, EVENT_STREAM_IDLE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function runEventStream() {
   eventStreamReady = new Promise((resolve) => {
     eventStreamReadyResolve = resolve;
@@ -421,9 +501,31 @@ async function runEventStream() {
   let connectedOnce = false;
   while (!shuttingDown) {
     try {
-      const res = await fetch(`${serverBase}/api/event`, {
-        headers: authHeaders({ Accept: 'text/event-stream' }),
-      });
+      // Connect deadline via an explicit AbortController: an
+      // AbortSignal.timeout would keep ticking after the headers
+      // arrive and abort the long-lived body read, so the timer is
+      // cleared as soon as fetch resolves.
+      const connectController = new AbortController();
+      const connectTimer = setTimeout(
+        () => connectController.abort(),
+        EVENT_STREAM_CONNECT_TIMEOUT_MS,
+      );
+      let res;
+      try {
+        res = await fetch(`${serverBase}/api/event`, {
+          headers: authHeaders({ Accept: 'text/event-stream' }),
+          signal: connectController.signal,
+        });
+      } catch (err) {
+        if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+          throw new Error(
+            `serve GET /api/event -> timed out after ${EVENT_STREAM_CONNECT_TIMEOUT_MS}ms`,
+          );
+        }
+        throw err;
+      } finally {
+        clearTimeout(connectTimer);
+      }
       if (!res.ok || !res.body) throw new Error(`GET /api/event -> ${res.status}`);
       markEventStreamReady();
       debug('event stream connected');
@@ -433,7 +535,7 @@ async function runEventStream() {
       const decoder = new TextDecoder();
       let buffer = '';
       for (;;) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithIdleDeadline(reader);
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let idx = buffer.indexOf('\n\n');

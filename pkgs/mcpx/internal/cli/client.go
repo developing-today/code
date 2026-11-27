@@ -132,12 +132,20 @@ func callHeader(set *settings.Set) string {
 // authorize attaches the configured daemon bearer token to a request
 // (#1975): the same transport.bearerToken setting the daemon checks,
 // resolved from this client's own settings (environment or config), so
-// a caller and its daemon agree by construction. Unset, no header --
-// the request is byte-for-byte what it was before the setting existed.
+// a caller and its daemon agree by construction. A daemon-authenticated
+// /mcp request can carry its validated key for a nested local call, keeping
+// the caller's ceiling across that boundary. Unset, no header -- the
+// request is byte-for-byte what it was before the setting existed.
 func (c *Client) authorize(req *http.Request) {
 	tok := daemon.BearerToken(c.set)
 	if c.authResolved {
 		tok = c.authToken
+	}
+	if delegated, ok := daemon.KeyCredentialFrom(req.Context()); ok {
+		// A keyed /mcp request that calls back through this local daemon
+		// client must keep the same identity; otherwise the nested /v1
+		// request would inherit the daemon's broader transport token.
+		tok = delegated
 	}
 	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)

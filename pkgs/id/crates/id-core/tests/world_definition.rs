@@ -31,7 +31,11 @@ mod signed_envelope;
 #[path = "../src/world_definition.rs"]
 mod world_definition;
 
+#[path = "../src/test_forgeries.rs"]
+mod test_forgeries;
+
 use ed25519_dalek::SigningKey;
+use test_forgeries::{IDENTITY_KEY, identity_forgery};
 use id_shape::{ContentId, HashProfile};
 use world_definition::{
     CoreKind, SignedWorldDefinition, WORLD_DEFINITION_DOMAIN, WorldDefinition, WorldDefinitionError,
@@ -112,6 +116,16 @@ fn tampering_domain_or_signer_key_rejects() {
         signer_tampered.verify().unwrap_err().class(),
         "bad_signature"
     );
+}
+
+#[test]
+fn identity_point_forgery_is_rejected() {
+    let signer = key(12);
+    let mut forged = SignedWorldDefinition::sign(definition(12, 1, None), &signer).unwrap();
+    forged.signer_key = IDENTITY_KEY;
+    forged.signature = identity_forgery();
+
+    assert_eq!(forged.verify().unwrap_err().class(), "bad_signature");
 }
 
 #[test]

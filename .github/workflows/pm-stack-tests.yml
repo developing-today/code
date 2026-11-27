@@ -40,13 +40,15 @@ jobs:
         working-directory: pm-stack/aggregator
         run: bun install --frozen-lockfile
 
-      - name: Test aggregator
-        working-directory: pm-stack/aggregator
-        run: bun test
-
+      # The aggregator's pm-core reader imports the projector store module.
+      # Install its runtime dependency before the aggregator test process.
       - name: Install projector dependencies
         working-directory: pm-stack/projector
         run: bun install --frozen-lockfile
+
+      - name: Test aggregator
+        working-directory: pm-stack/aggregator
+        run: bun test
 
       - name: Test projector
         working-directory: pm-stack/projector
@@ -166,6 +168,9 @@ jobs:
             exit 1
           fi
           echo "tailnet-bindings script suite passed."
+
+      - name: Test PM aggregator backend readiness gate
+        run: bash nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh
 
       # Fencing and cutover suites for #6816: pm-stack/scripts/
       # fence-check.test.sh proves the fencing rule (old writer fenced

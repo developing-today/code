@@ -109,9 +109,15 @@ impl Ladder {
     }
 
     pub fn call(&self, req: &Request) -> Result<Answer, CallError> {
+        // SSH fallback jobs live in a separate spool, not the daemon's job
+        // store. A recovered HTTP leg must not answer for an SSH-owned ID.
+        let ssh_owned = req.path.starts_with("/jobs/sshfb-");
         let mut failures: Vec<Failure> = Vec::new();
         for leg in &self.legs {
             let name = leg.name();
+            if ssh_owned && name != "ssh" {
+                continue;
+            }
             if req.direct_only && name == "broker" {
                 continue;
             }
@@ -148,6 +154,13 @@ impl Ladder {
                     failures.push(failure);
                 }
             }
+        }
+        if ssh_owned && failures.is_empty() {
+            failures.push(Failure {
+                leg: "ssh",
+                kind: "absent",
+                reason: "SSH-owned sshfb job requires the SSH leg, but none is configured".into(),
+            });
         }
         Err(CallError::AllLegsFailed(failures))
     }
@@ -208,6 +221,111 @@ mod tests {
             trip: "t".into(),
             idempotent,
             direct_only: false,
+        }
+    }
+
+    // Oracle: the sshfb namespace belongs exclusively to the SSH spool;
+    // unrelated HTTP stores must never observe its lifecycle requests.
+    #[test]
+    fn sshfb_lifecycle_uses_only_ssh_even_when_http_is_healthy() {
+        for (method, path) in [
+            ("GET", "/jobs/sshfb-test"),
+            ("GET", "/jobs/sshfb-test?out_off=0&err_off=0&wait_s=1"),
+            ("POST", "/jobs/sshfb-test/kill"),
+        ] {
+            let (broker, broker_calls) = fake("broker", ok(404));
+            let (cf, cf_calls) = fake("cloudflare", ok(404));
+            let (ts, ts_calls) = fake("tailscale", ok(404));
+            let (ssh, ssh_calls) = fake("ssh", ok(200));
+            let mut request = req(true);
+            request.method = method;
+            request.path = path.into();
+            let answer = Ladder::new(vec![broker, cf, ts, ssh])
+                .call(&request)
+                .unwrap();
+            assert_eq!(answer.leg, "ssh", "{method} {path}");
+            assert!(answer.fallbacks.is_empty());
+            assert_eq!(ssh_calls.load(Ordering::SeqCst), 1);
+            for calls in [broker_calls, cf_calls, ts_calls] {
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+
+    // Oracle: absence/failure of the authoritative owner is an error, never
+    // permission to consult another store (even if SSH precedes that store).
+    #[test]
+    fn sshfb_without_usable_ssh_fails_without_contacting_http() {
+        for (method, path, idempotent) in [
+            ("GET", "/jobs/sshfb-test", true),
+            ("POST", "/jobs/sshfb-test/kill", true),
+            ("POST", "/jobs/sshfb-test/kill", false),
+        ] {
+            for kind in ["missing", "absent", "unsent", "sent"] {
+                let mut legs = Vec::new();
+                let outcome = match kind {
+                    "absent" => Some(LegError::Absent("no script".into())),
+                    "unsent" => Some(LegError::Unsent("connection refused".into())),
+                    "sent" => Some(LegError::Sent("connection lost".into())),
+                    _ => None,
+                };
+                if let Some(error) = outcome {
+                    legs.push(fake("ssh", Err(error)).0);
+                }
+                let mut http_calls = Vec::new();
+                for name in ["broker", "cloudflare", "tailscale"] {
+                    let (leg, calls) = fake(name, ok(200));
+                    legs.push(leg);
+                    http_calls.push(calls);
+                }
+                let mut request = req(idempotent);
+                request.method = method;
+                request.path = path.into();
+                let error = Ladder::new(legs).call(&request).unwrap_err();
+                if kind == "sent" && !idempotent {
+                    assert!(matches!(error, CallError::NotReplayed { .. }));
+                } else {
+                    let CallError::AllLegsFailed(failures) = error else {
+                        panic!("expected owner failure, got {error:?}");
+                    };
+                    assert_eq!(failures.len(), 1);
+                    assert_eq!(failures[0].leg, "ssh");
+                    assert_eq!(
+                        failures[0].kind,
+                        if kind == "missing" { "absent" } else { kind }
+                    );
+                    assert!(!failures[0].reason.is_empty());
+                }
+                for calls in http_calls {
+                    assert_eq!(calls.load(Ordering::SeqCst), 0);
+                }
+            }
+        }
+    }
+
+    // Oracle: requests outside the SSH-owned namespace keep normal ladder
+    // ordering, including collection operations and similar-looking IDs.
+    #[test]
+    fn non_sshfb_requests_retain_the_normal_ladder() {
+        for (method, path) in [
+            ("GET", "/jobs/normal-id"),
+            ("POST", "/jobs/normal-id/kill"),
+            ("GET", "/jobs"),
+            ("POST", "/jobs"),
+            ("GET", "/jobs/not-sshfb-test"),
+            ("GET", "/jobs/sshfb"),
+        ] {
+            let (broker, broker_calls) = fake("broker", Err(LegError::Unsent("offline".into())));
+            let (cf, cf_calls) = fake("cloudflare", ok(200));
+            let (ssh, ssh_calls) = fake("ssh", ok(200));
+            let mut request = req(true);
+            request.method = method;
+            request.path = path.into();
+            let answer = Ladder::new(vec![broker, cf, ssh]).call(&request).unwrap();
+            assert_eq!(answer.leg, "cloudflare");
+            assert_eq!(broker_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(cf_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(ssh_calls.load(Ordering::SeqCst), 0);
         }
     }
 

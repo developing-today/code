@@ -724,6 +724,74 @@ test("lane assignment, platform limits, and session binding follow the native ru
   assert.equal(badSession["exit"], 2);
 });
 
+test("bind recovery mode compare-clears an error-stopped binding after lease expiry (#16066)", async () => {
+  const { store } = setup();
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { worker: "worker-a" });
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  await verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a" });
+  // Seed the bound opencode state the claimant recovers from: the
+  // prior session id in BOTH stores, lease already expired.
+  await store.updateLedger(id, { assigned_lane: "opencode", session_id: "ses_failed1" });
+  await store.updateTask(id, {
+    progress: { lane: "opencode", session_id: "ses_failed1", launched_by: "opencode-claimant" },
+    lease_until: iso(T0 - 60),
+  });
+  const before = await store.getTask(id);
+
+  // A mismatched prior session id is refused and clears nothing.
+  const mismatch = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_other1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(mismatch["exit"], 4);
+  assert.ok(String(mismatch["error"]).includes("recovery binding mismatch"));
+  assert.equal((await store.getLedger(id))?.session_id, "ses_failed1");
+
+  // The matching compare-and-clear succeeds atomically.
+  const recovered = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_failed1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(recovered["ok"], true);
+  assert.equal((recovered["row"] as JsonObject)["session_id"], null);
+  const after = await store.getTask(id);
+  assert.equal(after?.attempts, (before?.attempts ?? 0) + 1);
+  const progress = after?.progress as JsonObject;
+  assert.equal(progress["session_id"], null);
+  assert.equal(progress["stage"], "launch_failed");
+  assert.equal(progress["launch_failed_session_id"], "ses_failed1");
+  assert.equal(
+    progress["launch_failed_reason"],
+    "verified error-stopped session deleted before recovery",
+  );
+  assert.equal(
+    (await store.allEvents()).filter((e) => e.kind === "lane_session_recovered").length,
+    1,
+  );
+
+  // A live lease refuses recovery: a stale claimant can never
+  // clear a binding whose replacement may still legitimately launch.
+  await store.updateLedger(id, { session_id: "ses_failed1" });
+  await store.updateTask(id, {
+    progress: { lane: "opencode", session_id: "ses_failed1" },
+    lease_until: iso(T0 + 3600),
+  });
+  const liveLease = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_failed1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(liveLease["exit"], 4);
+  assert.ok(String(liveLease["error"]).includes("requires an expired lease"));
+  assert.equal((await store.getLedger(id))?.session_id, "ses_failed1");
+});
+
 test("a claim transfer moves the claim to the holder's named successor session only", async () => {
   const { store } = setup();
   await enqueue(store, nativeEnv(), fixPacket());

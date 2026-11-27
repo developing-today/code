@@ -1,16 +1,27 @@
 //! Bounded audit of the real unsigned version and lineage projections (#11186).
-//! Oracle: fixture-derived row facts, never another projector invocation.
-//! This slice covers unsigned correction §6.2 and retirement §6.3 from
-//! explicit fixture facts. Signed complete-unit §6.4 and pinned replay §6.1
-//! remain pending #11182/#11184.
+//! Oracle: fixture-derived row facts, never another version projector invocation.
+//! This suite checks pinned attestation replay (§6.1), complete publication-unit
+//! readiness (§6.4), correction clears (§6.2), and retirement tombstones (§6.3).
+//! Atlas-core exposes unsigned descriptors; event signing/binding remains the
+//! responsibility of the later publication adapter.
 
+use atlas_core::attestation::{
+    Batch, BatchOutcome, BatchPredicate, BatchStatement, Builder, BuilderVersion, Classification,
+    DigestSet, MaterialEntry, SubjectAnnotations, SubjectEntry,
+};
+use atlas_core::classify::sha256_hex;
+use atlas_core::id_projection::{
+    PROJECTION_VERSION as ID_PROJECTION_VERSION, ProjectionRunPins, project_run_with_pins,
+    replay_run_from_pins,
+};
+use atlas_core::shards::Tier;
 use atlas_core::version_projection::{
     AtlasCorrection, AtlasFileNoteBinding, AtlasRevisionEdge, AtlasTombstone, AtlasVersionKey,
     AtlasVersionRow, PROJECTION_VERSION, ProjectedCorrection, ProjectedDocumentRef,
     ProjectedLineageClaim, ProjectedLineageRef, ProjectedLineageValue, ProjectedNote,
-    ProjectedNoteEventRef, ProjectedSelectedVersion, ProjectedTag, ProjectedTagClear,
-    ProjectedTombstone, ProjectedTombstoneClaim, ProjectedVersion, project_corrections,
-    project_lineage_claims, project_selected_versions, project_tombstone,
+    ProjectedNoteEventRef, ProjectedSelectedVersion, ProjectedSubject, ProjectedTag,
+    ProjectedTagClear, ProjectedTombstone, ProjectedTombstoneClaim, ProjectedVersion,
+    project_corrections, project_lineage_claims, project_selected_versions, project_tombstone,
 };
 use proptest::prelude::*;
 use serde_json::Value;
@@ -104,9 +115,7 @@ impl AuditReport {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!(
-            "{verdicts}; pending: signed complete-unit §6.4, pinned replay §6.1 (#11182/#11184)"
-        )
+        format!("{verdicts}")
     }
 }
 
@@ -119,11 +128,11 @@ fn expected_tags(row: &AtlasVersionRow) -> Vec<ProjectedTag> {
         "file_id": row.file_id, "version_seq": row.version_seq,
         "path": row.path, "source_locator": row.source_locator,
         "ingested_at": row.ingested_at, "batch_id": row.batch_id,
-        "projection_version": "v1",
+        "projection_version": PROJECTION_VERSION,
     });
     let generated = serde_json::json!({
         "batch_id": row.batch_id, "file_id": row.file_id,
-        "version_seq": row.version_seq, "projection_version": "v1",
+        "version_seq": row.version_seq, "projection_version": PROJECTION_VERSION,
     });
     vec![
         ProjectedTag {
@@ -149,7 +158,7 @@ fn expected_document(row: &AtlasVersionRow) -> ProjectedVersion {
         media_type: row.media_type.clone(),
         size: content.len() as u64,
         content,
-        projection_version: "v1".into(),
+        projection_version: PROJECTION_VERSION.into(),
         claims: expected_tags(row),
     }
 }
@@ -364,6 +373,125 @@ fn project_fixture(f: &Fixture) -> ActualProjection {
     }
 }
 
+fn fixture_snapshot_marker(f: &Fixture) -> BTreeMap<String, u64> {
+    let mut marker = BTreeMap::new();
+    for row in &f.rows {
+        marker
+            .entry(row.file_id.clone())
+            .and_modify(|max_seq: &mut u64| *max_seq = (*max_seq).max(row.version_seq))
+            .or_insert(row.version_seq);
+    }
+    marker
+}
+
+fn fixture_batch_statements(f: &Fixture) -> Vec<BatchStatement> {
+    let mut batches = BTreeMap::<String, Vec<&AtlasVersionRow>>::new();
+    for row in &f.rows {
+        batches.entry(row.batch_id.clone()).or_default().push(row);
+    }
+
+    let mut prior_attestation = None;
+    let mut statements = Vec::with_capacity(batches.len());
+    for (batch_id, rows) in batches {
+        let subject = rows
+            .iter()
+            .map(|row| SubjectEntry {
+                uri: format!("atlas://{}/{}", row.file_id, row.version_seq),
+                digest: DigestSet::new(&sha256_hex(row.content.as_bytes())).unwrap(),
+                annotations: SubjectAnnotations {
+                    spans: vec![format!("version_seq={}", row.version_seq)],
+                },
+            })
+            .collect();
+        let materials = rows
+            .iter()
+            .map(|row| MaterialEntry {
+                uri: row.source_locator.clone(),
+                digest: DigestSet::new(&sha256_hex(row.content.as_bytes())).unwrap(),
+            })
+            .collect();
+        let statement = BatchStatement::new(
+            subject,
+            materials,
+            BatchPredicate {
+                builder: Builder {
+                    id: "atlas-fixture-ingester".into(),
+                    version: BuilderVersion {
+                        ingester_version: "fixture-v1".into(),
+                        code_rev: "0123456789abcdef0123456789abcdef01234567".into(),
+                    },
+                },
+                batch: Batch {
+                    batch_id: batch_id.clone(),
+                    staging_unit_id: format!("staging-{batch_id}"),
+                    gate_run_id: format!("gate-{batch_id}"),
+                    started_at: "2026-11-24T00:00:00Z".into(),
+                    finished_at: "2026-11-24T00:01:00Z".into(),
+                    outcome: BatchOutcome::Published,
+                    dedup_dropped: Vec::new(),
+                },
+                classification: Classification {
+                    tier: Tier::Public,
+                    scanner_name: "atlas-fixture-scanner".into(),
+                    scanner_version: "fixture-v1".into(),
+                    scan_verdict: "pass".into(),
+                    scan_evidence: sha256_hex(batch_id.as_bytes()),
+                },
+                prior_attestation: prior_attestation.clone(),
+            },
+        );
+        prior_attestation = Some(statement.envelope_digest().unwrap());
+        statements.push(statement);
+    }
+    statements
+}
+
+/// Build fixture-derived batch claims under explicit pins, then replay the
+/// persisted log and require byte-identical claims. The corrupted-input
+/// negative control must fail closed rather than accept a prefix.
+fn replay_fixture_batches(f: &Fixture) -> Result<BTreeSet<String>, String> {
+    let statements = fixture_batch_statements(f);
+    let pins = ProjectionRunPins {
+        atlas_snapshot_marker: fixture_snapshot_marker(f),
+        batch_chain_head: None,
+        publisher_key_id: "fixture-publisher-key".into(),
+        projection_version: ID_PROJECTION_VERSION.into(),
+    };
+    let log = project_run_with_pins("id-publication-fixture-run", &statements, pins.clone())
+        .map_err(|error| error.to_string())?;
+    if log.pins != pins {
+        return Err("run log did not preserve the fixture input pins".into());
+    }
+    let expected_batches = f
+        .rows
+        .iter()
+        .map(|row| row.batch_id.clone())
+        .collect::<BTreeSet<_>>();
+    let logged_batches = log
+        .claims
+        .iter()
+        .map(|claim| claim.batch_id.clone())
+        .collect::<BTreeSet<_>>();
+    if logged_batches != expected_batches {
+        return Err("run log batch set differs from Atlas fixture rows".into());
+    }
+    let replay = replay_run_from_pins(&log, &statements).map_err(|error| error.to_string())?;
+    if replay.claims_replayed != log.claims.len() || replay.batch_chain_head != log.batch_chain_head
+    {
+        return Err("pinned replay did not reproduce the complete logged run".into());
+    }
+    let mut changed_inputs = statements.clone();
+    changed_inputs[0]
+        .predicate
+        .batch
+        .batch_id
+        .push_str("-tampered");
+    if replay_run_from_pins(&log, &changed_inputs).is_ok() {
+        return Err("pinned replay accepted changed Atlas batch input".into());
+    }
+    Ok(logged_batches)
+}
+
 fn audit(
     f: &Fixture,
     selected: &[ProjectedSelectedVersion],
@@ -382,6 +510,8 @@ fn audit(
         "note.selection-and-chain",
         "correction.exact-clear",
         "retirement.remove-tombstone",
+        "replay.pinned-inputs",
+        "publication.complete-unit",
     ];
     let mut expected = BTreeMap::new();
     for row in &f.rows {
@@ -400,7 +530,15 @@ fn audit(
         || unique != expected.keys().cloned().collect()
     {
         failures.insert("version.key-set".to_owned());
+        failures.insert("publication.complete-unit".to_owned());
     }
+    let replayed_batches = match replay_fixture_batches(f) {
+        Ok(batches) => batches,
+        Err(_) => {
+            failures.insert("replay.pinned-inputs".to_owned());
+            BTreeSet::new()
+        }
+    };
     let expected_note_map = expected_notes(f);
     for item in selected {
         let Some(row) = expected.get(&item.key) else {
@@ -426,6 +564,51 @@ fn audit(
         }
         if item.note != expected_note_map.get(&item.key).cloned() {
             failures.insert("note.selection-and-chain".into());
+        }
+
+        let document_subject = ProjectedLineageRef::DocumentPut(item.key.clone());
+        let expected_note_ref = f
+            .bindings
+            .iter()
+            .find(|binding| binding.file_id == item.key.file_id)
+            .map(|binding| ProjectedLineageRef::NoteCreate(binding.note_create.clone()));
+        let generated_by_matches = item.document.claims.iter().any(|tag| {
+            if tag.kind != "tag.set"
+                || tag.subject != ProjectedSubject::DocumentPut
+                || tag.name != "atlas.wasGeneratedBy"
+            {
+                return false;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&tag.value) else {
+                return false;
+            };
+            value["batch_id"].as_str() == Some(row.batch_id.as_str())
+                && value["file_id"].as_str() == Some(row.file_id.as_str())
+                && value["version_seq"].as_u64() == Some(row.version_seq)
+                && value["projection_version"].as_str() == Some(PROJECTION_VERSION)
+                && replayed_batches.contains(&row.batch_id)
+        });
+        let specialization_matches = claims.iter().any(|claim| {
+            claim.subject == document_subject
+                && claim.name == "atlas.specializationOf"
+                && matches!(
+                    &claim.value,
+                    ProjectedLineageValue::Specialization { note }
+                        if Some(note) == expected_note_ref.as_ref()
+                )
+        });
+        let lineage_values_are_signer_ready = claims
+            .iter()
+            .filter(|claim| claim.subject == document_subject)
+            .all(|claim| claim.value_json(|_| Some("0".repeat(64))).is_ok());
+        let expected_note_matches = item.note == expected_note_map.get(&item.key).cloned();
+        if item.document.kind != "document.put"
+            || !generated_by_matches
+            || !specialization_matches
+            || !lineage_values_are_signer_ready
+            || !expected_note_matches
+        {
+            failures.insert("publication.complete-unit".into());
         }
     }
     if expected_note_map
@@ -502,11 +685,8 @@ fn real_projection_matches_fixture_oracle_and_permutations() {
         "fixture oracle mismatch: {}",
         report.summary()
     );
-    assert!(
-        report
-            .summary()
-            .contains("pending: signed complete-unit §6.4, pinned replay §6.1 (#11182/#11184)")
-    );
+    assert!(report.summary().contains("replay.pinned-inputs=PASS"));
+    assert!(report.summary().contains("publication.complete-unit=PASS"));
 
     let mut reversed = Fixture {
         values: f.values.clone(),
@@ -683,6 +863,43 @@ fn audit_reports_hash_claim_lineage_and_note_tampering() {
         )
         .has("note.selection-and-chain"),
         "oracle: head flags and selected-version content/ref chain"
+    );
+}
+
+#[test]
+fn audit_reports_pinned_replay_and_complete_unit_properties() {
+    // Oracle: the fixture audit advertises both remaining design properties
+    // independently, rather than silently treating its already-implemented
+    // correction/retirement checks as the whole conformance suite.
+    let f = fixture();
+    let actual = project_fixture(&f);
+    let report = audit_actual(&f, &actual);
+    let summary = report.summary();
+    assert!(
+        summary.contains("replay.pinned-inputs=PASS"),
+        "the report includes pinned replay status: {summary}"
+    );
+    assert!(
+        summary.contains("publication.complete-unit=PASS"),
+        "the report includes complete-unit status: {summary}"
+    );
+}
+
+#[test]
+fn audit_reports_incomplete_publication_units() {
+    // Oracle: removing the fixture-derived batch link from one version makes
+    // that version's document/relation group incomplete even if other rows pass.
+    let f = fixture();
+    let mut actual = project_fixture(&f);
+    actual.selected[0]
+        .document
+        .claims
+        .retain(|claim| claim.name != "atlas.wasGeneratedBy");
+    let report = audit_actual(&f, &actual);
+    assert!(
+        report.has("publication.complete-unit"),
+        "missing unit component is reported by name: {}",
+        report.summary()
     );
 }
 

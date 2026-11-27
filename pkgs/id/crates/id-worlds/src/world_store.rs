@@ -836,10 +836,12 @@ impl ModuleDir {
 
     /// Durably store `wasm` and return its hash. Writes to a temporary file
     /// and renames, so a crash never leaves a partial module under its hash.
+    /// The directory entry is synced before returning: a crash after `Ok`
+    /// never leaves *no* module under a hash the journal references.
     ///
     /// # Errors
     ///
-    /// I/O failures.
+    /// I/O failures, including a directory-sync failure.
     pub fn save(&self, wasm: &[u8]) -> Result<String> {
         let hash = module_hash(wasm);
         let path = self.path(&hash)?;
@@ -855,9 +857,15 @@ impl ModuleDir {
             file.sync_all()?;
         }
         std::fs::rename(&tmp, &path)?;
-        if let Ok(dir) = File::open(&self.dir) {
-            let _ = dir.sync_all();
-        }
+        // The rename is not durable until the directory entry is synced: a
+        // crash in between would leave the journal referencing a hash with
+        // no module behind it. Sibling paths (journal compaction, partition
+        // metadata) treat this as fatal; do the same here instead of
+        // recording an install that may not survive a crash.
+        File::open(&self.dir)
+            .with_context(|| format!("open {} for sync", self.dir.display()))?
+            .sync_all()
+            .with_context(|| format!("sync {}", self.dir.display()))?;
         Ok(hash)
     }
 
@@ -1625,6 +1633,11 @@ async fn populate_template_world(
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     {
         let (mut journal, _) = FileJournal::open(&dir.join("journal.jsonl"), &import.world_id)?;
+        if !import.roles.is_empty() {
+            journal.append(&JournalEntry::TemplateRolesSet {
+                roles: import.roles.clone(),
+            })?;
+        }
         for (key, value) in &import.state {
             journal.append(&JournalEntry::KvSet {
                 key: key.clone(),
@@ -1928,7 +1941,7 @@ mod tests {
         use super::*;
         use crate::program_bundle::{ProgramBundle, ProgramSpec, export};
         use crate::world_template::{
-            TemplateImport, TemplateSource, export_template, import_template,
+            RoleDefinition, TemplateImport, TemplateSource, export_template, import_template,
         };
         use ed25519_dalek::SigningKey;
         use std::collections::BTreeMap;
@@ -1975,8 +1988,12 @@ mod tests {
             // the bundle's identity and the state survived the install.
             let author = SigningKey::from_bytes(&[51; 32]);
             let bundle = counter(&author);
-            let import =
+            let mut import =
                 template_import(&bundle, &[("layout", "1")], std::slice::from_ref(&bundle));
+            import.roles.push(RoleDefinition {
+                name: "editor".to_owned(),
+                description: "Can edit shared notes".to_owned(),
+            });
             let dir = TempDir::new().unwrap();
             let world = create_world_from_template(
                 dir.path(),
@@ -1992,6 +2009,17 @@ mod tests {
 
             let again = template_source_from_dir(dir.path(), &["layout".to_owned()]).unwrap();
             assert_eq!(again.programs, vec![bundle.identity()]);
+            assert_eq!(
+                again
+                    .roles
+                    .iter()
+                    .map(|role| &role.definition)
+                    .collect::<Vec<_>>(),
+                vec![&RoleDefinition {
+                    name: "editor".to_owned(),
+                    description: "Can edit shared notes".to_owned(),
+                }]
+            );
             assert_eq!(
                 again.state,
                 BTreeMap::from([("layout".to_owned(), "1".to_owned())])
@@ -4620,6 +4648,21 @@ mod tests {
         .unwrap();
         assert!(modules.load(&hash).is_err());
         assert!(modules.load("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn module_dir_save_round_trips_across_handles() {
+        let dir = TempDir::new().unwrap();
+        let modules = ModuleDir::new(dir.path().join("modules"));
+        let wasm = b"\0asm\x01\0\0\0";
+        let hash = modules.save(wasm).unwrap();
+        // A fresh handle over the same directory observes the save. This is
+        // the post-crash restore shape: `Ok(hash)` means the module is
+        // loadable, never a journal reference to a missing file.
+        let reopened = ModuleDir::new(dir.path().join("modules"));
+        assert_eq!(reopened.load(&hash).unwrap(), wasm);
+        // Re-saving an installed module is idempotent.
+        assert_eq!(modules.save(wasm).unwrap(), hash);
     }
 
     #[cfg(feature = "sandbox")]
