@@ -12,6 +12,8 @@ type Env = Record<string, string | undefined>;
 const REPO_STREAMS = ["issues", "prs", "issue_comments", "review_comments", "reviews"] as const;
 type Stream = (typeof REPO_STREAMS)[number];
 
+export type ReconcileMode = "steady_state" | "backfill";
+
 /** Overlap subtracted from the reviews cursor before it bounds the PR
  *  sweep (#9850 round 2): covers the skew between a review's
  *  submitted_at (what the cursor stores) and its PR's updated_at (what
@@ -283,14 +285,15 @@ export async function reconcileRepos(
   db: Client,
   env: Env,
   fetchFn: typeof fetch = fetch,
+  mode: ReconcileMode = "steady_state",
 ): Promise<Record<string, any>> {
   const repos = csv(env);
   if (repos.length === 0) {
-    return { ok: false, error: "PM_REPOS is empty — nothing to reconcile", streams: [] };
+    return { ok: false, mode, error: "PM_REPOS is empty — nothing to reconcile", streams: [] };
   }
   const results: Record<string, any>[] = [];
   const passStarted = Date.now();
-  console.log(`[projector] reconcile pass started repos=${repos.join(",")}`);
+  console.log(`[projector] reconcile pass started mode=${mode} repos=${repos.join(",")}`);
   for (const repo of repos) {
     let auth: GitHubAuth;
     try {
@@ -302,7 +305,7 @@ export async function reconcileRepos(
       continue;
     }
     for (const stream of REPO_STREAMS) {
-      const since = await store.getSyncCursor(db, repo, stream);
+      const since = mode === "backfill" ? null : await store.getSyncCursor(db, repo, stream);
       // Per-stream timing in the journal (#9850): a pass that starts
       // stalling again is visible as a stream line that stops arriving,
       // instead of only as sentinel noise downstream.
@@ -331,12 +334,13 @@ export async function reconcileRepos(
     .map((r) => ({ repo: r.repo, stream: r.stream, error: r.error as string }));
   const partial = results.filter((r) => Array.isArray(r.errors) && r.errors.length > 0).length;
   console.log(
-    `[projector] reconcile pass finished written=${total} failed_streams=${failed.length}/${results.length}` +
+    `[projector] reconcile pass finished mode=${mode} written=${total} failed_streams=${failed.length}/${results.length}` +
       `${partial > 0 ? ` partial_streams=${partial}` : ""} ms=${Date.now() - passStarted}`,
   );
   for (const f of failed) console.log(`[projector] reconcile failed stream ${f.repo} ${f.stream}: ${f.error}`);
   return {
     ok: failed.length === 0,
+    mode,
     written: total,
     streams: results,
     ...(failed.length > 0 ? { failed } : {}),

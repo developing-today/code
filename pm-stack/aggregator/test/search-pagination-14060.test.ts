@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { GhItem, Provenance, ProvenanceDetail, RefKey } from "../src/model.ts";
+import type { GhItem, Provenance, ProvenanceDetail, RefKey, SessionRecord } from "../src/model.ts";
 import { renderSearch } from "../src/render.ts";
 import {
   paginateSearchResults,
   parseSearchPagination,
+  registrySearchRefs,
+  searchWork,
   SEARCH_DEFAULT_LIMIT,
   SEARCH_MAX_LIMIT,
   type SearchResult,
@@ -75,5 +77,88 @@ describe("renderSearch bounded page (#14060)", () => {
     const html = renderSearch("fleet", results.slice(0, 50), new Map<RefKey, GhItem>(), provenance, detail, 320);
     expect(html).toContain("320 results for");
     expect(html).toContain("Showing the first 50");
+  });
+});
+
+describe("search registry candidate bound (#15785)", () => {
+  test("repeated queries over a large registry visit only matching candidates", () => {
+    const recordCount = 28_479;
+    const matchingIds = [137, 9_001, 24_101];
+    const registry: SessionRecord[] = Array.from({ length: recordCount }, (_, i) => ({
+      id: matchingIds.includes(i) ? `needle-session-${i}` : `session-${i}`,
+      source: "opencode-sandbox",
+      label: matchingIds.includes(i) ? `needle result ${i}` : `ordinary session ${i}`,
+      title: `session title ${i}`,
+      agentId: "opencode",
+      agentLabel: "OpenCode",
+      parentId: null,
+      status: "completed",
+      model: "fixture-model",
+      directory: `/workspace/session-${i}`,
+      taskRefs: [],
+    }));
+    // The first call builds any snapshot-level search data. The next
+    // query must use that data instead of walking all 28,479 records.
+    const expected = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
+    expect(expected.map((result) => result.id)).toEqual(matchingIds.map((i) => `needle-session-${i}`));
+
+    let visited = 0;
+    const originalIterator = registry[Symbol.iterator].bind(registry);
+    Object.defineProperty(registry, Symbol.iterator, {
+      configurable: true,
+      value: function* () {
+        for (const record of originalIterator()) {
+          visited++;
+          yield record;
+        }
+      },
+    });
+
+    const actual = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
+    expect(actual).toEqual(expected);
+    expect(visited).toBeLessThanOrEqual(64);
+  });
+
+  test("indexed results equal the full-scan oracle across generated field values", () => {
+    const terms = ["fleet search", "ordinary", "unicode 🛰 record", "registry", "dashboard"];
+    const registry: SessionRecord[] = Array.from({ length: 256 }, (_, i) => ({
+      id: `session-${i}`,
+      source: "opencode-sandbox",
+      label: `${terms[i % terms.length]} label ${i}`,
+      title: i % 3 === 0 ? `Fleet task ${i}` : `title ${i}`,
+      agentId: i % 2 === 0 ? "opencode:main" : "opencode:subagent",
+      agentLabel: "OpenCode",
+      parentId: null,
+      status: i % 4 === 0 ? "in-progress" : "complete",
+      model: i % 5 === 0 ? "gpt-fleet-model" : "other-model",
+      directory: `/workspace/${terms[(i + 2) % terms.length]}/${i}`,
+      taskRefs: i % 7 === 0 ? [`developing-today/code#${i}`] : [],
+    }));
+    const queries = ["fleet", "opencode:sub", "code#", "🛰", "in-progress", "missing"];
+    expect(registrySearchRefs(registry)).toEqual([...new Set(registry.flatMap((record) => record.taskRefs))]);
+    const reference = (query: string) =>
+      registry
+        .filter((record) =>
+          [
+            record.id,
+            record.label,
+            record.title,
+            record.agentId,
+            record.agentLabel,
+            record.status,
+            record.model,
+            record.directory,
+            ...record.taskRefs,
+          ].some((value) => typeof value === "string" && value.toLowerCase().includes(query)),
+        )
+        .map((record) => record.id);
+
+    for (const rawQuery of queries) {
+      const query = rawQuery.trim().toLowerCase();
+      const actual = searchWork([], [], new Map<RefKey, GhItem>(), rawQuery, { registry })
+        .filter((result) => result.kind === "registry")
+        .map((result) => result.id);
+      expect(actual).toEqual(reference(query));
+    }
   });
 });
