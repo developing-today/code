@@ -1260,8 +1260,9 @@ in
   # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
-      After = [ "network-online.target" ];
+      After = [ "network-online.target" "mcpx.socket" ];
       Wants = [ "network-online.target" ];
+      Requires = [ "mcpx.socket" ];
       # A switch must not restart the daemon: that would end every
       # pooled MCP child. mcpxDeploy below hands a changed daemon
       # over instead.
@@ -1275,6 +1276,18 @@ in
     };
   };
 
+  # Keep mcpx's loopback TCP listener in systemd across service restarts.
+  # The Unix socket remains daemon-owned; LISTEN_FDS supplies only the
+  # configured TCP endpoint (127.0.0.1:34005) to the Go listener.
+  systemd.user.sockets.mcpx = {
+    Unit.Description = "mcpx daemon TCP listener (socket-activated)";
+    Socket = {
+      ListenStream = "127.0.0.1:34005";
+      Service = "mcpx.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
+
   # A switch that changes mcpx, its start command or its environment hands the
   # running daemon over, with the MCP children and the listener passed along.
   # The successor is started through the unit's start command, so it runs with
@@ -1286,7 +1299,15 @@ in
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
       if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
         if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
-          run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          if ${pkgs.systemd}/bin/systemctl --user is-enabled --quiet mcpx.socket; then
+            # An in-app upgrade inherits the old listener but not
+            # systemd's LISTEN_FDS marker. Start the socket first and
+            # restart through systemd so the successor receives fd 3.
+            run ${pkgs.systemd}/bin/systemctl --user start mcpx.socket
+            run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          else
+            run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          fi
         else
           run ${pkgs.systemd}/bin/systemctl --user start mcpx.service || true
         fi
