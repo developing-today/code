@@ -36,10 +36,10 @@ class StorageBoundTest(unittest.TestCase):
             "topic_stores": 173_545_247,
             "content_stores": 464_959_914,
         })
-        self.assertEqual(self.result["turso_bytes_freed_if_all_raw_text_is_offloaded"], 1_277_693_028)
+        self.assertEqual(self.result["turso_bytes_freed_if_all_measured_raw_text_is_offloaded"], 1_277_693_028)
 
     def test_r2_storage_upper_bound_rounds_to_billable_gigabytes(self):
-        self.assertEqual(self.result["r2_unique_content_bytes_upper_bound"], 1_277_693_028)
+        self.assertEqual(self.result["r2_unique_content_bytes_upper_bound_if_no_dedup"], 1_277_693_028)
         self.assertEqual(self.result["r2_decimal_gb_upper_bound"], Decimal("1.277693028"))
         self.assertEqual(self.result["r2_billable_gb_months_if_free_tier_exhausted"], Decimal("2"))
         self.assertEqual(self.result["r2_gross_monthly_storage_usd_if_free_tier_exhausted"], Decimal("0.030"))
