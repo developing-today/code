@@ -73,11 +73,14 @@ let
 
   # The search serve role (#5604) consumes atlas-core / atlas-embed /
   # atlas-proto by relative path (../atlas-search/crates/*, untouched),
-  # so the build source is the pkgs/ tree holding both workspaces and
+  # so the build source holds the pkgs/ tree with both workspaces and
   # cargo runs from pkgs/fleet inside it. The fleet Cargo.lock covers
-  # the atlas crates' external dependencies.
+  # the atlas crates' external dependencies. The root is the repo root
+  # (not pkgs/) because fleet-transport's contract test include_str!s
+  # the language-neutral registry at config/transport-adapters/
+  # (code#16152: the check phase compiles lib tests workspace-wide).
   fleetSrc = lib.fileset.toSource {
-    root = ./..;
+    root = ../..;
     fileset = lib.fileset.unions [
       ./.
       ../atlas-search/Cargo.toml
@@ -85,6 +88,9 @@ let
       # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
       # without it the fleet build fails on the missing .sql files.
       ../atlas-search/schema
+      # fleet-transport's registry test include_str!s the shared
+      # language-neutral adapter contract (see above).
+      ../../config/transport-adapters
     ];
   };
 
@@ -205,7 +211,7 @@ let
           inherit pname;
           version = "0.1.0";
           src = fleetSrc;
-          sourceRoot = "${fleetSrc.name}/fleet";
+          sourceRoot = "${fleetSrc.name}/pkgs/fleet";
           # The workspace root is the fleet/ subdir of the source,
           # and so is its lockfile; crane vendors from the lockfile
           # path it is given, not from the source root.
@@ -271,7 +277,7 @@ let
         inherit pname;
         version = "0.1.0";
         src = fleetSrc;
-        sourceRoot = "${fleetSrc.name}/fleet";
+        sourceRoot = "${fleetSrc.name}/pkgs/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
         nativeCheckInputs = checkTools;
@@ -335,7 +341,7 @@ in
     nativeCheckInputs = checkTools;
     version = "0.1.0";
     src = fleetSrc;
-    sourceRoot = "${fleetSrc.name}/fleet";
+    sourceRoot = "${fleetSrc.name}/pkgs/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
