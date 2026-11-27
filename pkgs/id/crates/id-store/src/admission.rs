@@ -245,10 +245,10 @@ pub struct QueuedOperation {
 }
 
 /// The sink prepare hooks request follow-up operations through.
-/// Requests accumulate for the duration of one run and are handed
-/// to the caller in the [`PipelineOutcome`]; the pipeline never
-/// executes a follow-up inline, so hook execution cannot recurse
-/// into admission.
+/// The pipeline records each completed hook's requests in the
+/// operation ledger and hands them to the caller only after the
+/// parent commits; it never executes a follow-up inline, so hook
+/// execution cannot recurse into admission.
 #[derive(Debug, Default)]
 pub struct FollowUpSink {
     queued: Mutex<Vec<QueuedOperation>>,
@@ -396,9 +396,9 @@ pub enum OpState {
 }
 
 /// One operation's ledger record: the envelope binding, the
-/// admission receipt, the annotations so far, and how far the
-/// prepare phase progressed (so a resumed operation continues
-/// the trace instead of restarting it).
+/// admission receipt, annotations and follow-ups requested so
+/// far, and how far prepare progressed (so a resumed operation
+/// continues the trace instead of restarting it).
 #[derive(Debug, Clone)]
 pub struct LedgerEntry {
     /// The envelope this operation ID is bound to.
@@ -407,6 +407,9 @@ pub struct LedgerEntry {
     pub receipt: AdmissionReceipt,
     /// Annotations accumulated by completed prepare hooks.
     pub annotations: Vec<Annotation>,
+    /// Follow-up operations requested by completed prepare hooks.
+    /// These are returned to the caller only after the parent commits.
+    pub follow_ups: Vec<QueuedOperation>,
     /// Index of the next prepare hook to run.
     pub prepare_cursor: usize,
     /// The lifecycle state.
@@ -826,6 +829,7 @@ impl AdmissionPipeline {
                         envelope_id: receipt.envelope_id().clone(),
                         receipt: receipt.clone(),
                         annotations: Vec::new(),
+                        follow_ups: Vec::new(),
                         prepare_cursor: 0,
                         state: OpState::Admitted,
                     },
@@ -835,6 +839,7 @@ impl AdmissionPipeline {
                 envelope_id: receipt.envelope_id().clone(),
                 receipt: receipt.clone(),
                 annotations: Vec::new(),
+                follow_ups: Vec::new(),
                 prepare_cursor: 0,
                 state: OpState::Admitted,
             },
@@ -869,6 +874,7 @@ impl AdmissionPipeline {
                     });
                 }
             }
+            entry.follow_ups.extend(follow_ups.drain());
             entry.prepare_cursor += 1;
             self.ledger.record(operation_id.clone(), entry.clone());
         }
@@ -924,7 +930,7 @@ impl AdmissionPipeline {
             receipt,
             annotations: entry.annotations,
             pending_outbox,
-            follow_ups: follow_ups.drain(),
+            follow_ups: entry.follow_ups,
             policy_epoch,
         })
     }
@@ -1425,15 +1431,10 @@ mod tests {
             let attempts_in_commit = attempts.clone();
             let err = rig
                 .pipeline
-                .run(
-                    op("op-parent-resumable"),
-                    &parent,
-                    &context(),
-                    move |_| {
-                        *attempts_in_commit.lock().unwrap() += 1;
-                        Err("store unavailable".to_string())
-                    },
-                )
+                .run(op("op-parent-resumable"), &parent, &context(), move |_| {
+                    *attempts_in_commit.lock().unwrap() += 1;
+                    Err("store unavailable".to_string())
+                })
                 .unwrap_err();
             assert_eq!(err.class(), "commit_failed");
         }
@@ -1454,10 +1455,17 @@ mod tests {
             panic!("the successful retry commits the parent");
         };
 
-        assert_eq!(*prepare_runs.lock().unwrap(), 1, "retry skips completed hooks");
+        assert_eq!(
+            *prepare_runs.lock().unwrap(),
+            1,
+            "retry skips completed hooks"
+        );
         assert_eq!(follow_ups.len(), 1, "the request is returned exactly once");
         assert_eq!(follow_ups[0].operation_id, op("op-child-resumable"));
-        assert_eq!(follow_ups[0].envelope, child, "return the original child envelope");
+        assert_eq!(
+            follow_ups[0].envelope, child,
+            "return the original child envelope"
+        );
         assert!(
             rig.ledger.entry(&op("op-child-resumable")).is_none(),
             "a follow-up is returned to the caller and never executed inline"
