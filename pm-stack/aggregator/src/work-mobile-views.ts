@@ -14,9 +14,10 @@
 // them (see the record section 9 gates and section 10 non-goals):
 // - The record names the input `PmWorkView`; that type does not exist.
 //   The input here is the actual MOB-01 export `WorkView`.
-// - `recent` / `cold_backlog` need the issue `updated_at`, which
-//   `WorkView` does not carry: both views return `unavailable` with
-//   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
+// - `recent` / `cold_backlog` use the `github_updated_at` fact MOB-01
+//   carries (F1 landed): rows with a usable timestamp are in or out,
+//   rows without one are `undecided`, and the view is `unavailable`
+//   only when no row carries the dimension at all.
 // - `needs_triage` needs issue labels, which `WorkView` does not carry:
 //   `unavailable` until MOB-01 carries them (follow-up F2).
 // - `triage` needs Area/Horizon beside Project Status; `WorkView`
@@ -24,9 +25,9 @@
 //   with `policy_undefined` (follow-up F3).
 // - `blocking` / `critical_path` wait on MOB-08 relations (record gate
 //   4): every row is `undecided` with `policy_undefined` (F4).
-// - D5 orders by column, then `updated_at` descending; `updated_at` is
-//   not in `WorkView`, so V1 orders by column, then
-//   `(authority_id, work_id)` (F1 covers the missing key).
+// - D5 orders by column, then `github_updated_at` descending (F1),
+//   then `(authority_id, work_id)`; rows without a usable timestamp
+//   sort after dated rows in the same column.
 // - `groupWorkViews` (by `repo` / `project` / `owner`) and
 //   `matchesSavedFilters` (record D1, D4, D6) are slice 2 in this
 //   same module below. `repo` groups by the primary source ref's
@@ -38,9 +39,10 @@
 // them (see the record section 9 gates and section 10 non-goals):
 // - The record names the input `PmWorkView`; that type does not exist.
 //   The input here is the actual MOB-01 export `WorkView`.
-// - `recent` / `cold_backlog` need the issue `updated_at`, which
-//   `WorkView` does not carry: both views return `unavailable` with
-//   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
+// - `recent` / `cold_backlog` use the `github_updated_at` fact MOB-01
+//   carries (F1 landed): rows with a usable timestamp are in or out,
+//   rows without one are `undecided`, and the view is `unavailable`
+//   only when no row carries the dimension at all.
 // - `needs_triage` needs issue labels, which `WorkView` does not carry:
 //   `unavailable` until MOB-01 carries them (follow-up F2).
 // - `triage` needs Area/Horizon beside Project Status; `WorkView`
@@ -48,9 +50,9 @@
 //   with `policy_undefined` (follow-up F3).
 // - `blocking` / `critical_path` wait on MOB-08 relations (record gate
 //   4): every row is `undecided` with `policy_undefined` (F4).
-// - D5 orders by column, then `updated_at` descending; `updated_at` is
-//   not in `WorkView`, so V1 orders by column, then
-//   `(authority_id, work_id)` (F1 covers the missing key).
+// - D5 orders by column, then `github_updated_at` descending (F1),
+//   then `(authority_id, work_id)`; rows without a usable timestamp
+//   sort after dated rows in the same column.
 // - `groupWorkViews` by `repo`/`project` and `matchesSavedFilters`
 //   are slice 2 below. `owner` grouping stays a single "Unknown author"
 //   bucket: `WorkView` carries no author fact (follow-up F5; the
@@ -167,6 +169,49 @@ const compareKeys = (a: WorkKey, b: WorkKey): number =>
           ? 1
           : 0;
 
+/** F1: read the carried github_updated_at as epoch ms, or say why it is unusable. */
+const updatedAtOf = (view: WorkView): { ok: true; ms: number } | { ok: false; state: UndecidedState } => {
+  const fact = view.facts.github_updated_at;
+  if (!fact || !("value" in fact)) {
+    const st = factState(fact);
+    return { ok: false, state: (st === "present" ? "absent" : st) as UndecidedState };
+  }
+  const st = factState(fact);
+  if (st !== "present") return { ok: false, state: st as UndecidedState };
+  const ms = Date.parse(fact.value);
+  if (Number.isNaN(ms)) return { ok: false, state: "invalid" };
+  return { ok: true, ms };
+};
+
+/** D5: column order, then updated_at descending (F1), then key. Rows
+ *  without a usable timestamp sort after dated rows in the same column. */
+const orderRefs = (
+  refs: WorkKey[],
+  rank: Map<string, number>,
+  recency: Map<string, number>,
+): void => {
+  refs.sort((a, b) => {
+    const ka = a.authority_id + "|" + a.work_id;
+    const kb = b.authority_id + "|" + b.work_id;
+    const ra = rank.get(ka) ?? 8;
+    const rb = rank.get(kb) ?? 8;
+    if (ra !== rb) return ra - rb;
+    const ta = recency.get(ka) ?? Number.NEGATIVE_INFINITY;
+    const tb = recency.get(kb) ?? Number.NEGATIVE_INFINITY;
+    if (ta !== tb) return tb - ta;
+    return compareKeys(a, b);
+  });
+};
+
+const recencyOf = (views: readonly WorkView[]): Map<string, number> => {
+  const recency = new Map<string, number>();
+  for (const view of views) {
+    const ts = updatedAtOf(view);
+    recency.set(keyOf(view), ts.ok ? ts.ms : Number.NEGATIVE_INFINITY);
+  }
+  return recency;
+};
+
 export function mobileView(
   views: readonly WorkView[],
   id: MobileViewId,
@@ -204,7 +249,9 @@ export function mobileView(
 
   // Views whose deciding dimension is absent from the V1 read model.
   if (id === "needs_triage") return { ...unavailable("github.labels"), undecided };
-  if (id === "recent" || id === "cold_backlog") return { ...unavailable("github.updated_at"), undecided };
+  // F1 landed: recent/cold_backlog are decided per row below from the
+  // carried github_updated_at fact. The view is unavailable only when no
+  // row carries the dimension at all (D2 pattern, as for claims).
 
   // Claim-gated views need a viewer, and need at least one row that
   // carries live claim data; otherwise the page must say claims are
@@ -216,6 +263,16 @@ export function mobileView(
     const anyClaim = known.some((v) => "value" in v.facts.claim);
     if (!anyClaim) {
       return { id, refs, undecided, unavailable: { reason: "fact_not_sourced", fact: "claim" }, freshness: "absent" };
+    }
+  }
+
+  // F1: recent/cold_backlog need at least one row with a usable
+  // timestamp; otherwise the page must say the dimension is not
+  // connected, never render an empty list.
+  if (id === "recent" || id === "cold_backlog") {
+    const anyTs = known.some((v) => updatedAtOf(v).ok);
+    if (!anyTs) {
+      return { id, refs, undecided, unavailable: { reason: "fact_not_sourced", fact: "github.updated_at" }, freshness: "absent" };
     }
   }
 
@@ -290,24 +347,37 @@ export function mobileView(
         }
         break;
       }
-      case "needs_triage":
       case "recent":
-      case "cold_backlog":
-        // Handled by the view-level `unavailable` above.
+      case "cold_backlog": {
+        // F1: decidable now that MOB-01 carries github_updated_at. A row
+        // whose timestamp is missing or unusable is undecided (D3); a
+        // row with a usable timestamp is in or out, never undecided.
+        const ts = updatedAtOf(view);
+        if (!ts.ok) {
+          hold("github.updated_at", ts.state);
+          break;
+        }
+        const nowMs = Date.parse(ctx.now);
+        if (id === "recent") {
+          if (nowMs - ts.ms <= Number(ctx.recent_window_ms)) refs.push(ref);
+        } else if (column === "Backlog" && nowMs - ts.ms > Number(ctx.cold_after_ms)) {
+          refs.push(ref);
+        }
+        break;
+      }
+      case "needs_triage":
+        // Labels are still not carried by pm_work_view/v1 (F2).
         break;
     }
   }
 
-  // D5: column order, then (authority_id, work_id).
+  // D5: column order, then updated_at descending (F1), then key.
   const rank = new Map<string, number>();
   for (const view of known) {
     rank.set(keyOf(view), COLUMN_ORDER[view.projection.column] ?? 8);
   }
-  refs.sort((a, b) => {
-    const ra = rank.get(a.authority_id + "|" + a.work_id) ?? 8;
-    const rb = rank.get(b.authority_id + "|" + b.work_id) ?? 8;
-    return ra - rb || compareKeys(a, b);
-  });
+  const recency = recencyOf(known);
+  orderRefs(refs, rank, recency);
   undecided.sort((a, b) => compareKeys(a.ref, b.ref));
 
   // Freshness is the worst facet state over placed and unplaced rows
@@ -360,16 +430,6 @@ export interface WorkGroup {
 
 const columnRankOf = (view: WorkView): number => COLUMN_ORDER[view.projection.column] ?? 8;
 
-const compareGroupRefs = (
-  a: WorkKey,
-  b: WorkKey,
-  rank: Map<string, number>,
-): number => {
-  const ra = rank.get(a.authority_id + "|" + a.work_id) ?? 8;
-  const rb = rank.get(b.authority_id + "|" + b.work_id) ?? 8;
-  return ra - rb || compareKeys(a, b);
-};
-
 export function groupWorkViews(views: readonly WorkView[], by: GroupBy): WorkGroup[] {
   // Same input validation as `mobileView`: a repeated work key is a
   // validation error, never silently merged (record negative case).
@@ -388,6 +448,7 @@ export function groupWorkViews(views: readonly WorkView[], by: GroupBy): WorkGro
   for (const view of views) {
     rank.set(keyOf(view), columnRankOf(view));
   }
+  const recency = recencyOf(views);
 
   const buckets = new Map<string, WorkGroup>();
   for (const view of views) {
@@ -420,7 +481,7 @@ export function groupWorkViews(views: readonly WorkView[], by: GroupBy): WorkGro
 
   const groups = [...buckets.values()];
   for (const group of groups) {
-    group.refs.sort((a, b) => compareGroupRefs(a, b, rank));
+    orderRefs(group.refs, rank, recency);
   }
   groups.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   return groups;

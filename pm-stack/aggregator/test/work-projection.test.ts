@@ -38,6 +38,26 @@ describe("pm_work_view/v1 golden shape and provenance", () => {
     expect(view.facts.effective_pressure.state).toBe("not_yet_defined_by_9200");
   });
 
+  test("github_updated_at_is_carried_as_a_fact_with_provenance", () => {
+    // MOB-01 F1 (#9468 follow-up): the issue/PR updated_at rides the
+    // read model so MOB-03 recent/cold_backlog are decidable.
+    const view = projectWorkView({
+      ...base,
+      github_updated_at: { value: GEN, source: "github", revision: "sha-2", observed_at: GEN },
+    });
+    expect(view.facts.github_updated_at).toMatchObject({ value: GEN, source: "github", revision: "sha-2" });
+    expect(view.freshness.facets.github_updated_at).toBe("live");
+    // Absent stays absent, never zero or epoch.
+    const absent = projectWorkView(base);
+    expect(absent.facts.github_updated_at).toEqual({ state: "absent", freshness: "absent" });
+    // Stale is carried, never zeroed.
+    const stale = projectWorkView({
+      ...base,
+      github_updated_at: { value: GEN, source: "github", freshness: "stale" },
+    });
+    expect(stale.facts.github_updated_at).toMatchObject({ value: GEN, freshness: "stale" });
+  });
+
   test("stale_and_error_facts_are_not_zeroed", () => {
     const stale = projectWorkView({
       ...base,

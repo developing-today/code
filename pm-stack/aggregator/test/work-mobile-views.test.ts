@@ -171,6 +171,8 @@ describe("work_mobile_views/v1 pure filter", () => {
       reason: "fact_not_sourced",
       fact: "github.labels",
     });
+    // No row carries updated_at at all: the page must say the dimension
+    // is not connected, never render an empty list.
     expect(mobileView(views, "recent", CTX).unavailable).toEqual({
       reason: "fact_not_sourced",
       fact: "github.updated_at",
@@ -179,6 +181,51 @@ describe("work_mobile_views/v1 pure filter", () => {
       reason: "fact_not_sourced",
       fact: "github.updated_at",
     });
+  });
+
+  test("work_mobile_views_recent_places_rows_updated_inside_the_window", () => {
+    // MOB-01 F1: recent is decidable once the read model carries updated_at.
+    const stamped = (id: string, updated_at: string): WorkView =>
+      base(id, { github_updated_at: { value: updated_at, source: "github", observed_at: GEN } });
+    const fresh = stamped("f1", "2026-11-26T11:00:00Z");
+    const old = stamped("o1", "2026-11-20T12:00:00Z");
+    const noTs = backlog("b1");
+    const got = mobileView([fresh, old, noTs], "recent", CTX);
+    expect(got.unavailable).toBeNull();
+    // Fresh is in; merely old is decidably out (excluded, not undecided);
+    // a row with no timestamp cannot be placed (D3).
+    expect(got.refs.map((r) => r.work_id)).toEqual(["f1"]);
+    expect(got.undecided).toEqual([
+      { ref: { authority_id: "fleet-authority", work_id: "b1" }, deciding_fact: "github.updated_at", state: "absent" },
+    ]);
+  });
+
+  test("work_mobile_views_cold_backlog_needs_backlog_column_and_age", () => {
+    const stamped = (id: string, updated_at: string, rest: Partial<WorkProjectionInput> = {}): WorkView =>
+      base(id, { github_updated_at: { value: updated_at, source: "github", observed_at: GEN }, ...rest });
+    const cold = stamped("c1", "2026-10-20T12:00:00Z");
+    const warmBacklog = stamped("w1", "2026-11-26T11:00:00Z");
+    const coldReady = stamped("r1", "2026-10-20T12:00:00Z", { queue: { eligible: true, explicitly_prepared: true } });
+    const noTs = backlog("b1");
+    const got = mobileView([cold, warmBacklog, coldReady, noTs], "cold_backlog", CTX);
+    expect(got.unavailable).toBeNull();
+    // Only the aged backlog row qualifies; warm backlog and cold-but-Ready
+    // are decidably out; the undated backlog row cannot be placed (D3).
+    expect(got.refs.map((r) => r.work_id)).toEqual(["c1"]);
+    expect(got.undecided).toEqual([
+      { ref: { authority_id: "fleet-authority", work_id: "b1" }, deciding_fact: "github.updated_at", state: "absent" },
+    ]);
+  });
+
+  test("work_mobile_views_d5_orders_same_column_by_updated_at_descending", () => {
+    const stamped = (id: string, updated_at: string): WorkView =>
+      base(id, { github_updated_at: { value: updated_at, source: "github", observed_at: GEN } });
+    const newer = stamped("n1", "2026-11-26T11:00:00Z");
+    const older = stamped("o1", "2026-11-20T12:00:00Z");
+    const undated = backlog("b1");
+    // All three project Backlog: D5 breaks the tie by recency, undated last.
+    const got = mobileView([older, undated, newer], "all", CTX);
+    expect(got.refs.map((r) => r.work_id)).toEqual(["n1", "o1", "b1"]);
   });
 });
 
