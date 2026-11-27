@@ -41,7 +41,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   format   convert | verify
   inventory list | show | search | audit
   key      generate | inspect
-  publish  plan | verify (apply | status deferred, production-gated)
+  publish  plan | apply --bundle <dir> --staging-dir <dir> | verify (status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
@@ -1542,7 +1542,28 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let code = emit(json_out, text, value);
             Ok(if report.valid { code } else { 1 })
         }
-        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+        "apply" => {
+            let p = parse_args(rest, &["bundle", "staging-dir"], &["json"])?;
+            let bundle = p
+                .get("bundle")
+                .map(PathBuf::from)
+                .or_else(|| p.positional(0).map(PathBuf::from))
+                .ok_or_else(|| CertError::usage("publish apply needs --bundle <dir>"))?;
+            let staging = p.get("staging-dir").map(PathBuf::from).ok_or_else(|| {
+                CertError::usage("publish apply requires --staging-dir <local-dir>")
+            })?;
+            let report = crate::publish::apply_staging(&bundle, &staging)?;
+            let text = format!(
+                "Publish staging apply: {} -> {}\\n  wrote {} public artifacts\\n",
+                report.bundle,
+                report.staging_dir,
+                report.written.len()
+            );
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            Ok(emit(json_out, text, value))
+        }
+        "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
             Err(CertError::policy(format!(
                 "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
                  slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
@@ -2617,8 +2638,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish apply/status",
-        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
+        "publish status",
+        "live AIA/CDP publication status (production-gated; local staging apply is supported)",
     ),
     (
         "key import/export/escrow/restore/rotate",
@@ -2747,7 +2768,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only, apply to local staging), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2755,7 +2776,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/apply-staging/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
