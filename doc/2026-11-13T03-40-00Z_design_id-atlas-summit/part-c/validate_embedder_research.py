@@ -50,7 +50,8 @@ def validate(report, directory):
     """
     shape(report, 'schema issue slice current_model owner_decision independent_recall_run '
           'second_embedder_enabled corpus_sha256 eval_set_sha256 quality_artifact sources candidates', 'report')
-    require(report['schema'] == 'atlas-embedder-research/v1' and report['issue'] == 10157
+    require(report['schema'] == 'atlas-embedder-research/v1'
+            and type(report['issue']) is int and report['issue'] == 10157
             and report['slice'] == 'C9138-01', 'wrong research identity')
     require(report['current_model'] == 'Snowflake arctic-embed-m-v2.0', 'current model substitution')
     require(report['independent_recall_run'] is False and report['second_embedder_enabled'] is False,
@@ -104,7 +105,8 @@ def validate(report, directory):
     data = path.read_bytes()
     require(hashlib.sha256(data).hexdigest() == artifact['sha256'], 'artifact byte digest mismatch')
     metadata = json.loads(data)
-    require(isinstance(metadata, dict) and metadata.get('owner_issue') == 9092, 'wrong artifact owner')
+    require(isinstance(metadata, dict) and type(metadata.get('owner_issue')) is int
+            and metadata.get('owner_issue') == 9092, 'wrong artifact owner')
     for key in ('corpus_sha256', 'eval_set_sha256'):
         require(metadata.get(key) == report[key], f'artifact {key} mismatch')
 

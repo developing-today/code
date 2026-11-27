@@ -41,6 +41,25 @@ class ResearchMatrixTests(unittest.TestCase):
     def check_report(self, report):
         VALIDATOR.validate(report, HERE)
 
+    def test_committed_report_conforms(self):
+        self.check_report(json.loads((HERE / 'embedder-candidates-research-report.json').read_text()))
+
+    def test_issue_id_types_are_not_coerced(self):
+        report = fixture()
+        report['issue'] = 10157.0
+        with self.assertRaises(ValueError):
+            self.check_report(report)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'owner.json'
+            owner = {'owner_issue': 9092.0, 'corpus_sha256': 'a' * 64, 'eval_set_sha256': 'b' * 64}
+            path.write_text(json.dumps(owner))
+            report = fixture()
+            report.update({k: owner[k] for k in ('corpus_sha256', 'eval_set_sha256')})
+            report['quality_artifact'] = {'path': 'owner.json', 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                                          'owner_ref': 'https://github.com/developing-today/code/issues/9092'}
+            with self.assertRaises(ValueError):
+                VALIDATOR.validate(report, Path(directory))
+
     def test_valid_and_all_candidate_permutations(self):
         # Property oracle: coverage is an unordered set of exactly five identities.
         for names in itertools.permutations(NAMES):
@@ -104,6 +123,32 @@ class ResearchMatrixTests(unittest.TestCase):
             path.write_text('{}')
             with self.assertRaises(ValueError):
                 VALIDATOR.validate(report, Path(directory))
+
+    def test_absence_and_citation_invariants(self):
+        for key, value in [('corpus_sha256', 'a' * 64), ('eval_set_sha256', 'b' * 64),
+                           ('sources', []), ('candidates', None)]:
+            report = fixture()
+            report[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.check_report(report)
+        for key, value in [('url', 'http://huggingface.co/BAAI/bge-m3'),
+                           ('url', 'https://example.com/fake'), ('retrieved', 'not-a-date')]:
+            report = fixture()
+            report['sources'][0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                self.check_report(report)
+
+    def test_cli_equals_and_space_forms_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'report.json'
+            path.write_text(json.dumps(fixture()))
+            outputs = []
+            for args in (['--input', str(path)], [f'--input={path}']):
+                result = subprocess.run([sys.executable, '-I', str(HERE / 'validate_embedder_research.py'), *args],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outputs.append(result.stdout)
+            self.assertEqual(*outputs)
 
     def test_malformed_shapes_are_controlled_errors(self):
         for report in (None, [], {}, {'candidates': None}):
