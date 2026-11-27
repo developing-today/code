@@ -1134,6 +1134,225 @@ mod tests {
         assert_eq!(out["dedupe_match"], json!(null), "{out}");
     }
 
+    /// A content-routed stub of the Turso pipeline endpoint for
+    /// the #16006 oracle (the stub_pipeline_routed_13091 pattern):
+    /// each request is answered by the first route whose needle
+    /// appears in its body; unmatched requests get a bare ok
+    /// execute reply. Every request body is captured for the
+    /// release-shape assertions. Routing (not position) keeps the
+    /// oracle independent of the sweeper's exact call order.
+    fn stub_pipeline_routed_16006(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let routes = std::sync::Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { break };
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if reader.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = String::from_utf8_lossy(&body).to_string();
+                sink.lock().unwrap().push(body.clone());
+                let resp = routes
+                    .iter()
+                    .find(|(needle, _)| body.contains(needle))
+                    .map(|(_, reply)| reply.clone())
+                    .unwrap_or_else(|| {
+                        json!({"results": [
+                            {"type": "ok", "response": {"type": "execute", "result": {
+                                "cols": [], "rows": [],
+                                "affected_row_count": 0,
+                                "last_insert_rowid": null}}},
+                            {"type": "ok", "response": {"type": "close"}}
+                        ]})
+                        .to_string()
+                    });
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
+                if sock.write_all(out.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// One parked task row in TASK_COLS order with a broker-owned
+    /// ready condition, for the #16006 sweeper oracle. Cells are
+    /// keyed by column name like task_row_13091 so a TASK_COLS
+    /// addition cannot silently shift the row.
+    fn parked_row_16006(id: i64, condition: &Value) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text("{}"));
+        cells.insert(
+            "dedupe_key",
+            text("repo-health:v1:fix:developing-today/code:issue:16006"),
+        );
+        cells.insert("priority", int(30));
+        cells.insert("status", text("parked"));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("park_kind", text("condition"));
+        cells.insert("wait_kind", text("condition"));
+        cells.insert("ready_condition", text(&condition.to_string()));
+        cells.insert("last_checked_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-20T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
+    }
+
+    fn status_reply_16006(status: &str) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "status"}],
+                "rows": [[{"type": "text", "value": status}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    fn count_reply_16006(n: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "n"}],
+                "rows": [[{"type": "integer", "value": n.to_string()}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    #[test]
+    fn default_sweep_releases_satisfied_condition_parks_16006() {
+        // #16006 oracle (P1 review finding on #13143): the default
+        // scheduled path — /sweep with revalidate and NO
+        // observe_only flag — releases satisfied broker-condition
+        // parks, keeps an unsatisfied one parked, and never releases
+        // a person_answer park (that waits for /wake). The pick
+        // exclusion (#13143) strands these rows without this path.
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        // Sweeper call routing: target-status reads answer per
+        // task id (100 done, 200 still queued), the wake-event count
+        // is seen, and every write gets a bare ok.
+        let (url, captured) = stub_pipeline_routed_16006(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // No observe_only key: the request exercises the broker
+        // default, which #16006 flips to mutating.
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(out["row"]["observe_only"], false, "{out}");
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        assert_eq!(rev["would_release"], 0, "{out}");
+        // Exactly the two satisfied rows release to queued (401:
+        // terminal task done; 403: wake event seen); the
+        // unsatisfied task_status (402) and the person_answer park
+        // (404) only get their check stamps and stay parked.
+        let bodies = captured.lock().unwrap();
+        let updates: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("UPDATE tasks SET"))
+            .collect();
+        assert_eq!(updates.len(), 4, "{bodies:?}");
+        let releases: Vec<&&String> = updates
+            .iter()
+            .filter(|b| b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(releases.len(), 2, "{bodies:?}");
+        for r in &releases {
+            let v: Value = serde_json::from_str(r).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "401" || id["value"] == "403",
+                "only the satisfied parks release: {r}"
+            );
+        }
+        let stamps: Vec<&&String> = updates
+            .iter()
+            .filter(|b| !b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(stamps.len(), 2, "{bodies:?}");
+        for s in &stamps {
+            let v: Value = serde_json::from_str(s).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "402" || id["value"] == "404",
+                "only the unsatisfied/person parks stamp: {s}"
+            );
+        }
+    }
+
     #[test]
     fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
         // The parked half, at the exact SQL the serve path runs:

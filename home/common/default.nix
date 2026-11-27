@@ -1015,19 +1015,21 @@ in
     };
     Service = {
       Type = "oneshot";
-      # The revalidator lands in observe-only mode (C3,
-      # doc/fleet/agent-events-turso.md): it logs would-releases
-      # without mutating tasks. Flip it live by writing "enabled" to
-      # ~/.config/queue-broker/revalidator-mode once the first daily
-      # observe cycle has been reviewed on #6803.
+      # The revalidator runs mutating by default (#16006): the
+      # broker releases satisfied task_terminal / task_status /
+      # event_seen parks, so the #13143 pick exclusion no longer
+      # strands them. Person-answer parks stay parked for /wake
+      # either way. Write "observe" to
+      # ~/.config/queue-broker/revalidator-mode for a dry run
+      # (logs would-releases without mutating tasks).
       ExecStart = toString (
         pkgs.writeShellScript "fleet-queue-sweeper" ''
           token="$(cat "$HOME/.config/queue-broker/token")"
-          mode="observe"
+          mode="enabled"
           if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
             mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
           fi
-          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
+          if [ "$mode" = "observe" ]; then obs=true; else obs=false; fi
           ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
             -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
             -d '{"prune":true,"keep_days":30}'

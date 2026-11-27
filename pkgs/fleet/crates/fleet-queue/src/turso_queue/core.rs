@@ -2041,8 +2041,10 @@ pub(crate) fn revalidate_outcome(
 ///
 /// observe_only (the C3 landing mode, agent-events-turso.md):
 /// outcomes are computed and logged (releases as would_release)
-/// but no task row is mutated, so the first enabled run re-checks
-/// the same population.
+/// but no task row is mutated. Pass observe_only=true for a dry
+/// run; the default scheduled path runs mutating (#16006), so the
+/// first mutating run re-checks the same population the observe
+/// cycles logged.
 pub(crate) fn revalidate_parked(
     t: &TursoBackend,
     min_age_seconds: i64,
@@ -2210,15 +2212,17 @@ pub(crate) fn revalidate_parked(
 /// by systemd timers POSTing here. Parts are opt-in per call except
 /// expire, which defaults on: the minutely timer sends
 /// {"expire": true} alone, the daily timer adds prune + revalidate.
-/// observe_only defaults true (C3): releases must be opted into by
-/// passing observe_only=false. A summary event is appended only
+/// observe_only defaults false (#16006): the default scheduled path
+/// releases satisfied broker-condition parks; pass observe_only=true
+/// explicitly for a dry run (the C3 landing mode is kept as that
+/// opt-in). A summary event is appended only
 /// when the cycle changed something or ran the daily parts, so the
 /// minutely expire stays silent while it has nothing to expire.
 pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
     let do_expire = req_bool(req, "expire").unwrap_or(true);
     let do_revalidate = req_bool(req, "revalidate").unwrap_or(false);
     let do_prune = req_bool(req, "prune").unwrap_or(false);
-    let observe_only = req_bool(req, "observe_only").unwrap_or(true);
+    let observe_only = req_bool(req, "observe_only").unwrap_or(false);
     let work = (|| -> Result<Value, TErr> {
         let mut out = json!({"observe_only": observe_only});
         let mut expired = 0i64;
