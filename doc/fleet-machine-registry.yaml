@@ -95,19 +95,19 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-27T23:24:17Z'
+      last_seen: '2026-11-27T23:54:14Z'
       status: degraded
       checks:
-        reported_at: '2026-11-27T23:24:17Z'
+        reported_at: '2026-11-27T23:54:14Z'
         reachable:
           state: ok
           ssh: true
           opencode_server_http: 200
         load_headroom:
           state: ok
-          load15: 10.91
+          load15: 8.04
           cpu_cores: 16
-          load15_per_core: 0.682
+          load15_per_core: 0.502
         disk_headroom:
           state: failed
           volume: worktree (home)
