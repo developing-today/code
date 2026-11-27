@@ -21,7 +21,7 @@
 // command and compare.
 
 import { describe, expect, test } from "bun:test";
-import type { BoardItem, RefKey, RoadmapRow } from "../src/model.ts";
+import type { BoardItem, GhItem, RefKey, RoadmapRow } from "../src/model.ts";
 import { searchWork } from "../src/search-view.ts";
 import { median, parseProfileArgs, summarize, type MeasureRecord } from "../scripts/search-profile.ts";
 
@@ -164,7 +164,7 @@ describe("searchWork — stable fixture response", () => {
       links: [],
     },
   ];
-  const items = new Map([
+  const items = new Map<RefKey, GhItem>([
     [
       ref,
       {
@@ -179,7 +179,7 @@ describe("searchWork — stable fixture response", () => {
         resolution: "projector",
       },
     ],
-  ] as never);
+  ]);
 
   test("same inputs give byte-identical outputs", () => {
     const a = searchWork(board, rows, items, "search", {});
