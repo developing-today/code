@@ -22,10 +22,11 @@
 //!   document and every accepted step, so an out-of-range position is
 //!   refused even when the step is otherwise well formed.
 //!
-//! What this does not yet prove is that a structurally plausible step
-//! applies (for example, that a slice's open depths fit the positions it
-//! replaces, or that content matches each node's content expression).
-//! Full server-side application is the later stage of #1618.
+//! This does not yet prove that a structurally plausible step applies
+//! against the evolving document. Slice validation also remains partial:
+//! `list_item` rejects direct text children, but other content-expression
+//! violations are deferred. Full server-side application is the later
+//! stage of #1618.
 
 use serde_json::{Map, Value};
 
@@ -400,6 +401,17 @@ fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, Stri
         Some(Value::Array(children)) => Some(children.as_slice()),
         Some(_) => return Err(format!("node `{kind}` has non-array `content`")),
     };
+    // `editor.ts` declares `list_item` content as `paragraph block*`.
+    // A bare text child cannot be produced by a valid rich-schema item.
+    if kind == "list_item"
+        && content.is_some_and(|children| {
+            children
+                .iter()
+                .any(|child| child.get("type").and_then(Value::as_str) == Some("text"))
+        })
+    {
+        return Err("list_item content cannot contain a direct text child".to_owned());
+    }
     if kind == "text" {
         if content.is_some_and(|children| !children.is_empty()) {
             return Err("text node has content".to_owned());
