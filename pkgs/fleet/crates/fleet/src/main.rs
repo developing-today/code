@@ -176,6 +176,9 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "actions") {
         caps.insert(Capability::Actions);
     }
+    if cfg!(feature = "id") {
+        caps.insert(Capability::Id);
+    }
     caps
 }
 
@@ -1108,11 +1111,16 @@ fn run_domain_with_initializer(
                 return kv::run(args);
             }
             // code#15430 (design #10391 §4.1): the id domain runs
-            // for real — session key lifecycle + stamping. Later
-            // slices add the proxy/initiator/serve-ws verbs.
+            // for real — session key lifecycle + stamping. Slice 2
+            // (#15434, design §4.2) adds the `fleet id proxy` entry
+            // point; mode 1 is live and mode 2 currently fails closed.
+            // Every other id verb remains on the slice-1 key surface.
             #[cfg(feature = "id")]
             if d.name == "id" {
-                return id_key::run(args);
+                return match args.first().map(|s| s.as_str()) {
+                    Some("proxy") => id_proxy::run(args),
+                    _ => id_key::run(args),
+                };
             }
             // The bridge domain runs for real: fleet mailboxes on the
             // message bridge (central send/agents/log/pipeline/
