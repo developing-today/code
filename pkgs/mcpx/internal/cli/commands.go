@@ -801,7 +801,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err := a.ensureSchemas(ctx, c, ns); err != nil {
 			return err
 		}
-	} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+	} else if err := a.ensureRunSchemas(ctx, c); err != nil {
 		return err
 	}
 
@@ -1402,6 +1402,24 @@ func firstNonEmpty(v ...string) string {
 		}
 	}
 	return ""
+}
+
+// ensureRunSchemas blocks until every known namespace has been read at
+// least once. A run snapshots the client at generation time: unlike a tool
+// call, which awaits its schema read daemon-side, a client generated from
+// a cold cache bakes lazy namespaces in, and the script then sees an empty
+// tools list. The wait happens only on a cold cache; a warm run pays
+// nothing beyond the namespace listing.
+func (a *App) ensureRunSchemas(ctx context.Context, c *Client) error {
+	known, err := c.Namespaces(ctx, a.Profile)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(known))
+	for _, n := range known {
+		names = append(names, n.Namespace)
+	}
+	return a.ensureSchemas(ctx, c, names)
 }
 
 // ensureAnySchemas starts a schema read when a namespace has none yet and
