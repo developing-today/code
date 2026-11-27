@@ -1,9 +1,8 @@
 // The signed event codec (src/event.ts) and the Ed25519 seam.
 //
 // Oracle: chain.rs's decode rules, and cross-language fixtures —
-// events signed by the Rust signer in
-// pkgs/id/tests/bridge_fixtures.rs are pinned here byte for byte,
-// and the TypeScript-signed events below are pinned there.
+// Rust- and TypeScript-signed events share one byte-exact fixture
+// file consumed by both language suites.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

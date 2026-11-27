@@ -3,9 +3,9 @@
 // Oracle: the official BLAKE3 test vectors — the empty-input value
 // below is the published vector, the rest are cross-pinned with the
 // Rust implementation (p2panda-core's Hash) in
-// pkgs/id/tests/bridge_fixtures.rs, which asserts the same table
-// from the other side. Input byte i is i mod 251, the vectors'
-// input pattern.
+// pkgs/id/tests/bridge_fixtures.rs. Both suites read the same table
+// from pkgs/id/tests/fixtures/hosted-second-version-g1.json. Input
+// byte i is i mod 251, the vectors' input pattern.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

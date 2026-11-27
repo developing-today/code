@@ -1,13 +1,13 @@
 //! Golden-vector tests for the canonical CBOR profile
 //! (slice A9114-cbor-profile, #10181) — evidence first.
 //!
-//! The vector table below is the cross-language oracle: the
+//! The shared JSON vector table is the cross-language oracle: the
 //! hosted TypeScript suite (`hosted-worker/test/
-//! canonical-cbor.test.ts`) asserts the *same* hex for the *same*
-//! logical values, so byte equality across Rust and TypeScript
-//! is checked by both suites against one fixed table, and every
-//! ambiguous encoding in the rejection table must fail with the
-//! named typed error in both implementations.
+//! canonical-cbor.test.ts`) asserts the same hex for the same
+//! logical values, so byte equality across Rust and TypeScript is
+//! checked by both suites against one fixed file. Every ambiguous
+//! encoding in the rejection table must fail with the named typed
+//! error in both implementations.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
