@@ -115,6 +115,32 @@ def test_second_import_wholesale_replaces():
         assert live_rows(home, "snapshots") == []
 
 
+def test_enforced_foreign_keys_stage():
+    # The live homes enforce foreign keys, but during staging the
+    # parents exist only under staging names. Staging inserts must
+    # still land; the swapped-in copy keeps the full DDL.
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "source.db")
+        if os.path.exists(src):
+            os.unlink(src)
+        db = sqlite3.connect(src)
+        db.execute("CREATE TABLE repository (id TEXT PRIMARY KEY)")
+        db.execute(
+            "CREATE TABLE work_item (id TEXT PRIMARY KEY, repository_id TEXT "
+            "REFERENCES repository(id) ON DELETE CASCADE)"
+        )
+        db.execute("INSERT INTO repository VALUES ('r1')")
+        db.execute("INSERT INTO work_item VALUES ('w1', 'r1'), ('w2', 'r1')")
+        db.commit()
+        db.close()
+        home = FakeHome()
+        home.conn.execute("PRAGMA foreign_keys=ON")
+        receipt = imp.run_import(src, home, "laptop-backup-test")
+        assert receipt["counts"] == {"repository": 1, "work_item": 2}, receipt
+        fks = home.execute("PRAGMA foreign_key_list(work_item)")[1]
+        assert len(fks) == 1 and fks[0][2] == "repository", fks
+
+
 def test_backtick_quoted_ddl_stages():
     # drizzle-style sources quote identifiers with backticks; the
     # stager must accept them like double-quoted and bare names.
