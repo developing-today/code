@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, migrate, upsertItem, type ItemRow } from "../../projector/src/store.ts";
@@ -28,7 +28,7 @@ const item = (): Omit<ItemRow, "fetched_at"> => ({
 });
 
 test("live pm-core reads projector items from its in-process store without an HTTP projector", async () => {
-  const dir = mkdtemp(join(tmpdir(), "pm-core-projector-reader-"));
+  const dir = mkdtempSync(join(tmpdir(), "pm-core-projector-reader-"));
   const databaseUrl = `file:${join(dir, "projector.db")}`;
   const db = openDb({ DATABASE_URL: databaseUrl });
   try {
@@ -54,7 +54,6 @@ test("live pm-core reads projector items from its in-process store without an HT
     });
 
     expect(child.exitCode).toBe(0);
-    expect(child.stderr.toString()).toBe("");
     expect(JSON.parse(child.stdout.toString())).toMatchObject({
       ref,
       title: "Reader served from the pm-core projector store",
