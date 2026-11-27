@@ -319,6 +319,7 @@ pub fn rehome_moved_sources(
             bail!("re-import contains duplicate destination note identity {note_id}");
         }
     }
+    next.validate_inventory_reconciles()?;
 
     *current = next;
     Ok(moves)
