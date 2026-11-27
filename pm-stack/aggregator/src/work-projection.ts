@@ -59,8 +59,9 @@ export interface ClaimInput {
   worker?: string;
   lane?: string;
   /** A claim counts toward In Progress only when the authoritative
-   *  claim read is fresh. A label, queue row, dispatch intent or
-   *  session shell alone is not proof of active execution. */
+   *  claim read is fresh AND the adapter readback verifies the task/session
+   *  binding. A label, queue row, dispatch intent or session shell alone
+   *  is not proof of active execution. */
   fresh?: boolean;
   /** Session is displayed as bound only when readback confirms the
    *  task/session binding. */
@@ -235,8 +236,7 @@ export function projectWorkView(
   const parked = input.queue?.parked ?? null;
   const blocked = input.queue?.blocked === true || hardBlockers.length > 0;
   const verifiedDone = input.completion?.verified_terminal_receipt === true;
-  const terminalSignal =
-    ("value" in github && (github.value === "closed" || github.value === "merged")) || false;
+  const terminalSignal = ("value" in github && (github.value === "closed" || github.value === "merged")) || false;
 
   let column: BoardColumn;
   if (verifiedDone) {
@@ -248,9 +248,16 @@ export function projectWorkView(
   } else if (blocked) {
     column = "Blocked";
     reasons.add(hardBlockers.length > 0 ? "hard_blockers_present" : "queue_blocked");
-  } else if (claimFresh) {
+  } else if (
+    claimFresh &&
+    input.claim?.session_binding === "verified" &&
+    "value" in session &&
+    session.freshness === "live" &&
+    !session.value.endsWith(":terminal")
+  ) {
     column = "In Progress";
     reasons.add("fresh_authoritative_claim");
+    reasons.add("verified_session_binding");
   } else if (terminalSignal) {
     // Terminal signal without a verified receipt: conflict/pending,
     // never Done.
@@ -269,7 +276,11 @@ export function projectWorkView(
   ) {
     column = "Ready";
     reasons.add(
-      input.queue?.high_or_above ? "eligible_high_or_above" : input.queue?.explicitly_prepared ? "explicitly_prepared" : "owner_assigned",
+      input.queue?.high_or_above
+        ? "eligible_high_or_above"
+        : input.queue?.explicitly_prepared
+          ? "explicitly_prepared"
+          : "owner_assigned",
     );
   } else if (input.triage_required === true) {
     column = "Inbox/Triage";

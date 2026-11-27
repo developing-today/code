@@ -160,6 +160,69 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
     run_session_with(hub, io, SessionConfig::default()).await;
 }
 
+const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A per-session outbound deadline. Once a frame stalls or the peer
+/// disappears, the wrapper treats the connection as closed so later
+/// handlers cannot keep the world lease alive by sending again.
+struct SendDeadlineIo<'a, I> {
+    inner: &'a mut I,
+    timeout: Duration,
+    closed: bool,
+}
+
+impl<I: SessionIo> SessionIo for SendDeadlineIo<'_, I> {
+    fn recv(&mut self) -> impl std::future::Future<Output = Inbound> + Send {
+        async move {
+            if self.closed {
+                Inbound::Closed
+            } else {
+                self.inner.recv().await
+            }
+        }
+    }
+
+    fn send(&mut self, frame: String) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn supports_bytes(&self) -> bool {
+        self.inner.supports_bytes()
+    }
+
+    fn send_bytes(&mut self, frame: Vec<u8>) -> impl std::future::Future<Output = bool> + Send {
+        async move {
+            if self.closed {
+                return false;
+            }
+            let sent = tokio::time::timeout(self.timeout, self.inner.send_bytes(frame))
+                .await
+                .unwrap_or(false);
+            if !sent {
+                self.closed = true;
+            }
+            sent
+        }
+    }
+
+    fn mark_authorized(&mut self) {
+        if !self.closed {
+            self.inner.mark_authorized();
+        }
+    }
+}
+
 /// The admin secret a first frame carries, if it is an administrative one.
 /// Most admin frames can create the world they name; history reads cannot.
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
@@ -183,6 +246,24 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
 /// The first frame names the world (`"world": "<name>"`, default world if
 /// absent), and the session holds a lease on it until it ends.
 pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    run_session_with_send_deadline(hub, io, config, DEFAULT_SEND_TIMEOUT).await;
+}
+
+async fn run_session_with_send_deadline<I: SessionIo>(
+    hub: &WorldHub,
+    io: &mut I,
+    config: SessionConfig,
+    send_timeout: Duration,
+) {
+    let mut io = SendDeadlineIo {
+        inner: io,
+        timeout: send_timeout,
+        closed: false,
+    };
+    run_session_inner(hub, &mut io, config).await;
+}
+
+async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
     // Frames sent before a world lease exists belong to no world, so
     // their bytes go to a throwaway meter rather than being attributed
     // to a world that did not send them.

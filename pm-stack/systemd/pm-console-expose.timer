@@ -1,5 +1,5 @@
 [Unit]
-Description=PM console — re-check the public address every quarter hour (pm-stack)
+Description=PM console — re-check the local console's tunnel ingress every quarter hour (pm-stack)
 
 [Timer]
 OnBootSec=5min

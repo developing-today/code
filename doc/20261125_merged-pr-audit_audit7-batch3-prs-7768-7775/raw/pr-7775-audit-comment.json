@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157699207","html_url":"https://github.com/developing-today/code/pull/7775#issuecomment-7157699207","issue_url":"https://api.github.com/repos/developing-today/code/issues/7775","id":7157699207,"node_id":"IC_kwDOJWP4788AAAABqqHShw","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T08:58:00Z","updated_at":"2026-11-25T08:58:00Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 review: this PR vendors the canonical Python reference and frozen golden-311 evaluation set into the repo, but #5670's full §8 migration remains open. Current tracked remainder includes aggregator absorption (#14128), the backup unit switch-over/nightly cycle and copy retirement (#14129; PR #14906 landed the verb only), the frozen-corpus parity run (#14131), and historical archive/delete (#14132). #14133 also records this as phase 1 and says #5670 stays open. Marked `audit:partial`; no duplicate issue filed.","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157699207/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157699207",
+  "html_url": "https://github.com/developing-today/code/pull/7775#issuecomment-7157699207",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/7775",
+  "id": 7157699207,
+  "node_id": "IC_kwDOJWP4788AAAABqqHShw",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T08:58:00Z",
+  "updated_at": "2026-11-25T08:58:00Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 review: this PR vendors the canonical Python reference and frozen golden-311 evaluation set into the repo, but #5670's full §8 migration remains open. Current tracked remainder includes aggregator absorption (#14128), the backup unit switch-over/nightly cycle and copy retirement (#14129; PR #14906 landed the verb only), the frozen-corpus parity run (#14131), and historical archive/delete (#14132). #14133 also records this as phase 1 and says #5670 stays open. Marked `audit:partial`; no duplicate issue filed.",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157699207/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}

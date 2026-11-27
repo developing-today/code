@@ -141,6 +141,7 @@ fn app_with_signer(signer: TokenSigner, jwks: Jwks) -> axum::Router {
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
+            email: None,
             roles: ["owner", "orchestrator", "agent", "read-only"]
                 .iter()
                 .map(|s| s.to_string())

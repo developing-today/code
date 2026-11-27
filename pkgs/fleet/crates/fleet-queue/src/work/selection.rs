@@ -40,7 +40,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::contracts::WorkRef;
-use super::priority::{compare_candidates, CandidateKey, PriorityError, PriorityProfile};
+use super::priority::{CandidateKey, PriorityError, PriorityProfile, compare_candidates};
 
 /// One eligible candidate, in the order the normal selection
 /// comparator produced (effective urgency ascending, then exact
@@ -652,9 +652,11 @@ mod tests {
         ];
         let order = BoundedShareFairness.service_order(&candidates, &FairnessState::new());
         assert_eq!(ids(&candidates, &order), vec!["a1", "a2"]);
-        assert!(BoundedShareFairness
-            .service_order(&[], &FairnessState::new())
-            .is_empty());
+        assert!(
+            BoundedShareFairness
+                .service_order(&[], &FairnessState::new())
+                .is_empty()
+        );
     }
 
     #[test]

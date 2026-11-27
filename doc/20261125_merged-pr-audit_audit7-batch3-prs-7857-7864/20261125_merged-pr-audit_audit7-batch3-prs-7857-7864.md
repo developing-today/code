@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7857 | #5861 | `audit:complete` | Records board-scoped roles/actions, signed moderation hooks, private reporting, append-only audit and appeals; corrects the #5680 reference distinction between world-session capabilities and board authority. |
-| #7860 | #5897 | `audit:complete` | Specifies regression budgets, paired-run noise handling, waiver/re-baselining process and durable JSONL result states/archive. The issue's later close-out confirms its design acceptance is met. |
-| #7861 | #5797 | `audit:complete` | Defines per-tier latency budgets and a reproducible measurement plan while preserving the parent fallback order and keeping Workers out of bulk SLOs. |
-| #7863 | #5815 | `audit:complete` | Binds session security to ID-layer signatures/transcripts/policy floor, defines replay/downgrade behavior and relay constraints. It preserves parent decisions and records sibling interface obligations. |
-| #7864 | #5854 | `audit:complete` | Settles style/theme/override/CSS cascade, assets, conditional blocks and a three-target worked example, with sibling dependencies named and no runtime behavior changed. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                         |
+| -------------: | -------------: | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7857 |          #5861 | `audit:complete` | Records board-scoped roles/actions, signed moderation hooks, private reporting, append-only audit and appeals; corrects the #5680 reference distinction between world-session capabilities and board authority. |
+|          #7860 |          #5897 | `audit:complete` | Specifies regression budgets, paired-run noise handling, waiver/re-baselining process and durable JSONL result states/archive. The issue's later close-out confirms its design acceptance is met.               |
+|          #7861 |          #5797 | `audit:complete` | Defines per-tier latency budgets and a reproducible measurement plan while preserving the parent fallback order and keeping Workers out of bulk SLOs.                                                           |
+|          #7863 |          #5815 | `audit:complete` | Binds session security to ID-layer signatures/transcripts/policy floor, defines replay/downgrade behavior and relay constraints. It preserves parent decisions and records sibling interface obligations.       |
+|          #7864 |          #5854 | `audit:complete` | Settles style/theme/override/CSS cascade, assets, conditional blocks and a three-target worked example, with sibling dependencies named and no runtime behavior changed.                                        |
 
 ## Slice state
 

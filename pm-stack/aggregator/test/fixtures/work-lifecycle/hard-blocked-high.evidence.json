@@ -22,12 +22,8 @@
       },
       "eligibility": {
         "state": "ineligible",
-        "reason_codes": [
-          "hard_blocker"
-        ],
-        "hard_blocker_refs": [
-          "fleet://work/9"
-        ]
+        "reason_codes": ["hard_blocker"],
+        "hard_blocker_refs": ["fleet://work/9"]
       }
     },
     "source": "fleet_broker",

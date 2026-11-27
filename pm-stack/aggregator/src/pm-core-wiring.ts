@@ -44,7 +44,8 @@ export interface PmCoreJobDeps {
 
 export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps): PmCoreJobs {
   const env = options.env ?? process.env;
-  const feedPauseFile = options.feedPauseFile ?? env.PM_CORE_FEED_PAUSE_FILE ?? join(dirname(options.feedFile), "fleet-feed.pause");
+  const feedPauseFile =
+    options.feedPauseFile ?? env.PM_CORE_FEED_PAUSE_FILE ?? join(dirname(options.feedFile), "fleet-feed.pause");
   const loadQuotaMain = options.loadQuotaMain ?? (async () => (await import("../scripts/gather-quota.ts")).main);
   const loadFleetFeedMain =
     options.loadFleetFeedMain ?? (async () => (await import("../scripts/collect-fleet-feed.ts")).main);

@@ -124,7 +124,18 @@ describe("column projection matrix (oracle: design §3.1)", () => {
       session: { value: { provider: "slack", state: "posted" }, source: "session-adapter" },
     });
     expect(view.facts.session.state).toBe("binding_unknown");
+    expect(view.projection.column).not.toBe("In Progress");
     expect(view.projection.conflicts.map((c) => c.code)).toContain("claimed_binding_unknown");
+  });
+
+  test("in_progress_requires_a_fresh_nonterminal_session_readback", () => {
+    const claim = { state: "claimed", worker: "lane-1", fresh: true, session_binding: "verified" } as const;
+    const cases: WorkProjectionInput[] = [
+      { ...base, claim },
+      { ...base, claim, session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" } },
+      { ...base, claim, session: { value: { provider: "opencode", state: "terminal" }, source: "session-adapter" } },
+    ];
+    for (const input of cases) expect(projectWorkView(input).projection.column).not.toBe("In Progress");
   });
 
   test("ready_requires_eligible_and_high_or_prepared_or_owner_assigned", () => {

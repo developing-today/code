@@ -88,37 +88,134 @@ func (n NPMInstaller) Install(ctx context.Context, dir string, _ []ResolvedPacka
 	return nil
 }
 
+// PreparedSubset is one foreign project's separately materialised package
+// set. ManifestDir is the project boundary the runtime resolves imports from;
+// Dir is an mcpx-owned cache entry, never a directory inside that project.
+type PreparedSubset struct {
+	ManifestPath string
+	ManifestDir  string
+	Dir          string
+	Key          string
+	Hit          bool
+	Packages     []ResolvedPackage
+}
+
 // PreparedSet is the outcome of stage 3 for one resolved set.
 type PreparedSet struct {
 	// Dir is the prepared environment's directory in the cache. It is
-	// empty when the resolved set had no entry-project packages: there
-	// was nothing to materialise and no entry was created.
+	// empty when the resolved set had no entry-project packages.
 	Dir string
 	// Key is the cache key Dir lives under, derived from the canonical
-	// resolved set.
+	// entry-project set.
 	Key string
-	// Hit reports that the entry already existed and nothing installed.
+	// Hit reports that the entry-project cache already existed.
 	Hit bool
-	// Packages are the canonical pins that were materialised, sorted by
-	// name.
+	// Packages are the canonical entry-project pins, sorted by name.
 	Packages []ResolvedPackage
-	// Subsets counts the cross-project subsets the resolved set kept
-	// separate. They are not materialised by this stage.
+	// Subsets is the number of cross-project subsets retained by stage 2.
 	Subsets int
+	// PreparedSubsets contains one content-addressed cache environment per
+	// non-empty foreign project. Each is keyed by project manifest identity
+	// and canonical pins, so different projects never collide merely because
+	// they happen to declare the same versions.
+	PreparedSubsets []PreparedSubset
+	// warmLeases pin entries between PrepareSet and runner wiring. Once the
+	// runtime has acquired its own leases, it releases these temporary ones.
+	warmLeases []*cache.Lease
 }
 
-// PrepareSet materialises set's entry-project packages into the cache
-// rooted at cacheRoot. An empty set is a successful no-op. A failure
-// leaves no cache entry behind: the cache stores an entry only when its
-// fill completes, so a failed install is retried by the next prepare
-// rather than served half-built forever.
+// ReleaseWarmLeases releases the temporary leases held across the
+// preflight-to-runner handoff. It is safe to call more than once.
+func (p *PreparedSet) ReleaseWarmLeases() {
+	if p == nil {
+		return
+	}
+	for _, lease := range p.warmLeases {
+		lease.Release()
+	}
+	p.warmLeases = nil
+}
+
+type preparedSubsetPlan struct {
+	manifestPath string
+	manifestDir  string
+	packages     []ResolvedPackage
+}
+
+// canonicalSubsetPlans validates project identities and normalises the
+// foreign package pins before any cache entry is written. Two distinct
+// manifests resolving into one directory cannot be linked independently, so
+// that ambiguous shape fails closed rather than selecting one project's pins.
+func canonicalSubsetPlans(subsets []DependencySubset) ([]preparedSubsetPlan, error) {
+	ordered := append([]DependencySubset(nil), subsets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].Manifest.Path < ordered[j].Manifest.Path
+	})
+	plans := make([]preparedSubsetPlan, 0, len(ordered))
+	dirs := make(map[string]string, len(ordered))
+	for _, subset := range ordered {
+		pins, err := canonicalPins(subset.Packages)
+		if err != nil {
+			return nil, fmt.Errorf("cross-project subset %s: %w", subset.Manifest.Path, err)
+		}
+		if len(pins) == 0 {
+			continue
+		}
+		manifestPath := filepath.Clean(subset.Manifest.Path)
+		manifestDir := filepath.Clean(subset.Manifest.Dir)
+		if !filepath.IsAbs(manifestPath) || !filepath.IsAbs(manifestDir) {
+			return nil, fmt.Errorf("cross-project subset manifest path and directory must be absolute: %q in %q", subset.Manifest.Path, subset.Manifest.Dir)
+		}
+		rel, err := filepath.Rel(manifestDir, manifestPath)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("cross-project subset manifest %q is not inside project directory %q", manifestPath, manifestDir)
+		}
+		if previous, ok := dirs[manifestDir]; ok && previous != manifestPath {
+			return nil, fmt.Errorf("cross-project manifests %q and %q share directory %q; isolated node_modules cannot represent both", previous, manifestPath, manifestDir)
+		}
+		dirs[manifestDir] = manifestPath
+		plans = append(plans, preparedSubsetPlan{manifestPath: manifestPath, manifestDir: manifestDir, packages: pins})
+	}
+	return plans, nil
+}
+
+func preparedSetKey(prefix, identity string, pkgs []ResolvedPackage) string {
+	parts := make([]string, 0, len(pkgs)+2)
+	parts = append(parts, prefix)
+	if identity != "" {
+		parts = append(parts, identity)
+	}
+	for _, p := range pkgs {
+		parts = append(parts, p.Name+"@"+p.Version)
+	}
+	return cache.KeyString(parts...)
+}
+
+func putPreparedSet(ctx context.Context, c *cache.Cache, key string, pkgs []ResolvedPackage, inst Installer, lim cache.Limits) (string, bool, error) {
+	return c.Put(prepareKind, key, lim, func(dir string) error {
+		if err := writePreparedManifest(dir, pkgs); err != nil {
+			return err
+		}
+		return inst.Install(ctx, dir, pkgs)
+	})
+}
+
+// PrepareSet materialises the entry project's set and each non-empty isolated
+// subset into separate content-addressed cache entries. The source projects
+// are read-only: stage 3 writes only under cacheRoot. A failed install never
+// leaves a partial cache entry, and temporary leases keep completed entries
+// from eviction until the runner takes over.
 func PrepareSet(ctx context.Context, cacheRoot string, set ResolvedSet, inst Installer) (PreparedSet, error) {
 	pkgs, err := canonicalPins(set.Packages)
 	if err != nil {
 		return PreparedSet{}, err
 	}
-	out := PreparedSet{Packages: pkgs, Subsets: len(set.Subsets)}
-	if len(pkgs) == 0 {
+	subsets, err := canonicalSubsetPlans(set.Subsets)
+	if err != nil {
+		return PreparedSet{}, err
+	}
+	out := PreparedSet{Packages: pkgs, Subsets: len(subsets)}
+	if len(pkgs) == 0 && len(subsets) == 0 {
 		return out, nil
 	}
 	if cacheRoot == "" {
@@ -127,28 +224,52 @@ func PrepareSet(ctx context.Context, cacheRoot string, set ResolvedSet, inst Ins
 	if inst == nil {
 		inst = NPMInstaller{}
 	}
-	parts := make([]string, 0, len(pkgs)+1)
-	parts = append(parts, "mcpx-prepare-v1")
-	for _, p := range pkgs {
-		parts = append(parts, p.Name+"@"+p.Version)
-	}
-	key := cache.KeyString(parts...)
+	completed := false
+	defer func() {
+		if !completed {
+			out.ReleaseWarmLeases()
+		}
+	}()
 	c := cache.Open(cacheRoot)
 	lim := cache.Limits{
 		MaxBytes:      defaults.CacheMaxBytes,
 		MaxAge:        defaults.CacheMaxAge,
 		LeaseStaleAge: defaults.CacheLeaseStaleAge,
 	}
-	dir, hit, err := c.Put(prepareKind, key, lim, func(dir string) error {
-		if err := writePreparedManifest(dir, pkgs); err != nil {
-			return err
+	if len(pkgs) > 0 {
+		key := preparedSetKey("mcpx-prepare-v1", "", pkgs)
+		dir, hit, err := putPreparedSet(ctx, c, key, pkgs, inst, lim)
+		if err != nil {
+			return PreparedSet{}, fmt.Errorf("materialise the resolved dependency set: %w", err)
 		}
-		return inst.Install(ctx, dir, pkgs)
-	})
-	if err != nil {
-		return PreparedSet{}, fmt.Errorf("materialise the resolved dependency set: %w", err)
+		lease, err := cache.Acquire(dir)
+		if err != nil {
+			return PreparedSet{}, fmt.Errorf("lease the prepared dependency set at %s: %w", dir, err)
+		}
+		out.warmLeases = append(out.warmLeases, lease)
+		out.Dir, out.Key, out.Hit = dir, key, hit
 	}
-	out.Dir, out.Key, out.Hit = dir, key, hit
+	for _, subset := range subsets {
+		key := preparedSetKey("mcpx-prepare-subset-v1", subset.manifestPath, subset.packages)
+		dir, hit, err := putPreparedSet(ctx, c, key, subset.packages, inst, lim)
+		if err != nil {
+			return PreparedSet{}, fmt.Errorf("materialise the cross-project subset for %s: %w", subset.manifestPath, err)
+		}
+		lease, err := cache.Acquire(dir)
+		if err != nil {
+			return PreparedSet{}, fmt.Errorf("lease the cross-project subset for %s at %s: %w", subset.manifestPath, dir, err)
+		}
+		out.warmLeases = append(out.warmLeases, lease)
+		out.PreparedSubsets = append(out.PreparedSubsets, PreparedSubset{
+			ManifestPath: subset.manifestPath,
+			ManifestDir:  subset.manifestDir,
+			Dir:          dir,
+			Key:          key,
+			Hit:          hit,
+			Packages:     subset.packages,
+		})
+	}
+	completed = true
 	return out, nil
 }
 
@@ -249,9 +370,9 @@ func prepareResolved(ctx context.Context, r *Report, set ResolvedSet, opts Resol
 			Where: "script.imports",
 		})
 	}
-	if prepared.Subsets > 0 {
+	if len(prepared.PreparedSubsets) > 0 {
 		r.Add(Problem{
-			What:  fmt.Sprintf("%d cross-project dependency subset(s) were resolved but are not materialised yet: prepare covers the entry project's set only", prepared.Subsets),
+			What:  fmt.Sprintf("prepared %d isolated cross-project dependency subset(s) in the content-addressed cache", len(prepared.PreparedSubsets)),
 			Where: "script.imports",
 		})
 	}

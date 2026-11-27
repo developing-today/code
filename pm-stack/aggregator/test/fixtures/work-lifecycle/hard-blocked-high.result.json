@@ -1,10 +1,7 @@
 {
   "column": "Blocked",
   "rule": "R3",
-  "reason_codes": [
-    "hard_blockers_present",
-    "held_not_promoted"
-  ],
+  "reason_codes": ["hard_blockers_present", "held_not_promoted"],
   "conflicts": [],
   "stale_facets": []
 }

@@ -187,6 +187,21 @@ const (
 	TypeCheckStrict TypeCheckMode = "strict"
 )
 
+// ShouldSkipJSCheck is the script.checkJs gate (#1911 slice 2): when
+// checkJs is off, a JavaScript entry is not type checked at all —
+// Deno would otherwise still report // @ts-check pragma errors in it.
+// TypeScript entries are never skipped by this gate.
+func ShouldSkipJSCheck(entry string, checkJs bool) bool {
+	if checkJs {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(entry)) {
+	case ".js", ".mjs", ".cjs":
+		return true
+	}
+	return false
+}
+
 // TypeCheck resolves and checks a program without running it.
 //
 // This is the check that answers "will every import resolve and every name

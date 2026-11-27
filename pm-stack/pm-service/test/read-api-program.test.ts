@@ -213,8 +213,6 @@ describe("CF-5d program read wave", () => {
       ]),
       ...body.unassigned.map((item) => item.ref),
     ].filter((item): item is string => item !== undefined);
-    expect(returnedRefs.slice().sort()).toEqual(
-      [...POOL, FORKS_EPIC, FORKS_CHILD].map((item) => item.ref).sort(),
-    );
+    expect(returnedRefs.slice().sort()).toEqual([...POOL, FORKS_EPIC, FORKS_CHILD].map((item) => item.ref).sort());
   });
 });

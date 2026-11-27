@@ -1,12 +1,7 @@
 {
   "column": "Review",
   "rule": "R5",
-  "reason_codes": [
-    "completion_unverified"
-  ],
-  "conflicts": [
-    "completion_unverified",
-    "issue_open_pr_merged"
-  ],
+  "reason_codes": ["completion_unverified"],
+  "conflicts": ["completion_unverified", "issue_open_pr_merged"],
   "stale_facets": []
 }

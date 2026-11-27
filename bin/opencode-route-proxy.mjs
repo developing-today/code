@@ -33,6 +33,8 @@
 // Env:
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
+//   LISTEN_FDS=1 plus LISTEN_PID=<this pid> adopts systemd fd 3;
+//   without those markers the proxy binds OPENCODE_ROUTE_PROXY_PORT itself.
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
 //   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
 //                                         (default 3000 ms; below the client
@@ -64,6 +66,17 @@ import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
+const systemdListenFd = () => {
+  const listenFds = process.env.LISTEN_FDS;
+  const listenPid = process.env.LISTEN_PID;
+  if (listenFds === undefined && listenPid === undefined) return null;
+  if (listenFds !== "1" || listenPid !== String(process.pid)) {
+    throw new Error(
+      "systemd socket activation requires LISTEN_FDS=1 and matching LISTEN_PID",
+    );
+  }
+  return 3;
+};
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
 const LEAF_TIMEOUT_MS = parseProxyMillis(
   "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
@@ -3639,6 +3652,12 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
+const onListening = () => {
   console.log(`opencode-route-proxy listening on http://${HOST}:${PORT}`);
-});
+};
+const listenFd = systemdListenFd();
+if (listenFd === null) {
+  server.listen(PORT, HOST, onListening);
+} else {
+  server.listen({ fd: listenFd }, onListening);
+}

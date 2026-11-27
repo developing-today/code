@@ -78,8 +78,15 @@ class TestExportPass(unittest.TestCase):
         plan_path = self.dir / "plan.json"
         plan_path.write_text(json.dumps(plan))
         return subprocess.run(
-            [sys.executable, str(PASS), "--plan", str(plan_path),
-             "--exporter", str(self.exporter), *extra],
+            [
+                sys.executable,
+                str(PASS),
+                "--plan",
+                str(plan_path),
+                "--exporter",
+                str(self.exporter),
+                *extra,
+            ],
             capture_output=True,
             check=False,
         )
@@ -125,13 +132,25 @@ class TestExportPass(unittest.TestCase):
         self.assertEqual(record["excluded_class_a"], ["atlas"])
 
     def test_previous_retry_list_is_carried_into_the_next_pass(self):
-        yesterday = {"date": "2026-11-23", "cohort": 0, "ok": False, "databases": [],
-                     "exported": [], "retry": [{"database": "db-carried", "reason": "exporter exited 1"}],
-                     "excluded_class_a": []}
+        yesterday = {
+            "date": "2026-11-23",
+            "cohort": 0,
+            "ok": False,
+            "databases": [],
+            "exported": [],
+            "retry": [{"database": "db-carried", "reason": "exporter exited 1"}],
+            "excluded_class_a": [],
+        }
         prior_path = self.dir / "prior.json"
         prior_path.write_text(json.dumps(yesterday))
-        plan = {"date": "2026-11-24", "cohort": plan_cohort(self.day),
-                "databases": [], "excluded_class_a": [], "class_b_total": 0, "cohorts": 14}
+        plan = {
+            "date": "2026-11-24",
+            "cohort": plan_cohort(self.day),
+            "databases": [],
+            "excluded_class_a": [],
+            "class_b_total": 0,
+            "cohorts": 14,
+        }
         result = self.run_pass_cli(plan, "--retry", str(prior_path))
         self.assertEqual(result.returncode, 0, result.stderr)
         record = json.loads(result.stdout.decode())
@@ -140,8 +159,14 @@ class TestExportPass(unittest.TestCase):
         self.assertEqual(record["retry"], [])
 
     def test_class_a_names_never_reach_the_exporter(self):
-        plan = {"date": "2026-11-24", "cohort": plan_cohort(self.day),
-                "databases": ["atlas"], "excluded_class_a": [], "class_b_total": 0, "cohorts": 14}
+        plan = {
+            "date": "2026-11-24",
+            "cohort": plan_cohort(self.day),
+            "databases": ["atlas"],
+            "excluded_class_a": [],
+            "class_b_total": 0,
+            "cohorts": 14,
+        }
         result = self.run_pass_cli(plan)
         record = json.loads(result.stdout.decode())
         self.assertEqual(record["exported"], [])
@@ -151,32 +176,71 @@ class TestExportPass(unittest.TestCase):
         plan_path = self.dir / "plan.json"
         plan_path.write_text("{}")
         valid_plan_path = self.dir / "valid-plan.json"
-        valid_plan_path.write_text(json.dumps({
-            "date": "2026-11-24",
-            "cohort": plan_cohort(self.day),
-            "databases": ["db-valid"],
-            "excluded_class_a": [],
-            "class_b_total": 1,
-            "cohorts": 14,
-        }))
-        base = [sys.executable, str(PASS), "--plan", str(plan_path), "--exporter", str(self.exporter)]
-        self.assertEqual(subprocess.run(base + ["--bogus"], capture_output=True).returncode, 2)
-        self.assertEqual(subprocess.run(base + ["extra-positional"], capture_output=True).returncode, 2)
-        self.assertEqual(subprocess.run(base + ["--timeout", "0"], capture_output=True).returncode, 2)
+        valid_plan_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-11-24",
+                    "cohort": plan_cohort(self.day),
+                    "databases": ["db-valid"],
+                    "excluded_class_a": [],
+                    "class_b_total": 1,
+                    "cohorts": 14,
+                }
+            )
+        )
+        base = [
+            sys.executable,
+            str(PASS),
+            "--plan",
+            str(plan_path),
+            "--exporter",
+            str(self.exporter),
+        ]
+        self.assertEqual(
+            subprocess.run(base + ["--bogus"], capture_output=True).returncode, 2
+        )
+        self.assertEqual(
+            subprocess.run(base + ["extra-positional"], capture_output=True).returncode,
+            2,
+        )
+        self.assertEqual(
+            subprocess.run(base + ["--timeout", "0"], capture_output=True).returncode, 2
+        )
         self.assertEqual(subprocess.run(base, capture_output=True).returncode, 2)
-        abbreviated = [sys.executable, str(PASS), "--plan", str(valid_plan_path),
-                       "--exporter", str(self.exporter), "--pla", str(valid_plan_path)]
+        abbreviated = [
+            sys.executable,
+            str(PASS),
+            "--plan",
+            str(valid_plan_path),
+            "--exporter",
+            str(self.exporter),
+            "--pla",
+            str(valid_plan_path),
+        ]
         self.assertEqual(subprocess.run(abbreviated, capture_output=True).returncode, 2)
 
     def test_missing_exporter_is_a_recorded_miss_not_a_crash(self):
-        plan = {"date": "2026-11-24", "cohort": plan_cohort(self.day),
-                "databases": ["db-x"], "excluded_class_a": [], "class_b_total": 1, "cohorts": 14}
+        plan = {
+            "date": "2026-11-24",
+            "cohort": plan_cohort(self.day),
+            "databases": ["db-x"],
+            "excluded_class_a": [],
+            "class_b_total": 1,
+            "cohorts": 14,
+        }
         plan_path = self.dir / "plan.json"
         plan_path.write_text(json.dumps(plan))
         result = subprocess.run(
-            [sys.executable, str(PASS), "--plan", str(plan_path),
-             "--exporter", str(self.dir / "no-such-exporter")],
-            capture_output=True, check=False,
+            [
+                sys.executable,
+                str(PASS),
+                "--plan",
+                str(plan_path),
+                "--exporter",
+                str(self.dir / "no-such-exporter"),
+            ],
+            capture_output=True,
+            check=False,
         )
         self.assertEqual(result.returncode, 1)
         record = json.loads(result.stdout.decode())

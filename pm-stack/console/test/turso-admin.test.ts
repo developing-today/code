@@ -66,7 +66,12 @@ test("dispatch inputs carry names and choices only, never a token value", () => 
     group: TURSO_GROUP,
   });
   const mint = tursoAdminInputs(
-    tursoAdminRequest({ operation: "mint-token", database: "fleet-new", secret_name: "turso_fleet_new_rw_token", expiry: "30d" }),
+    tursoAdminRequest({
+      operation: "mint-token",
+      database: "fleet-new",
+      secret_name: "turso_fleet_new_rw_token",
+      expiry: "30d",
+    }),
   );
   expect(mint).toEqual({
     operation: "mint-token",
@@ -160,7 +165,12 @@ test("Ops dispatches the admin workflow on main and reads its last run", async (
         code: 0,
         stdout: JSON.stringify({
           workflow_runs: [
-            { status: "completed", conclusion: "failure", created_at: "2026-11-25T00:00:00Z", html_url: "https://example.invalid/run/9" },
+            {
+              status: "completed",
+              conclusion: "failure",
+              created_at: "2026-11-25T00:00:00Z",
+              html_url: "https://example.invalid/run/9",
+            },
           ],
         }),
         stderr: "",

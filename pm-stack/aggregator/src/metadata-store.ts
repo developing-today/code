@@ -130,6 +130,21 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
       queue_id = excluded.queue_id,
       links_json = excluded.links_json,
       source_updated_at = excluded.source_updated_at
+    WHERE pm_metadata_items.repo IS NOT excluded.repo
+      OR pm_metadata_items.item_number IS NOT excluded.item_number
+      OR pm_metadata_items.item_kind IS NOT excluded.item_kind
+      OR pm_metadata_items.source_url IS NOT excluded.source_url
+      OR pm_metadata_items.schema_version IS NOT excluded.schema_version
+      OR pm_metadata_items.metadata_json IS NOT excluded.metadata_json
+      OR pm_metadata_items.extras_json IS NOT excluded.extras_json
+      OR pm_metadata_items.direct_parent_repo IS NOT excluded.direct_parent_repo
+      OR pm_metadata_items.direct_parent_number IS NOT excluded.direct_parent_number
+      OR pm_metadata_items.session_id IS NOT excluded.session_id
+      OR pm_metadata_items.lane IS NOT excluded.lane
+      OR pm_metadata_items.host IS NOT excluded.host
+      OR pm_metadata_items.queue_id IS NOT excluded.queue_id
+      OR pm_metadata_items.links_json IS NOT excluded.links_json
+      OR pm_metadata_items.source_updated_at IS NOT excluded.source_updated_at
     `).run(
       record.artifactId,
       record.repo,
@@ -149,13 +164,24 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
       record.sourceUpdatedAt ?? null,
     );
 
-    // Derived link rows are deliberately rebuilt from the version adapter so a
-    // replay cannot leave stale rows behind after a source edit.
-    db.query("DELETE FROM pm_metadata_links WHERE artifact_id = ?").run(record.artifactId);
+    // Upsert only changed derived rows. A source replay must not delete and
+    // recreate every link for an artifact; remove only trailing indexes left
+    // behind when the source has fewer links than before.
     const insertLink = db.query(`
     INSERT INTO pm_metadata_links (
       artifact_id, link_index, target_repo, target_number, relation, status, link_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(artifact_id, link_index) DO UPDATE SET
+      target_repo = excluded.target_repo,
+      target_number = excluded.target_number,
+      relation = excluded.relation,
+      status = excluded.status,
+      link_json = excluded.link_json
+    WHERE pm_metadata_links.target_repo IS NOT excluded.target_repo
+      OR pm_metadata_links.target_number IS NOT excluded.target_number
+      OR pm_metadata_links.relation IS NOT excluded.relation
+      OR pm_metadata_links.status IS NOT excluded.status
+      OR pm_metadata_links.link_json IS NOT excluded.link_json
     `);
     for (const [linkIndex, link] of parsed.indexes.links.entries()) {
       insertLink.run(
@@ -168,6 +194,10 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
         JSON.stringify(link),
       );
     }
+    db.query("DELETE FROM pm_metadata_links WHERE artifact_id = ? AND link_index >= ?").run(
+      record.artifactId,
+      parsed.indexes.links.length,
+    );
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

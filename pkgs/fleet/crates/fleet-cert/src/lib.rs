@@ -63,6 +63,7 @@ pub mod error;
 pub mod format;
 pub mod graph;
 pub mod inventory;
+pub mod jwk;
 pub mod model;
 pub mod naming;
 pub mod ocsp;

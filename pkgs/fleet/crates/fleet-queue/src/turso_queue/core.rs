@@ -7,7 +7,8 @@
 
 use super::*;
 
-pub const DEFAULT_TURSO_URL: &str = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
+pub const DEFAULT_TURSO_URL: &str =
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
@@ -2275,6 +2276,28 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = quarantine_summary {
             out["quarantine_recheck"] = s;
         }
+        // #14212: the time rechecker rides the sweep beside the
+        // dep and quarantine recheckers, on the same expire
+        // timer — a blocked row whose time ready_condition has
+        // lapsed is requeued within one sweep minute, so a
+        // wait-until-time block can never fossilize in blocked
+        // again. Opt out per call: time_recheck=false.
+        let time_summary = if req_bool(req, "time_recheck").unwrap_or(true) {
+            Some(run_time_rechecks(
+                t,
+                req_i64(req, "time_limit").unwrap_or(200),
+            )?)
+        } else {
+            None
+        };
+        let time_checked = time_summary
+            .as_ref()
+            .and_then(|s| s.get("checked"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = time_summary {
+            out["time_recheck"] = s;
+        }
         // #9177: the closed-bound detective rides the sweep too —
         // the same minutely timer already POSTs /sweep, so every
         // bound (session-stamped claimed|parked) task gets its
@@ -2317,6 +2340,7 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
             || do_prune
             || dep_checked > 0
             || quarantine_checked > 0
+            || time_checked > 0
             || closed_bound_missing > 0
         {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;

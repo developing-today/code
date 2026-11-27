@@ -851,6 +851,19 @@
       "related_issues": [12828]
     },
     {
+      "id": "pm-service.dual-edition-conformance",
+      "paths": ["pm-stack/pm-service/test/dual-edition-conformance.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test test/dual-edition-conformance.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9074, 12833]
+    },
+    {
       "id": "pm-service.oauth-pkce",
       "paths": ["pm-stack/pm-service/test/worker-auth.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test test/worker-auth.test.ts",
@@ -1852,7 +1865,8 @@
         "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
-        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
+        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_reimport.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {

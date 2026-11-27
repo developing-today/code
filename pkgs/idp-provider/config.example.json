@@ -3,6 +3,7 @@
   "account": {
     "account_id": "drew",
     "display_name": "Drew",
+    "email": null,
     "identities": [{ "provider": "devtoday-local", "subject": "drew" }],
     "local_credential_hash": "",
     "roles": ["owner", "orchestrator", "agent", "read-only"]
@@ -39,7 +40,7 @@
       "display_name": "GitHub",
       "kind": "github",
       "name": "github",
-      "scopes": ["read:user"],
+      "scopes": ["read:user", "user:email"],
       "token_url": "https://github.com/login/oauth/access_token",
       "userinfo_url": "https://api.github.com/user"
     },
@@ -52,7 +53,7 @@
       "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs",
       "kind": "oidc",
       "name": "google",
-      "scopes": ["openid"],
+      "scopes": ["openid", "email"],
       "subject_claim": "sub",
       "token_url": "https://oauth2.googleapis.com/token"
     },
@@ -65,7 +66,7 @@
       "jwks_uri": "https://login.microsoftonline.com/consumers/discovery/v2.0/keys",
       "kind": "oidc",
       "name": "microsoft",
-      "scopes": ["openid"],
+      "scopes": ["openid", "email"],
       "subject_claim": "oid",
       "token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
     }
