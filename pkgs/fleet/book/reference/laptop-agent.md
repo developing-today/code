@@ -233,7 +233,7 @@ fleet laptop-agent fetch REMOTE_PATH LOCAL_PATH
 
 ### Behaviour
 
-Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
+Hash-checked copy with resume. First it sizes and hashes the remote file _on the laptop_ (`wc -c` and `shasum -a 256` through `/exec`). An existing destination is resumed from its current size — only the missing tail is pulled, in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` — and a destination longer than the remote file is refused, never appended to. The SHA-256 of the complete file (existing prefix + downloaded tail) is verified against the remote hash before anything is appended — a mismatch writes nothing and exits 1. On success it prints the legacy receipt: `fetched N bytes from REMOTE -> LOCAL in T round trip(s)`, with `(resumed from offset K)` when a partial destination was continued.
 
 ### Exit codes
 
