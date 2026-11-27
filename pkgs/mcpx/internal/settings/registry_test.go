@@ -1,6 +1,7 @@
 package settings_test
 
 import (
+	"encoding/json"
 	"flag"
 	"strings"
 	"testing"
@@ -44,6 +45,35 @@ func TestEveryDefaultSurvivesItsOwnValidator(t *testing.T) {
 	for _, set := range schema(t).All() {
 		if err := settings.Validate(set, set.Default); err != nil {
 			t.Errorf("%s has an invalid default %q: %v", set.Path, set.Default, err)
+		}
+	}
+}
+
+func TestCapabilityCeilingSettingDeclaresStarterToolPolicies(t *testing.T) {
+	set, ok := schema(t).Lookup("auth.capabilityCeilings")
+	if !ok {
+		t.Fatal("auth.capabilityCeilings is missing from the settings registry")
+	}
+	if set.Kind != settings.KindString || set.Scope != settings.ScopeDaemon || !set.Hot {
+		t.Fatalf("capability ceiling setting = kind %v, scope %v, hot %v; want daemon string setting that reloads live", set.Kind, set.Scope, set.Hot)
+	}
+	var ceilings []struct {
+		Name  string   `json:"name"`
+		Tools []string `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(set.Default), &ceilings); err != nil {
+		t.Fatalf("default capability ceilings are invalid JSON: %v", err)
+	}
+	byName := make(map[string][]string, len(ceilings))
+	for _, ceiling := range ceilings {
+		byName[ceiling.Name] = ceiling.Tools
+	}
+	if len(byName["full"]) != 1 || byName["full"][0] != "*" {
+		t.Errorf("full ceiling tools = %v, want [*]", byName["full"])
+	}
+	for _, name := range []string{"discovery", "admin"} {
+		if len(byName[name]) != 0 {
+			t.Errorf("%s ceiling tools = %v, want no tool calls", name, byName[name])
 		}
 	}
 }
