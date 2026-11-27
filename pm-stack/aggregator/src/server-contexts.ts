@@ -30,7 +30,7 @@ import { renderBoard, deriveOverview, renderOverview, buildRoadmapDrill } from "
 import { buildBriefs } from "./brief.ts";
 import { RULING_CLASS_ID, type ConflictRuling } from "./conflict-rulings.ts";
 import { buildDigest, type Digest, type DigestKind } from "./digest.ts";
-import { searchWork } from "./search-view.ts";
+import { registrySearchRefs, searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
@@ -253,9 +253,7 @@ export async function searchContext(query: string) {
   // (registry taskRefs, tier-item refs) join the resolution set, or
   // their search badges always render unresolved even when the live
   // pool/projector could resolve them.
-  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
-    isValidRef,
-  );
+  const extraRefs = [...registrySearchRefs(registry), ...tierItems.map((item) => item.ref)].filter(isValidRef);
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await withSearchTiming(timings, "items", () => source.items(refs));
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };

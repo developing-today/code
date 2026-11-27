@@ -55,7 +55,30 @@ describe("search-profile args — strict contract", () => {
 
   test("defaults: spawn mode, 1 cold, 3 warm", () => {
     const opts = parseProfileArgs(["--query", "fleet"]);
-    expect(opts).toMatchObject({ query: "fleet", mode: "spawn", coldRuns: 1, warmRuns: 3, live: false });
+    expect(opts).toMatchObject({
+      query: "fleet",
+      mode: "spawn",
+      coldRuns: 1,
+      warmRuns: 3,
+      live: false,
+      largeRegistryRecords: 0,
+    });
+  });
+
+  test("large-registry mode is explicit and bounded to fixture servers", () => {
+    expect(parseProfileArgs(["--query", "fleet", "--large-registry", "28479"]).largeRegistryRecords).toBe(28_479);
+    const exit = process.exit;
+    (process as { exit: (c: number) => void }).exit = ((c: number) => {
+      throw new Error(`exit:${c}`);
+    }) as typeof process.exit;
+    try {
+      expect(() => parseProfileArgs(["--query", "fleet", "--live", "--large-registry", "28479"])).toThrow(
+        "exit:2",
+      );
+      expect(() => parseProfileArgs(["--query", "fleet", "--large-registry", "1e3"])).toThrow("exit:2");
+    } finally {
+      process.exit = exit;
+    }
   });
 });
 
@@ -108,6 +131,11 @@ describe("summarize", () => {
     const json = summary.routes.find((r) => r.route === "/api/search.json")!;
     expect(json.warmMedianElapsedMs).toBeNull();
     expect(summary.renderDeltaMs).toBeNull();
+  });
+
+  test("records the explicit fixture corpus size", () => {
+    const summary = summarize("fleet", "spawned-fixtures", [], 28_479);
+    expect(summary.largeRegistryRecords).toBe(28_479);
   });
 });
 
