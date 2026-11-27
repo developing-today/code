@@ -1881,7 +1881,8 @@
         "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs",
-        "pkgs/id/crates/id-import-notion/tests/recorded_reimport.rs"
+        "pkgs/id/crates/id-import-notion/tests/recorded_reimport.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_fidelity.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
