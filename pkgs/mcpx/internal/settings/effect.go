@@ -273,6 +273,7 @@ var EffectProbes = map[string]string{
 	"http.remoteIdleConns":               "TestHTTPIdleConnectionPoolSettingsChangeReuse",
 	"http.idleConnTimeout":               "TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection",
 	"transport.bearerToken":              "TestTransportBearerTokenGatesTheDaemon",
+	"auth.mode":                          "TestAuthModeRequiredGatesTCPButNotTheSocket",
 	"transport.allowedOrigins":           "TestTransportAllowedOriginsAreServed",
 	"transport.sessionMetaKeys":          "TestTransportSessionMetaKeysNameTheSession",
 	"transport.sseKeepAlive":             "TestTransportSSEKeepAliveCommentsOnAQuietStream",

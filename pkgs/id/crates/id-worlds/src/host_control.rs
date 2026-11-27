@@ -4,7 +4,9 @@
 //! `id host run` binds `host.sock` inside the data root and answers one
 //! JSON request per connection, one line each way, so `id host start`,
 //! `stop`, `archive`, `restore`, `list` and `inspect` act on the running
-//! host. There is no network listener: the socket is a filesystem object
+//! host. `id serve --world-host` binds the same socket and answers the
+//! same requests for the worlds it serves ([`crate::node_control`]).
+//! There is no network listener: the socket is a filesystem object
 //! readable and writable by its owner alone, so only the operator who
 //! runs the host can drive it. Requests are answered one at a time, in
 //! the order they arrive, so two operator acts never interleave.
@@ -19,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::host::{LifecycleState, Supervisor, WakeMode, inspect_world, settings_body};
+use crate::host::{
+    LifecycleState, Supervisor, WakeMode, inspect_world, settings_body, snapshot_settings_body,
+};
+use crate::host_snapshots::SnapshotPolicy;
 use crate::world_export::ExportManifest;
 
 /// Name of the control socket inside a data root.
@@ -93,6 +98,22 @@ pub enum ControlRequest {
         /// The wake mode.
         wake: WakeMode,
     },
+    /// Set the host-wide snapshot policy (no world) or one world's own;
+    /// no policy clears it (#13739).
+    SetSnapshots {
+        /// The world, or none for the host-wide default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        world: Option<String>,
+        /// The policy, or none to clear it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<SnapshotPolicy>,
+    },
+    /// Show the snapshot policy and sets, changing nothing (#13739).
+    Snapshots {
+        /// The world, or none for the host-wide default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        world: Option<String>,
+    },
     /// Export a live world to a new file, signed by the host key (#10695).
     Export {
         /// The world.
@@ -126,7 +147,7 @@ pub struct ControlResponse {
 }
 
 impl ControlResponse {
-    fn done(body: serde_json::Value) -> Self {
+    pub(crate) const fn done(body: serde_json::Value) -> Self {
         Self {
             ok: true,
             error: None,
@@ -134,7 +155,7 @@ impl ControlResponse {
         }
     }
 
-    fn refused(error: String) -> Self {
+    pub(crate) const fn refused(error: String) -> Self {
         Self {
             ok: false,
             error: Some(error),
@@ -154,13 +175,13 @@ pub fn parse_source(source: &str) -> Result<[u8; 32]> {
         .with_context(|| format!("source {source:?} is not 64 hex digits"))
 }
 
-fn export_body(manifest: &ExportManifest, path: &Path) -> Result<serde_json::Value> {
+pub(crate) fn export_body(manifest: &ExportManifest, path: &Path) -> Result<serde_json::Value> {
     let mut body = serde_json::to_value(manifest)?;
     body["path"] = serde_json::json!(path);
     Ok(body)
 }
 
-fn state_body(world: &str, state: LifecycleState) -> serde_json::Value {
+pub(crate) fn state_body(world: &str, state: LifecycleState) -> serde_json::Value {
     serde_json::json!({ "world": world, "state": state })
 }
 
@@ -200,6 +221,14 @@ pub async fn handle(supervisor: &mut Supervisor, request: ControlRequest) -> Con
         ControlRequest::SetWake { world, wake } => supervisor
             .set_wake(&world, wake)
             .and_then(|()| settings_body(supervisor.file(), &world)),
+        ControlRequest::SetSnapshots { world, policy } => supervisor
+            .set_snapshot_policy(world.as_deref(), policy)
+            .and_then(|()| {
+                snapshot_settings_body(supervisor.root(), supervisor.file(), world.as_deref())
+            }),
+        ControlRequest::Snapshots { world } => {
+            snapshot_settings_body(supervisor.root(), supervisor.file(), world.as_deref())
+        }
         ControlRequest::Export { world, path } => supervisor
             .export(&world, &path)
             .await
@@ -269,9 +298,19 @@ pub async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     tokio::pin!(shutdown);
+    let mut snapshots = tokio::time::interval(Duration::from_secs(
+        crate::host_snapshots::SNAPSHOT_TICK_SECS,
+    ));
+    snapshots.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = &mut shutdown => return Ok(()),
+            _ = snapshots.tick() => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs());
+                log_snapshot_run(&supervisor.run_due_snapshots(now).await);
+            }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     if let Err(error) = answer(supervisor, stream).await {
@@ -284,18 +323,59 @@ pub async fn serve(
     }
 }
 
+/// Log what a scheduled snapshot pass did, one line per set and failure.
+pub(crate) fn log_snapshot_run(run: &crate::host_snapshots::SnapshotRun) {
+    for set in &run.taken {
+        tracing::info!(
+            world = %set.world,
+            entries = set.entries,
+            bytes = set.bytes,
+            "snapshot taken: {}",
+            set.path.display()
+        );
+    }
+    for set in &run.removed {
+        tracing::info!(world = %set.world, "snapshot removed: {}", set.path.display());
+    }
+    for (world, error) in &run.failed {
+        tracing::warn!(world = %world, "snapshot failed: {error}");
+    }
+}
+
 async fn answer(supervisor: &mut Supervisor, stream: UnixStream) -> Result<()> {
-    let (read, mut write) = stream.into_split();
+    let (request, write) = read_request(stream).await?;
+    let response = match request {
+        Ok(request) => handle(supervisor, request).await,
+        Err(refusal) => refusal,
+    };
+    write_response(write, &response).await
+}
+
+/// Read one request line from a connected client: the request, or the
+/// refusal a line that does not parse gets, plus the half to answer on.
+pub(crate) async fn read_request(
+    stream: UnixStream,
+) -> Result<(
+    std::result::Result<ControlRequest, ControlResponse>,
+    tokio::net::unix::OwnedWriteHalf,
+)> {
+    let (read, write) = stream.into_split();
     let mut reader = BufReader::new(read.take(MAX_REQUEST_BYTES));
     let mut line = String::new();
     tokio::time::timeout(REQUEST_TIMEOUT, reader.read_line(&mut line))
         .await
         .context("client sent no request in time")??;
-    let response = match serde_json::from_str::<ControlRequest>(line.trim()) {
-        Ok(request) => handle(supervisor, request).await,
-        Err(error) => ControlResponse::refused(format!("bad request: {error}")),
-    };
-    let mut bytes = serde_json::to_vec(&response)?;
+    let request = serde_json::from_str::<ControlRequest>(line.trim())
+        .map_err(|error| ControlResponse::refused(format!("bad request: {error}")));
+    Ok((request, write))
+}
+
+/// Send one response line and close the connection.
+pub(crate) async fn write_response(
+    mut write: tokio::net::unix::OwnedWriteHalf,
+    response: &ControlResponse,
+) -> Result<()> {
+    let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
     write.write_all(&bytes).await?;
     write.shutdown().await?;
@@ -311,7 +391,7 @@ async fn answer(supervisor: &mut Supervisor, stream: UnixStream) -> Result<()> {
 pub async fn request(root: &Path, request: &ControlRequest) -> Result<ControlResponse> {
     try_request(root, request).await?.with_context(|| {
         format!(
-            "no host is running on {} (start one with `id host run {}`)",
+            "no host is running on {} (start one with `id host run {}`, or serve it with `id serve --world-host`)",
             root.display(),
             root.display()
         )

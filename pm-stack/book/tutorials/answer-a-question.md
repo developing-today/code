@@ -41,7 +41,7 @@ Open the answer page from the notification. The page presents the same endpoint 
 
 The endpoint records the resolution against the ledger item's question, through the decisions machinery in `aggregator/src/decisions.ts` and `aggregator/src/needs-drew.ts`. The dropped-thread catcher then applies resolutions to the Muse-side decisions ledger, per question.
 
-One limit stands in the code, recorded as D9: the surveys name `needs-drew.ts` as "the question store" for single questions and name decision sets as a distinct store, and the exact file a single-question answer writes is UNVERIFIED. This tutorial therefore names the endpoint and the ledger application, and no store file for the single-question path.
+The single-question path has its own store, recorded as D9 and settled in source: `recordAnswer` in `pm-stack/aggregator/src/needs-drew.ts` writes it to the needs-Drew question store, the file at `cfg.needsDrewFile`. That path is `PM_AGG_NEEDS_USER_FILE`, else the legacy `PM_AGG_NEEDS_DREW_FILE`, else `needs-user.json` (or the legacy `needs-drew.json` where only that exists) under `~/.local/state/pm-aggregator/`, resolved by `needs-user-state-path.ts`. Decision sets keep their own store, `decisions.json`.
 
 ## Path B: answer a decision set on its page
 

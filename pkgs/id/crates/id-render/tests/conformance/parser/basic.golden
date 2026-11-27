@@ -1,0 +1,9 @@
+element <document> @1:1
+  @version="1"
+  element <page> @2:3
+    @title="Welcome"
+    element <text> @3:5
+      text "hello world"
+    end <text>
+  end <page>
+end <document>

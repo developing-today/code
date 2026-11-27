@@ -151,3 +151,33 @@ jobs:
               - **One PR per coherent set**: batch every instance of the same problem — and all related dependency updates — into a single PR, or a few PRs split by coherent group. Never one PR per item or per dependency.
               - **Prefer tracked, higher-impact work**: before inventing a new micro-fix, check the open issues and implement the highest-impact one you can complete and verify, even when it spans several files.
               - **Merging is permitted, never required**: merge your PR only when checks pass and you are reasonably certain it is correct and low-risk. Otherwise leave it open and state your confidence and what a human should check in the description.
+
+      - name: Close superseded daily session-prompt issues (#15723)
+        # Runs in the same job as the dispatch above, once the new tracking
+        # issue exists, so each close comment can name it as the successor.
+        # A prior copy is stale when it is open, carries the exact
+        # session-prompt title, is older than 24h, and is not claimed (no
+        # queue/claimed label): a claimed/in-flight copy is never auto-closed.
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.dispatch.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_ISSUE: ${{ steps.dispatch.outputs.issue_number }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --search '"Daily codebase innovation & maintenance" in:title' \
+            --json number,title,createdAt,labels > stale-copies.json
+          jq -r --arg cutoff "$cutoff" --argjson new_issue "$NEW_ISSUE" '
+            .[]
+            | select(.title == "Daily codebase innovation & maintenance")
+            | select(.number != $new_issue)
+            | select(.createdAt < $cutoff)
+            | select([.labels[].name] | index("queue/claimed") == null)
+            | .number' stale-copies.json > stale-copies.txt
+          while read -r n; do
+            [ -n "$n" ] || continue
+            echo "closing superseded session-prompt issue #$n"
+            gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+              --comment "closed as moot — session prompt superseded by #$NEW_ISSUE"
+          done < stale-copies.txt

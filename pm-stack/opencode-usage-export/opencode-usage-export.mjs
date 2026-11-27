@@ -103,6 +103,10 @@ export function defaultCandidatePaths(home = requireHome("the OpenCode store can
 
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
 const zeroTokens = () => ({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 });
+/** A message's cost or token count: a finite number, else 0. A string
+ * or object there would otherwise concatenate into the totals. */
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const isRecord = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const addTokens = (acc, t) => {
   acc.input += t.input || 0;
   acc.output += t.output || 0;
@@ -112,11 +116,11 @@ const addTokens = (acc, t) => {
   return acc;
 };
 const msgTokens = (t) => ({
-  input: t?.input || 0,
-  output: t?.output || 0,
-  reasoning: t?.reasoning || 0,
-  cacheRead: t?.cache?.read || 0,
-  cacheWrite: t?.cache?.write || 0,
+  input: num(t?.input),
+  output: num(t?.output),
+  reasoning: num(t?.reasoning),
+  cacheRead: num(t?.cache?.read),
+  cacheWrite: num(t?.cache?.write),
 });
 
 /** Parse a session/model JSON text column defensively: current rows
@@ -249,13 +253,16 @@ function readUsageSnapshot(db, { sinceMs }) {
       } catch {
         continue;
       }
+      // Valid JSON that is not an object (null, an array, a scalar) is
+      // not a message body: skip it like unparseable text (#7983).
+      if (!isRecord(data)) continue;
       const model = parseModel(data.model);
       const key = `${model.providerID ?? ""}\u0000${model.id ?? ""}`;
       const entry =
         byModel.get(key) ??
         { model: model.id, providerID: model.providerID, count: 0, cost: 0, tokens: zeroTokens() };
       entry.count += 1;
-      entry.cost += data.cost || 0;
+      entry.cost += num(data.cost);
       addTokens(entry.tokens, msgTokens(data.tokens));
       byModel.set(key, entry);
     }
