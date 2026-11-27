@@ -1768,7 +1768,15 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 		names = append(names, name)
 	}
 	var outcomes []mcpclient.SupervisorScanOutcome
-	for attempt := 0; ; attempt++ {
+	// A stopped daemon's detach lands only once its pools finish
+	// draining, which takes up to limits.execDrainTimeout after the
+	// shutdown began — while waitUntilStopped above already returned,
+	// because the HTTP listener closes first. So a refusal can persist
+	// for the whole drain window; retry until it is over rather than
+	// for a fixed few attempts, or the reap gives up mid-drain and the
+	// child outlives the stop it was cut by.
+	deadline := time.Now().Add(defaults.ExecDrainTimeout + 5*time.Second)
+	for {
 		outcomes = mcpclient.ReapSupervisors(stateDir, names, nil)
 		refused := false
 		for _, o := range outcomes {
@@ -1776,7 +1784,7 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 				refused = true
 			}
 		}
-		if !refused || attempt >= 20 {
+		if !refused || !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(defaults.SupervisorReapRetry)

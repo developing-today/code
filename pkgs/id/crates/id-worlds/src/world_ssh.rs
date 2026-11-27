@@ -78,6 +78,9 @@ const EXPLORE_PREFIX: &str = "explore:";
 /// User-name prefix that opens the line-buffered command shell for a world.
 const COMMAND_PREFIX: &str = "cmd:";
 const MAX_PACKET_BYTES: u32 = 32 * 1024;
+/// The QUIC/`StreamIo` path reaps idle joined sessions on the same
+/// posture via `SessionConfig::idle_timeout`, whose default is this
+/// same 10 minutes (#15976).
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 /// Concurrent SSH connections the server accepts; the rest are refused at auth.
 const MAX_CONNECTIONS: usize = 64;

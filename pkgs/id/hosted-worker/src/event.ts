@@ -40,8 +40,8 @@
 // treats the signed header as the event. This boundary is recorded
 // in doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation.
 
-import { decodeCanonical, encodeCanonical, type CborValue } from "./canonical-cbor.ts";
-import { blake3 } from "./blake3.ts";
+import { decodeCanonical, encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex, verifyEd25519, type IdKey } from "./ed25519.ts";
 
 export const DOMAIN_TAG = "id.events.v1";

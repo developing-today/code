@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 import { bytesToHex, hexToBytes, importIdKey, verifyEd25519 } from "../src/ed25519.ts";
 import { decodeEvent, Malformed, parseEvent, signEvent } from "../src/event.ts";
 

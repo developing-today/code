@@ -68,7 +68,7 @@ use crate::hex::hex_encode;
 /// permitted to write `group`? This is the seam the signed-graph
 /// membership state plugs into; the gate itself only asks, never
 /// interprets.
-pub trait MembershipFrontier {
+pub trait MembershipFrontier: Send + Sync {
     /// Whether `origin` (account ID hex) may write `group`.
     fn is_authorized(&self, origin: &str, group: &str) -> bool;
 }
