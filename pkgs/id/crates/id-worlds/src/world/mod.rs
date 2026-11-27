@@ -1805,7 +1805,9 @@ pub trait WorldProgram: Send + 'static {
     /// participant-input update. The actor clears this context before it
     /// handles another command. Programs without account-aware billing may
     /// ignore it.
-    fn set_caller_account(&mut self, _account: Option<&str>) {}
+    fn replace_caller_account(&mut self, _account: Option<&str>) -> Option<String> {
+        None
+    }
 
     /// Apply an opaque participant input. Chat is managed by the host and is
     /// not passed to the game program.

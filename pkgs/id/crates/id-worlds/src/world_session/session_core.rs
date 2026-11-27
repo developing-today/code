@@ -14,6 +14,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
     frame: ClientFrame,
     world_name: &str,
     documents_store: Option<Store>,
+    caller_account: Option<String>,
 ) {
     match frame {
         ClientFrame::Join {
@@ -43,6 +44,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 agent_profile,
                 device_input,
                 documents_store,
+                caller_account,
             )
             .await;
         }
