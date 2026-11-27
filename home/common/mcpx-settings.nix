@@ -11,6 +11,11 @@
 # reaches the daemon.
 {
   "$schema" = "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json";
+  # Stable loopback endpoint held by mcpx.socket; the Go daemon adopts
+  # systemd's fd 3 when LISTEN_FDS is present (#1822, #12276).
+  "daemon" = {
+    "port" = 34005;
+  };
   "mcpServers" = {
     "atlas" = {
       # Atlas search (#8625): the atlas-search Worker's MCP
