@@ -782,7 +782,7 @@ fn command_for_manifest(manifest: &atlas_core::manifest::Manifest) -> Result<Com
                 ),
             ));
         }
-        search.arg(
+        *search = std::mem::take(search).arg(
             Arg::new(dimension.name.clone())
                 .long(long)
                 .value_name("VALUE")
