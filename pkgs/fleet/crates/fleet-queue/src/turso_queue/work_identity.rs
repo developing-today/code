@@ -286,6 +286,7 @@ pub(crate) fn triage_follow_on_statuses(
         repo: identity.repo.clone(),
         issue: identity.issue,
         family: "fix".to_string(),
+        prompt_id: None,
         prs: Vec::new(),
     };
     let rows = t.query_objs(
