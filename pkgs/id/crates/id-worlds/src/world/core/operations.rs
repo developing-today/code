@@ -1594,7 +1594,8 @@ impl WorldCore {
         let participant_id = self.authorize(token, WorldScopes::JOIN)?;
         let scopes = self.viewer_scopes(participant_id);
         let oldest = self.oldest_sequence();
-        let needs_snapshot = after_sequence.saturating_add(1) < oldest || after_sequence > self.sequence;
+        let needs_snapshot =
+            after_sequence.saturating_add(1) < oldest || after_sequence > self.sequence;
         let events = if needs_snapshot {
             Vec::new()
         } else {
