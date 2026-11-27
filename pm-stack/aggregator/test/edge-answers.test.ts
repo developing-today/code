@@ -16,7 +16,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyEdgeAnswer, tokenHashOf, type EdgeAnswer } from "../src/needs-drew-answer.ts";
 import { getNeedsDrew, raiseNeedsDrew, recordAnswer } from "../src/needs-drew.ts";
-import { handleDecisionRoutes } from "../src/server-decision-routes.ts";
+// server-decision-routes.ts pulls in server-wiring.ts, whose module-scope
+// loadConfig() refuses fixture mode when PM_AGG_SOURCE is unset outside
+// explicit dev mode (#1195). A static import evaluates that graph before
+// any test code can set the dev switch — and the import failure takes the
+// whole file's tests with it — so the routes module loads lazily here.
+async function loadDecisionRoutes() {
+  const saved = process.env.PM_AGG_DEV;
+  process.env.PM_AGG_DEV = "1";
+  try {
+    return await import("../src/server-decision-routes.ts");
+  } finally {
+    if (saved === undefined) delete process.env.PM_AGG_DEV;
+    else process.env.PM_AGG_DEV = saved;
+  }
+}
 import type { NotificationCandidate } from "../src/notifications.ts";
 import { NotifyRelayClient, notificationMirrorEvent } from "../src/notify-relay.ts";
 
@@ -112,6 +126,7 @@ test("the new needs-user answer URL uses the same token gate as the legacy URL",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token: "invalid-token", optionId: "yes" }),
   });
+  const { handleDecisionRoutes } = await loadDecisionRoutes();
   const response = await handleDecisionRoutes(request, new URL(request.url), path);
   expect(response?.status).toBe(403);
 });
