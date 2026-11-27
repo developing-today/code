@@ -200,6 +200,28 @@ pub fn connect_capabilities() -> CapabilitySet {
     capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice])
 }
 
+/// Versioned Python CLI compatibility contract (developing-today/code#16088).
+///
+/// `pkgs/fleet/laptop-agent.py` is a strict compatibility selector: it execs
+/// `<fleet> laptop-agent …` only when `fleet capabilities` advertises this
+/// marker AND the laptop-agent domain is available. Advertising it promises
+/// the entire legacy Python CLI's semantics — health, exec, exec-batch, run
+/// (including accepted `--timeout`), poll, kill, jobs, fetch with `--chunk`
+/// and resume, argument boundaries, stdio/exit conventions, and the
+/// detached-job ownership/cursors — never just verb names.
+pub const LAPTOP_AGENT_PYTHON_CLI_CONTRACT: &str = "laptop-agent-python-cli/v1";
+
+/// The `compatibility_contracts` list for `fleet capabilities`: the Python
+/// CLI contract when the laptop-agent domain is available to this
+/// invocation, empty otherwise. Availability alone never advertises.
+pub fn compatibility_contracts_for(laptop_agent_available: bool) -> &'static [&'static str] {
+    if laptop_agent_available {
+        &[LAPTOP_AGENT_PYTHON_CLI_CONTRACT]
+    } else {
+        &[]
+    }
+}
+
 /// A shipped build variant (§2). The variant is a property of the
 /// artifact; the same names double as invocation profiles (Refinement A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,7 +514,16 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopAgent],
         primary: Capability::LaptopAgent,
         aliases: &["laptop-agent"],
-        subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
+        subcommands: &[
+            "health",
+            "jobs",
+            "kill",
+            "exec-batch",
+            "exec",
+            "run",
+            "poll",
+            "fetch",
+        ],
     },
     Domain {
         name: "commander",
