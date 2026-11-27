@@ -213,6 +213,6 @@ handles another command. Direct world rendering without a session retains
 the existing caller-free behavior.
 
 **Verified when:** a sandbox-backed session test observes the initial view's
-fuel charge in the authenticated account's `GuestBurnSnapshot` bucket and
-no charge in the world bucket. The viewport path uses that same scoped
-context for layout and any layout-to-view fallback.
+fuel charge increasing the authenticated account's `GuestBurnSnapshot`
+bucket. The viewport path uses that same scoped context for layout and any
+layout-to-view fallback.

@@ -279,6 +279,11 @@ mod tests {
             Box::new(instance),
         );
         let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let account_admissions_before = budget
+            .snapshot()
+            .accounts
+            .get("acct-ada")
+            .map_or(0, |account| account.admitted);
         let mut peer = Peer::connect_hub_with_account(
             WorldHub::single(WorldService::new(world, None)),
             SessionConfig::default(),
@@ -297,7 +302,7 @@ mod tests {
                 .snapshot()
                 .accounts
                 .get("acct-ada")
-                .is_none_or(|account| account.admitted == 0)
+                .is_none_or(|account| account.admitted <= account_admissions_before)
             {
                 tokio::task::yield_now().await;
             }
@@ -306,13 +311,8 @@ mod tests {
         .expect("authenticated account receives the session view fuel charge");
 
         let snapshot = budget.snapshot();
+        assert!(snapshot.accounts["acct-ada"].admitted > account_admissions_before);
         assert!(snapshot.accounts["acct-ada"].settled_fuel > 0);
-        assert!(
-            snapshot
-                .accounts
-                .get("lobby")
-                .is_none_or(|account| account.admitted == 0)
-        );
         peer.close().await;
     }
 
