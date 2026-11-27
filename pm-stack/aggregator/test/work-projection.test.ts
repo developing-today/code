@@ -53,6 +53,30 @@ describe("pm_work_view/v1 golden shape and provenance", () => {
     expect(err.freshness.state).toBe("error");
   });
 
+  test("github_labels_are_carried_as_a_fact_with_provenance", () => {
+    // MOB-01 F2 (#9468 follow-up): issue/PR labels ride the read model
+    // so MOB-03 needs_triage is decidable.
+    const view = projectWorkView({
+      ...base,
+      github_labels: { value: ["needs-triage", "kind/design"], source: "github", revision: "sha-3", observed_at: GEN },
+    });
+    expect(view.facts.github_labels).toMatchObject({
+      value: ["needs-triage", "kind/design"],
+      source: "github",
+      revision: "sha-3",
+    });
+    expect(view.freshness.facets.github_labels).toBe("live");
+    // Absent stays absent, never an empty list.
+    const absent = projectWorkView(base);
+    expect(absent.facts.github_labels).toEqual({ state: "absent", freshness: "absent" });
+    // Stale is carried, never zeroed.
+    const stale = projectWorkView({
+      ...base,
+      github_labels: { value: ["needs-triage"], source: "github", freshness: "stale" },
+    });
+    expect(stale.facts.github_labels).toMatchObject({ value: ["needs-triage"], freshness: "stale" });
+  });
+
   test("equal_number_refs_under_different_repositories_do_not_merge", () => {
     const view = projectWorkView({
       ...base,

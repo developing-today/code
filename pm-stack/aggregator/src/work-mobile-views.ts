@@ -17,8 +17,10 @@
 // - `recent` / `cold_backlog` need the issue `updated_at`, which
 //   `WorkView` does not carry: both views return `unavailable` with
 //   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
-// - `needs_triage` needs issue labels, which `WorkView` does not carry:
-//   `unavailable` until MOB-01 carries them (follow-up F2).
+// - `needs_triage` uses the `github.labels` fact MOB-01 carries
+//   (F2 landed): rows carrying the verbatim `needs-triage` label
+//   match, rows without it are out, and the view is `unavailable`
+//   only when no row carries the dimension at all.
 // - `triage` needs Area/Horizon beside Project Status; `WorkView`
 //   carries neither, so a decidable-status row is still `undecided`
 //   with `policy_undefined` (follow-up F3).
@@ -41,8 +43,10 @@
 // - `recent` / `cold_backlog` need the issue `updated_at`, which
 //   `WorkView` does not carry: both views return `unavailable` with
 //   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
-// - `needs_triage` needs issue labels, which `WorkView` does not carry:
-//   `unavailable` until MOB-01 carries them (follow-up F2).
+// - `needs_triage` uses the `github.labels` fact MOB-01 carries
+//   (F2 landed): rows carrying the verbatim `needs-triage` label
+//   match, rows without it are out, and the view is `unavailable`
+//   only when no row carries the dimension at all.
 // - `triage` needs Area/Horizon beside Project Status; `WorkView`
 //   carries neither, so a decidable-status row is still `undecided`
 //   with `policy_undefined` (follow-up F3).
@@ -167,6 +171,21 @@ const compareKeys = (a: WorkKey, b: WorkKey): number =>
           ? 1
           : 0;
 
+/** F2: read the carried github_labels, or say why they are unusable. */
+const labelsOf = (view: WorkView): { ok: true; labels: string[] } | { ok: false; state: UndecidedState } => {
+  const fact = view.facts.github_labels;
+  if (!fact || !("value" in fact)) {
+    const st = factState(fact);
+    return { ok: false, state: (st === "present" ? "absent" : st) as UndecidedState };
+  }
+  const st = factState(fact);
+  if (st !== "present") return { ok: false, state: st as UndecidedState };
+  if (!Array.isArray(fact.value) || !fact.value.every((l) => typeof l === "string")) {
+    return { ok: false, state: "invalid" };
+  }
+  return { ok: true, labels: fact.value };
+};
+
 export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: ViewContext): MobileViewResult {
   const refs: WorkKey[] = [];
   const undecided: UndecidedRow[] = [];
@@ -199,7 +218,21 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
   }
 
   // Views whose deciding dimension is absent from the V1 read model.
-  if (id === "needs_triage") return { ...unavailable("github.labels"), undecided };
+  // F2 landed: needs_triage is decided per row below from the carried
+  // github_labels fact. The view is unavailable only when no row
+  // carries the dimension at all (D2 pattern, as for claims).
+  if (id === "needs_triage") {
+    const anyLabels = known.some((v) => labelsOf(v).ok);
+    if (!anyLabels) {
+      return {
+        id,
+        refs,
+        undecided,
+        unavailable: { reason: "fact_not_sourced", fact: "github.labels" },
+        freshness: "absent",
+      };
+    }
+  }
   if (id === "recent" || id === "cold_backlog") return { ...unavailable("github.updated_at"), undecided };
 
   // Claim-gated views need a viewer, and need at least one row that
@@ -285,7 +318,19 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
         }
         break;
       }
-      case "needs_triage":
+      case "needs_triage": {
+        // F2: decidable now that MOB-01 carries github_labels. The
+        // record reads the `needs-triage` label verbatim; a row whose
+        // labels are missing or unusable is undecided (D3), a row
+        // without the label is decidably out, never undecided.
+        const ls = labelsOf(view);
+        if (!ls.ok) {
+          hold("github.labels", ls.state);
+          break;
+        }
+        if (ls.labels.includes("needs-triage")) refs.push(ref);
+        break;
+      }
       case "recent":
       case "cold_backlog":
         // Handled by the view-level `unavailable` above.
