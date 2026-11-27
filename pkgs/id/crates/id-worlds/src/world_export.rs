@@ -164,6 +164,43 @@ pub async fn export_world_to_file(
     signing_key: &SigningKey,
     path: &Path,
 ) -> Result<ExportManifest> {
+    export_world_to_file_with_dir_sync(service, signing_key, path, &sync_export_parent_dir).await
+}
+
+/// Make the rename of an exported file durable by syncing its parent
+/// directory (#16179), mirroring `HostFile::save`: without it, a power
+/// loss can lose the renamed file even though the export returned `Ok`.
+/// Best-effort no-op off unix, mirroring the `#[cfg(unix)]` shape in
+/// `host.rs`.
+///
+/// # Errors
+///
+/// The parent directory cannot be opened, or its sync fails.
+fn sync_export_parent_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync export directory {}", parent.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// [`export_world_to_file`] with the parent-directory sync step
+/// supplied, split out so tests can fault-inject a sync failure (the
+/// same shape as the #16058/#16131/#16140 durability tests).
+async fn export_world_to_file_with_dir_sync(
+    service: &WorldService,
+    signing_key: &SigningKey,
+    path: &Path,
+    sync_dir: &dyn Fn(&Path) -> Result<()>,
+) -> Result<ExportManifest> {
     if tokio::fs::symlink_metadata(path).await.is_ok() {
         bail!("{} already exists: export to a new file", path.display());
     }
@@ -180,6 +217,10 @@ pub async fn export_world_to_file(
         tokio::fs::rename(&partial, path)
             .await
             .with_context(|| format!("renaming {} to {}", partial.display(), path.display()))?;
+        // Make the rename itself durable before reporting success: the
+        // directory entry is synced after the rename, and a sync failure
+        // is propagated rather than acking a non-durable export (#16179).
+        sync_dir(path)?;
         Ok(manifest)
     }
     .await;
@@ -707,6 +748,58 @@ mod tests {
         service.world().chat(ann.clone(), "hello").await.unwrap();
         service.world().chat(ann, "again").await.unwrap();
         service
+    }
+
+    // #16179 oracle: the durable ack requires the parent-directory sync
+    // after the rename — the injected sync observes the renamed file
+    // already in place, and is called exactly once with the export path.
+    #[tokio::test]
+    async fn an_export_syncs_the_parent_directory_after_the_rename() {
+        let root = TempDir::new().unwrap();
+        let world_dir = root.path().join("w");
+        let service = busy_world(&world_dir).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let file = root.path().join("w.export");
+        let synced = std::sync::Mutex::new(Vec::new());
+        let recording_sync = |path: &Path| -> Result<()> {
+            assert!(
+                path.exists(),
+                "directory sync ran before the rename landed"
+            );
+            synced.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        };
+        let manifest =
+            export_world_to_file_with_dir_sync(&service, &key, &file, &recording_sync)
+                .await
+                .unwrap();
+        service.world().shutdown().await.unwrap();
+        assert_eq!(manifest.world, "w");
+        assert_eq!(*synced.lock().unwrap(), vec![file.clone()]);
+        assert!(file.exists());
+    }
+
+    // #16179 oracle: a parent-directory sync failure is propagated, not
+    // a successful export — the caller must not treat the export as
+    // crash-durable when its rename was never made durable.
+    #[tokio::test]
+    async fn an_export_propagates_a_parent_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let world_dir = root.path().join("w");
+        let service = busy_world(&world_dir).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let file = root.path().join("w.export");
+        let failing_sync = |_: &Path| -> Result<()> {
+            bail!("injected directory sync failure")
+        };
+        let error = export_world_to_file_with_dir_sync(&service, &key, &file, &failing_sync)
+            .await
+            .unwrap_err();
+        service.world().shutdown().await.unwrap();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "{error:#}"
+        );
     }
 
     #[tokio::test]
