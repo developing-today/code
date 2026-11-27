@@ -77,9 +77,21 @@ line the weekly audit already counts (`[source: hard-stop]`); a pool
 with no entry — or an explicit `stopped: false` — seats unaffected,
 and the file never clears a `pool_hard_stop` recorded in the answers.
 A missing or malformed registry fails the dispatch loudly instead of
-seating unguarded. Follow-up (not this slice): the steward writer that
-maintains `hard-stops.json` beside `quota-current.json`, and the
-trailing-pace input, which still has no live producer.
+seating unguarded. The `placement-hard-stop` command maintains this
+registry atomically; both setting and clearing require a reason, and a
+clear is recorded as `stopped:false` rather than deleting the pool entry:
+
+```sh
+placement-hard-stop --action set --file hard-stops.json --pool chatgpt-plan \
+  --note "monthly usage near the wall"
+placement-hard-stop --action clear --file hard-stops.json --pool chatgpt-plan \
+  --note "provider quota recovered"
+```
+
+`--issued-at <RFC3339>` can supply a fixed timestamp for a steward action;
+otherwise the command records the current UTC time. This writer completes
+the registry lifecycle. The production trailing-pace input still has no
+live producer.
 
 ## Tests
 
@@ -93,7 +105,8 @@ proceed), the hard-stop registry (stopped/absent/explicit-false reads,
 sticky stop, fail-closed I/O, pool identity required), and the weekly
 audit sample (emitted records re-checked against
 the table, tampered records named by finding kind, deterministic
-sampling, refusal counting).
+sampling, refusal counting), and hard-stop writer create/update/clear plus
+strict command-argument validation.
 
 ## Monthly pace guard (issue #2732, slice 1)
 
