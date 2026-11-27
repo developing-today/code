@@ -61,6 +61,7 @@
 - [Research and incidental findings](research-and-findings.md)
 - [Script runtimes, permission profiles and presets](runtimes.md)
 - [Schema validation (`internal/schemaval`)](schema-validation.md)
+- [Record and replay tool calls](record-and-replay.md)
 - [MCP tool reference](tool-reference.md)
 - [Scripts](scripts.md)
 - [Script-side generate: the API contract](script-generate.md)
