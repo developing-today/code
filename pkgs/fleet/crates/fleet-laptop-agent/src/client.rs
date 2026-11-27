@@ -907,18 +907,50 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     }
 }
 
-/// The sha256 of the remote file, computed on the laptop by `shasum`
-/// (present on macOS, where the daemon runs) through `/exec`.
-fn remote_sha256(ladder: &Arc<Ladder>, remote: &str) -> Result<String, String> {
-    let cmd = vec![
+/// Parse one `/exec` result of the fingerprint pair (below): the
+/// command must have exited 0, and `pick` reads its stdout.
+fn fingerprint_part<T>(
+    r: &Value,
+    remote: &str,
+    what: &str,
+    pick: impl Fn(&str) -> Option<T>,
+) -> Result<T, String> {
+    if r.get("exit").and_then(Value::as_i64) != Some(0) {
+        let err = r
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Err(format!("cannot {what} {remote}: {err}"));
+    }
+    let out = r.get("stdout").and_then(Value::as_str).unwrap_or("");
+    pick(out).ok_or_else(|| format!("unexpected {what} output for {remote}"))
+}
+
+/// The fingerprint of the remote file: its sha256 and byte size,
+/// computed on the laptop through one `/exec` carrying `shasum`
+/// (present on macOS, where the daemon runs) and `wc -c`. The size
+/// is what the legacy client reads from the `X-File-Size` header —
+/// this ladder's replies carry no headers, so the size rides the
+/// fingerprint instead; it drives the fetch loop's EOF, the
+/// overshoot refusal, and the receipt's byte count.
+fn remote_fingerprint(ladder: &Arc<Ladder>, remote: &str) -> Result<(String, u64), String> {
+    let hash_cmd = vec![
         "shasum".to_string(),
         "-a".to_string(),
         "256".to_string(),
         remote.to_string(),
     ];
-    let spec = command_spec(None, false, &cmd);
+    let size_cmd = vec!["wc".to_string(), "-c".to_string(), remote.to_string()];
+    let body = json!({
+        "cmds": [
+            command_spec(None, false, &hash_cmd),
+            command_spec(None, false, &size_cmd),
+        ],
+        "timeout_s": 60,
+    });
     let trip = crate::new_trip();
-    let body = json!({ "cmds": [spec], "timeout_s": 60 });
     let reply = call(
         ladder,
         &trip,
@@ -929,26 +961,85 @@ fn remote_sha256(ladder: &Arc<Ladder>, remote: &str) -> Result<String, String> {
         Duration::from_secs(60 + TRANSPORT_GRACE_S),
     )
     .map_err(|e| e.to_string())?;
-    let r = reply
+    let results = reply
         .body
         .get("results")
-        .and_then(|v| v.get(0))
-        .ok_or("reply has no result")?;
-    if r.get("exit").and_then(Value::as_i64) != Some(0) {
-        let err = r
-            .get("stderr")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Err(format!("cannot hash {remote}: {err}"));
+        .and_then(Value::as_array)
+        .filter(|rs| rs.len() == 2)
+        .ok_or("reply has no fingerprint results")?;
+    let hash = fingerprint_part(&results[0], remote, "hash", |out| {
+        out.split_whitespace()
+            .next()
+            .filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(|h| h.to_ascii_lowercase())
+    })?;
+    let size = fingerprint_part(&results[1], remote, "size", |out| {
+        out.split_whitespace().next().and_then(|n| n.parse().ok())
+    })?;
+    Ok((hash, size))
+}
+
+/// How the legacy fetch loop (laptop-agent-legacy.py, `fetch`
+/// branch) can stop before the receipt.
+#[derive(Debug, PartialEq)]
+pub(crate) enum FetchError {
+    /// A chunk fetch failed; the partial OUT stays for a later
+    /// resume, exactly as the legacy leaves it.
+    Transport(String),
+    /// Writing a chunk to OUT failed.
+    Write(String),
+    /// A chunk came back empty while bytes were still owed.
+    EmptyBeforeEof,
+}
+
+/// The legacy fetch loop, driven over injected chunk fetches and
+/// writes so tests name the oracle without a daemon: fetch at the
+/// running offset until it reaches `total`, counting one round trip
+/// per chunk request. The loop always makes at least one request —
+/// the legacy learns `total` from a response header, so even an
+/// empty file or a fully resumed OUT costs one trip. A short chunk
+/// with bytes still owed simply loops. Returns the trip count.
+pub(crate) fn fetch_download(
+    total: u64,
+    resumed_from: u64,
+    chunk_len: u64,
+    mut get: impl FnMut(u64, u64) -> Result<Vec<u8>, String>,
+    mut put: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<u64, FetchError> {
+    let mut off = resumed_from;
+    let mut trips = 0;
+    loop {
+        let data = get(off, chunk_len).map_err(FetchError::Transport)?;
+        trips += 1;
+        if data.is_empty() && off < total {
+            return Err(FetchError::EmptyBeforeEof);
+        }
+        put(&data).map_err(FetchError::Write)?;
+        off += data.len() as u64;
+        if off >= total {
+            return Ok(trips);
+        }
     }
-    let out = r.get("stdout").and_then(Value::as_str).unwrap_or("");
-    out.split_whitespace()
-        .next()
-        .filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()))
-        .map(|h| h.to_ascii_lowercase())
-        .ok_or_else(|| format!("unexpected shasum output for {remote}"))
+}
+
+/// The receipt the legacy prints on stderr after a fetch:
+/// `fetched {total} bytes from {remote} -> {out} in {trips} round
+/// trip(s)`, plus the resumed suffix when OUT already held bytes.
+pub(crate) fn fetch_receipt(
+    remote: &str,
+    dest: &std::path::Path,
+    total: u64,
+    trips: u64,
+    resumed_from: u64,
+) -> String {
+    let mut line = format!(
+        "fetched {total} bytes from {remote} -> {} in {trips} round trip(s)",
+        dest.display()
+    );
+    if resumed_from > 0 {
+        line.push_str(&format!(" (resumed from offset {resumed_from})"));
+    }
+    line
 }
 
 /// One `GET /file` range of `len` bytes. Raw bytes, so the reply is
@@ -992,48 +1083,106 @@ fn percent_encode(s: &str) -> String {
         .collect()
 }
 
-/// Copy a remote file to `dest`, hash-checked: the bytes are written only
-/// when their sha256 matches the remote's own. `chunk` is the GET /file
-/// range size (`--chunk`, default 1 MiB); it is clamped to the daemon's
-/// 1 MiB per-request cap. Resume-from-existing-OUT, the overshoot
-/// refusal, and the legacy `N round trip(s)` receipt stay deferred to a
-/// follow-up slice — this transport downloads whole and verifies.
+/// Copy a remote file to `dest`, resuming and hash-checked.
+/// `chunk` is the GET /file range size (`--chunk`, default 1 MiB);
+/// it is clamped to the daemon's 1 MiB per-request cap.
+///
+/// The loop is the legacy's (laptop-agent-legacy.py, `fetch`
+/// branch, code#5757): an existing OUT is continued from its current
+/// size, never restarted; a local file already larger than the
+/// remote is refused before any chunk is fetched; the receipt names
+/// the round trips and the resume offset. On top of the legacy this
+/// transport keeps its sha256 verification: the hash runs over the
+/// resumed prefix plus every fetched chunk, and on a mismatch the
+/// fetched bytes are rolled back — OUT is left exactly as it was
+/// found (or removed, if this fetch created it). A transport or
+/// write failure instead leaves the partial OUT in place, like the
+/// legacy, so a later fetch resumes from it.
 pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: u64) -> i32 {
     let len = chunk.clamp(1, FILE_CHUNK_MAX);
-    let want = match remote_sha256(ladder, remote) {
-        Ok(h) => h,
+    let (want, total) = match remote_fingerprint(ladder, remote) {
+        Ok(fp) => fp,
         Err(message) => {
             eprintln!("laptop-agent: {message}");
             return 1;
         }
     };
-    let mut data = Vec::new();
-    loop {
-        match fetch_chunk(ladder, remote, data.len() as u64, len) {
-            Ok(chunk) if chunk.is_empty() => break,
-            Ok(chunk) => data.extend_from_slice(&chunk),
-            Err(e) => return fail(e),
+    let prefix = match std::fs::read(dest) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("laptop-agent: cannot read {}: {e}", dest.display());
+            return 1;
         }
+    };
+    let resumed_from = prefix.as_ref().map_or(0, |b| b.len() as u64);
+    if resumed_from > total {
+        eprintln!(
+            "laptop-agent: local {} is {resumed_from} bytes but remote {remote} is only {total}; refusing to append \u{2014} remove or rename the local file and retry",
+            dest.display()
+        );
+        return 1;
     }
-    let got: String = Sha256::digest(&data)
+    let existed = prefix.is_some();
+    let mut hasher = Sha256::new();
+    if let Some(bytes) = &prefix {
+        hasher.update(bytes);
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dest)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
+            return 1;
+        }
+    };
+    let downloaded = fetch_download(
+        total,
+        resumed_from,
+        len,
+        |off, n| fetch_chunk(ladder, remote, off, n).map_err(|e| e.to_string()),
+        |data| {
+            hasher.update(data);
+            file.write_all(data)
+                .map_err(|e| format!("cannot write {}: {e}", dest.display()))
+        },
+    );
+    let trips = match downloaded {
+        Ok(trips) => trips,
+        Err(FetchError::EmptyBeforeEof) => {
+            eprintln!("laptop-agent: empty chunk before EOF; fetch incomplete");
+            return 1;
+        }
+        Err(FetchError::Transport(message)) | Err(FetchError::Write(message)) => {
+            eprintln!("laptop-agent: {message}");
+            return 1;
+        }
+    };
+    drop(file);
+    let got: String = hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     if got != want {
+        // Roll the fetched bytes back: a corrupt prefix must not be
+        // resumed from as if it were verified data.
+        if existed {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(dest) {
+                let _ = f.set_len(resumed_from);
+            }
+        } else {
+            let _ = std::fs::remove_file(dest);
+        }
         eprintln!(
             "laptop-agent: sha256 mismatch for {remote}: remote {want}, received {got}; nothing written"
         );
         return 1;
     }
-    if let Err(e) = std::fs::write(dest, &data) {
-        eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
-        return 1;
-    }
-    eprintln!(
-        "[laptop-agent] fetched {remote} -> {} ({} bytes, sha256 {got})",
-        dest.display(),
-        data.len()
-    );
+    eprintln!("{}", fetch_receipt(remote, dest, total, trips, resumed_from));
     0
 }
 
@@ -1560,5 +1709,168 @@ mod tests {
         assert!(seen[0].contains("len=64"), "{}", seen[0]);
         assert!(seen[0].contains("off=0"), "{}", seen[0]);
         assert!(seen[1].contains("off=64"), "{}", seen[1]);
+    }
+
+    /// A fake remote file served in ranges, the way the daemon's
+    /// GET /file serves it: at most `len` bytes from the offset,
+    /// empty at or past EOF.
+    fn fake_remote(data: &[u8]) -> impl FnMut(u64, u64) -> Result<Vec<u8>, String> {
+        let data = data.to_vec();
+        move |off, len| {
+            let start = (off as usize).min(data.len());
+            let end = (start + len as usize).min(data.len());
+            Ok(data[start..end].to_vec())
+        }
+    }
+
+    /// code#16088 fetch resume slice — oracle: laptop-agent-legacy.py
+    /// `fetch` branch (code#5757). A fresh download fetches from 0 in
+    /// chunk-sized trips until the offset reaches the total; the
+    /// bytes land in order.
+    #[test]
+    fn fetch_download_fresh_file_walks_chunks_to_total() {
+        let data: Vec<u8> = (0..250u32).map(|i| (i % 251) as u8).collect();
+        let mut written = Vec::new();
+        let trips = fetch_download(250, 0, 100, fake_remote(&data), |d| {
+            written.extend_from_slice(d);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(trips, 3);
+        assert_eq!(written, data);
+    }
+
+    /// Oracle: an existing OUT is continued from its current size —
+    /// the first request starts at the resume offset, and only the
+    /// missing tail is fetched.
+    #[test]
+    fn fetch_download_resumes_from_the_existing_size() {
+        let data: Vec<u8> = (0..250u32).map(|i| (i % 251) as u8).collect();
+        let mut offsets = Vec::new();
+        let mut serve = fake_remote(&data);
+        let mut written = Vec::new();
+        let trips = fetch_download(
+            250,
+            200,
+            100,
+            |off, len| {
+                offsets.push(off);
+                serve(off, len)
+            },
+            |d| {
+                written.extend_from_slice(d);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(trips, 1);
+        assert_eq!(offsets, [200]);
+        assert_eq!(written, data[200..]);
+    }
+
+    /// Oracle: the legacy learns the total from a response header,
+    /// so a fully resumed OUT (and an empty remote) still costs
+    /// exactly one round trip, which returns empty at EOF.
+    #[test]
+    fn fetch_download_complete_or_empty_still_makes_one_trip() {
+        let data = vec![7u8; 10];
+        let trips = fetch_download(10, 10, 100, fake_remote(&data), |_| Ok(())).unwrap();
+        assert_eq!(trips, 1);
+        let trips = fetch_download(0, 0, 100, fake_remote(&[]), |_| Ok(())).unwrap();
+        assert_eq!(trips, 1);
+    }
+
+    /// Oracle: a chunk that comes back empty before EOF is a loud
+    /// failure (`empty chunk before EOF; fetch incomplete`), never a
+    /// silent short file.
+    #[test]
+    fn fetch_download_empty_chunk_before_eof_fails_loud() {
+        let got = fetch_download(10, 0, 100, |_, _| Ok(Vec::new()), |_| Ok(()));
+        assert_eq!(got, Err(FetchError::EmptyBeforeEof));
+    }
+
+    /// Oracle: a short chunk with bytes still owed is not EOF — the
+    /// legacy loops (`if len(data) < chunk and off < total:
+    /// continue`) until the offset reaches the total.
+    #[test]
+    fn fetch_download_short_chunks_loop_until_total() {
+        let data: Vec<u8> = (0..10u32).map(|i| i as u8).collect();
+        let mut written = Vec::new();
+        // Serve at most 3 bytes per request whatever `len` asks.
+        let trips = fetch_download(
+            10,
+            0,
+            100,
+            |off, _| {
+                let start = (off as usize).min(data.len());
+                let end = (start + 3).min(data.len());
+                Ok(data[start..end].to_vec())
+            },
+            |d| {
+                written.extend_from_slice(d);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(trips, 4);
+        assert_eq!(written, data);
+    }
+
+    /// Transport and write failures surface with their message and
+    /// are distinct from the EOF failure.
+    #[test]
+    fn fetch_download_propagates_transport_and_write_errors() {
+        let got = fetch_download(10, 0, 100, |_, _| Err("boom".to_string()), |_| Ok(()));
+        assert_eq!(got, Err(FetchError::Transport("boom".to_string())));
+        let got = fetch_download(10, 0, 100, fake_remote(&[1u8; 10]), |_| {
+            Err("disk full".to_string())
+        });
+        assert_eq!(got, Err(FetchError::Write("disk full".to_string())));
+    }
+
+    /// Oracle: the receipt is the legacy's stderr line, verbatim —
+    /// `fetched {total} bytes from {remote} -> {out} in {trips}
+    /// round trip(s)`, with ` (resumed from offset N)` only when
+    /// OUT already held bytes.
+    #[test]
+    fn fetch_receipt_matches_the_legacy_line() {
+        let dest = std::path::Path::new("/tmp/out.bin");
+        assert_eq!(
+            fetch_receipt("/remote/a.bin", dest, 250, 3, 0),
+            "fetched 250 bytes from /remote/a.bin -> /tmp/out.bin in 3 round trip(s)"
+        );
+        assert_eq!(
+            fetch_receipt("/remote/a.bin", dest, 250, 1, 200),
+            "fetched 250 bytes from /remote/a.bin -> /tmp/out.bin in 1 round trip(s) (resumed from offset 200)"
+        );
+    }
+
+    /// The fingerprint pair parses like the commands print:
+    /// `shasum -a 256` gives `<hash>  <name>`, `wc -c` gives
+    /// `<size> <name>`; a failed command or junk output is refused.
+    #[test]
+    fn fingerprint_parts_parse_shasum_and_wc_output() {
+        let hash = "a".repeat(64);
+        let ok = json!({"exit": 0, "stdout": format!("{hash}  /remote/a.bin"), "stderr": ""});
+        assert_eq!(
+            fingerprint_part(&ok, "/remote/a.bin", "hash", |out| {
+                out.split_whitespace()
+                    .next()
+                    .filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()))
+                    .map(|h| h.to_ascii_lowercase())
+            })
+            .unwrap(),
+            hash
+        );
+        let sized = json!({"exit": 0, "stdout": "    250 /remote/a.bin", "stderr": ""});
+        assert_eq!(
+            fingerprint_part(&sized, "/remote/a.bin", "size", |out| {
+                out.split_whitespace().next().and_then(|n| n.parse::<u64>().ok())
+            })
+            .unwrap(),
+            250
+        );
+        let failed = json!({"exit": 1, "stdout": "", "stderr": "no such file"});
+        assert!(fingerprint_part(&failed, "/remote/a.bin", "hash", |_| Some(())).is_err());
     }
 }
