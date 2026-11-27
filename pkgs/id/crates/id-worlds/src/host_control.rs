@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::host::{LifecycleState, Supervisor, WakeMode, inspect_world, settings_body};
+use crate::host::{
+    LifecycleState, Supervisor, WakeMode, inspect_world, settings_body, snapshot_settings_body,
+};
+use crate::host_snapshots::SnapshotPolicy;
 use crate::world_export::ExportManifest;
 
 /// Name of the control socket inside a data root.
@@ -94,6 +97,22 @@ pub enum ControlRequest {
         world: String,
         /// The wake mode.
         wake: WakeMode,
+    },
+    /// Set the host-wide snapshot policy (no world) or one world's own;
+    /// no policy clears it (#13739).
+    SetSnapshots {
+        /// The world, or none for the host-wide default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        world: Option<String>,
+        /// The policy, or none to clear it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<SnapshotPolicy>,
+    },
+    /// Show the snapshot policy and sets, changing nothing (#13739).
+    Snapshots {
+        /// The world, or none for the host-wide default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        world: Option<String>,
     },
     /// Export a live world to a new file, signed by the host key (#10695).
     Export {
@@ -202,6 +221,14 @@ pub async fn handle(supervisor: &mut Supervisor, request: ControlRequest) -> Con
         ControlRequest::SetWake { world, wake } => supervisor
             .set_wake(&world, wake)
             .and_then(|()| settings_body(supervisor.file(), &world)),
+        ControlRequest::SetSnapshots { world, policy } => supervisor
+            .set_snapshot_policy(world.as_deref(), policy)
+            .and_then(|()| {
+                snapshot_settings_body(supervisor.root(), supervisor.file(), world.as_deref())
+            }),
+        ControlRequest::Snapshots { world } => {
+            snapshot_settings_body(supervisor.root(), supervisor.file(), world.as_deref())
+        }
         ControlRequest::Export { world, path } => supervisor
             .export(&world, &path)
             .await
@@ -271,9 +298,19 @@ pub async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> Result<()> {
     tokio::pin!(shutdown);
+    let mut snapshots = tokio::time::interval(Duration::from_secs(
+        crate::host_snapshots::SNAPSHOT_TICK_SECS,
+    ));
+    snapshots.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = &mut shutdown => return Ok(()),
+            _ = snapshots.tick() => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs());
+                log_snapshot_run(&supervisor.run_due_snapshots(now).await);
+            }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     if let Err(error) = answer(supervisor, stream).await {
@@ -283,6 +320,25 @@ pub async fn serve(
                 Err(error) => tracing::warn!("host control: accept failed: {error}"),
             },
         }
+    }
+}
+
+/// Log what a scheduled snapshot pass did, one line per set and failure.
+pub(crate) fn log_snapshot_run(run: &crate::host_snapshots::SnapshotRun) {
+    for set in &run.taken {
+        tracing::info!(
+            world = %set.world,
+            entries = set.entries,
+            bytes = set.bytes,
+            "snapshot taken: {}",
+            set.path.display()
+        );
+    }
+    for set in &run.removed {
+        tracing::info!(world = %set.world, "snapshot removed: {}", set.path.display());
+    }
+    for (world, error) in &run.failed {
+        tracing::warn!(world = %world, "snapshot failed: {error}");
     }
 }
 

@@ -136,14 +136,9 @@ record lands on `Muse` with the option's own supervision text. The emitted
 record for a live handoff of exactly that shape is posted on #4986 with the
 PR that carries this PoC.
 
-One seam the PoC review should settle: implementation handoffs. The table's
-default rule (R4) places implementation work on a dispatched OpenCode
-session, while the newer direct-assignment doctrine (#8187, which the #2024
-review says wins where the two differ) makes the claim itself the placement
-for queue work. This PoC evaluates the table as written; how a claimed
-implementation task's record should be emitted — R4 as evaluated, or the
-claiming lane's option under a recorded E1 exception citing #8187 — is a
-review decision, not something the PoC pre-judges.
+For a claimed queue-work implementation task, record the claiming lane's
+option under `rule: "exception"` with an `exception_id` citing #8187; the
+claim itself is the placement.
 
 ## Not in this PoC (the rollout this PoC is reviewed for)
 

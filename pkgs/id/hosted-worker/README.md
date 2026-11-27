@@ -82,8 +82,12 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   no state of its own and resumes from the directory's phase after a
   crash or a lost response. `abortMigration` discards the staged copy,
   moves the directory back to the source at a fresh epoch and reopens
-  the source, which then refuses a stale freeze. Nothing exposes the
-  coordinator to callers yet.
+  the source, which then refuses a stale freeze. The internal operator
+  API at `POST /v1/internal/migrations/{start,resume,abort}` exposes these
+  operations only when the dedicated `MIGRATION_OPERATOR_TOKEN` secret is
+  configured; it is unset by default, so the route remains disabled.
+  Requests use a binding ID and stable migration ID, and retries resume
+  from the durable directory phase. Abort remains refused after switch.
 
 ## Storage contract, budget ladder and backend manifest (#15483)
 

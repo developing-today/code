@@ -1,6 +1,6 @@
 # fleet queue: lifecycle verbs
 
-The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`, `repair`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
+The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`, `repair`, `resolution-backfill`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
 
 Shared rules, stated in [fleet queue: core verbs](queue-core.md) and not repeated in full here: the global exit-code vocabulary (0 ok, 1 gate/not-found, 2 usage, 3 transport/401, 4 broker store failure, 5 no-claim/no-row, 6 fallback switch); the `--worker` default `repo-worker-code`; the `--lane` resolution (flag → env `REPO_QUEUE_LANE` → null, broker checks worker alone); and `--progress` / `--progress-file` mutual exclusion.
 
@@ -309,6 +309,18 @@ Exit codes: 0 repaired (or the dry-run report) · 2 usage · 3 transport · 4 br
 $ fleet queue repair 19481 --dry-run
 {"task_id": 19481, "outcome": "dry_run", "defects": ["..."], "repairs": [{"field": "payload.dedupe", "action": "stamped checked_at/basis by re-performing the dedupe check live"}], "dry_run": true, "status": "blocked", "status_after": "queued"}
 ```
+
+## fleet queue resolution-backfill
+
+```text
+usage: repo-queue resolution-backfill
+```
+
+Takes no arguments; any positional or flag is a usage error (exit 2).
+
+**Behaviour.** Runs the terminal-resolution backfill for #14170 Q2 (broker route `/resolution-backfill`) and prints the broker's report as JSON: the terminal census, the rows it proved, and the rows it left unresolved. It writes a verdict only where existing result data, or a unique dedupe twin, evidences it, so a row with no such evidence stays unresolved. The backfill is idempotent: a second run writes nothing new.
+
+Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
 
 ## fleet queue cancel
 
