@@ -273,6 +273,7 @@ pub mod serve_proxy;
 pub mod serve_proxy_keepalive;
 pub mod serve_proxy_leg;
 pub mod serve_proxy_mux;
+pub mod serve_proxy_scheduler;
 pub use id_core::membership;
 pub use id_core::migration_control;
 #[cfg(feature = "world")]
