@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, anyhow, ensure};
 use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -95,6 +95,15 @@ pub trait WorldOpener: Send + Sync + 'static {
     fn pinned(&self, _name: &str) -> bool {
         false
     }
+
+    /// Stored bytes of `name`'s world data, for per-account storage
+    /// quotas (#1067, F12.10). `None` (the default) means the size is
+    /// unknown — the hub charges nothing for it. Asked while the hub's
+    /// slot map is locked, so it must be cheap (a file stat, never an
+    /// open) and must not call back into the hub.
+    fn stored_bytes(&self, _name: &str) -> Option<u64> {
+        None
+    }
 }
 
 /// Ceilings a hub enforces.
@@ -148,6 +157,11 @@ pub enum ResolveError {
     Busy,
     /// The server is at its open-world ceiling and none is idle.
     TooManyWorlds,
+    /// The acting account is at its per-account storage quota (#1067,
+    /// F12.10): charging the world's measured bytes would take it past
+    /// the limit, so the open or create charges nothing and is refused
+    /// whole — like [`Self::TooManyWorlds`] for the world count.
+    StorageQuota,
     /// Storage failed to open the world.
     Unavailable,
 }
@@ -161,6 +175,9 @@ impl ResolveError {
             Self::InvalidName => "invalid world name",
             Self::Busy => "server is busy; try again shortly",
             Self::TooManyWorlds => "server has too many worlds open; try again shortly",
+            Self::StorageQuota => {
+                "account is at its storage quota; try again after freeing storage"
+            }
             Self::Unavailable => "world is unavailable",
         }
     }
@@ -432,6 +449,9 @@ struct SlotLeaseGuard {
     /// Whether this acquire recorded a new world hold for `account`
     /// (rolled back if the guard drops while armed).
     noted: bool,
+    /// Storage bytes this acquire charged for `account` (rolled back
+    /// with the hold if the guard drops while armed).
+    storage_charged: u64,
     armed: bool,
 }
 
@@ -445,6 +465,7 @@ impl Drop for SlotLeaseGuard {
             && let Ok(mut worlds) = self.hub.inner.account_worlds.lock()
         {
             worlds.release(account, &self.name);
+            self.hub.release_storage_as(account, self.storage_charged);
         }
         self.slot.leases.fetch_sub(1, Ordering::AcqRel);
         if let Ok(mut slots) = self.hub.inner.slots.lock()
@@ -662,7 +683,7 @@ impl WorldHub {
         permit: OwnedSemaphorePermit,
         account: Option<&str>,
     ) -> Result<WorldLease, ResolveError> {
-        let (slot, evicted, noted) = self.acquire_slot(name, create, account)?;
+        let (slot, evicted, noted, storage_charged) = self.acquire_slot(name, create, account)?;
         // Armed until the lease is handed to the caller: dropping the guard
         // (error return, or cancellation of the awaits below) releases the
         // counted lease exactly once, and rolls back a world hold this
@@ -673,6 +694,7 @@ impl WorldHub {
             slot: Arc::clone(&slot),
             account: account.map(str::to_owned),
             noted,
+            storage_charged,
             armed: true,
         };
         for (victim, service) in evicted {
@@ -727,19 +749,22 @@ impl WorldHub {
     /// Find or create the slot for `name` and count a lease on it. Returns
     /// the worlds evicted to make room (name and service), to be shut down
     /// by the caller — plus whether this call recorded a new world hold
-    /// for `account` (for the [`SlotLeaseGuard`] rollback).
+    /// for `account` and how many storage bytes it charged (both for the
+    /// [`SlotLeaseGuard`] rollback).
     ///
     /// A slot that already exists is never a new hold, so the
     /// per-account quota cannot refuse a reopen; a `None` account
     /// skips the quota entirely. Refusing with
     /// [`ResolveError::TooManyWorlds`] reuses the global ceiling's
-    /// refusal, so every bridge path handles it as it already does.
+    /// refusal, so every bridge path handles it as it already does;
+    /// a storage refusal is [`ResolveError::StorageQuota`], whose
+    /// message the session bridge surfaces verbatim.
     fn acquire_slot(
         &self,
         name: &str,
         create: bool,
         account: Option<&str>,
-    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>, bool), ResolveError> {
+    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>, bool, u64), ResolveError> {
         let mut slots = self
             .inner
             .slots
@@ -749,7 +774,7 @@ impl WorldHub {
             // Counted under the map lock so eviction cannot slip in between.
             slot.leases.fetch_add(1, Ordering::AcqRel);
             slot.touch();
-            return Ok((Arc::clone(slot), Vec::new(), false));
+            return Ok((Arc::clone(slot), Vec::new(), false, 0));
         }
         let opener = self
             .inner
@@ -790,7 +815,13 @@ impl WorldHub {
         // map lock as the slot insert, so two concurrent creations for
         // one account cannot both slip past the limit. The hold is
         // rolled back by the lease guard when the open never completes.
+        // A new hold also charges the world's measured bytes against
+        // the account's storage quota (#1067, F12.10): the charge reads
+        // the opener's stored size (a stat, never an open) and refuses
+        // whole with `StorageQuota` before the slot is inserted, so a
+        // refused create leaves no slot, no hold, and no charge.
         let mut noted = false;
+        let mut storage_charged: u64 = 0;
         if let Some(account) = account
             && let Ok(mut worlds) = self.inner.account_worlds.lock()
         {
@@ -798,9 +829,17 @@ impl WorldHub {
                 Ok(new_hold) => noted = new_hold,
                 Err(_) => return Err(ResolveError::TooManyWorlds),
             }
+            if noted && let Ok(mut storage) = self.inner.account_storage.lock() {
+                let bytes = opener.stored_bytes(name).unwrap_or(0);
+                if storage.try_charge(account, bytes).is_err() {
+                    worlds.release(account, name);
+                    return Err(ResolveError::StorageQuota);
+                }
+                storage_charged = bytes;
+            }
         }
         slots.insert(name.to_owned(), Arc::clone(&slot));
-        Ok((slot, evicted, noted))
+        Ok((slot, evicted, noted, storage_charged))
     }
 
     /// The cross-world schedule delivery sink backed by this hub
@@ -1836,6 +1875,141 @@ mod tests {
         assert_eq!(open.storage_limit_per_account(), 0);
         open.try_charge_storage_as("acct-a", u64::MAX).unwrap();
         assert_eq!(open.storage_charged_by("acct-a"), u64::MAX);
+    }
+
+    /// A test opener with fixed stored-byte sizes per world (#1067
+    /// F12.10 storage-measurement slice): opens behave exactly like
+    /// [`MemoryOpener`], but `stored_bytes` reports the seeded sizes
+    /// and names in `fail_open` fail the open — so the hub charges
+    /// measured bytes without touching the filesystem.
+    struct SizedOpener {
+        inner: Arc<MemoryOpener>,
+        sizes: std::collections::HashMap<String, u64>,
+        fail_open: Vec<String>,
+    }
+
+    impl SizedOpener {
+        fn sized(sizes: &[(&str, u64)], fail_open: &[&str]) -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryOpener::new(true),
+                sizes: sizes
+                    .iter()
+                    .map(|(name, bytes)| ((*name).to_owned(), *bytes))
+                    .collect(),
+                fail_open: fail_open.iter().map(|name| (*name).to_owned()).collect(),
+            })
+        }
+    }
+
+    impl WorldOpener for SizedOpener {
+        fn open<'a>(&'a self, name: &'a str, create: bool) -> OpenFuture<'a> {
+            Box::pin(async move {
+                if self.fail_open.iter().any(|n| n == name) {
+                    return Err(anyhow::anyhow!("test opener refuses {name}"));
+                }
+                self.inner.open(name, create).await
+            })
+        }
+
+        fn exists(&self, name: &str) -> bool {
+            self.inner.exists(name)
+        }
+
+        fn list(&self) -> Vec<String> {
+            self.inner.list()
+        }
+
+        fn durable(&self) -> bool {
+            self.inner.durable()
+        }
+
+        fn stored_bytes(&self, name: &str) -> Option<u64> {
+            self.sizes.get(name).copied()
+        }
+    }
+
+    /// Oracle (#1067 F12.10 storage-measurement slice): when a world
+    /// is newly attributed to an account at the hub's open/create
+    /// boundary, the hub charges the opener's measured bytes to that
+    /// account's storage ledger. A charge that would cross the limit
+    /// refuses the whole open with `StorageQuota` — no slot, no hold,
+    /// no charge; a failed open rolls the charge back with the hold;
+    /// other accounts are unaffected; an unconfigured hub admits all.
+    #[tokio::test]
+    async fn storage_quota_charges_measured_bytes_on_write_path() {
+        let opener: Arc<dyn WorldOpener> = SizedOpener::sized(
+            &[("w60", 60), ("w50", 50), ("wbig", 200), ("wfail", 30)],
+            &["wfail"],
+        );
+        let hub = WorldHub::new(
+            opener,
+            Some("admin".to_owned()),
+            "lobby",
+            HubLimits {
+                max_storage_bytes_per_account: 100,
+                ..HubLimits::default()
+            },
+        );
+
+        // First attribution charges the measured bytes.
+        hub.lease_as(Some("w60"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap();
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+
+        // Reopening an already-held world charges nothing more.
+        hub.lease_as(Some("w60"), None, Some("acct-a"))
+            .await
+            .unwrap();
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+
+        // Past the limit the whole open is refused: the error is the
+        // storage variant with its explicit message, and the account
+        // is exactly as it was — nothing charged, held, or slotted.
+        let refused = hub
+            .lease_as(Some("w50"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused, ResolveError::StorageQuota);
+        assert_eq!(
+            refused.message(),
+            "account is at its storage quota; try again after freeing storage"
+        );
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+
+        // A failed open rolls the 30-byte charge back with the hold.
+        let failed = hub
+            .lease_as(Some("wfail"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(failed, ResolveError::Unavailable);
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+
+        // Other accounts are unaffected; a charge larger than the
+        // limit is refused even from zero.
+        hub.lease_as(Some("w50"), Some("admin"), Some("acct-b"))
+            .await
+            .unwrap();
+        assert_eq!(hub.storage_charged_by("acct-b"), 50);
+        let refused = hub
+            .lease_as(Some("wbig"), Some("admin"), Some("acct-c"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused, ResolveError::StorageQuota);
+        assert_eq!(hub.storage_charged_by("acct-c"), 0);
+
+        // An unconfigured hub admits everything.
+        let opener: Arc<dyn WorldOpener> = SizedOpener::sized(&[("wbig", 200)], &[]);
+        let open = WorldHub::new(
+            opener,
+            Some("admin".to_owned()),
+            "lobby",
+            HubLimits::default(),
+        );
+        open.lease_as(Some("wbig"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap();
+        assert_eq!(open.storage_charged_by("acct-a"), 200);
     }
 
     #[test]

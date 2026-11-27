@@ -1037,6 +1037,24 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
     fn durable(&self) -> bool {
         !self.ephemeral
     }
+
+    fn stored_bytes(&self, name: &str) -> Option<u64> {
+        // The journal is the world's durable bytes (#1067, F12.10):
+        // a stat, never an open, so it stays cheap under the hub's
+        // slot-map lock. Ephemeral servers keep nothing, and a missing
+        // journal (a world about to be created) measures zero via the
+        // hub's `unwrap_or(0)`.
+        if self.ephemeral {
+            return None;
+        }
+        std::fs::metadata(
+            Path::new(WORLDS_DIR)
+                .join(name)
+                .join(id_worlds::world_store::JOURNAL_FILE),
+        )
+        .ok()
+        .map(|meta| meta.len())
+    }
 }
 
 /// Whether `name` is a durable world under `root` that this server may
