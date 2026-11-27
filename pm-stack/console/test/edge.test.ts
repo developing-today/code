@@ -2075,9 +2075,9 @@ describe("actions", () => {
     const done = { [ids[1]]: "started" };
     w.link.now = new EdgeLink({
       url: `https://${HOST}`,
-      keys: memoryStore(
-        JSON.stringify(await (async () => ({ publicJwk: await w.link.now.publicKey(), privateJwk: null }))()),
-      ),
+      // A restart retains the signing key. Regenerating it here would
+      // impersonate a different machine, which must not take bound work.
+      keys: w.keys,
       done: memoryStore(JSON.stringify(done)),
       docs: w.hostDocs,
       phones: w.hostDeps.phones!.devices,
@@ -5619,6 +5619,10 @@ describe("the edge does the core itself", () => {
     test("a token that may not write there: nothing is written, and it is a machine's to do for the hour, as a reply is", async () => {
       const w = await primary();
       handsItem(w);
+      // handsItem advances beyond the heartbeat window. Establish a
+      // reachable machine before testing immediate permission handover.
+      w.now.t += 1000;
+      await w.link.now.once();
       w.ghRefuses.push(onItem("DELETE", /\/issues\/301\/labels\//));
       const done = await w.act("hands.done", { ref: REF });
       expect(done.status).toBe(200);
@@ -8621,6 +8625,10 @@ describe("the edge does the core itself", () => {
 
   test("an asking past its deadline becomes host-owned once, including across passivation", async () => {
     const w = await primary();
+    // primary's setup clock passed the heartbeat window. This test
+    // needs an actual relay in flight, not a stale machine's held work.
+    w.now.t += 1000;
+    await w.link.now.once();
     w.ghRefuses.push(COMMENT);
     let open = () => {};
     w.gate.wait = new Promise<void>((resolve) => {

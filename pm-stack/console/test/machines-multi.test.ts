@@ -48,11 +48,8 @@ async function setup() {
     throw new Error(`unexpected fetch ${u}`);
   };
   const { kv } = makeKv();
-  const edge = new Edge({
-    kv,
-    now: clock,
-    fetchImpl: asThePlatformFetch(outward) as never,
-  });
+  const freshEdge = () => new Edge({ kv, now: clock, fetchImpl: asThePlatformFetch(outward) as never });
+  let edge = freshEdge();
   const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: OWNER });
   cfg.issuers = [ISSUER];
   const edgeConfig: EdgeConfig = {
@@ -94,7 +91,7 @@ async function setup() {
     );
   const ownerBrowse = async (path: string, init: { method?: string; body?: unknown } = {}) =>
     browse(path, { ...init, token: await token() });
-  return { edge, kv, now, clock, edgeConfig, browse, ownerBrowse, token };
+  return { get edge() { return edge; }, restart: () => { edge = freshEdge(); }, kv, now, clock, edgeConfig, browse, ownerBrowse, token };
 }
 
 async function syncAs(
@@ -102,17 +99,18 @@ async function syncAs(
   pair: { publicJwk: { kty: "EC"; crv: "P-256"; x: string; y: string }; privateJwk: JsonWebKey },
   name: string,
   at: number,
+  options: { actions?: string[]; legacy?: boolean; acks?: { id: string; ok: boolean }[] } = {},
 ) {
   const kid = await keyId(pair.publicJwk);
   const body = new TextEncoder().encode(
     JSON.stringify({
       v: 1,
       at,
-      machine: { name, actions: ["task.move"], sections: ["board"] },
+      ...(options.legacy ? {} : { machine: { name, actions: options.actions ?? ["task.move"], sections: ["board"] } }),
       config: s.edgeConfig,
       sections: [],
       have: {},
-      acks: [],
+      acks: options.acks ?? [],
       phones: { devices: [], removed: [] },
     }),
   );
@@ -127,6 +125,63 @@ async function syncAs(
     ),
   };
 }
+
+describe("key-bound multi-machine routing (#13492 slice 2)", () => {
+  test("distinct capabilities, duplicate names, restart, wrong-key ack and legacy reports", async () => {
+    // Oracle: the selected signing key alone receives and settles work;
+    // no directive may relay a second machine's action to the first tunnel.
+    const s = await setup();
+    const first = await newKeyPair();
+    const second = await newKeyPair();
+    const firstKid = await keyId(first.publicJwk);
+    const secondKid = await keyId(second.publicJwk);
+    await s.edge.fetch(new Request("https://pm.internal/internal/key", {
+      method: "POST", body: JSON.stringify({ key: first.publicJwk }),
+    }));
+    const { code } = await (await s.ownerBrowse("/console/api/machines/enroll-code", { body: {} })).json() as { code: string };
+    expect((await s.edge.fetch(new Request(`https://${HOST}/console/edge/enroll`, {
+      method: "POST", body: JSON.stringify({ key: second.publicJwk, code }),
+    }))).status).toBe(200);
+    const sync = async (pair: typeof first, actions: string[], extra: { legacy?: boolean; acks?: { id: string; ok: boolean }[] } = {}) => {
+      s.now.t += 1000;
+      return (await syncAs(s, pair, "same-name", s.now.t, { actions, ...extra })).res;
+    };
+    await sync(first, ["task.move"]);
+    await sync(second, ["issue.comment"]);
+    const act = (id: string, kind: string, args: unknown) => s.ownerBrowse("/console/api/act", { body: { id, kind, args } });
+    const relayed = await act("first-act", "task.move", { task: 21016, to: "first" });
+    expect(relayed.headers.get("x-pm-next")).toBe("relay");
+    expect(await relayed.json()).toMatchObject({ forKid: firstKid });
+    const held = await act("second-act", "issue.comment", { issue: 301, text: "second only" });
+    expect(held.headers.get("x-pm-next")).toBeNull();
+    expect(await held.json()).toMatchObject({ held: true });
+    s.restart();
+    const wrong = await sync(first, ["task.move", "issue.comment"], { acks: [{ id: "second-act", ok: true }] });
+    expect(await wrong.json()).toMatchObject({ commands: [] });
+    const machines = await (await s.ownerBrowse("/console/api/machines")).json() as { held: { id: string; forKid: string }[] };
+    expect(machines.held).toContainEqual(expect.objectContaining({ id: "second-act", forKid: secondKid }));
+    // Capability changes on the other key and identical names do not steal it.
+    const delivered = await sync(second, ["issue.comment"]);
+    expect(await delivered.json()).toMatchObject({ commands: [{ id: "second-act", forKid: secondKid }] });
+    s.restart();
+    // Same signed key can acknowledge even with an older, nameless report.
+    await sync(second, [], { legacy: true, acks: [{ id: "second-act", ok: true }] });
+    expect((await (await s.ownerBrowse("/console/api/machines")).json() as { held: unknown[] }).held).toEqual([]);
+    await sync(second, ["issue.comment"]);
+    const none = await act("none-act", "pr.merge", { pr: 7 });
+    expect(none.status).toBe(503);
+    expect(none.headers.get("x-pm-next")).toBeNull();
+    expect(await none.json()).toMatchObject({ noneCapable: true });
+    // A second machine's fresh report does not revive a stale first tunnel.
+    s.now.t += 121000;
+    await sync(second, ["issue.comment"]);
+    const stale = await act("stale-first", "task.move", { task: 21017, to: "first" });
+    expect(stale.headers.get("x-pm-next")).toBeNull();
+    expect(await stale.json()).toMatchObject({ held: true });
+    expect(await (await sync(second, ["issue.comment"])).json()).toMatchObject({ commands: [] });
+    expect(await (await sync(first, ["task.move"])).json()).toMatchObject({ commands: [{ id: "stale-first", forKid: firstKid }] });
+  });
+});
 
 describe("second machine enrollment (#13492 slice 1)", () => {
   test("owner-approved enroll, per-key reports, removal, legacy compat", async () => {

@@ -137,9 +137,11 @@ export function machineReport(value: unknown): MachineReport | null {
 
 /** One machine as the edge knows it for choosing who does an action
  * (#13492 slice 2): what it says it can do, and whether it is
- * connected — it has reported lately, so the edge has an address it
- * can reach for it. */
+ * reachable through a trusted relay path and has reported lately.
+ * A recent report alone does not establish a reachable address. */
 export interface MachineCandidate {
+  /** Stable enrolled key identity; names are display text, not authority. */
+  kid?: string;
   name: string;
   actions: string[];
   connected: boolean;
@@ -305,12 +307,12 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
-  /** The machine this waits for, by name (#13492 slice 2): the one
-   * selected for it because it says it can do this kind. Only that
-   * machine is handed it. Absent from what was held before the
-   * saying, and for what no machine has said it can do: such a one
-   * waits for any machine, as it did before. */
+  /** Display name of the selected machine. Not an identity: duplicate
+   * names are allowed. Delivery authority is forKid below. */
   for?: string;
+  /** Signing key allowed to take and acknowledge this action. Additive:
+   * older machines need not understand it; the edge enforces delivery. */
+  forKid?: string;
   /** It certainly reached no machine: it was never sent toward one, or
    * the one time it was, what answered in the machine's place said it
    * never arrived. Only then may the platform do it itself. Without
