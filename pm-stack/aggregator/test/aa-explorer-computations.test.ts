@@ -21,6 +21,8 @@ import {
   costScoreEnvelope,
   costScoreOls,
   costScoreTail,
+  resolveLabelMode,
+  shouldLabelPoint,
   sortRows,
   unpricedScoredPoints,
 } from "../src/assets/aa-explorer-computations.js";
@@ -443,5 +445,34 @@ describe("cost x score overlays (#1400 remainder)", () => {
       2,
     );
     expect(tail.length).toBe(1);
+  });
+});
+
+describe("chart point-label modes (#1400 remainder)", () => {
+  test("unknown and missing modes fall back to key, the historical default", () => {
+    expect(resolveLabelMode(undefined)).toBe("key");
+    expect(resolveLabelMode(null)).toBe("key");
+    expect(resolveLabelMode("")).toBe("key");
+    expect(resolveLabelMode("bogus")).toBe("key");
+    expect(resolveLabelMode("key")).toBe("key");
+    expect(resolveLabelMode("all")).toBe("all");
+    expect(resolveLabelMode("none")).toBe("none");
+  });
+
+  test("key labels only frontier and selected points, like the charts always did", () => {
+    expect(shouldLabelPoint("key", true, false)).toBe(true);
+    expect(shouldLabelPoint("key", false, true)).toBe(true);
+    expect(shouldLabelPoint("key", true, true)).toBe(true);
+    expect(shouldLabelPoint("key", false, false)).toBe(false);
+    // garbage mode resolves to key
+    expect(shouldLabelPoint("bogus", false, false)).toBe(false);
+    expect(shouldLabelPoint("bogus", true, false)).toBe(true);
+  });
+
+  test("all labels every point and none labels nothing", () => {
+    expect(shouldLabelPoint("all", false, false)).toBe(true);
+    expect(shouldLabelPoint("all", true, true)).toBe(true);
+    expect(shouldLabelPoint("none", false, false)).toBe(false);
+    expect(shouldLabelPoint("none", true, true)).toBe(false);
   });
 });

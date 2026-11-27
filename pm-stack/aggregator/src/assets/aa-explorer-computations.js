@@ -536,3 +536,22 @@ export function costScoreTail(points, binCount) {
   }
   return smoothScores(line);
 }
+
+// Per-chart point-label modes (#1400 remainder). The three scatter charts
+// (xpl-c1/c2/c3) label a subset of their dots: "key" labels frontier +
+// selected points (the historical behavior, kept as the default), "all"
+// labels every plotted point, and "none" labels nothing. Mode state lives
+// per chart id on the page (S.labelBy); these helpers normalize the raw
+// stored value and decide one point so Bun tests exercise exactly the
+// code the browser runs.
+export function resolveLabelMode(mode) {
+  if (mode === "all" || mode === "none" || mode === "key") return mode;
+  return "key";
+}
+
+export function shouldLabelPoint(mode, onFrontier, isSelected) {
+  var m = resolveLabelMode(mode);
+  if (m === "all") return true;
+  if (m === "none") return false;
+  return !!(onFrontier || isSelected);
+}
