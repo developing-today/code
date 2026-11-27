@@ -53,7 +53,9 @@ blake3 = "1"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 # zlib for kitty graphics RGBA payloads (`o=z`, kitty_graphics.rs, #13623);
 # already in the workspace graph through id-core's `world` feature.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1", default-features = false, features = [
+  "rust_backend",
+] }
 futures-lite = "2"
 # Decodes and resizes kitty graphics stills (kitty_graphics::fit_still,
 # #13623). Already in the workspace graph through bevy; this edge turns

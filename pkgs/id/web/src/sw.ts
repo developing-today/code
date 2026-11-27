@@ -27,7 +27,7 @@ type ServiceWorkerScope = {
   skipWaiting(): Promise<void>;
   clients: {
     claim(): Promise<void>;
-    matchAll(options: { type: "window", includeUncontrolled: boolean }): Promise<WindowClient[]>;
+    matchAll(options: { type: "window"; includeUncontrolled: boolean }): Promise<WindowClient[]>;
     openWindow(url: string): Promise<WindowClient | null>;
   };
   addEventListener(type: "install" | "activate", listener: (event: ExtendableEvent) => void): void;
@@ -63,7 +63,12 @@ scope.addEventListener("fetch", (event) => {
 scope.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data;
-  if (typeof data !== "object" || data === null || Array.isArray(data) || (data as Record<string, unknown>).type !== "client.notify") {
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    Array.isArray(data) ||
+    (data as Record<string, unknown>).type !== "client.notify"
+  ) {
     return;
   }
   event.waitUntil(

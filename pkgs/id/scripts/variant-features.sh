@@ -30,7 +30,7 @@ fi
 variant="$1"
 minus_defaults=false
 if [[ $# -eq 2 ]]; then
-  if [[ "$2" != "--minus-defaults" ]]; then
+  if [[ $2 != "--minus-defaults" ]]; then
     usage
     echo "Error: unknown option '$2'" >&2
     exit 1
@@ -40,7 +40,7 @@ fi
 
 here="$(cd "$(dirname "$0")" && pwd)"
 source_file="$here/../composition/variants.toml"
-if [[ ! -f "$source_file" ]]; then
+if [[ ! -f $source_file ]]; then
   echo "Error: profile source not found: $source_file" >&2
   exit 1
 fi

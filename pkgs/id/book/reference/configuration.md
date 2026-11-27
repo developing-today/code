@@ -177,56 +177,56 @@ Slice 03 of the #9111 configuration surface (parts 2–7) added six behaviour pl
 
 **`fanout` — query fan-out and its remotes.** The fan-out keys bound how one query spreads across peers. Each key is validated against `1 ..= limit`, where the limit is fixed in the crate; a value above its limit rejects the document at load instead of being clamped.
 
-| Key                        | Default | Limit (reject above) | Rule                                                                                                                          |
-| -------------------------- | ------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `fanout.deadline_ms`       | `5000`  | `60000`              | Whole fan-out query deadline.                                                                                                 |
-| `fanout.per_peer_timeout_ms` | `2000` | `30000`              | Per-peer timeout. A value above `deadline_ms` is accepted and clamped to it in the resolved config — the one clamp in the plane. |
-| `fanout.peer_breadth`      | `4`     | `16`                 | How many peers one query asks at once. The hop bound is `ceilings.max_hops`, itself rejected above `8`.                        |
-| `fanout.remotes[]`         | `[]` (local-only) | —          | The peers fan-out queries may ask; see below. Omitted from the canonical encoding when empty.                                  |
+| Key                          | Default           | Limit (reject above) | Rule                                                                                                                             |
+| ---------------------------- | ----------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `fanout.deadline_ms`         | `5000`            | `60000`              | Whole fan-out query deadline.                                                                                                    |
+| `fanout.per_peer_timeout_ms` | `2000`            | `30000`              | Per-peer timeout. A value above `deadline_ms` is accepted and clamped to it in the resolved config — the one clamp in the plane. |
+| `fanout.peer_breadth`        | `4`               | `16`                 | How many peers one query asks at once. The hop bound is `ceilings.max_hops`, itself rejected above `8`.                          |
+| `fanout.remotes[]`           | `[]` (local-only) | —                    | The peers fan-out queries may ask; see below. Omitted from the canonical encoding when empty.                                    |
 
 Each `fanout.remotes[]` entry names a peer that fan-out may ask:
 
-| Key          | Rule                                                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `peer_id`    | **Required.** Must have a `peers[]` entry granting `query.out`; at most one remote per peer.                                          |
-| `priority`   | **Required.** Ask order, lowest first; ties keep list order. Ordering only.                                                            |
-| `relay`      | Default `false`. `true` needs a `fully_trusted` peer with `relay_granted`.                                                             |
-| `timeout_ms` | Optional as written; always set in the resolved config, to the effective timeout.                                                      |
-| `scope`      | Default: the peer's `scope`.                                                                                                           |
+| Key          | Rule                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------- |
+| `peer_id`    | **Required.** Must have a `peers[]` entry granting `query.out`; at most one remote per peer. |
+| `priority`   | **Required.** Ask order, lowest first; ties keep list order. Ordering only.                  |
+| `relay`      | Default `false`. `true` needs a `fully_trusted` peer with `relay_granted`.                   |
+| `timeout_ms` | Optional as written; always set in the resolved config, to the effective timeout.            |
+| `scope`      | Default: the peer's `scope`.                                                                 |
 
 **`peers[]` — the peer plane.** Each entry is one peer relationship:
 
-| Key             | Default    | Rule                                                                                                                                                              |
-| --------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `peer_id`       | —          | **Required**, non-empty, unique in the document: the peer's signing identity.                                                                                      |
-| `class`         | `unknown`  | Trust class: `fully_trusted` (broad configured operations in both directions; never a validation bypass), `send_only` (we send, never accept peer-originated data), `accept_signed_from` (inbound acceptance only, for objects passing the full gate), `unknown` (no configured trust: deny everything). |
-| `operations`    | none       | Operations granted, each at most once: `sync.accept`, `sync.send`, `query.out`, `query.answer`, `relay` (relaying a third party's query is governed only by `relay_granted`). |
-| `operation_overrides` | none | Per-operation overrides keyed by operation name. Only two keys can be chosen per operation: `adapter` (must be one the build advertises) and `timeout_ms` (within `1 ..= 30000`); an absent key or `null` keeps the link-kind default. Omitted from the canonical encoding when empty. |
-| `relay_granted` | `false`    | The separate relay grant; only meaningful with `fully_trusted`.                                                                                                    |
-| `scope`         | deployment default | The scope the policy applies to; absent means the deployment's default scope, present must be non-empty.                                                     |
-| `policy_version` | —         | **Required.** Monotonic per-peer policy version.                                                                                                                   |
-| `valid_from` / `expires_at` | none | Optional RFC 3339 instants bounding when the policy is in force; `expires_at` must be after `valid_from` when both are set.                                       |
-| `timeout_ms`    | none       | Per-peer timeout within `1 ..= 30000`; absent means the fan-out `per_peer_timeout_ms` applies.                                                                       |
-| `priority`      | none       | Fan-out ask order; absent means list position.                                                                                                                     |
+| Key                         | Default            | Rule                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `peer_id`                   | —                  | **Required**, non-empty, unique in the document: the peer's signing identity.                                                                                                                                                                                                                            |
+| `class`                     | `unknown`          | Trust class: `fully_trusted` (broad configured operations in both directions; never a validation bypass), `send_only` (we send, never accept peer-originated data), `accept_signed_from` (inbound acceptance only, for objects passing the full gate), `unknown` (no configured trust: deny everything). |
+| `operations`                | none               | Operations granted, each at most once: `sync.accept`, `sync.send`, `query.out`, `query.answer`, `relay` (relaying a third party's query is governed only by `relay_granted`).                                                                                                                            |
+| `operation_overrides`       | none               | Per-operation overrides keyed by operation name. Only two keys can be chosen per operation: `adapter` (must be one the build advertises) and `timeout_ms` (within `1 ..= 30000`); an absent key or `null` keeps the link-kind default. Omitted from the canonical encoding when empty.                   |
+| `relay_granted`             | `false`            | The separate relay grant; only meaningful with `fully_trusted`.                                                                                                                                                                                                                                          |
+| `scope`                     | deployment default | The scope the policy applies to; absent means the deployment's default scope, present must be non-empty.                                                                                                                                                                                                 |
+| `policy_version`            | —                  | **Required.** Monotonic per-peer policy version.                                                                                                                                                                                                                                                         |
+| `valid_from` / `expires_at` | none               | Optional RFC 3339 instants bounding when the policy is in force; `expires_at` must be after `valid_from` when both are set.                                                                                                                                                                              |
+| `timeout_ms`                | none               | Per-peer timeout within `1 ..= 30000`; absent means the fan-out `per_peer_timeout_ms` applies.                                                                                                                                                                                                           |
+| `priority`                  | none               | Fan-out ask order; absent means list position.                                                                                                                                                                                                                                                           |
 
 **`storage` — the storage plane.** Three bindings, each resolved against the adapters this build advertises. This build advertises `redb` with `fsync` durability for the local store and the event log, and **no object-store adapter** (the design's `fs`, `s3`, and `r2` families have no implementation in this build), so `storage.object_store` can only be absent or `null` until one lands.
 
-| Key                        | Keys of the binding                                                                 | Defaults                                                                 |
-| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `storage.local_store`      | `adapter`, `durability`, `sync_participation` (`full` \| `none`)                     | `redb`, `fsync`, `full`                                                  |
-| `storage.event_log`        | same                                                                                 | `redb`, `fsync`, `none`                                                  |
-| `storage.object_store`     | `adapter` (**required** when the binding is present), `retention_class`              | no object store; retention class `default`                               |
+| Key                    | Keys of the binding                                                     | Defaults                                   |
+| ---------------------- | ----------------------------------------------------------------------- | ------------------------------------------ |
+| `storage.local_store`  | `adapter`, `durability`, `sync_participation` (`full` \| `none`)        | `redb`, `fsync`, `full`                    |
+| `storage.event_log`    | same                                                                    | `redb`, `fsync`, `none`                    |
+| `storage.object_store` | `adapter` (**required** when the binding is present), `retention_class` | no object store; retention class `default` |
 
 **`tiers` — the tier map.** A map from tier identifier (at most 64 characters) to a policy of two optional keys: `placement` (`local` — the local persistent store — or `object_store` — the bound `storage.object_store`; default `local`) and `retention` (`indefinite`, or a whole number of days written `<n>d` with `n` at least 1; default `indefinite`). The resolved map always contains the `default` tier. Lookup never reclassifies an unknown identifier and never answers whether access is allowed: a record carrying an unmapped tier is held in the default tier. Tier labels never authorise access (see also `behavior.tier` above).
 
 **`links` — the link plane.** Defaults for the four link kinds. An adapter the build does not advertise rejects the document; this build advertises only `iroh`.
 
-| Key              | Keys                                                                                     | Defaults                                                        |
-| ---------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `links.sync`     | `enabled`, `adapter`, `sync_scope`, `retention_class`                                    | off, `iroh`, the resolved `behavior.sync_scope`, `default`      |
-| `links.query`    | `enabled`, `timeout_ms` (within `1 ..= 30000`)                                           | off, the resolved `fanout.per_peer_timeout_ms`                  |
-| `links.send_only` | `enabled`, `adapter`, `retention_class`                                                 | off, `iroh`, `default`                                          |
-| `links.control`  | no keys — accepted only as `{}` or `null`                                                | always on                                                       |
+| Key               | Keys                                                  | Defaults                                                   |
+| ----------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
+| `links.sync`      | `enabled`, `adapter`, `sync_scope`, `retention_class` | off, `iroh`, the resolved `behavior.sync_scope`, `default` |
+| `links.query`     | `enabled`, `timeout_ms` (within `1 ..= 30000`)        | off, the resolved `fanout.per_peer_timeout_ms`             |
+| `links.send_only` | `enabled`, `adapter`, `retention_class`               | off, `iroh`, `default`                                     |
+| `links.control`   | no keys — accepted only as `{}` or `null`             | always on                                                  |
 
 **`namespaces` — the namespace registry reference.** One optional key, `registry` (default `builtin`), naming which local registry names resolve in: `builtin` for the built-in registry, or `server:<id>` / `handle:<id>`, where the id is non-empty, at most 255 characters, and ASCII-graphic only. Any other form rejects the document.
 

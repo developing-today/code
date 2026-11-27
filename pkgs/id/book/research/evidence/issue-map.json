@@ -5,15 +5,7 @@
     "title": "design(id): store abstraction \u2014 Turso/SQLite-over-HTTP beside redb, IndexedDB evaluated (one interface, pluggable backends)",
     "url": "https://github.com/developing-today/code/issues/9082",
     "updated_at": "2026-11-23T11:26:44Z",
-    "labels": [
-      "app/id",
-      "design",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/high",
-      "status/triaged"
-    ],
+    "labels": ["app/id", "design", "effort/l", "epic/id-program", "kind/design", "priority/high", "status/triaged"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -34,14 +26,7 @@
     "title": "epic(id): Part A \u2014 ID core: namespaces, ID shapes, triples, user attributes",
     "url": "https://github.com/developing-today/code/issues/9107",
     "updated_at": "2026-11-23T13:26:08Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic",
-      "epic/id-program",
-      "priority/high",
-      "status/triaged"
-    ],
+    "labels": ["app/id", "effort/l", "epic", "epic/id-program", "priority/high", "status/triaged"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -93,12 +78,7 @@
     "title": "id: design: ID messaging/relay protocol v1",
     "url": "https://github.com/developing-today/code/issues/2036",
     "updated_at": "2026-11-20T00:44:12Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "status/triaged"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "status/triaged"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -149,13 +129,7 @@
     "title": "design(id/atlas): ID-graph publication format \u2014 Atlas objects + provenance/lineage relations as ID-graph objects",
     "url": "https://github.com/developing-today/code/issues/6062",
     "updated_at": "2026-11-22T00:44:06Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program",
-      "kind/design",
-      "meta/epic",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "epic/atlas-program", "kind/design", "meta/epic", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -176,12 +150,7 @@
     "title": "id: design: match attestation + audit v1",
     "url": "https://github.com/developing-today/code/issues/2039",
     "updated_at": "2026-11-20T00:44:13Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -202,14 +171,7 @@
     "title": "id: design program: worlds \u2014 advanced Roc libraries, capabilities, permissions, dynamic user functions, licensing (2026-11-04 brief)",
     "url": "https://github.com/developing-today/code/issues/5955",
     "updated_at": "2026-11-20T00:40:28Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/normal", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -230,11 +192,7 @@
     "title": "epic(id): Part B \u2014 federation & trust: peer classes, signed data, federated query, reputation",
     "url": "https://github.com/developing-today/code/issues/9108",
     "updated_at": "2026-11-20T00:40:07Z",
-    "labels": [
-      "app/id",
-      "epic",
-      "epic/id-program"
-    ],
+    "labels": ["app/id", "epic", "epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -255,11 +213,7 @@
     "title": "research(id): graph query language selection + visualization",
     "url": "https://github.com/developing-today/code/issues/9126",
     "updated_at": "2026-11-20T00:40:45Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -314,10 +268,7 @@
     "title": "id: implement ID messaging and relay protocol v1 (design #2036)",
     "url": "https://github.com/developing-today/code/issues/5534",
     "updated_at": "2026-11-20T00:43:24Z",
-    "labels": [
-      "epic/id-program",
-      "priority/high"
-    ],
+    "labels": ["epic/id-program", "priority/high"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -367,14 +318,7 @@
     "title": "id: implement gallery registry protocol + reference registry service (from #6278)",
     "url": "https://github.com/developing-today/code/issues/8281",
     "updated_at": "2026-11-23T03:09:32Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/enhancement",
-      "priority/high",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/enhancement", "priority/high", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -395,13 +339,7 @@
     "title": "design(id): extensibility architecture \u2014 primitive/adapter/hook boundary spec + backend conformance",
     "url": "https://github.com/developing-today/code/issues/9110",
     "updated_at": "2026-11-20T00:40:10Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/high"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/high"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -422,14 +360,7 @@
     "title": "design(id): bare-string shorthand + default-index configuration; streaming interfaces + max-items",
     "url": "https://github.com/developing-today/code/issues/9119",
     "updated_at": "2026-11-20T00:40:36Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/high",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/high", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -450,14 +381,7 @@
     "title": "design(id): numeric registry namespaces over the byte system",
     "url": "https://github.com/developing-today/code/issues/9122",
     "updated_at": "2026-11-20T00:40:39Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/high",
-      "status/triaged"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/high", "status/triaged"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -478,13 +402,7 @@
     "title": "design(id): versioning \u2014 succeeds triples + carried-forward comments",
     "url": "https://github.com/developing-today/code/issues/9129",
     "updated_at": "2026-11-20T00:40:51Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/high"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/high"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -505,13 +423,7 @@
     "title": "design(id): implicit-trust sync \u2014 convergence toward 1:1 + conflict reports",
     "url": "https://github.com/developing-today/code/issues/9142",
     "updated_at": "2026-11-20T00:41:23Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/high"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/high"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -532,13 +444,7 @@
     "title": "design(id): reputation system + public claims/dispute log",
     "url": "https://github.com/developing-today/code/issues/9147",
     "updated_at": "2026-11-20T00:41:29Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/high"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/high"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -559,14 +465,7 @@
     "title": "id: design: Markup & styling model for programs-as-websites \u2014 semantic markup, style-override mapping",
     "url": "https://github.com/developing-today/code/issues/5679",
     "updated_at": "2026-11-23T05:01:42Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "source/creator",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/normal", "source/creator", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -648,14 +547,7 @@
     "title": "id: design: RateAuthorisation as a signed ID-graph object \u2014 schema, signing, revocation",
     "url": "https://github.com/developing-today/code/issues/2290",
     "updated_at": "2026-11-22T17:31:04Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/enhancement",
-      "priority/normal",
-      "source/creator",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/enhancement", "priority/normal", "source/creator", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -691,10 +583,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2064,
-      2043
-    ],
+    "body_prerequisites": [2064, 2043],
     "note": "Engineering rehearsal subject to review; production selection is separate.",
     "open_pr_candidates": [],
     "comments_count": 14,
@@ -724,9 +613,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2279
-    ],
+    "body_prerequisites": [2279],
     "note": "Backup umbrella also requires a server-side unwrap design decision.",
     "open_pr_candidates": [],
     "comments_count": 30,
@@ -786,9 +673,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2046
-    ],
+    "body_prerequisites": [2046],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 26,
@@ -892,9 +777,7 @@
     "title": "id: implement Jurisdiction-aware per-user hosted stores (design #2283)",
     "url": "https://github.com/developing-today/code/issues/5523",
     "updated_at": "2026-11-20T00:43:01Z",
-    "labels": [
-      "epic/id-program"
-    ],
+    "labels": ["epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -915,12 +798,7 @@
     "title": "id: implement ID serverless edition v1 on Cloudflare Workers (design #2046)",
     "url": "https://github.com/developing-today/code/issues/5524",
     "updated_at": "2026-11-20T00:43:03Z",
-    "labels": [
-      "effort/l",
-      "epic/id-program",
-      "kind/enhancement",
-      "priority/normal"
-    ],
+    "labels": ["effort/l", "epic/id-program", "kind/enhancement", "priority/normal"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -941,13 +819,7 @@
     "title": "id: implement Jurisdiction-partitioned hosted worlds and world blobs (design #3397)",
     "url": "https://github.com/developing-today/code/issues/5528",
     "updated_at": "2026-11-20T00:43:22Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/infrastructure",
-      "priority/normal"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/infrastructure", "priority/normal"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -968,9 +840,7 @@
     "title": "id: implement Zettelkasten layer - multiplayer docs/wiki on ID (design #2048)",
     "url": "https://github.com/developing-today/code/issues/5535",
     "updated_at": "2026-11-23T03:02:13Z",
-    "labels": [
-      "epic/id-program"
-    ],
+    "labels": ["epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -991,13 +861,7 @@
     "title": "id: design: Wire format & transport adapters \u2014 postcard schema, non-UDP carriers, relays/proxies",
     "url": "https://github.com/developing-today/code/issues/5674",
     "updated_at": "2026-11-20T00:43:36Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1018,14 +882,7 @@
     "title": "id: design: ID notes, message board, and multiplayer editing v1",
     "url": "https://github.com/developing-today/code/issues/5677",
     "updated_at": "2026-11-20T00:43:40Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "source/creator",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "source/creator", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1046,12 +903,7 @@
     "title": "id: design: Knowledge layer feature program \u2014 competitor feature matrix, import/export, read-authority",
     "url": "https://github.com/developing-today/code/issues/5678",
     "updated_at": "2026-11-20T00:43:41Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1072,13 +924,7 @@
     "title": "id: design: Boards next steps \u2014 sharing flows, portable themes, playable posts, moderation",
     "url": "https://github.com/developing-today/code/issues/5680",
     "updated_at": "2026-11-20T00:43:44Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1190,13 +1036,7 @@
     "title": "id: design: Bevy incorporation \u2014 ID worlds as Bevy applications (ECS mapping of the entity/triple model)",
     "url": "https://github.com/developing-today/code/issues/5781",
     "updated_at": "2026-11-20T00:39:31Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "status:to-do",
-      "task/fix",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "status:to-do", "task/fix", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1217,14 +1057,7 @@
     "title": "id: design: Postgres-over-HTTP adapter (from #5672)",
     "url": "https://github.com/developing-today/code/issues/5805",
     "updated_at": "2026-11-20T00:39:37Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/triage"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/normal", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1245,10 +1078,7 @@
     "title": "id: design: adapter conformance harness & interop matrix CI (from #5674)",
     "url": "https://github.com/developing-today/code/issues/5814",
     "updated_at": "2026-11-22T00:44:41Z",
-    "labels": [
-      "app/id",
-      "epic/id-program"
-    ],
+    "labels": ["app/id", "epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1269,11 +1099,7 @@
     "title": "id: design: server-side filtered remote query execution (from #5675)",
     "url": "https://github.com/developing-today/code/issues/5818",
     "updated_at": "2026-11-20T00:39:40Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1294,10 +1120,7 @@
     "title": "id: design: result shaping & cursor pagination (from #5675)",
     "url": "https://github.com/developing-today/code/issues/5821",
     "updated_at": "2026-11-22T00:44:38Z",
-    "labels": [
-      "app/id",
-      "task/triage"
-    ],
+    "labels": ["app/id", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1318,11 +1141,7 @@
     "title": "id: design: per-object talk page + changelog (from #5677)",
     "url": "https://github.com/developing-today/code/issues/5834",
     "updated_at": "2026-11-20T00:39:43Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1343,11 +1162,7 @@
     "title": "id: design: AI-over-notes cluster (from #5678)",
     "url": "https://github.com/developing-today/code/issues/5842",
     "updated_at": "2026-11-22T00:44:34Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1368,11 +1183,7 @@
     "title": "id: design: board subscription, discovery & feed integration (from #5680)",
     "url": "https://github.com/developing-today/code/issues/5862",
     "updated_at": "2026-11-20T00:39:51Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1393,14 +1204,7 @@
     "title": "id: design: dynamic user functions \u2014 server-compiled DLLs, hot-swap into running worlds without world recompile",
     "url": "https://github.com/developing-today/code/issues/5964",
     "updated_at": "2026-11-22T00:44:16Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/triage"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/normal", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1421,13 +1225,7 @@
     "title": "id: design: tick & intent data model \u2014 inputs, state updates, per-user function views, intent sources",
     "url": "https://github.com/developing-today/code/issues/5968",
     "updated_at": "2026-11-22T01:22:46Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/normal", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1448,13 +1246,7 @@
     "title": "id: design: user presentation assets \u2014 shaders, sprites by ID, filters, per-world gating, graceful degradation",
     "url": "https://github.com/developing-today/code/issues/5970",
     "updated_at": "2026-11-20T00:40:39Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/normal", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1475,13 +1267,7 @@
     "title": "id: design: feature-object library attachment \u2014 runtime attach/detach of library behavior to entities without world recompilation",
     "url": "https://github.com/developing-today/code/issues/6003",
     "updated_at": "2026-11-22T17:35:39Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/normal", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1502,14 +1288,7 @@
     "title": "id: design: semantic cell/tag presentation model \u2014 one tagged state, many renderers",
     "url": "https://github.com/developing-today/code/issues/6010",
     "updated_at": "2026-11-22T00:44:12Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/triage"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/normal", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1626,14 +1405,7 @@
     "title": "id: implement Notion importer per #6436 design",
     "url": "https://github.com/developing-today/code/issues/6513",
     "updated_at": "2026-11-20T00:42:57Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/feature",
-      "priority/normal",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/feature", "priority/normal", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1684,14 +1456,7 @@
     "title": "fix(id/serve-proxy): bound credit grants to flow-control limits",
     "url": "https://github.com/developing-today/code/issues/8970",
     "updated_at": "2026-11-23T13:13:50Z",
-    "labels": [
-      "app/id",
-      "effort/xs",
-      "kind/bug",
-      "priority/normal",
-      "source/creator",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/xs", "kind/bug", "priority/normal", "source/creator", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1712,13 +1477,7 @@
     "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
     "url": "https://github.com/developing-today/code/issues/9106",
     "updated_at": "2026-11-20T00:40:03Z",
-    "labels": [
-      "app/id",
-      "epic",
-      "epic/atlas-program",
-      "epic/id-program",
-      "status:to-do"
-    ],
+    "labels": ["app/id", "epic", "epic/atlas-program", "epic/id-program", "status:to-do"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1739,14 +1498,7 @@
     "title": "design(id): modes & configuration surface \u2014 modes, link kinds, storages, tiering as config",
     "url": "https://github.com/developing-today/code/issues/9111",
     "updated_at": "2026-11-20T00:40:12Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "status/triaged"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/normal", "status/triaged"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1767,14 +1519,7 @@
     "title": "design(id): federated query fan-out \u2014 prioritized remotes, trusted relay, max-hops",
     "url": "https://github.com/developing-today/code/issues/9144",
     "updated_at": "2026-11-20T00:41:24Z",
-    "labels": [
-      "app/id",
-      "effort/m",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/m", "epic/id-program", "kind/design", "priority/normal", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1795,11 +1540,7 @@
     "title": "research(id): takeover resistance + acknowledgment-based inconsistency detection",
     "url": "https://github.com/developing-today/code/issues/9148",
     "updated_at": "2026-11-20T00:41:31Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1820,13 +1561,7 @@
     "title": "impl(id): build-time defaults.json \u2014 typed parse, pair-atomic cascade, provenance (#5916 follow-on)",
     "url": "https://github.com/developing-today/code/issues/10345",
     "updated_at": "2026-11-21T05:33:31Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "priority/normal",
-      "task/small_fix"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "priority/normal", "task/small_fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1847,10 +1582,7 @@
     "title": "impl(atlas/id): projector \u2014 versions, files, relations emission (#6062 follow-on 1)",
     "url": "https://github.com/developing-today/code/issues/11182",
     "updated_at": "2026-11-20T00:40:35Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program"
-    ],
+    "labels": ["app/id", "epic/atlas-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1871,10 +1603,7 @@
     "title": "impl(atlas/id): projector \u2014 attestations and ingest runs (#6062 follow-on 2)",
     "url": "https://github.com/developing-today/code/issues/11183",
     "updated_at": "2026-11-20T00:40:37Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program"
-    ],
+    "labels": ["app/id", "epic/atlas-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1895,10 +1624,7 @@
     "title": "impl(atlas/id): projector operations \u2014 run logging, replay, backfill (#6062 follow-on 3)",
     "url": "https://github.com/developing-today/code/issues/11184",
     "updated_at": "2026-11-20T00:40:39Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program"
-    ],
+    "labels": ["app/id", "epic/atlas-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1919,10 +1645,7 @@
     "title": "impl(atlas/id): consumer view presets for ID-graph publication (#6062 follow-on 4)",
     "url": "https://github.com/developing-today/code/issues/11185",
     "updated_at": "2026-11-20T00:40:40Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program"
-    ],
+    "labels": ["app/id", "epic/atlas-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1943,10 +1666,7 @@
     "title": "impl(atlas/id): ID-graph publication conformance audit (#6062 follow-on 5)",
     "url": "https://github.com/developing-today/code/issues/11186",
     "updated_at": "2026-11-20T00:40:42Z",
-    "labels": [
-      "app/id",
-      "epic/atlas-program"
-    ],
+    "labels": ["app/id", "epic/atlas-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -1967,17 +1687,12 @@
     "title": "impl(id): related path links in hash.metadata \u2014 typed RelatedLink, PathRef validation, Dangling resolution",
     "url": "https://github.com/developing-today/code/issues/11419",
     "updated_at": "2026-11-20T00:41:02Z",
-    "labels": [
-      "app/id",
-      "kind/design"
-    ],
+    "labels": ["app/id", "kind/design"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10242
-    ],
+    "body_prerequisites": [10242],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -1993,10 +1708,7 @@
     "title": "id: inspect one world\u2019s on-disk storage safely",
     "url": "https://github.com/developing-today/code/issues/11776",
     "updated_at": "2026-11-22T00:41:07Z",
-    "labels": [
-      "app/id",
-      "kind/feature"
-    ],
+    "labels": ["app/id", "kind/feature"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2017,10 +1729,7 @@
     "title": "id: verify durable actor attribution for world moderation",
     "url": "https://github.com/developing-today/code/issues/11778",
     "updated_at": "2026-11-22T00:41:04Z",
-    "labels": [
-      "app/id",
-      "kind/feature"
-    ],
+    "labels": ["app/id", "kind/feature"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2041,11 +1750,7 @@
     "title": "epic(id): maintenance",
     "url": "https://github.com/developing-today/code/issues/12462",
     "updated_at": "2026-11-22T08:26:52Z",
-    "labels": [
-      "app/id",
-      "epic",
-      "epic/id-maintenance"
-    ],
+    "labels": ["app/id", "epic", "epic/id-maintenance"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2066,10 +1771,7 @@
     "title": "id: invite capability_pin term \u2014 pin the capability baseline as issued (#5751 delta from #5959 design)",
     "url": "https://github.com/developing-today/code/issues/12922",
     "updated_at": "2026-11-23T09:19:09Z",
-    "labels": [
-      "app/id",
-      "epic/id-program"
-    ],
+    "labels": ["app/id", "epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2139,12 +1841,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      561,
-      562,
-      545,
-      564
-    ],
+    "body_prerequisites": [561, 562, 545, 564],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 122,
@@ -2160,15 +1857,7 @@
     "title": "id phase-7: P7.5 deployments and real-network tests are owner-blocked with no tracking issue",
     "url": "https://github.com/developing-today/code/issues/794",
     "updated_at": "2026-11-20T00:39:20Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/test",
-      "meta/enriched",
-      "mode/hybrid",
-      "priority/low"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/test", "meta/enriched", "mode/hybrid", "priority/low"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2344,14 +2033,7 @@
     "title": "id: design: D1 journal fit (design + spike) (from #5681)",
     "url": "https://github.com/developing-today/code/issues/5864",
     "updated_at": "2026-11-22T00:44:28Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/low",
-      "source/queue-worker",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/low", "source/queue-worker", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2372,13 +2054,7 @@
     "title": "id: research: permission-prompt precedents \u2014 Play Store, Android/iOS runtime permissions, OAuth scopes, extension permissions, TCC/portals",
     "url": "https://github.com/developing-today/code/issues/5961",
     "updated_at": "2026-11-22T00:44:19Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/low",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/low", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2399,14 +2075,7 @@
     "title": "id: research: image/video conversion tooling \u2014 kitty graphics protocol and video-to-ASCII",
     "url": "https://github.com/developing-today/code/issues/5971",
     "updated_at": "2026-11-20T00:40:42Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/design",
-      "priority/low",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/design", "priority/low", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2427,14 +2096,7 @@
     "title": "id: research: SPDX identifiers and license-detection tooling for the classifier",
     "url": "https://github.com/developing-today/code/issues/5979",
     "updated_at": "2026-11-20T00:40:45Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/low",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/low", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2551,13 +2213,7 @@
     "title": "id: implement thread resolution & change proposals (per #5874 decision record)",
     "url": "https://github.com/developing-today/code/issues/7849",
     "updated_at": "2026-11-20T00:39:05Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -2595,9 +2251,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      13206
-    ],
+    "open_pr_candidates": [13206],
     "comments_count": 12,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -2723,13 +2377,9 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      539
-    ],
+    "body_prerequisites": [539],
     "note": null,
-    "open_pr_candidates": [
-      12496
-    ],
+    "open_pr_candidates": [12496],
     "comments_count": 136,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -2759,15 +2409,9 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      553,
-      539
-    ],
+    "body_prerequisites": [553, 539],
     "note": null,
-    "open_pr_candidates": [
-      12539,
-      12557
-    ],
+    "open_pr_candidates": [12539, 12557],
     "comments_count": 83,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -2861,9 +2505,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3399
-    ],
+    "body_prerequisites": [3399],
     "note": "Also requires actual hosted Durable Object interface.",
     "open_pr_candidates": [],
     "comments_count": 78,
@@ -2927,10 +2569,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3399,
-      3400
-    ],
+    "body_prerequisites": [3399, 3400],
     "note": "Existing migration state-machine work spans #13167 and durable freeze acknowledgement in #13275. Reconcile the assigned work before changing transitions.",
     "open_pr_candidates": [],
     "comments_count": 180,
@@ -2962,9 +2601,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10705
-    ],
+    "body_prerequisites": [10705],
     "note": "The required schema issue #10705 is closed. The reason blocked/assigned labels remain needs a current comment and queue read.",
     "open_pr_candidates": [],
     "comments_count": 5,
@@ -3028,10 +2665,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      6022,
-      6062
-    ],
+    "body_prerequisites": [6022, 6062],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 16,
@@ -3065,9 +2699,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      13234
-    ],
+    "open_pr_candidates": [13234],
     "comments_count": 9,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3128,11 +2760,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3403,
-      3399,
-      3400
-    ],
+    "body_prerequisites": [3403, 3399, 3400],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 27,
@@ -3178,23 +2806,12 @@
     "title": "id(phase-14): discovery resolver \u2014 invite link, pkarr, registries in order (#6287 breakdown 4/5)",
     "url": "https://github.com/developing-today/code/issues/10708",
     "updated_at": "2026-11-22T01:22:32Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "queue/blocked",
-      "status/blocked",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "queue/blocked", "status/blocked", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10705,
-      10706,
-      10707
-    ],
+    "body_prerequisites": [10705, 10706, 10707],
     "note": "Schema #10705 and registry #10707 closed. The pkarr packet #10706 remains open.",
     "open_pr_candidates": [],
     "comments_count": 4,
@@ -3243,13 +2860,7 @@
     "title": "id: PoC \u2014 multi-provider chunk-range retrieval in the get path (swarm scheduler over iroh-blobs)",
     "url": "https://github.com/developing-today/code/issues/2261",
     "updated_at": "2026-11-23T03:10:50Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "task/small-fix",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "task/small-fix", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -3350,10 +2961,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2285,
-      3400
-    ],
+    "body_prerequisites": [2285, 3400],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 72,
@@ -3369,23 +2977,12 @@
     "title": "id(app): PoC \u2014 sticky notes + did-it tracker, the first ID app (Phase 3 of #2031)",
     "url": "https://github.com/developing-today/code/issues/3790",
     "updated_at": "2026-11-22T23:15:46Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "queue/queued",
-      "source/creator",
-      "task/triage",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "epic/id-program", "queue/queued", "source/creator", "task/triage", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      4837,
-      3788,
-      3789
-    ],
+    "body_prerequisites": [4837, 3788, 3789],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 33,
@@ -3430,12 +3027,7 @@
     "title": "id: implement ID boards v1 - signed boards, portable themes, playable posts (design #2054)",
     "url": "https://github.com/developing-today/code/issues/5525",
     "updated_at": "2026-11-20T00:43:04Z",
-    "labels": [
-      "app/id",
-      "queue/blocked",
-      "status/in-progress",
-      "status:to-do"
-    ],
+    "labels": ["app/id", "queue/blocked", "status/in-progress", "status:to-do"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -3456,13 +3048,7 @@
     "title": "id: design: importer design: Joplin (from #5678)",
     "url": "https://github.com/developing-today/code/issues/5848",
     "updated_at": "2026-11-20T00:39:46Z",
-    "labels": [
-      "app/id",
-      "queue/blocked",
-      "status/blocked",
-      "task/triage",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "queue/blocked", "status/blocked", "task/triage", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -3483,13 +3069,7 @@
     "title": "id: design: capability-change notices on reconnect \u2014 expansion and sideways changes",
     "url": "https://github.com/developing-today/code/issues/5959",
     "updated_at": "2026-11-23T09:18:02Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "priority/normal",
-      "status:in-review"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "priority/normal", "status:in-review"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -3563,9 +3143,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      13233
-    ],
+    "open_pr_candidates": [13233],
     "comments_count": 67,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3629,9 +3207,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12861
-    ],
+    "open_pr_candidates": [12861],
     "comments_count": 31,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3695,9 +3271,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12038
-    ],
+    "open_pr_candidates": [12038],
     "comments_count": 54,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3744,14 +3318,7 @@
     "title": "id: implement: sanctions boundary data model \u2014 ListVersion store, scope evaluation, review-queue data (from #5878)",
     "url": "https://github.com/developing-today/code/issues/8201",
     "updated_at": "2026-11-22T00:43:22Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/feature",
-      "priority/normal",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/feature", "priority/normal", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -3937,9 +3504,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      13184
-    ],
+    "open_pr_candidates": [13184],
     "comments_count": 5,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3953,21 +3518,14 @@
     "title": "id: A9 five-minute path \u2014 scripted empty-directory-to-joinable-world run with elapsed time",
     "url": "https://github.com/developing-today/code/issues/12595",
     "updated_at": "2026-11-23T01:15:19Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/agent",
-      "status:in-review"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/agent", "status:in-review"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12750
-    ],
+    "open_pr_candidates": [12750],
     "comments_count": 2,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -3981,23 +3539,14 @@
     "title": "id: F12.8/A7 third guest language \u2014 Zig SDK passing conformance with a playable example",
     "url": "https://github.com/developing-today/code/issues/12596",
     "updated_at": "2026-11-23T03:35:29Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/agent",
-      "status:in-review"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/agent", "status:in-review"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12793,
-      12827,
-      12837
-    ],
+    "open_pr_candidates": [12793, 12827, 12837],
     "comments_count": 7,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -4011,23 +3560,14 @@
     "title": "id: block content follow-on \u2014 projections (outline, journal, database views) + note-granularity read-authority (from #8218)",
     "url": "https://github.com/developing-today/code/issues/12751",
     "updated_at": "2026-11-23T04:53:00Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "kind/feature",
-      "priority/normal",
-      "status:in-review"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "kind/feature", "priority/normal", "status:in-review"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12912
-    ],
+    "open_pr_candidates": [12912],
     "comments_count": 3,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -4041,11 +3581,7 @@
     "title": "id: implement capability-change notices \u2014 client baseline store, connect-stage comparison, notice surface (#5959 design)",
     "url": "https://github.com/developing-today/code/issues/12921",
     "updated_at": "2026-11-23T08:00:48Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "status:in-review"
-    ],
+    "labels": ["app/id", "epic/id-program", "status:in-review"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -4082,9 +3618,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      6281
-    ],
+    "native_open": [6281],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -4121,9 +3655,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      6304
-    ],
+    "native_open": [6304],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -4159,9 +3691,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      6305
-    ],
+    "native_open": [6305],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -4228,9 +3758,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      564
-    ],
+    "body_prerequisites": [564],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 98,
@@ -4400,9 +3928,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      6377
-    ],
+    "body_prerequisites": [6377],
     "note": "Explicit architecture dependency in body.",
     "open_pr_candidates": [],
     "comments_count": 11,
@@ -4434,9 +3960,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12814
-    ],
+    "open_pr_candidates": [12814],
     "comments_count": 3,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -4523,10 +4047,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3808,
-      3811
-    ],
+    "body_prerequisites": [3808, 3811],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 33,
@@ -4542,24 +4063,12 @@
     "title": "id(phase-14) v2 step 2: multi-agent sessions under distinct roles (#6301)",
     "url": "https://github.com/developing-today/code/issues/8300",
     "updated_at": "2026-11-20T00:40:55Z",
-    "labels": [
-      "design/id-phase-14",
-      "epic/id-program"
-    ],
+    "labels": ["design/id-phase-14", "epic/id-program"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      8299
-    ],
-    "native_closed": [
-      7914,
-      7916
-    ],
-    "body_prerequisites": [
-      8299,
-      7914,
-      7916
-    ],
+    "native_open": [8299],
+    "native_closed": [7914, 7916],
+    "body_prerequisites": [8299, 7914, 7916],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -4575,22 +4084,12 @@
     "title": "id(phase-14) v2 step 3: per-agent quota ledger (#6301)",
     "url": "https://github.com/developing-today/code/issues/8301",
     "updated_at": "2026-11-20T00:40:56Z",
-    "labels": [
-      "design/id-phase-14",
-      "epic/id-program"
-    ],
+    "labels": ["design/id-phase-14", "epic/id-program"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      8299
-    ],
-    "native_closed": [
-      7916
-    ],
-    "body_prerequisites": [
-      8299,
-      7916
-    ],
+    "native_open": [8299],
+    "native_closed": [7916],
+    "body_prerequisites": [8299, 7916],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -4606,21 +4105,12 @@
     "title": "id(phase-14) v2 step 4: owner review tooling (#6301)",
     "url": "https://github.com/developing-today/code/issues/8302",
     "updated_at": "2026-11-20T00:40:58Z",
-    "labels": [
-      "design/id-phase-14",
-      "epic/id-program"
-    ],
+    "labels": ["design/id-phase-14", "epic/id-program"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      8299,
-      8301
-    ],
+    "native_open": [8299, 8301],
     "native_closed": [],
-    "body_prerequisites": [
-      8299,
-      8301
-    ],
+    "body_prerequisites": [8299, 8301],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -4636,21 +4126,12 @@
     "title": "id(phase-14): hosted worlds v1 P2 \u2014 lifecycle transitions as authority-frame actions",
     "url": "https://github.com/developing-today/code/issues/10694",
     "updated_at": "2026-11-20T00:39:16Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "kind/feature",
-      "priority/normal",
-      "queue/blocked",
-      "status/blocked"
-    ],
+    "labels": ["app/id", "epic/id-platform", "kind/feature", "priority/normal", "queue/blocked", "status/blocked"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10693
-    ],
+    "body_prerequisites": [10693],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -4696,22 +4177,12 @@
     "title": "id(phase-14): hosted worlds v1 P3 \u2014 restart/recovery hardening + snapshot/export",
     "url": "https://github.com/developing-today/code/issues/10695",
     "updated_at": "2026-11-20T00:39:18Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "kind/feature",
-      "priority/normal",
-      "queue/blocked",
-      "status/blocked"
-    ],
+    "labels": ["app/id", "epic/id-platform", "kind/feature", "priority/normal", "queue/blocked", "status/blocked"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10693,
-      806
-    ],
+    "body_prerequisites": [10693, 806],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -4727,22 +4198,12 @@
     "title": "id(phase-14): hosted worlds v1 P4 \u2014 operator CLI (list/start/stop/inspect)",
     "url": "https://github.com/developing-today/code/issues/10696",
     "updated_at": "2026-11-20T00:39:20Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "kind/feature",
-      "priority/normal",
-      "queue/blocked",
-      "status/blocked"
-    ],
+    "labels": ["app/id", "epic/id-platform", "kind/feature", "priority/normal", "queue/blocked", "status/blocked"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10693,
-      10694
-    ],
+    "body_prerequisites": [10693, 10694],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 3,
@@ -4758,18 +4219,12 @@
     "title": "id(phase-14): client discovery settings \u2014 registry subscription, visibility scopes, relay-required (#6287 breakdown 5/5)",
     "url": "https://github.com/developing-today/code/issues/10709",
     "updated_at": "2026-11-20T00:39:28Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10708
-    ],
+    "body_prerequisites": [10708],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -4801,10 +4256,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10707,
-      10709
-    ],
+    "body_prerequisites": [10707, 10709],
     "note": "Registry #10707 closed; the subscribed-client configuration prerequisite #10709 remains open.",
     "open_pr_candidates": [],
     "comments_count": 4,
@@ -4837,12 +4289,8 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10712
-    ],
-    "native_closed": [
-      6288
-    ],
+    "native_open": [10712],
+    "native_closed": [6288],
     "body_prerequisites": [],
     "note": null,
     "open_pr_candidates": [],
@@ -4872,10 +4320,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      1087,
-      1088
-    ],
+    "native_open": [1087, 1088],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -4939,9 +4384,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      1831
-    ],
+    "body_prerequisites": [1831],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 35,
@@ -4957,20 +4400,12 @@
     "title": "id: poc: five-node bridge relay over iroh-gossip \u2014 chained fan-out via a single bridging member",
     "url": "https://github.com/developing-today/code/issues/2249",
     "updated_at": "2026-11-23T11:49:58Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "source/creator",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "source/creator", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2036
-    ],
+    "body_prerequisites": [2036],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 7,
@@ -5032,9 +4467,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2380
-    ],
+    "body_prerequisites": [2380],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 20,
@@ -5064,9 +4497,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3404
-    ],
+    "body_prerequisites": [3404],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 53,
@@ -5098,11 +4529,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3399,
-      3898,
-      9935
-    ],
+    "body_prerequisites": [3399, 3898, 9935],
     "note": "Includes partition-local blobs built on #3401.",
     "open_pr_candidates": [],
     "comments_count": 6,
@@ -5118,12 +4545,7 @@
     "title": "id: implement ID conversion engine - linked transfer pairs and rate authorisation (design #2063)",
     "url": "https://github.com/developing-today/code/issues/5536",
     "updated_at": "2026-11-23T07:45:40Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "epic/id-program",
-      "status/waiting-dependency"
-    ],
+    "labels": ["app/id", "epic/id-platform", "epic/id-program", "status/waiting-dependency"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -5144,14 +4566,7 @@
     "title": "id: design: CI tiering for adversarial & benchmark suites (from #5685)",
     "url": "https://github.com/developing-today/code/issues/5893",
     "updated_at": "2026-11-20T00:40:25Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "queue/blocked",
-      "status/blocked",
-      "task/fix",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "epic/id-program", "queue/blocked", "status/blocked", "task/fix", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -5184,10 +4599,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3447,
-      1831
-    ],
+    "body_prerequisites": [3447, 1831],
     "note": "Different slices have different prerequisites; see issue.",
     "open_pr_candidates": [],
     "comments_count": 4,
@@ -5235,13 +4647,7 @@
     "title": "impl(id): WebSocket/WSS + HTTPS fallback adapter per #5811 decision record",
     "url": "https://github.com/developing-today/code/issues/8215",
     "updated_at": "2026-11-20T00:39:39Z",
-    "labels": [
-      "app/id",
-      "effort/l",
-      "epic/id-program",
-      "priority/normal",
-      "status/waiting-dependency"
-    ],
+    "labels": ["app/id", "effort/l", "epic/id-program", "priority/normal", "status/waiting-dependency"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -5262,23 +4668,12 @@
     "title": "id(phase-14) v2 step 5: citizenship conformance + multi-agent spike run (#6301)",
     "url": "https://github.com/developing-today/code/issues/8303",
     "updated_at": "2026-11-20T00:41:00Z",
-    "labels": [
-      "design/id-phase-14",
-      "epic/id-program"
-    ],
+    "labels": ["design/id-phase-14", "epic/id-program"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      8300,
-      8301,
-      8302
-    ],
+    "native_open": [8300, 8301, 8302],
     "native_closed": [],
-    "body_prerequisites": [
-      8300,
-      8301,
-      8302
-    ],
+    "body_prerequisites": [8300, 8301, 8302],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -5294,14 +4689,7 @@
     "title": "design(id): relay duplicate + loop handling \u2014 inform, short-circuit, dedup, loop-inform",
     "url": "https://github.com/developing-today/code/issues/9145",
     "updated_at": "2026-11-22T03:59:14Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "kind/design",
-      "queue/blocked",
-      "status/blocked",
-      "task/small-fix"
-    ],
+    "labels": ["app/id", "epic/id-program", "kind/design", "queue/blocked", "status/blocked", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -5322,22 +4710,12 @@
     "title": "id(phase-14): hosted worlds v1 P5 \u2014 basement-cluster deployment pack",
     "url": "https://github.com/developing-today/code/issues/10697",
     "updated_at": "2026-11-23T07:39:28Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "kind/feature",
-      "priority/normal",
-      "queue/blocked",
-      "status/blocked"
-    ],
+    "labels": ["app/id", "epic/id-platform", "kind/feature", "priority/normal", "queue/blocked", "status/blocked"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10693,
-      10696
-    ],
+    "body_prerequisites": [10693, 10696],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 4,
@@ -5353,20 +4731,12 @@
     "title": "id(phase-14): hosted worlds v1 P6 \u2014 hosted/local parity conformance suite",
     "url": "https://github.com/developing-today/code/issues/10698",
     "updated_at": "2026-11-20T00:39:23Z",
-    "labels": [
-      "app/id",
-      "epic/id-platform",
-      "kind/feature",
-      "priority/normal"
-    ],
+    "labels": ["app/id", "epic/id-platform", "kind/feature", "priority/normal"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      10693,
-      10694
-    ],
+    "body_prerequisites": [10693, 10694],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -5382,19 +4752,10 @@
     "title": "id(phase-14) v3 step 1: shared work-surface data model \u2014 task boards and shared documents as world state (#6302)",
     "url": "https://github.com/developing-today/code/issues/10049",
     "updated_at": "2026-11-20T00:42:54Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      8299,
-      8300
-    ],
+    "native_open": [8299, 8300],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -5412,22 +4773,12 @@
     "title": "id(phase-14) v3 step 2: concurrency and conflict handling on shared surfaces (#6302)",
     "url": "https://github.com/developing-today/code/issues/10050",
     "updated_at": "2026-11-20T00:42:55Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10049
-    ],
+    "native_open": [10049],
     "native_closed": [],
-    "body_prerequisites": [
-      10049
-    ],
+    "body_prerequisites": [10049],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -5443,25 +4794,12 @@
     "title": "id(phase-14) v3 step 3: agent-to-agent task delegation protocol (#6302)",
     "url": "https://github.com/developing-today/code/issues/10051",
     "updated_at": "2026-11-20T00:42:57Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10049,
-      10050
-    ],
+    "native_open": [10049, 10050],
     "native_closed": [],
-    "body_prerequisites": [
-      10049,
-      8299,
-      8301
-    ],
+    "body_prerequisites": [10049, 8299, 8301],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -5477,23 +4815,12 @@
     "title": "id(phase-14) v3 step 4: agent-majority worlds and human visitors (#6302)",
     "url": "https://github.com/developing-today/code/issues/10052",
     "updated_at": "2026-11-20T00:42:59Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10049,
-      8300
-    ],
+    "native_open": [10049, 8300],
     "native_closed": [],
-    "body_prerequisites": [
-      10049
-    ],
+    "body_prerequisites": [10049],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 1,
@@ -5523,9 +4850,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10695
-    ],
+    "native_open": [10695],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -5561,9 +4886,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      6284
-    ],
+    "native_open": [6284],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -5581,26 +4904,12 @@
     "title": "id(phase-14) v3 step 5: review and quota for shared surfaces (#6302)",
     "url": "https://github.com/developing-today/code/issues/10053",
     "updated_at": "2026-11-20T00:43:01Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature",
-      "priority/low"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature", "priority/low"],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10049,
-      8301,
-      8302
-    ],
+    "native_open": [10049, 8301, 8302],
     "native_closed": [],
-    "body_prerequisites": [
-      10051,
-      10052,
-      8302
-    ],
+    "body_prerequisites": [10051, 10052, 8302],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -5630,9 +4939,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      1831
-    ],
+    "body_prerequisites": [1831],
     "note": "Owner withdrew two-network requirement; native phone leg remains.",
     "open_pr_candidates": [],
     "comments_count": 13,
@@ -5700,9 +5007,7 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      6306
-    ],
+    "native_open": [6306],
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
@@ -5800,19 +5105,9 @@
     ],
     "assignees": [],
     "state": "open",
-    "native_open": [
-      10050,
-      10051,
-      10052,
-      10053
-    ],
+    "native_open": [10050, 10051, 10052, 10053],
     "native_closed": [],
-    "body_prerequisites": [
-      10050,
-      10051,
-      10052,
-      10053
-    ],
+    "body_prerequisites": [10050, 10051, 10052, 10053],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -5872,9 +5167,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3814
-    ],
+    "body_prerequisites": [3814],
     "note": "Recorded decision prerequisite for shared-write authority (Q2 #2048); check subsequent ruling.",
     "open_pr_candidates": [],
     "comments_count": 48,
@@ -5937,9 +5230,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2062
-    ],
+    "body_prerequisites": [2062],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 40,
@@ -5971,9 +5262,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2294
-    ],
+    "body_prerequisites": [2294],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 14,
@@ -6008,9 +5297,7 @@
     "native_closed": [],
     "body_prerequisites": [],
     "note": null,
-    "open_pr_candidates": [
-      12348
-    ],
+    "open_pr_candidates": [12348],
     "comments_count": 74,
     "comment_pages_checked": 0,
     "latest_comment_checked": null,
@@ -6042,9 +5329,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      2251
-    ],
+    "body_prerequisites": [2251],
     "note": "Queue simultaneously reports claimed and parked; check final claim.",
     "open_pr_candidates": [],
     "comments_count": 93,
@@ -6060,21 +5345,12 @@
     "title": "id(currency): quote issuance + binding for RateAuthorisation (Phase 3 of #2290)",
     "url": "https://github.com/developing-today/code/issues/3802",
     "updated_at": "2026-11-20T01:09:20Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "queue/parked",
-      "source/creator",
-      "status/parked",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "queue/parked", "source/creator", "status/parked", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3801
-    ],
+    "body_prerequisites": [3801],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 64,
@@ -6122,14 +5398,7 @@
     "title": "id: design: ESP32 hardware platform line \u2014 boards, provisioning, firmware lifecycle, OTA, power",
     "url": "https://github.com/developing-today/code/issues/5783",
     "updated_at": "2026-11-22T00:44:44Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "queue/parked",
-      "queue/queued",
-      "status/triaged",
-      "task/triage"
-    ],
+    "labels": ["app/id", "epic/id-program", "queue/parked", "queue/queued", "status/triaged", "task/triage"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -6150,14 +5419,7 @@
     "title": "id: design: public shares through ID (from #5672)",
     "url": "https://github.com/developing-today/code/issues/5802",
     "updated_at": "2026-11-20T00:39:36Z",
-    "labels": [
-      "app/id",
-      "epic/id-program",
-      "queue/parked",
-      "status/parked",
-      "status/triaged",
-      "work/assigned"
-    ],
+    "labels": ["app/id", "epic/id-program", "queue/parked", "status/parked", "status/triaged", "work/assigned"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -6193,10 +5455,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      5858,
-      5679
-    ],
+    "body_prerequisites": [5858, 5679],
     "note": null,
     "open_pr_candidates": [],
     "comments_count": 139,
@@ -6247,12 +5506,7 @@
     "title": "id: implement the #5905 provider security model \u2014 admission verification and ceiling-composition audit",
     "url": "https://github.com/developing-today/code/issues/7944",
     "updated_at": "2026-11-20T00:39:19Z",
-    "labels": [
-      "epic/id-program",
-      "queue/parked",
-      "status/parked",
-      "task/small-fix"
-    ],
+    "labels": ["epic/id-program", "queue/parked", "status/parked", "task/small-fix"],
     "assignees": [],
     "state": "open",
     "native_open": [],
@@ -6318,10 +5572,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3804,
-      3805
-    ],
+    "body_prerequisites": [3804, 3805],
     "note": "T1 requires both handoffs proven.",
     "open_pr_candidates": [],
     "comments_count": 30,
@@ -6424,10 +5675,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3805,
-      7572
-    ],
+    "body_prerequisites": [3805, 7572],
     "note": "T2 requires first spill or stale/refused reads.",
     "open_pr_candidates": [],
     "comments_count": 64,
@@ -6460,9 +5708,7 @@
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      3805
-    ],
+    "body_prerequisites": [3805],
     "note": "T3 requires multi-world spill or fairness case at a spill host.",
     "open_pr_candidates": [],
     "comments_count": 57,
@@ -6478,19 +5724,12 @@
     "title": "id(phase-14): join-time benches \u2014 cold and warm join at stress tiers",
     "url": "https://github.com/developing-today/code/issues/13084",
     "updated_at": "2026-11-23T09:58:57Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      13083
-    ],
+    "body_prerequisites": [13083],
     "note": "Item-specific approval hold; supersedes pickup. No work on this issue.",
     "open_pr_candidates": [],
     "comments_count": 3,
@@ -6506,22 +5745,12 @@
     "title": "id(phase-14): first 10x stress run \u2014 measured limits table update",
     "url": "https://github.com/developing-today/code/issues/13087",
     "updated_at": "2026-11-23T10:29:45Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      13083,
-      13084,
-      13085,
-      13086
-    ],
+    "body_prerequisites": [13083, 13084, 13085, 13086],
     "note": "Generator #13083, frame cost #13085 and memory #13086 are closed. The join benchmark #13084 remains held.",
     "open_pr_candidates": [],
     "comments_count": 2,
@@ -6537,20 +5766,12 @@
     "title": "id(phase-14): 100x feasibility run \u2014 find and record the wall",
     "url": "https://github.com/developing-today/code/issues/13088",
     "updated_at": "2026-11-23T10:30:51Z",
-    "labels": [
-      "app/id",
-      "design/id-phase-14",
-      "epic/id-program",
-      "kind/feature"
-    ],
+    "labels": ["app/id", "design/id-phase-14", "epic/id-program", "kind/feature"],
     "assignees": [],
     "state": "open",
     "native_open": [],
     "native_closed": [],
-    "body_prerequisites": [
-      13087,
-      8239
-    ],
+    "body_prerequisites": [13087, 8239],
     "note": "Batching #8239 is closed. First 10x run #13087 remains open. Measure resource needs before scheduling.",
     "open_pr_candidates": [],
     "comments_count": 2,

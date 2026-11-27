@@ -38,7 +38,11 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
 
 async function createTestDirectory() {
   const db = new DatabaseSync(":memory:");
-  for (const migration of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql", "0003_migration_leases.sql"]) {
+  for (const migration of [
+    "0001_hosted_accounts.sql",
+    "0002_legacy_hosted_accounts.sql",
+    "0003_migration_leases.sql",
+  ]) {
     const schema = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
     db.exec(schema);
   }
@@ -59,10 +63,7 @@ test("persistent duplicate signup returns the stored row without changing its po
       jurisdiction: "us",
     });
     assert.deepEqual(duplicate, first);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
   } finally {
     db.close();
   }
@@ -128,10 +129,7 @@ test("concurrent persistent signups for one subject preserve exactly one row", a
       }),
     ]);
     assert.deepEqual(left, right);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
     assert.ok(["eu", "us"].includes(left.jurisdiction));
   } finally {
     db.close();
@@ -155,9 +153,7 @@ test("a signup racing a legacy inventory leaves the subject in one table", async
       assert.equal(rejected.length, 1);
       assert.ok(rejected[0].reason instanceof FailClosed);
       assert.ok(
-        ["legacy_subject_requires_migration", "legacy_subject_already_registered"].includes(
-          rejected[0].reason.code,
-        ),
+        ["legacy_subject_requires_migration", "legacy_subject_already_registered"].includes(rejected[0].reason.code),
         String(rejected[0].reason.code),
       );
       const validated = db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count;
@@ -183,9 +179,7 @@ test("persistent signup rejects conflicting subject and binding mappings", async
         bindingId: OTHER_BINDING,
         jurisdiction: "eu",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed &&
-        error.code === "duplicate_subject_conflict",
+      (error: unknown) => error instanceof FailClosed && error.code === "duplicate_subject_conflict",
     );
     await assert.rejects(
       accountDirectory.signup({
@@ -193,13 +187,9 @@ test("persistent signup rejects conflicting subject and binding mappings", async
         bindingId: BINDING,
         jurisdiction: "eu",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "binding_conflict",
+      (error: unknown) => error instanceof FailClosed && error.code === "binding_conflict",
     );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
   } finally {
     db.close();
   }
@@ -214,14 +204,9 @@ test("persistent signup fails closed before creating a row for invalid jurisdict
         bindingId: BINDING,
         jurisdiction: "unknown",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed &&
-        error.code === "unsupported_jurisdiction",
+      (error: unknown) => error instanceof FailClosed && error.code === "unsupported_jurisdiction",
     );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      0,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -260,8 +245,7 @@ test("durable legacy inventory refuses any asserted jurisdiction, even on repeat
           bindingId: BINDING,
           jurisdiction,
         }),
-        (error: unknown) =>
-          error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
+        (error: unknown) => error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
       );
     }
     assert.deepEqual(await accountDirectory.listLegacyInventory(), []);
@@ -273,8 +257,7 @@ test("durable legacy inventory refuses any asserted jurisdiction, even on repeat
         bindingId: BINDING,
         jurisdiction: "us",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
+      (error: unknown) => error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
     );
     assert.deepEqual(await accountDirectory.listLegacyInventory(), [
       {
@@ -306,8 +289,7 @@ test("duplicate durable legacy inventory returns the preserved entry; conflictin
         subjectKey: "subject-legacy",
         bindingId: OTHER_BINDING,
       }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "duplicate_subject_conflict",
+      (error: unknown) => error instanceof FailClosed && error.code === "duplicate_subject_conflict",
     );
     assert.deepEqual(await accountDirectory.listLegacyInventory(), [first]);
   } finally {
@@ -328,14 +310,10 @@ test("durable signup for a legacy-inventoried subject fails closed without creat
         bindingId: BINDING,
         jurisdiction: "us",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
+      (error: unknown) => error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
     );
     assert.equal(await accountDirectory.get("subject-legacy"), undefined);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      0,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -351,8 +329,7 @@ test("durable inventory of an already-registered subject fails closed", async ()
     });
     await assert.rejects(
       accountDirectory.inventoryLegacy({ subjectKey: "subject-1", bindingId: BINDING }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_subject_already_registered",
+      (error: unknown) => error instanceof FailClosed && error.code === "legacy_subject_already_registered",
     );
     assert.deepEqual(
       await accountDirectory.signup({
@@ -410,20 +387,9 @@ test("legacy inventory CHECK constraints reject malformed identity and any juris
       undefined,
       "non-hex binding id",
     );
-    assert.throws(
-      () => insert.run("subject", BINDING, "us"),
-      undefined,
-      "jurisdiction as classification",
-    );
-    assert.throws(
-      () => insert.run("subject", BINDING, "other"),
-      undefined,
-      "unknown classification",
-    );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM legacy_hosted_accounts").get()?.count,
-      0,
-    );
+    assert.throws(() => insert.run("subject", BINDING, "us"), undefined, "jurisdiction as classification");
+    assert.throws(() => insert.run("subject", BINDING, "other"), undefined, "unknown classification");
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM legacy_hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -445,14 +411,12 @@ test("durable legacy reads fail closed on records outside the legacy contract", 
     insert.run("subject-bad-binding", "google:sub", "legacy-unrestricted");
     await assert.rejects(
       accountDirectory.legacyInventory("subject-odd"),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
+      (error: unknown) => error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
       "jurisdiction-labelled legacy row",
     );
     await assert.rejects(
       accountDirectory.legacyInventory("subject-bad-binding"),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
+      (error: unknown) => error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
       "malformed binding id in legacy row",
     );
   } finally {
@@ -507,8 +471,7 @@ test("persistent reads reject records outside the per-phase account contract", a
 
       await assert.rejects(
         accountDirectory.get(`subject-${index}`),
-        (error: unknown) =>
-          error instanceof FailClosed && error.code === "invalid_directory_record",
+        (error: unknown) => error instanceof FailClosed && error.code === "invalid_directory_record",
         name,
       );
       db.exec("DELETE FROM hosted_accounts");
@@ -605,12 +568,23 @@ test("transitions refuse steps out of order, foreign migration ids and bad targe
     );
     const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
     await assert.rejects(directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-9" }), refused);
-    await assert.rejects(directory.transition(pending, { type: "switch", migrationId: "m-1" }), refused, "switch needs a verified snapshot");
-    await assert.rejects(directory.transition(pending, { type: "begin", migrationId: "m-2", targetJurisdiction: "fedramp" }), refused);
+    await assert.rejects(
+      directory.transition(pending, { type: "switch", migrationId: "m-1" }),
+      refused,
+      "switch needs a verified snapshot",
+    );
+    await assert.rejects(
+      directory.transition(pending, { type: "begin", migrationId: "m-2", targetJurisdiction: "fedramp" }),
+      refused,
+    );
     const frozen = await directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" });
     const verified = await directory.transition(frozen, { type: "snapshot-verified", migrationId: "m-1" });
     const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
-    await assert.rejects(directory.transition(switched, { type: "abort", migrationId: "m-1" }), refused, "no abort after the switch");
+    await assert.rejects(
+      directory.transition(switched, { type: "abort", migrationId: "m-1" }),
+      refused,
+      "no abort after the switch",
+    );
     assert.deepEqual(await directory.get("s"), switched, "refused steps write nothing");
   } finally {
     db.close();

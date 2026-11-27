@@ -216,27 +216,27 @@ The hosted control plane's database (schema home: `pkgs/id/hosted-worker/tenancy
 
 Migration `0001_tenancy_baseline.sql` (E1 of #9083):
 
-| Table            | Holds                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `meta`           | Name/value rows; carries `schema_version`.                                                                         |
-| `account`        | One row per identity that can own things: provider subject (`sub`, unique, never an email), contact email, state, tier. |
+| Table            | Holds                                                                                                                                                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `meta`           | Name/value rows; carries `schema_version`.                                                                                                                                                           |
+| `account`        | One row per identity that can own things: provider subject (`sub`, unique, never an email), contact email, state, tier.                                                                              |
 | `binding`        | The account → identity/tenant pointer: `binding_id` (32 lowercase hex), current root key (`iroh_id`, public only), status; a partial unique index enforces at most one `active` binding per account. |
-| `tenant_db`      | One row per data plane a tenant owns: `participant_kind` (`user_hosted` / `user_native` / `self_hosted_node` / `public`), jurisdiction, backend, provisioning state. |
-| `role_grant`     | Role grants keyed by (`binding_id`, role, scope); scope is a tenant or `*`.                                        |
-| `peer_policy`    | Peer configuration in the #9106/B31 shape: class, operations, relay grant, policy version.                         |
-| `publish_record` | What a tenant has offered to the public plane: content hash, kind, signed-artifact digest.                         |
-| `credential`     | Credential metadata only: scope (`read` / `readwrite` / `ddl`), expiry, and the `jti` revocation handle — never the token. |
+| `tenant_db`      | One row per data plane a tenant owns: `participant_kind` (`user_hosted` / `user_native` / `self_hosted_node` / `public`), jurisdiction, backend, provisioning state.                                 |
+| `role_grant`     | Role grants keyed by (`binding_id`, role, scope); scope is a tenant or `*`.                                                                                                                          |
+| `peer_policy`    | Peer configuration in the #9106/B31 shape: class, operations, relay grant, policy version.                                                                                                           |
+| `publish_record` | What a tenant has offered to the public plane: content hash, kind, signed-artifact digest.                                                                                                           |
+| `credential`     | Credential metadata only: scope (`read` / `readwrite` / `ddl`), expiry, and the `jti` revocation handle — never the token.                                                                           |
 
 Migration `0002_identity_link.sql` (H2 of #9086) adds the SSO relying-party link tables beside the baseline's `account`/`binding` tables. A row holds a door name, the provider's stable subject for that door, and timestamps — the subject is an identifier, not a credential, and email never appears in either table.
 
-| Column        | `identity_link` rule                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------- |
-| `link_id`     | Primary key.                                                                                             |
-| `account_id`  | References `account`; the account this door opens.                                                       |
-| `door`        | Closed vocabulary with a CHECK constraint: `github`, `google`, `microsoft`, `devtoday`.                |
-| `provider_sub` | The provider's stable subject at that door. The (door, subject) pair is the identity; the same subject string at two doors is two identities. |
-| `linked_at` / `linked_by` | When the link was made, and the `binding_id` that performed it.                              |
-| `unlinked_at` | NULL while the link is active; set on unlink. Rows are retained, never hard-deleted while the account lives. |
+| Column                    | `identity_link` rule                                                                                                                          |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `link_id`                 | Primary key.                                                                                                                                  |
+| `account_id`              | References `account`; the account this door opens.                                                                                            |
+| `door`                    | Closed vocabulary with a CHECK constraint: `github`, `google`, `microsoft`, `devtoday`.                                                       |
+| `provider_sub`            | The provider's stable subject at that door. The (door, subject) pair is the identity; the same subject string at two doors is two identities. |
+| `linked_at` / `linked_by` | When the link was made, and the `binding_id` that performed it.                                                                               |
+| `unlinked_at`             | NULL while the link is active; set on unlink. Rows are retained, never hard-deleted while the account lives.                                  |
 
 The table-level `UNIQUE (door, provider_sub)` spans **all** rows, active and historical — one account per door-identity, ever. A door-identity an account has unlinked is not free for another account; the owning account re-linking the same door-identity reactivates its retained row instead of inserting a second one.
 

@@ -164,7 +164,10 @@ export function gcRevocationConformanceCases(factory: HarnessFactory): Conforman
         store.createReference({ contentId, refClass: "standard", createdBy: OTHER, now: at(9 * DAY_MS) });
         h.index.consume(store, { now: at(9 * DAY_MS) });
         h.index.notePublished(contentId, h.locator, { now: at(9 * DAY_MS) });
-        check(checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed, "re-upload is referenceable");
+        check(
+          checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed,
+          "re-upload is referenceable",
+        );
       },
     },
     {
@@ -185,7 +188,10 @@ export function gcRevocationConformanceCases(factory: HarnessFactory): Conforman
         // The EU sweep refuses a mixed-partition store set before
         // reading anything, and deletes nothing anywhere.
         const eu = await factory(EU_PRIVATE);
-        await expectFailClosed(us.gc.sweep([us.stores[0], eu.stores[0]], { now: at(8 * DAY_MS) }), "gc_store_partition_mismatch");
+        await expectFailClosed(
+          us.gc.sweep([us.stores[0], eu.stores[0]], { now: at(8 * DAY_MS) }),
+          "gc_store_partition_mismatch",
+        );
         check((await eu.plane.head(contentId)) === null, "eu partition holds no replica of the us content");
       },
     },
@@ -214,16 +220,25 @@ export function gcRevocationConformanceCases(factory: HarnessFactory): Conforman
         // Granting a reference then removing it revokes the grant:
         // the check denies again with no live row behind it.
         const { row } = h.stores[0].createReference({ contentId, refClass: "standard", createdBy: WRITER, now: T0 });
-        check(checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed, "live reference authorizes");
+        check(
+          checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed,
+          "live reference authorizes",
+        );
         h.stores[0].removeReference(row.reference_id, { actor: WRITER, now: at(1000) });
-        check(!checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed, "removed reference revokes");
+        check(
+          !checkAccess({ contentId, partition: h.partition, authorizedDbs: h.stores }).allowed,
+          "removed reference revokes",
+        );
       },
     },
     {
       name: "(e) revocation by reference removal stops new capability minting within the TTL bound",
       run: async () => {
         const h = await factory(US_PUBLIC);
-        check(h.publication !== undefined && h.publicDb !== undefined, "public harness carries the publication service");
+        check(
+          h.publication !== undefined && h.publicDb !== undefined,
+          "public harness carries the publication service",
+        );
         const publication = h.publication;
         const publicDb = h.publicDb;
         const tenantDb = h.stores[0];
@@ -269,7 +284,10 @@ export function gcRevocationConformanceCases(factory: HarnessFactory): Conforman
 
         // Erasure is refused while the requester's own reference is
         // still live: remove it first.
-        await expectFailClosed(h.gc.requestErasure(contentId, WRITER, h.stores, { now: T0 }), "erasure_reference_still_live");
+        await expectFailClosed(
+          h.gc.requestErasure(contentId, WRITER, h.stores, { now: T0 }),
+          "erasure_reference_still_live",
+        );
         store.removeReference(row.reference_id, { actor: WRITER, now: at(1000) });
         h.index.consume(store, { now: at(1000) });
 

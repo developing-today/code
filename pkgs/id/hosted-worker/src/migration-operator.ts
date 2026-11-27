@@ -87,7 +87,12 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): void {
   }
 }
 
-function responseRecord(record: { migrationId: string | null; phase: string; jurisdiction: string; routingEpoch: number }) {
+function responseRecord(record: {
+  migrationId: string | null;
+  phase: string;
+  jurisdiction: string;
+  routingEpoch: number;
+}) {
   return {
     migration_id: record.migrationId,
     phase: record.phase,
@@ -115,14 +120,18 @@ export async function handleMigrationOperatorRequest(
     if (!match || !(await sameToken(match[1]!, env.MIGRATION_OPERATOR_TOKEN))) {
       throw new FailClosed(401, "operator_auth_required", "a valid migration operator bearer token is required");
     }
-    if (req.method !== "POST") throw new FailClosed(405, "method_not_allowed", "migration operator routes require POST");
+    if (req.method !== "POST")
+      throw new FailClosed(405, "method_not_allowed", "migration operator routes require POST");
 
     const action = url.pathname.slice(PATH_PREFIX.length);
     if (action !== "start" && action !== "resume" && action !== "abort") {
       throw new FailClosed(404, "not_found", "no such migration operator route");
     }
     const body = await bodyObject(req);
-    exactKeys(body, action === "abort" ? ["binding_id", "migration_id"] : ["binding_id", "migration_id", "target_jurisdiction"]);
+    exactKeys(
+      body,
+      action === "abort" ? ["binding_id", "migration_id"] : ["binding_id", "migration_id", "target_jurisdiction"],
+    );
     if (typeof body.binding_id !== "string") {
       throw new FailClosed(400, "invalid_binding_id", "binding_id must be a minted 32-character hexadecimal ID");
     }
@@ -137,7 +146,8 @@ export async function handleMigrationOperatorRequest(
     }
     const migrationId = body.migration_id;
     const record = await ports.directory.findByBindingId(bindingId);
-    if (record == null) throw new FailClosed(404, "directory_account_missing", "no hosted account record for this binding");
+    if (record == null)
+      throw new FailClosed(404, "directory_account_missing", "no hosted account record for this binding");
 
     const run = {
       subjectKey: record.subjectKey,
@@ -153,11 +163,18 @@ export async function handleMigrationOperatorRequest(
     const targetJurisdiction = parseJurisdiction(
       typeof body.target_jurisdiction === "string" ? body.target_jurisdiction : null,
     );
-    if (record.phase !== "stable" && (record.migrationId !== migrationId || record.jurisdictionPending !== targetJurisdiction)) {
+    if (
+      record.phase !== "stable" &&
+      (record.migrationId !== migrationId || record.jurisdictionPending !== targetJurisdiction)
+    ) {
       throw new FailClosed(409, "migration_in_progress", "binding has a different migration or target in progress");
     }
     if (action === "resume" && record.phase === "stable" && record.jurisdiction !== targetJurisdiction) {
-      throw new FailClosed(409, "migration_not_in_progress", "resume requires the requested migration to be in progress or already complete");
+      throw new FailClosed(
+        409,
+        "migration_not_in_progress",
+        "resume requires the requested migration to be in progress or already complete",
+      );
     }
     const result = await driveMigration(ports, { ...run, targetJurisdiction });
     return json({ result: "complete", account: responseRecord(result) });

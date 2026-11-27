@@ -44,7 +44,10 @@ redb = "=5.0.0"
 # id-worlds; blocking because the store traits are synchronous. No SQL
 # library ships: statements travel as protocol JSON, so the no-SQLite
 # rule for the shipped build (see tests/store_traits.rs) is untouched.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "blocking",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

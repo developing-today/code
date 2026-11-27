@@ -14,11 +14,11 @@ reports (notably the Android 13 Keystore-Ed25519 report placing
 API 33). Executable form: `direct_keystore_ed25519_supported` in
 `pkgs/id/crates/id-client/src/enrollment.rs`.
 
-| API level | Direct Keystore Ed25519 | StrongBox Ed25519 | Spike decision | Provenance |
-| --- | --- | --- | --- | --- |
-| 21–32 | No (no doc source reports it) | No | **Envelope fallback mandatory** | Doc-derived |
-| 33+ (TEE Keystore) | Reported yes | — | **Envelope fallback default**; direct only after a real-device run proves algorithm + hardware level on that device | Doc-derived |
-| 33+ (StrongBox) | Device-dependent; frequently absent | **Assume absent until proven per-device** | Envelope with StrongBox-wrapped AES key where present, TEE wrap otherwise; report the actual level | Doc-derived |
+| API level          | Direct Keystore Ed25519             | StrongBox Ed25519                         | Spike decision                                                                                                      | Provenance  |
+| ------------------ | ----------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 21–32              | No (no doc source reports it)       | No                                        | **Envelope fallback mandatory**                                                                                     | Doc-derived |
+| 33+ (TEE Keystore) | Reported yes                        | —                                         | **Envelope fallback default**; direct only after a real-device run proves algorithm + hardware level on that device | Doc-derived |
+| 33+ (StrongBox)    | Device-dependent; frequently absent | **Assume absent until proven per-device** | Envelope with StrongBox-wrapped AES key where present, TEE wrap otherwise; report the actual level                  | Doc-derived |
 
 Fallback decision: **the encrypted-key-envelope path is the default
 on every API level.** Direct hardware Ed25519 (`Ed25519` via

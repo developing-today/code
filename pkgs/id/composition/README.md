@@ -15,16 +15,16 @@ Predecessor record: `doc/2026-11-09T04-43-05Z_design_id5788_build_variants.md`
 
 ## Contents
 
-| File | What |
-|---|---|
-| `catalogue.toml` | The §4 catalogue as data: features (adds / requires / roles / status / forwards), exclusivity groups, profiles (built-ins + served examples + aliases), the unrepresentable list. |
-| `manifest-schema.md` | The §5.1 build-manifest schema (TOML surface, fields, the 8 rules) + open profile sets + the `id-compose` (S7) contract. |
-| `composition-hash-spec.md` | The §5.2 composition-hash spec: canonical CBOR profile + BLAKE3-256, the hashed field table, version stamp + registry + yank semantics, conventions boundary, worked example. |
-| `examples/` | Three valid manifests: `basement-store-node.toml` (plan §5.1 verbatim), `headless-alias.toml` (alias-invariance pair), `user-profile.toml` (open-set mechanism). |
-| `golden/` | `inputs.json` (worked-example inputs), `make_vector.py` (stdlib canonical encoder), `canonical.hex` (464 bytes), `hash.hex` (BLAKE3 identity), `recheck.sh` (reproduce both). |
-| `validate.py` | S1 catalogue/tree checks plus the S2 variant-source pin (check 8). Run `python3 -I validate.py` here. |
-| `variants.toml` | S2 single source for the `web` and `lib` shipped build feature sets and root defaults. |
-| `../scripts/variant-features.sh` | Strict reader used by just/build.sh to obtain a variant's feature set. |
+| File                             | What                                                                                                                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalogue.toml`                 | The §4 catalogue as data: features (adds / requires / roles / status / forwards), exclusivity groups, profiles (built-ins + served examples + aliases), the unrepresentable list. |
+| `manifest-schema.md`             | The §5.1 build-manifest schema (TOML surface, fields, the 8 rules) + open profile sets + the `id-compose` (S7) contract.                                                          |
+| `composition-hash-spec.md`       | The §5.2 composition-hash spec: canonical CBOR profile + BLAKE3-256, the hashed field table, version stamp + registry + yank semantics, conventions boundary, worked example.     |
+| `examples/`                      | Three valid manifests: `basement-store-node.toml` (plan §5.1 verbatim), `headless-alias.toml` (alias-invariance pair), `user-profile.toml` (open-set mechanism).                  |
+| `golden/`                        | `inputs.json` (worked-example inputs), `make_vector.py` (stdlib canonical encoder), `canonical.hex` (464 bytes), `hash.hex` (BLAKE3 identity), `recheck.sh` (reproduce both).     |
+| `validate.py`                    | S1 catalogue/tree checks plus the S2 variant-source pin (check 8). Run `python3 -I validate.py` here.                                                                             |
+| `variants.toml`                  | S2 single source for the `web` and `lib` shipped build feature sets and root defaults.                                                                                            |
+| `../scripts/variant-features.sh` | Strict reader used by just/build.sh to obtain a variant's feature set.                                                                                                            |
 
 ## The five amendments, and where each landed
 

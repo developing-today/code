@@ -10,8 +10,8 @@ set -euo pipefail
 # never found. The default stays relative to this script's directory.
 if [ $# -ge 1 ]; then
   case "$1" in
-    /*) wasm="$1" ;;
-    *) wasm="$PWD/$1" ;;
+  /*) wasm="$1" ;;
+  *) wasm="$PWD/$1" ;;
   esac
 else
   wasm=""

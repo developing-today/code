@@ -29,7 +29,7 @@ if ! ID_ZIG_ACTUAL_OUTPUT="$("$ID_ZIG_BIN" version 2>&1)"; then
   exit 1
 fi
 
-if [[ "$ID_ZIG_ACTUAL_OUTPUT" != "$ID_ZIG_EXPECTED_VERSION" ]]; then
+if [[ $ID_ZIG_ACTUAL_OUTPUT != "$ID_ZIG_EXPECTED_VERSION" ]]; then
   printf 'Zig toolchain mismatch: expected %s from %s, got %s from %s; refusing to build.\n' \
     "$ID_ZIG_EXPECTED_VERSION" "$ID_ZIG_VERSION_FILE" "$ID_ZIG_ACTUAL_OUTPUT" "$ID_ZIG_BIN" >&2
   exit 1

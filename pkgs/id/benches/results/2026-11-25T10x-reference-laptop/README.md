@@ -27,7 +27,7 @@ run on the reference laptop (AMD Ryzen 7 7840U, 16 threads, NixOS).
 - `many_worlds`: one attempt using the 10x population (10,000
   idle worlds, 1,000 active worlds, 20 events/s per active world, 10 seconds)
   hit a wall after 89.76 seconds with `server has too many worlds open; try
-  again shortly`. This is recorded as a measured wall, not a 10x workload
+again shortly`. This is recorded as a measured wall, not a 10x workload
   pass. The exact command, exit status and elapsed duration are retained in
   [`jobs.json`](jobs.json).
 

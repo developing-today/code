@@ -72,6 +72,7 @@
                 "peek_tests::",
                 "filter_flag_tests::",
                 "show_peek_subcommand_help::",
+                "structured_logging_tests::",
             ],
             900,
         ),

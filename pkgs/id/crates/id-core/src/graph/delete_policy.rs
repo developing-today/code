@@ -95,10 +95,11 @@ pub(crate) fn apply_clear_policy(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        apply_clear_policy, authorizes_clear_delete, ClearAuthority, ClearMarker,
-        ServerDeletePolicy,
+        ClearAuthority, ClearMarker, ServerDeletePolicy, apply_clear_policy,
+        authorizes_clear_delete,
     };
     use crate::graph::deletion::{DeletionState, DeletionStateMachine, TransitionOutcome};
     use p2panda_core::SigningKey;

@@ -74,11 +74,7 @@ function assertState(state: MigrationState): void {
     aborted: [state.sourceJurisdiction, false, false],
   };
   const [active, frozen, serving] = expected[state.phase];
-  if (
-    state.activeJurisdiction !== active ||
-    state.sourceFrozen !== frozen ||
-    state.targetServing !== serving
-  ) {
+  if (state.activeJurisdiction !== active || state.sourceFrozen !== frozen || state.targetServing !== serving) {
     throw new MigrationTransitionError(`state invariants do not hold for phase ${state.phase}`);
   }
 }

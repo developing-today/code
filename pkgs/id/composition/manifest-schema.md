@@ -1,9 +1,15 @@
 # Build manifest schema v1 — from a composition manifest to a built binary
+
 #
+
 # S1 of developing-today/code#14056. Implements plan §5.1 as amended
+
 # (amendment 2: alias resolution + open profile sets; amendment 3: roles
+
 # compose per node). The build tool (`id-compose`, S7) validates manifests
+
 # against this schema and the catalogue; the hash spec
+
 # (`composition-hash-spec.md`) defines what happens after validation.
 
 ## Surface syntax
@@ -14,23 +20,23 @@ manifest").
 
 ## Fields
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `schema` | uint | yes | Manifest schema version. Today: `1`. Unknown versions are refused. |
-| `target` | string | yes | Rust target triple, e.g. `x86_64-unknown-linux-musl`. |
-| `name` | string | no | Human name for a served environment's build. Absent for arbitrary (unlisted) compositions. Never hashed — identity is the composition hash, not the name. |
-| `profile` | string | no | Base profile: a canonical name or an alias (`basement` resolves to `headless` before anything else). |
-| `features` | string[] | no | Additions to the base profile, or the full selection when no profile is named. Every entry must exist in the catalogue. |
-| `group_select` | table | no | Per-group member overrides, `{ group = "member" }`. Group and member must exist in the catalogue. |
+| Field          | Type     | Required | Meaning                                                                                                                                                   |
+| -------------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema`       | uint     | yes      | Manifest schema version. Today: `1`. Unknown versions are refused.                                                                                        |
+| `target`       | string   | yes      | Rust target triple, e.g. `x86_64-unknown-linux-musl`.                                                                                                     |
+| `name`         | string   | no       | Human name for a served environment's build. Absent for arbitrary (unlisted) compositions. Never hashed — identity is the composition hash, not the name. |
+| `profile`      | string   | no       | Base profile: a canonical name or an alias (`basement` resolves to `headless` before anything else).                                                      |
+| `features`     | string[] | no       | Additions to the base profile, or the full selection when no profile is named. Every entry must exist in the catalogue.                                   |
+| `group_select` | table    | no       | Per-group member overrides, `{ group = "member" }`. Group and member must exist in the catalogue.                                                         |
 
 Omitted `features` means "no additions". Omitted `profile` with `features`
 present means "compose from core plus exactly these features".
 
 ## Rules (all refusals name the offending entries)
 
-1. **One base.** A manifest names a base profile *or* an explicit feature
+1. **One base.** A manifest names a base profile _or_ an explicit feature
    list composition — additions to a profile are stated as additions, and
-   the *resolved set* is what is hashed (plan §5.1). Stating the same
+   the _resolved set_ is what is hashed (plan §5.1). Stating the same
    feature both in the profile and in `features` is allowed and means
    nothing (sets, not lists).
 2. **Alias resolution first.** Aliases (`basement` → `headless`, and any
@@ -53,7 +59,7 @@ present means "compose from core plus exactly these features".
    the resolved set (sorted) is the hash input. A manifest need not list
    what its selections imply (`roc-composer` implies `rust`), but may.
 7. **Grants, config, data are never manifest content.** A composition
-   decides what a binary *can* do; what it *does* is runtime
+   decides what a binary _can_ do; what it _does_ is runtime
    configuration, a different layer (plan §5.2, composer §3.1 rule).
 8. **Roles are descriptive, not selective.** A feature's `roles` say
    which role-acts need it (amendments 1, 3); they do not filter

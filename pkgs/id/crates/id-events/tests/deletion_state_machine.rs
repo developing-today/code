@@ -17,6 +17,13 @@ mod canonical_cbor {
     pub use id_core::canonical_cbor::*;
 }
 
+// Same crate-root wiring gap as above: deletion.rs calls
+// `crate::hex::hex_encode`, which resolves in id-core but not when the
+// model includes the file directly.
+mod hex {
+    pub use id_core::hex::*;
+}
+
 use p2panda_core::SigningKey;
 
 use deletion::{DeletionAction, DeletionState, DeletionStateMachine, TransitionOutcome};

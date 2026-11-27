@@ -8,11 +8,7 @@
 // SQLite (node:sqlite), the harness shape of test/gc-sweep.test.ts.
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import {
-  gcRevocationConformanceCases,
-  type Partition,
-  type SliceHarness,
-} from "../src/gc-revocation-conformance.ts";
+import { gcRevocationConformanceCases, type Partition, type SliceHarness } from "../src/gc-revocation-conformance.ts";
 import { ReferenceStore } from "../src/references.ts";
 import { ReferenceIndex } from "../src/reference-index.ts";
 import { GcSweeper } from "../src/gc-sweep.ts";

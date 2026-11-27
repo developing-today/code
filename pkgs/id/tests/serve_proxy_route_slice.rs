@@ -1,5 +1,7 @@
 //! Integration oracles for live serve-proxy mux/leg routing (#14918).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use id::serve_proxy::{Frame, FrameType};
 use id::serve_proxy_route::LiveLeg;
 use id::serve_proxy_scheduler::StreamPriority;
