@@ -33,6 +33,8 @@
 // Env:
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
+//   LISTEN_FDS=1 plus LISTEN_PID=<this pid> adopts systemd fd 3;
+//   without those markers the proxy binds OPENCODE_ROUTE_PROXY_PORT itself.
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
 //   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
 //                                         (default 3000 ms; below the client
@@ -64,6 +66,17 @@ import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
+const systemdListenFd = () => {
+  const listenFds = process.env.LISTEN_FDS;
+  const listenPid = process.env.LISTEN_PID;
+  if (listenFds === undefined && listenPid === undefined) return null;
+  if (listenFds !== "1" || listenPid !== String(process.pid)) {
+    throw new Error(
+      "systemd socket activation requires LISTEN_FDS=1 and matching LISTEN_PID",
+    );
+  }
+  return 3;
+};
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
 const LEAF_TIMEOUT_MS = parseProxyMillis(
   "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
@@ -957,7 +970,118 @@ const recordAttempt = (a) => {
   let db = null;
   try {
     db = openDb();
-    db.prepare(
+    // Window context is read at record time from the live config so
+    // every attempt carries the switch state without touching the
+    // dispatch call sites; the pinned test clock
+    // (OPENCODE_ROUTE_PROXY_NOW_MS) is the simulated attempt time.
+    let ctx = null;
+    try {
+      ctx = routeWindowContext(loadConfig(), a.routeId, nowMs());
+    } catch {
+      ctx = null;
+    }
+    if (ctx && ensureAttemptWindowColumns(db)) {
+      try {
+        insertAttempt(
+          db,
+          `INSERT INTO route_attempt (
+           time_started, time_ended, session_id, assistant_message_id,
+           route_id, provider_id, model_id, variant, outcome,
+           error_tag, error_code, error_status, error_message, retryable,
+           output_started, failed_over_to, first_token_ms, response_ms,
+           tokens_per_second, tokens_input, tokens_output, tokens_reasoning,
+           tokens_cache_read, tokens_cache_write, quota, cost_usd,
+           window_names, window_class, holiday, priority_band
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            a.started,
+            a.ended,
+            null,
+            null,
+            a.routeId,
+            a.providerId,
+            a.modelId,
+            a.variant ?? null,
+            a.outcome,
+            a.errorTag ?? null,
+            a.errorCode ?? null,
+            a.errorStatus ?? null,
+            a.errorMessage ?? null,
+            a.retryable == null ? null : a.retryable ? 1 : 0,
+            a.outputStarted ? 1 : 0,
+            a.failedOverTo ?? null,
+            a.firstTokenMs ?? null,
+            a.responseMs ?? null,
+            a.tokensPerSecond ?? null,
+            a.tokensInput ?? null,
+            a.tokensOutput ?? null,
+            a.tokensReasoning ?? null,
+            a.tokensCacheRead ?? null,
+            a.tokensCacheWrite ?? null,
+            a.quota ?? null,
+            a.costUsd ?? null,
+            ctx.windowNames,
+            ctx.windowClass,
+            ctx.holiday,
+            ctx.priorityBand,
+          ],
+        );
+        return;
+      } catch {
+        // A shared store can change under us; the legacy shape below
+        // only touches columns OpenCode core has always owned.
+      }
+    }
+    insertAttemptLegacy(db, a);
+  } catch {
+    // The ledger must never fail a completion.
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// The route_attempt table belongs to OpenCode core, so the proxy never
+// creates it — it only adds the window-context columns it records
+// (#9378 stage 2), once each, and records without them when the store
+// is read-only or shared.
+const ensureAttemptWindowColumns = (db) => {
+  const columns = [
+    ["window_names", "TEXT"],
+    ["window_class", "TEXT"],
+    ["holiday", "TEXT"],
+    ["priority_band", "TEXT"],
+  ];
+  let names = [];
+  try {
+    names = db
+      .prepare("PRAGMA table_info(route_attempt)")
+      .all()
+      .map((r) => r.name);
+  } catch {
+    return false;
+  }
+  for (const [name, type] of columns) {
+    if (names.includes(name)) continue;
+    try {
+      db.exec(`ALTER TABLE route_attempt ADD COLUMN ${name} ${type}`);
+      names.push(name);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+};
+
+const insertAttempt = (db, sql, params) => {
+  db.prepare(sql).run(...params);
+};
+
+const insertAttemptLegacy = (db, a) => {
+  try {
+    insertAttempt(
+      db,
       `INSERT INTO route_attempt (
          time_started, time_ended, session_id, assistant_message_id,
          route_id, provider_id, model_id, variant, outcome,
@@ -966,40 +1090,37 @@ const recordAttempt = (a) => {
          tokens_per_second, tokens_input, tokens_output, tokens_reasoning,
          tokens_cache_read, tokens_cache_write, quota, cost_usd
        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      a.started,
-      a.ended,
-      null,
-      null,
-      a.routeId,
-      a.providerId,
-      a.modelId,
-      a.variant ?? null,
-      a.outcome,
-      a.errorTag ?? null,
-      a.errorCode ?? null,
-      a.errorStatus ?? null,
-      a.errorMessage ?? null,
-      a.retryable == null ? null : a.retryable ? 1 : 0,
-      a.outputStarted ? 1 : 0,
-      a.failedOverTo ?? null,
-      a.firstTokenMs ?? null,
-      a.responseMs ?? null,
-      a.tokensPerSecond ?? null,
-      a.tokensInput ?? null,
-      a.tokensOutput ?? null,
-      a.tokensReasoning ?? null,
-      a.tokensCacheRead ?? null,
-      a.tokensCacheWrite ?? null,
-      a.quota ?? null,
-      a.costUsd ?? null,
+      [
+        a.started,
+        a.ended,
+        null,
+        null,
+        a.routeId,
+        a.providerId,
+        a.modelId,
+        a.variant ?? null,
+        a.outcome,
+        a.errorTag ?? null,
+        a.errorCode ?? null,
+        a.errorStatus ?? null,
+        a.errorMessage ?? null,
+        a.retryable == null ? null : a.retryable ? 1 : 0,
+        a.outputStarted ? 1 : 0,
+        a.failedOverTo ?? null,
+        a.firstTokenMs ?? null,
+        a.responseMs ?? null,
+        a.tokensPerSecond ?? null,
+        a.tokensInput ?? null,
+        a.tokensOutput ?? null,
+        a.tokensReasoning ?? null,
+        a.tokensCacheRead ?? null,
+        a.tokensCacheWrite ?? null,
+        a.quota ?? null,
+        a.costUsd ?? null,
+      ],
     );
   } catch {
     // The ledger must never fail a completion.
-  } finally {
-    try {
-      db?.close();
-    } catch {}
   }
 };
 
@@ -1072,6 +1193,31 @@ const validTimeZone = (tz) => {
   }
 };
 
+// Time-of-day window classes (#9378 stage 2; values from
+// doc/2026-11-18T12-00-00Z_design_time_of_day_routing_policy/spec.md
+// §1.1). A window may carry `class` of peak, off-peak or preburn;
+// absent means peak for compatibility with the shipped DeepSeek
+// windows. The class is recording-only vocabulary: it never changes
+// gate matching, only what route_attempt rows carry.
+const WINDOW_CLASSES = new Set(["peak", "off-peak", "preburn"]);
+const WINDOW_CLASS_PRECEDENCE = ["peak", "preburn", "off-peak"];
+
+const windowClassOf = (win) =>
+  win && typeof win.class === "string" && WINDOW_CLASSES.has(win.class)
+    ? win.class
+    : "peak";
+
+// A present-but-unknown class value: named at load, recorded as the
+// peak default, and never fail-closed — a recording-label typo must
+// not flip the window's gate the way a bad time rule does.
+const windowClassProblems = (win) =>
+  win?.class == null ||
+  (typeof win.class === "string" && WINDOW_CLASSES.has(win.class))
+    ? null
+    : [
+        `class=${JSON.stringify(win?.class)} (expected one of peak, off-peak, preburn; absent means peak)`,
+      ];
+
 // Why a window entry can never match, or null when it is well formed.
 // start/end must be HH:MM in range (#4259); a present `timezone` must
 // be a real Intl time zone and a present `daysOfWeek` an array of
@@ -1101,6 +1247,8 @@ const windowProblems = (win) => {
 
 // At config load, name every model_route_windows entry that can never
 // match, with the offending values, instead of silently evaluating it.
+// A bad `class` is named separately: it never matches differently,
+// it only records as the peak default (see windowClassProblems).
 const warnInvalidWindows = (windows) => {
   if (!windows || typeof windows !== "object") return;
   for (const [name, win] of Object.entries(windows)) {
@@ -1109,6 +1257,13 @@ const warnInvalidWindows = (windows) => {
       console.error(
         `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
           `${problems.join("; ")}; window will never match`,
+      );
+    }
+    const classProblems = windowClassProblems(win);
+    if (classProblems) {
+      console.error(
+        `opencode-route-proxy: model_route_windows["${name}"] has an unknown class: ` +
+          `${classProblems.join("; ")}; window still gates on its time rule`,
       );
     }
   }
@@ -1160,6 +1315,39 @@ const targetEligible = (cfg, t, now) => {
   if (!t.windowGate) return true;
   const active = windowActive(cfg.windows?.[t.windowGate.name], now);
   return t.windowGate.invert ? !active : active;
+};
+
+// Time-of-day window context, recorded on every route_attempt
+// (#9378 stage 2; policy values from the stage-1 spec §1/§4.1). A
+// route may bind the windows whose class drives it (`windows: [...]`
+// on the route); only bound windows count when the route binds any,
+// otherwise every defined window counts. Unknown binding names are
+// ignored here (the route checker flags them). Class precedence when
+// several match: peak > preburn > off-peak; no match records
+// neutral. `holiday` has no calendar source yet
+// (developing-today/opencode#821) and records "unknown". The batch
+// class route (background) serves queue work; every other route
+// serves interactive work first (G1) — that is what priority_band
+// records.
+const routeWindowContext = (cfg, routeId, now) => {
+  const windows =
+    cfg?.windows && typeof cfg.windows === "object" ? cfg.windows : {};
+  const route = cfg?.routes?.[routeId];
+  const bound = Array.isArray(route?.windows)
+    ? [...new Set(route.windows.filter((w) => typeof w === "string" && w))]
+    : null;
+  const names = (bound && bound.length ? bound : Object.keys(windows)).filter(
+    (n) => Object.hasOwn(windows, n),
+  );
+  const matched = names.filter((n) => windowActive(windows[n], now));
+  const classes = new Set(matched.map((n) => windowClassOf(windows[n])));
+  return {
+    windowNames: matched.join(","),
+    windowClass:
+      WINDOW_CLASS_PRECEDENCE.find((c) => classes.has(c)) ?? "neutral",
+    holiday: "unknown",
+    priorityBand: routeId === "background" ? "batch" : "interactive",
+  };
 };
 
 const rotation = new Map(); // routeId -> counter
@@ -3464,6 +3652,12 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
+const onListening = () => {
   console.log(`opencode-route-proxy listening on http://${HOST}:${PORT}`);
-});
+};
+const listenFd = systemdListenFd();
+if (listenFd === null) {
+  server.listen(PORT, HOST, onListening);
+} else {
+  server.listen({ fd: listenFd }, onListening);
+}

@@ -1,0 +1,76 @@
+name: pmo-contract-conformance
+
+# CI tier policy: see .github/ci-policy.md
+#
+# CEN-07 (#9437; design record
+# doc/2026-11-25T20-54-29Z_design_cen07_adapter_conformance_ci/):
+# feeds the PM orchestration golden fixtures
+# (pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/)
+# to the code that serves each contract on main, Fleet side and
+# projector side, and reports each contract family separately
+# (test-suite registry row pmo.contract-conformance). A gated family
+# is reported with its issue and never counted as passing.
+#
+# The job writes nothing outside its runner: no secrets, no deploy,
+# no GitHub write, no broker or projector endpoint.
+
+on:
+  schedule:
+    # Nightly, like the other test venues (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pmo-contract-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pmo-contract-conformance:
+    name: "pmo contract conformance"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MANIFEST: pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/manifest.json
+      CARGO_TEST: cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance
+      # A missing projector source fails here instead of reading as
+      # not run.
+      PMO_CONFORMANCE_REQUIRE_PROJECTOR: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify manifest-driven projector selection
+        run: python3 -I .github/scripts/test_pmo_projector_selection.py -v
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+
+      - name: Assert the manifest's tests exist in the target
+        run: |
+          $CARGO_TEST -- --list --format terse | tee "$RUNNER_TEMP/list.txt"
+          python3 -I .github/scripts/pmo-contract-conformance.py check-list "$MANIFEST" "$RUNNER_TEMP/list.txt"
+
+      - name: Run the conformance target
+        id: rust
+        run: |
+          set +e
+          $CARGO_TEST 2>&1 | tee "$RUNNER_TEMP/rust.log"
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Run the projector's forwarding tests by exact file
+        id: projector
+        working-directory: pm-stack/projector
+        run: |
+          set +e
+          python3 -I ../../.github/scripts/pmo-contract-conformance.py run-projector "$GITHUB_WORKSPACE/$MANIFEST"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report each contract family
+        run: |
+          python3 -I .github/scripts/pmo-contract-conformance.py summary "$MANIFEST" \
+            "$RUNNER_TEMP/rust.log" "${{ steps.rust.outputs.rc }}" "${{ steps.projector.outputs.rc }}"

@@ -1,0 +1,59 @@
+{
+  "title": "Complete gopls worktree live proof after PR #8049",
+  "body": "Run the three live gopls workspace proofs required by #961 after the managed daemon loads the merged worktree-scope config; record any blocker precisely.",
+  "priority": 50,
+  "max_attempts": 1000,
+  "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:15098",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "ci_investigation",
+    "repo": "developing-today/code",
+    "problem": "#8049 changes gopls-mcp-server to worktree scope, but #961 was closed before its required live workspace proof ran. Verify the current managed mcpx daemon and prove module API lookup, linked-worktree root selection, and distinct gopls instances from separate checkouts.",
+    "priority_reason": "Normal priority; a closed code issue left a production-relevant live proof unverified. The bounded follow-up provides the missing acceptance evidence without duplicating the completed config change.",
+    "evidence": [
+      "PR #8049 changes the `.mcpx.json` gopls-mcp-server scope to worktree.",
+      "Issue #961 comment #6780423113 says the live proof was still owed because the daemon retained its pre-merge config.",
+      "#961 acceptance requires main-checkout API, linked-worktree root, and distinct per-checkout gopls instances.",
+      "Lane 2 closure pointer #13871 comment 7162914420; no separate live-proof issue existed before this follow-up."
+    ],
+    "acceptance": [
+      "Record the daemon version/config source and show `go_package_api` returns the real module API from the main checkout.",
+      "Repeat the prompt from a linked worktree and record that gopls resolves its root to that worktree.",
+      "Run two callers from different checkouts and record distinct gopls instances and roots in `mcpx status`.",
+      "Use the managed config generation/deployment path if the daemon still loads a stale config; do not report evidence from an unrelated remote runner.",
+      "If a prerequisite prevents a live proof, record the exact blocker and route a separately scoped activation issue/task."
+    ],
+    "tests": [
+      "Run the three read-only live gopls checks required by #961 on the daemon that serves the user environment; capture command/session evidence and outcomes."
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/15098",
+      "https://github.com/developing-today/code/issues/961",
+      "https://github.com/developing-today/code/pull/8049",
+      "https://github.com/developing-today/code/issues/13871#issuecomment-7162914420"
+    ],
+    "issue": {
+      "number": 15098,
+      "title": "mcpx: complete gopls worktree live proof after PR #8049",
+      "url": "https://github.com/developing-today/code/issues/15098"
+    },
+    "scope": {
+      "include": [
+        "Verify the current mcpx daemon/config source",
+        "Run gopls API prompt in main and linked worktrees",
+        "Record distinct per-worktree gopls instances and roots"
+      ],
+      "exclude": [
+        "changing gopls or mcpx implementation code unless a separately scoped blocker is found",
+        "hand-editing generated ephemeral config",
+        "using remote CI evidence that cannot reach the user daemon"
+      ]
+    },
+    "risk": { "level": "low", "flags": [] },
+    "timebox_minutes": 45,
+    "dedupe": {
+      "checked_at": "2026-11-25T12:52:03Z",
+      "basis": "Searched open issues for go_package_api, linked-worktree proof, and distinct gopls worktree instances; only closed source issue #961 matched. Existing Lane 2 pointer #13871#7162914420 has no live-proof task."
+    }
+  }
+}

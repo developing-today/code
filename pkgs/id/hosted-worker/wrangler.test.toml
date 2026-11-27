@@ -17,12 +17,21 @@ class_name = "UserDO"
 tag = "v1"
 new_sqlite_classes = ["UserDO"]
 
-# Slice A of #3811 (#9954): content-addressed blob bytes. Local
-# emulation only — no production bucket is provisioned by this
-# config (account gates #2285 / #3403 stay untouched).
+# Slice A of #3811 (#9954) + #3401: content-addressed blob bytes,
+# one bucket per jurisdiction. Local emulation only — no production
+# bucket is provisioned by this config (account gates #2285 / #3403
+# stay untouched).
 [[r2_buckets]]
-binding = "BLOBS"
-bucket_name = "id-hosted-blobs-test"
+binding = "BLOBS_US"
+bucket_name = "id-hosted-blobs-test-us"
+
+[[r2_buckets]]
+binding = "BLOBS_EU"
+bucket_name = "id-hosted-blobs-test-eu"
+
+[[r2_buckets]]
+binding = "BLOBS_FEDRAMP"
+bucket_name = "id-hosted-blobs-test-fedramp"
 
 # Slice B (#9955): a generous ceiling for the harness so the usage
 # read path reports a configured ceiling without tripping it; the

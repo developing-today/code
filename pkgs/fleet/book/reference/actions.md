@@ -45,6 +45,15 @@ partitioned from the broker):
   portable form resolves later.
 - `fleet actions exec run <ref> [--timeout S] -- <command...>` —
   enqueue one command, stream its output, exit with its code.
+- `fleet actions exec once [--repo OWNER/REPO] [--target-repo
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar: find a live session for
+  `--repo` in the local store or start one (same coordinator
+  claim, same handoff), run one command, exit with its code.
+  Defaults: `--repo dezren39/fleet`, `--lease 1800`,
+  `--max-lifespan 1800`, `--timeout 600`. The session stays open
+  for the next `once` unless `--close`.
 - `fleet actions exec attach <ref>` / `watch <ref>` — stream the
   session's IO after handoff; `watch` also reports the run and
   session status.

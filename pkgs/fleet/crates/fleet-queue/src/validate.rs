@@ -141,14 +141,149 @@ pub const NEXT_UP_PRIORITY: i64 = 25;
 pub const DEDUPE_STAMP_ERROR: &str =
     "payload.dedupe: must have checked_at and basis as non-empty strings";
 
-pub const KINDS: [&str; 6] = [
+pub const KINDS: [&str; 7] = [
     "pr_shepherd",
     "triage",
     "small_fix",
     "ci_investigation",
     "second_pass",
     "feature_slice",
+    "prompt",
 ];
+
+/// Structured terminal verdicts for queue tasks (#14170 Q2). Keep the
+/// category and substatus table here so broker transitions and tests use
+/// one vocabulary.
+pub const RESOLUTIONS: [&str; 9] = [
+    "done",
+    "already_solved",
+    "answered",
+    "duplicate",
+    "superseded",
+    "split_out",
+    "wontfix",
+    "obsolete",
+    "invalid",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionFields {
+    pub resolution: String,
+    pub category: String,
+    pub substatus: Option<String>,
+    pub reason: Option<String>,
+    pub reference: Option<String>,
+}
+
+pub fn resolution_category(resolution: &str) -> Option<&'static str> {
+    match resolution {
+        "done" | "already_solved" | "answered" => Some("success"),
+        "duplicate" | "superseded" | "split_out" => Some("redirection"),
+        "wontfix" | "obsolete" | "invalid" => Some("rejection"),
+        _ => None,
+    }
+}
+
+pub fn resolution_substatuses(resolution: &str) -> Option<&'static [&'static str]> {
+    match resolution {
+        "done" => Some(&["verified", "unverified", "partial_with_followup"]),
+        "already_solved" => Some(&["solved_elsewhere", "premise_already_met"]),
+        "answered" => Some(&["answered_from_record", "answered_by_decision"]),
+        "superseded" => Some(&["by_task", "by_issue", "by_pr"]),
+        "wontfix" => Some(&["decided_by_drew", "decided_by_agent", "out_of_scope"]),
+        "obsolete" => Some(&["issue_closed_elsewhere", "premise_gone", "expired"]),
+        "invalid" => Some(&["malformed_packet", "wrong_queue", "not_a_task"]),
+        "duplicate" | "split_out" => Some(&[]),
+        _ => None,
+    }
+}
+
+/// Validate and normalize a terminal resolution. `done` defaults to
+/// `unverified`; the broker upgrades it to `verified` only from a fresh
+/// disposition readback. Other resolutions require an explicit
+/// substatus when their taxonomy defines one.
+pub fn validate_resolution(
+    status: &str,
+    resolution: Option<&str>,
+    substatus: Option<&str>,
+    reason: Option<&str>,
+    reference: Option<&str>,
+) -> Result<Option<ResolutionFields>, String> {
+    let Some(resolution) = resolution.map(str::trim).filter(|s| !s.is_empty()) else {
+        return match status {
+            "done" => Ok(Some(ResolutionFields {
+                resolution: "done".into(),
+                category: "success".into(),
+                substatus: Some("unverified".into()),
+                reason: None,
+                reference: None,
+            })),
+            "cancelled" => Err("resolution is required for cancellation".into()),
+            "failed" => Ok(None),
+            other => Err(format!(
+                "resolution is not valid for terminal status {other:?}"
+            )),
+        };
+    };
+    let category = resolution_category(resolution).ok_or_else(|| {
+        format!(
+            "unknown resolution {resolution:?}; allowed: {}",
+            RESOLUTIONS.join(", ")
+        )
+    })?;
+    match status {
+        "done" if category != "success" => {
+            return Err(
+                "done requires a success resolution (done, already_solved, answered)".into(),
+            );
+        }
+        "cancelled" if category == "success" => {
+            return Err("cancelled requires a redirection or rejection resolution".into());
+        }
+        "failed" if category != "rejection" => {
+            return Err("failed may only carry a rejection resolution".into());
+        }
+        "done" | "cancelled" | "failed" => {}
+        other => {
+            return Err(format!(
+                "resolution is not valid for terminal status {other:?}"
+            ));
+        }
+    }
+    let allowed =
+        resolution_substatuses(resolution).expect("registered resolution has substatuses");
+    let normalized_substatus = match substatus.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(value) if allowed.contains(&value) => Some(value.to_string()),
+        Some(value) => {
+            return Err(format!(
+                "resolution {resolution:?} does not allow substatus {value:?}; allowed: {}",
+                allowed.join(", ")
+            ));
+        }
+        None => match resolution {
+            "done" => Some("unverified".into()),
+            "already_solved" => Some("premise_already_met".into()),
+            "answered" => Some("answered_by_decision".into()),
+            "duplicate" | "split_out" => None,
+            _ => return Err(format!("resolution {resolution:?} requires a substatus")),
+        },
+    };
+    let reason = reason.map(str::trim).filter(|s| !s.is_empty());
+    let reference = reference.map(str::trim).filter(|s| !s.is_empty());
+    if category == "rejection" && reason.is_none() {
+        return Err(format!("resolution {resolution:?} requires a reason"));
+    }
+    if category == "redirection" && reference.is_none() {
+        return Err(format!("resolution {resolution:?} requires a reference"));
+    }
+    Ok(Some(ResolutionFields {
+        resolution: resolution.to_string(),
+        category: category.to_string(),
+        substatus: normalized_substatus,
+        reason: reason.map(str::to_string),
+        reference: reference.map(str::to_string),
+    }))
+}
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
 // tasks carry dedupe keys with the old names and must keep validating,
@@ -166,6 +301,155 @@ pub const FLEET_REPOS: [&str; 9] = [
 ];
 const PAYLOAD_WARN_BYTES: usize = 4096;
 const PAYLOAD_MAX_BYTES: usize = 16384;
+pub const META_MAX_BYTES: usize = 8192;
+pub const META_MAX_KEYS: usize = 64;
+pub const META_MAX_KEY_BYTES: usize = 64;
+pub const META_MAX_VALUE_BYTES: usize = 2048;
+
+/// Validate queue metadata at every broker write boundary. Unknown keys are
+/// intentionally allowed; registered keys have stable shapes consumers may
+/// rely on. Returns a human-readable error naming the violated limit/key.
+pub fn validate_metadata_key(key: &str) -> Result<(), String> {
+    if key.is_empty()
+        || key.len() > META_MAX_KEY_BYTES
+        || !key.bytes().enumerate().all(|(i, b)| {
+            if i == 0 {
+                b.is_ascii_lowercase()
+            } else {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+            }
+        })
+    {
+        return Err(format!(
+            "metadata key {key:?} violates key-name limit/pattern (lowercase [a-z][a-z0-9_.-]*, <= {META_MAX_KEY_BYTES} bytes)"
+        ));
+    }
+    Ok(())
+}
+
+fn metadata_key_value_error(key: &str, value: &Value) -> Result<(), String> {
+    // Registered keys gate their values. An unregistered key takes any JSON.
+    let shape = match key {
+        "programme" | "verification_class" | "coverage_exception" => value.is_string(),
+        "tracking_issue" | "source_issue" => value.as_str().is_some_and(|s| {
+            let Some((repo, number)) = s.rsplit_once('#') else {
+                return false;
+            };
+            repo.split_once('/')
+                .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty())
+                && !number.is_empty()
+                && number.bytes().all(|b| b.is_ascii_digit())
+        }),
+        "held" => value.as_object().is_some_and(|v| {
+            ["by", "reason", "since"]
+                .iter()
+                .all(|k| v.get(*k).is_some_and(Value::is_string))
+        }),
+        "external_ids" => value.is_object(),
+        "question" => value.as_object().is_some_and(|v| {
+            v.get("ledger_id").is_some_and(Value::is_string)
+                && v.get("state").is_some_and(Value::is_string)
+        }),
+        "lane_hint" => value.as_object().is_some_and(|v| {
+            ["host", "lane", "session"]
+                .iter()
+                .all(|k| v.get(*k).is_none_or(Value::is_string))
+        }),
+        "estimate" => value.as_object().is_some_and(|v| {
+            ["minutes", "points"]
+                .iter()
+                .all(|k| v.get(*k).is_none_or(Value::is_number))
+        }),
+        _ => true,
+    };
+    if shape {
+        Ok(())
+    } else {
+        Err(format!("metadata key {key} has invalid type/shape"))
+    }
+}
+
+/// Validate a key-level metadata merge patch. Null values mean deletion and
+/// therefore have no registered value shape to validate.
+pub fn validate_metadata_patch(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "metadata patch must be a JSON object".to_string())?;
+    for (key, value) in obj {
+        validate_metadata_key(key)?;
+        if value.is_null() {
+            continue;
+        }
+        let encoded = serde_json::to_vec(value)
+            .map_err(|e| format!("metadata {key}: JSON encoding failed: {e}"))?;
+        if encoded.len() > META_MAX_VALUE_BYTES {
+            return Err(format!(
+                "metadata value for {key} exceeds limit ({META_MAX_VALUE_BYTES} bytes)"
+            ));
+        }
+        metadata_key_value_error(key, value)?;
+    }
+    Ok(())
+}
+
+pub fn validate_metadata(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "metadata must be a JSON object".to_string())?;
+    if obj.len() > META_MAX_KEYS {
+        return Err(format!(
+            "metadata key count exceeds limit ({META_MAX_KEYS})"
+        ));
+    }
+    for (key, value) in obj {
+        validate_metadata_key(key)?;
+        let encoded = serde_json::to_vec(value)
+            .map_err(|e| format!("metadata {key}: JSON encoding failed: {e}"))?;
+        if encoded.len() > META_MAX_VALUE_BYTES {
+            return Err(format!(
+                "metadata value for {key} exceeds limit ({META_MAX_VALUE_BYTES} bytes)"
+            ));
+        }
+        metadata_key_value_error(key, value)?;
+    }
+    let encoded =
+        serde_json::to_vec(value).map_err(|e| format!("metadata JSON encoding failed: {e}"))?;
+    if encoded.len() > META_MAX_BYTES {
+        return Err(format!(
+            "metadata object exceeds limit ({META_MAX_BYTES} bytes)"
+        ));
+    }
+    Ok(())
+}
+
+pub const METADATA_REGISTRY: [(&str, &str, &str); 10] = [
+    ("programme", "string", "Owning programme"),
+    (
+        "tracking_issue",
+        "owner/repo#n string",
+        "Programme tracking issue",
+    ),
+    (
+        "source_issue",
+        "owner/repo#n string",
+        "Issue that spawned this task",
+    ),
+    ("held", "{by,reason,since} object", "Advisory hold mark"),
+    ("verification_class", "string", "Verification risk/class"),
+    ("external_ids", "object", "Foreign identifiers"),
+    ("coverage_exception", "string", "Estate-coverage exception"),
+    (
+        "question",
+        "{ledger_id,state} object",
+        "Needs-user question",
+    ),
+    (
+        "lane_hint",
+        "{host?,lane?,session?} object",
+        "Non-binding routing hint",
+    ),
+    ("estimate", "{minutes?,points?} object", "Producer estimate"),
+];
 const BODY_WARN_WORDS: usize = 250;
 
 pub const DEDUPE_PATTERNS_DOC: &str = "fix:         repo-health:v1:fix:<repo>:issue:<n>\n\
@@ -176,7 +460,27 @@ pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n\
 second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>\n\
-slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>";
+slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>\nprompt:      repo-health:v1:prompt:<repo>:submission:<UUIDv4>";
+
+fn valid_prompt_id(id: &str) -> bool {
+    let Some(uuid) = id.strip_prefix("prompt:") else {
+        return false;
+    };
+    let b = uuid.as_bytes();
+    b.len() == 36
+        && [8, 13, 18, 23].iter().all(|&i| b[i] == b'-')
+        && b.iter().enumerate().all(|(i, byte)| {
+            if [8, 13, 18, 23].contains(&i) {
+                true
+            } else if i == 14 {
+                *byte == b'4'
+            } else if i == 19 {
+                matches!(*byte, b'8' | b'9' | b'a' | b'b')
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
+            }
+        })
+}
 
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
@@ -193,6 +497,12 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         let mut sorted = KINDS;
         sorted.sort();
         errs.push(format!("payload.kind: must be one of {sorted:?}"));
+    }
+    if get("kind").and_then(Value::as_str) == Some("prompt") {
+        let id = p.pointer("/prompt/id").and_then(Value::as_str);
+        if !id.is_some_and(valid_prompt_id) {
+            errs.push("payload.prompt.id: must be a canonical prompt:<UUIDv4>".to_string());
+        }
     }
     let repo_ok =
         matches!(get("repo"), Some(Value::String(r)) if FLEET_REPOS.contains(&r.as_str()));
@@ -317,6 +627,41 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
         _ => errs.push("payload.required_budget_minutes: must be a positive integer".to_string()),
     }
+    // #15070: the optional structured route declaration. Absent/null
+    // means unrouted (legacy behavior — claimable by any family);
+    // when present it must be exactly {platform, reason}: platform
+    // one of the platform families (the same vocabulary parse_platform
+    // enforces broker-side), reason a non-blank string — a route is
+    // a platform limitation, and a limitation exists only with its
+    // reason recorded beside it (#8210). verb_enqueue translates a
+    // valid declaration into the task's lane-ledger platform
+    // limitation at creation.
+    match get("route") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(route)) => {
+            match route.get("platform") {
+                Some(Value::String(p)) if ["openchamber", "muse"].contains(&p.as_str()) => {}
+                _ => errs.push(
+                    "payload.route.platform: must be \"openchamber\" or \"muse\"".to_string(),
+                ),
+            }
+            match route.get("reason") {
+                Some(Value::String(s)) if !s.trim().is_empty() => {}
+                _ => errs.push(
+                    "payload.route.reason: must be a non-empty string (a route declaration \
+                     requires its recorded reason)"
+                        .to_string(),
+                ),
+            }
+            if route.keys().any(|k| k != "platform" && k != "reason") {
+                errs.push(
+                    "payload.route: unknown field(s) (only platform and reason are declared)"
+                        .to_string(),
+                );
+            }
+        }
+        Some(_) => errs.push("payload.route: must be an object {platform, reason}".to_string()),
+    }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
             errs.push(format!(
@@ -356,7 +701,11 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     let has_source = matches!(get("source"), Some(Value::Object(s))
         if matches!(s.get("pr"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1))
             && matches!(s.get("finding"), Some(Value::String(f)) if !f.is_empty()));
-    if !(has_issue || has_prs || has_set || has_source) {
+    let has_prompt_identity = get("kind").and_then(Value::as_str) == Some("prompt")
+        && p.pointer("/prompt/id")
+            .and_then(Value::as_str)
+            .is_some_and(valid_prompt_id);
+    if !(has_issue || has_prs || has_set || has_source || has_prompt_identity) {
         errs.push(
             "payload identity: need issue.number, a non-empty prs list, a set object, \
              or a pre-filing source {pr, finding}"
@@ -606,6 +955,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         "maintenance",
         "second-pass",
         "slice",
+        "prompt",
     ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
@@ -705,6 +1055,22 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                         });
                     }
                 }
+                "prompt" => {
+                    let Some(id) = tail.strip_prefix("submission:") else {
+                        continue;
+                    };
+                    let id = format!("prompt:{id}");
+                    if valid_prompt_id(&id) {
+                        return Some(DedupeMatch {
+                            family: fam.into(),
+                            repo: repo.to_string(),
+                            num: None,
+                            nums: None,
+                            origin: None,
+                            pass: None,
+                        });
+                    }
+                }
                 "maintenance" => {
                     // <slug>:<YYYY-Www>; slug [a-z0-9][a-z0-9_-]*
                     if let Some((slug, week)) = tail.rsplit_once(':') {
@@ -768,6 +1134,7 @@ fn kind_families(kind: &str) -> Option<&'static [&'static str]> {
         "ci_investigation" => Some(&["fix", "triage", "pr"]),
         "second_pass" => Some(&["second-pass"]),
         "feature_slice" => Some(&["slice"]),
+        "prompt" => Some(&["prompt"]),
         _ => None,
     }
 }
@@ -836,6 +1203,19 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
         .is_some_and(|o| !o.is_empty());
     let source_only =
         source_pr.is_some() && issue_no.is_none() && pr_numbers.is_empty() && !has_set;
+    if m.family == "prompt" {
+        let id = payload.pointer("/prompt/id").and_then(Value::as_str);
+        let expected = id.and_then(|id| id.strip_prefix("prompt:"));
+        let canonical_key =
+            expected.map(|id| format!("repo-health:v1:prompt:{}:submission:{}", m.repo, id));
+        if canonical_key.as_deref() != Some(key.as_str()) {
+            errors.push(
+                "payload.prompt.id: must match packet.dedupe_key canonical submission identity"
+                    .to_string(),
+            );
+        }
+        return errors;
+    }
     match m.family.as_str() {
         "fix" | "triage" => {
             let n = m.num.unwrap_or(0);
@@ -1201,6 +1581,26 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let Some(obj) = packet.as_object() else {
         return (vec!["packet: must be a JSON object".to_string()], warnings);
     };
+    if obj
+        .get("manual_only")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        errors.push("packet.manual_only: must be a boolean".to_string());
+    }
+    // #9178 §1 (FDR-0001): the durable resume hint — the OpenCode
+    // session id a claim should continue. Absent/null means no hint
+    // (existing claim behavior, unchanged). When present it must be
+    // a non-empty string; the trimmed value is what the row stores,
+    // so a stored hint is always meaningful and NULL always means
+    // absent. No `ses_` format check here: the claim-wire slice
+    // checks existence against the server, where the id lives.
+    if let Some(value) = obj.get("resume_session_id").filter(|v| !v.is_null()) {
+        if !value.as_str().is_some_and(|s| !s.trim().is_empty()) {
+            errors.push(
+                "packet.resume_session_id: must be a non-empty string when present".to_string(),
+            );
+        }
+    }
     let Some(payload) = obj.get("payload").filter(|p| p.is_object()) else {
         return (
             vec!["packet.payload: required object (repo-task/v1 payload)".to_string()],
@@ -1335,6 +1735,24 @@ pub(crate) fn label_band_priority(payload: &Value) -> Option<i64> {
     }
 }
 
+/// The payload's structured route declaration (#15070), as the
+/// (platform, reason) pair verb_enqueue stamps onto the new task's
+/// lane ledger. None when the payload carries no route, or when the
+/// declaration is not in its valid shape — validate_packet has
+/// already refused an invalid declaration at the boundary, so a
+/// malformed stored copy reads as unrouted here rather than as a
+/// half-applied limitation (mirroring platform_limit_invalid: a
+/// reason-less limitation is never enforced).
+pub fn route_declaration(payload: &Value) -> Option<(String, String)> {
+    let route = payload.get("route")?.as_object()?;
+    let platform = route.get("platform")?.as_str()?.trim();
+    let reason = route.get("reason")?.as_str()?.trim();
+    if platform.is_empty() || reason.is_empty() {
+        return None;
+    }
+    Some((platform.to_string(), reason.to_string()))
+}
+
 /// task_from_packet: the agent.tasks row shape the enqueue RPC takes.
 pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     let mut payload = packet.get("payload").cloned().unwrap_or(json!({}));
@@ -1414,6 +1832,13 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     };
     json!({
         "queue": queue,
+        "manual_only": packet.get("manual_only").and_then(Value::as_bool).unwrap_or(false),
+        "resume_session_id": packet.get("resume_session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(Value::String)
+            .unwrap_or(Value::Null),
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
         "body": packet.get("body").cloned().unwrap_or(Value::Null),
         "payload": payload,
@@ -1428,6 +1853,67 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolution_registry_enforces_terminal_taxonomy() {
+        assert_eq!(RESOLUTIONS.len(), 9);
+        assert_eq!(resolution_category("done"), Some("success"));
+        assert_eq!(resolution_category("superseded"), Some("redirection"));
+        assert_eq!(resolution_category("invalid"), Some("rejection"));
+        assert_eq!(
+            validate_resolution("done", None, None, None, None).unwrap(),
+            Some(ResolutionFields {
+                resolution: "done".into(),
+                category: "success".into(),
+                substatus: Some("unverified".into()),
+                reason: None,
+                reference: None,
+            })
+        );
+        assert!(
+            validate_resolution("cancelled", None, None, None, None)
+                .unwrap_err()
+                .contains("required")
+        );
+        assert!(validate_resolution("done", Some("wontfix"), None, Some("no"), None).is_err());
+        assert!(validate_resolution("cancelled", Some("done"), None, None, None).is_err());
+        assert!(
+            validate_resolution("cancelled", Some("superseded"), Some("by_pr"), None, None)
+                .is_err()
+        );
+        assert!(
+            validate_resolution(
+                "cancelled",
+                Some("wontfix"),
+                Some("out_of_scope"),
+                None,
+                None
+            )
+            .is_err()
+        );
+        let redirected = validate_resolution(
+            "cancelled",
+            Some("superseded"),
+            Some("by_pr"),
+            None,
+            Some("pr:14700"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(redirected.category, "redirection");
+        assert_eq!(redirected.reference.as_deref(), Some("pr:14700"));
+        let rejected = validate_resolution(
+            "cancelled",
+            Some("wontfix"),
+            Some("out_of_scope"),
+            Some("outside current scope"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rejected.category, "rejection");
+    }
+
     #[test]
     fn reprioritize_scale_and_category_mapping() {
         // #14100: the design scale is exactly these seven numbers.
@@ -1505,6 +1991,56 @@ mod tests {
             enum_of("repo"),
             FLEET_REPOS,
             "schema repo enum drifted from FLEET_REPOS"
+        );
+    }
+    /// Schema parity oracle (#16005 review): the prompt-identity anyOf
+    /// branch accepts prompt-only identity only for `kind: prompt`, matching
+    /// the Rust/hosted-worker manual validators. A non-prompt packet carrying
+    /// only a prompt object must not satisfy the schema's identity anyOf.
+    #[test]
+    fn schema_prompt_identity_requires_kind_prompt() {
+        let schema_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../repo-task-v1.schema.json"
+        );
+        let raw = std::fs::read_to_string(schema_path)
+            .expect("repo-task-v1.schema.json must exist beside pkgs/fleet");
+        let schema: Value = serde_json::from_str(&raw).expect("schema must parse");
+        let branches = schema["anyOf"]
+            .as_array()
+            .expect("schema anyOf must be an array");
+        for branch in branches {
+            let requires = branch
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|reqs| {
+                    reqs.iter().filter_map(Value::as_str).collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if requires.contains(&"prompt") {
+                assert!(
+                    requires.contains(&"kind"),
+                    "prompt-identity anyOf branch must also require kind: {branch:?}"
+                );
+                assert_eq!(
+                    branch["properties"]["kind"]["const"],
+                    json!("prompt"),
+                    "prompt-identity anyOf branch must pin kind to prompt: {branch:?}"
+                );
+            }
+        }
+        assert!(
+            branches.iter().any(|branch| {
+                branch
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|reqs| {
+                        reqs.iter().any(|r| r == "prompt")
+                            && reqs.iter().any(|r| r == "kind")
+                    })
+                    && branch["properties"]["kind"]["const"] == json!("prompt")
+            }),
+            "schema anyOf must carry a kind: prompt + prompt identity branch"
         );
     }
     use super::*;
@@ -2027,6 +2563,55 @@ mod tests {
         payload
     }
 
+    #[test]
+    fn route_declaration_validation_15070() {
+        // #15070 oracle: absent/null route validates (unrouted,
+        // legacy behavior); a well-formed {platform, reason} pair
+        // validates and route_declaration returns it; every malformed
+        // shape errors naming payload.route and reads as unrouted.
+        for absent in [json!({}), json!({"route": null})] {
+            let payload = payload_with(absent);
+            assert!(
+                !manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("payload.route")),
+                "{payload}"
+            );
+            assert_eq!(route_declaration(&payload), None);
+        }
+        let payload = payload_with(json!({
+            "route": {"platform": "muse", "reason": "needs the muse seat's checkout"}
+        }));
+        assert!(
+            !manual_schema_errors(&payload)
+                .iter()
+                .any(|e| e.contains("payload.route")),
+            "{payload}"
+        );
+        assert_eq!(
+            route_declaration(&payload),
+            Some((
+                "muse".to_string(),
+                "needs the muse seat's checkout".to_string()
+            ))
+        );
+        for bad in [
+            json!({"route": {"platform": "laptop", "reason": "r"}}),
+            json!({"route": {"platform": "muse", "reason": ""}}),
+            json!({"route": {"reason": "r"}}),
+            json!({"route": {"platform": "muse", "reason": "r", "extra": 1}}),
+            json!({"route": "muse"}),
+        ] {
+            let payload = payload_with(bad);
+            assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("payload.route")),
+                "{payload}"
+            );
+        }
+    }
+
     fn identity_errors(payload: &Value) -> Vec<String> {
         manual_schema_errors(payload)
             .into_iter()
@@ -2158,6 +2743,75 @@ mod tests {
             "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:6430",
             "payload": payload_with(json!({"issue": {"number": 6430}})),
         })
+    }
+
+    #[test]
+    fn prompt_packet_requires_a_canonical_submission_id_that_matches_its_dedupe_key() {
+        let id = "prompt:00000000-0000-4000-8000-000000000001";
+        let mut packet = valid_packet();
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001"
+        );
+        packet["payload"]["kind"] = json!("prompt");
+        packet["payload"]["prompt"] = json!({
+            "id": id,
+            "text": "Summarize the current queue health.",
+            "target": "pool:auto",
+            "mode": "async"
+        });
+
+        let (errors, _) = validate_packet(&packet);
+        assert!(errors.is_empty(), "valid prompt packet errors: {errors:?}");
+
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002"
+        );
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "identity mismatch must name prompt.id: {errors:?}"
+        );
+
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001"
+        );
+        packet["payload"]["prompt"]["id"] = json!("prompt:not-a-uuid");
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "malformed ID must name prompt.id: {errors:?}"
+        );
+
+        packet["payload"]["prompt"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "missing ID must name prompt.id: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn non_prompt_kind_with_only_prompt_identity_is_rejected() {
+        // #16005 review parity: prompt-only identity is valid only for
+        // kind: prompt. A triage packet carrying a canonical prompt.id
+        // but no issue/prs/set/source must fail the identity rule.
+        let mut packet = valid_packet();
+        packet["payload"]["kind"] = json!("triage");
+        packet["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("issue");
+        packet["payload"]["prompt"] = json!({
+            "id": "prompt:00000000-0000-4000-8000-000000000001",
+        });
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("payload identity")),
+            "triage with prompt-only identity must fail identity: {errors:?}"
+        );
     }
 
     #[test]

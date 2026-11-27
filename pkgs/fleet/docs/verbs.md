@@ -30,41 +30,45 @@ Invocation is `fleet <domain> <verb> [args...]`. The executable aliases `repo-qu
 
 Client for the repo-queue broker. It supports direct broker transport and the configured proxy path; broker unavailability is an execution error, not a successful empty result.
 
-| Verb                 | Purpose                                                                                                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `validate`           | Validate a queue packet without enqueueing it.                                                                                                                                                   |
-| `enqueue`            | Submit a packet to the queue.                                                                                                                                                                    |
-| `list`               | List queue items using the requested filters.                                                                                                                                                    |
-| `show`               | Read the full record for one item.                                                                                                                                                               |
-| `claim`              | Atomically claim the highest-priority eligible item for a worker and lane.                                                                                                                       |
-| `release`            | Release a held claim; requires a reason.                                                                                                                                                         |
-| `lane`               | Inspect lane state or change a lane's state.                                                                                                                                                     |
-| `bind`               | Bind an item to its task/session reference.                                                                                                                                                      |
-| `heartbeat`          | Extend the current claim lease.                                                                                                                                                                  |
-| `checkpoint`         | Save progress and the next action for a claimed item.                                                                                                                                            |
-| `park`               | Park an item until a delay or wake. Waiting on a person requires a hands item and a concrete action.                                                                                             |
-| `wake`               | Return a parked item to eligibility.                                                                                                                                                             |
-| `block`              | Block an item with a reason class. Human waits follow the same hands-item rule as `park`.                                                                                                        |
-| `unblock`            | Clear an item's block.                                                                                                                                                                           |
-| `dep-recheck`        | Re-evaluate recorded dependency edges.                                                                                                                                                           |
-| `quarantine-recheck` | Re-evaluate quarantined items.                                                                                                                                                                   |
-| `repair`             | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                  |
-| `cancel`             | Cancel an item.                                                                                                                                                                                  |
-| `revive`             | Reopen a failed or cancelled item.                                                                                                                                                               |
-| `fail`               | Mark a claimed item failed with a reason class.                                                                                                                                                  |
-| `complete`           | Complete a claimed item with a structured result.                                                                                                                                                |
-| `verify-disposition` | Verify a recorded disposition.                                                                                                                                                                   |
-| `timeline`           | Print one item's event timeline.                                                                                                                                                                 |
-| `history`            | Alias for the item event timeline.                                                                                                                                                               |
-| `models`             | Show model catalog and pool information.                                                                                                                                                         |
-| `health`             | Show broker health and queue counts.                                                                                                                                                             |
-| `signal`             | Send a signal to a worker or item.                                                                                                                                                               |
-| `fallback`           | Use the GitHub-issue fallback claim workflow; see the nested commands below.                                                                                                                     |
-| `dispatch`           | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md). |
-| `session`            | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                 |
-| `surfaces`           | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                               |
-| `outbox`             | Inspect and drain the creation outbox.                                                                                                                                                           |
-| `stack`              | Record and operate on dependent pull-request stacks.                                                                                                                                             |
+| Verb                  | Purpose                                                                                                                                                                                                                                                                                 |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validate`            | Validate a queue packet without enqueueing it.                                                                                                                                                                                                                                          |
+| `enqueue`             | Submit a packet to the queue.                                                                                                                                                                                                                                                           |
+| `list`                | List queue items using the requested filters.                                                                                                                                                                                                                                           |
+| `show`                | Read the full record for one item.                                                                                                                                                                                                                                                      |
+| `claim`               | Atomically claim the highest-priority eligible item for a worker and lane.                                                                                                                                                                                                              |
+| `release`             | Release a held claim; requires a reason. A release whose claim consumed the last attempt fails the item at the cap (reason in `last_error`) instead of returning it to queued unclaimable.                                                                                              |
+| `lane`                | Inspect lane state or change a lane's state.                                                                                                                                                                                                                                            |
+| `bind`                | Bind an item to its task/session reference.                                                                                                                                                                                                                                             |
+| `heartbeat`           | Extend the current claim lease.                                                                                                                                                                                                                                                         |
+| `checkpoint`          | Save progress and the next action for a claimed item.                                                                                                                                                                                                                                   |
+| `park`                | Park an item until a delay or wake. Waiting on a person requires a hands item and a concrete action.                                                                                                                                                                                    |
+| `wake`                | Return a parked item to eligibility.                                                                                                                                                                                                                                                    |
+| `block`               | Block an item with a reason class. Human waits follow the same hands-item rule as `park`.                                                                                                                                                                                               |
+| `unblock`             | Clear an item's block.                                                                                                                                                                                                                                                                  |
+| `link`                | Add, remove, or list normalized issue, pull-request, and task relationships.                                                                                                                                                                                                            |
+| `dep-recheck`         | Re-evaluate recorded dependency edges.                                                                                                                                                                                                                                                  |
+| `quarantine-recheck`  | Re-evaluate quarantined items.                                                                                                                                                                                                                                                          |
+| `time-recheck`        | Re-evaluate items blocked until a time; requeue the ones whose time has passed (#14212).                                                                                                                                                                                                |
+| `repair`              | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                                                                                                         |
+| `resolution-backfill` | Run the idempotent, evidence-only Q2 terminal-resolution backfill and print its census.                                                                                                                                                                                                 |
+| `cancel`              | Cancel an item.                                                                                                                                                                                                                                                                         |
+| `revive`              | Reopen a failed or cancelled item.                                                                                                                                                                                                                                                      |
+| `fail`                | Mark a claimed item failed with a reason class.                                                                                                                                                                                                                                         |
+| `complete`            | Complete a claimed item with a structured result.                                                                                                                                                                                                                                       |
+| `verify-disposition`  | Verify a recorded disposition.                                                                                                                                                                                                                                                          |
+| `timeline`            | Print one item's event timeline.                                                                                                                                                                                                                                                        |
+| `history`             | Alias for the item event timeline.                                                                                                                                                                                                                                                      |
+| `models`              | Show model catalog and pool information.                                                                                                                                                                                                                                                |
+| `health`              | Show broker health and queue counts.                                                                                                                                                                                                                                                    |
+| `signal`              | Send a signal to a worker or item.                                                                                                                                                                                                                                                      |
+| `fallback`            | Use the GitHub-issue fallback claim workflow; see the nested commands below.                                                                                                                                                                                                            |
+| `dispatch`            | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md).                                                                                        |
+| `session`             | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                                                                                                        |
+| `surfaces`            | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                                                                                                                      |
+| `placement-load`      | Print the placement coordinator's true load view (broker `/placement-load`): per owner, GitHub running/queued counts, active claims, occupancy vs cap, and the sweep read's time/source; `--json` prints the broker answer verbatim. Read-only; a down or disabled coordinator exits 3. |
+| `outbox`              | Inspect and drain the creation outbox.                                                                                                                                                                                                                                                  |
+| `stack`               | Record and operate on dependent pull-request stacks.                                                                                                                                                                                                                                    |
 
 ### `queue fallback`
 
@@ -162,13 +166,13 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 `fleet gh <gh args...>` passes normal arguments through to the installed `gh` CLI with Fleet's token rotation and cache. The supported Fleet-specific commands are:
 
-| Command                     | Purpose                                                                    |
-| --------------------------- | -------------------------------------------------------------------------- |
-| `tiers`                     | Show token-source rate-limit headroom.                                     |
-| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                   |
-| `cache-status`              | Probe configured token-cache daemons.                                      |
-| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number. |
-| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.   |
+| Command                     | Purpose                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `tiers [--all]`             | Show token-source rate-limit headroom; `--all` lists every App installation. |
+| `cache-serve [--bind ADDR]` | Run the local GitHub-token cache daemon.                                     |
+| `cache-status`              | Probe configured token-cache daemons.                                        |
+| `closures [ITEM]`           | Read locally recorded closure records, optionally filtered by item number.   |
+| `--raw <gh args...>`        | Run the real `gh` with ambient credentials and no Fleet token injection.     |
 
 Leading `--cache-addr ADDR` options and `--no-cache` control the token cache for a call. Normal `gh` flags and subcommands pass through unchanged.
 
@@ -187,16 +191,18 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 ## `bridge` — Fleet messaging
 
-| Verb     | Purpose                                                                             |
-| -------- | ----------------------------------------------------------------------------------- |
-| `send`   | Send a message or command to agents, groups, or all agents using the owner token.   |
-| `agents` | List registered agents and groups with unread counts.                               |
-| `log`    | Read bridge message history with filters.                                           |
-| `hello`  | Register or refresh an agent and its groups.                                        |
-| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals. |
-| `post`   | Reply to central or send a message/instruction to an address.                       |
-| `ack`    | Mark one or more inbound messages read.                                             |
-| `health` | Check the bridge health endpoint.                                                   |
+| Verb     | Purpose                                                                                                                                                                                                                                                     |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`   | Send a message or command to agents, groups, or all agents using the owner token. Names may be globs (`agent:f*`); `--limit N` caps delivery and the answer is the match report. `send --broaden <batch>` delivers a pattern send's remainder on its batch. |
+| `offer`  | Post a message or command as a claim offer with `--slots N`: the next N eligible agents to claim it are delivered it.                                                                                                                                       |
+| `offers` | List every offer with its claims.                                                                                                                                                                                                                           |
+| `agents` | List registered agents and groups with unread counts.                                                                                                                                                                                                       |
+| `log`    | Read bridge message history with filters.                                                                                                                                                                                                                   |
+| `hello`  | Register or refresh an agent and its groups.                                                                                                                                                                                                                |
+| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals.                                                                                                                                                                         |
+| `post`   | Reply to central or send a message/instruction to an address.                                                                                                                                                                                               |
+| `ack`    | Mark one or more inbound messages read.                                                                                                                                                                                                                     |
+| `health` | Check the bridge health endpoint.                                                                                                                                                                                                                           |
 
 `fleet bridge --help` lists the central and agent forms and their accepted flags.
 
@@ -226,15 +232,15 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 `fleet shell [OPTIONS] [-- COMMAND...]` plans or runs a command. `fleet shell targets` reports laptop and Codespace reachability and what automatic selection would choose.
 
-| Option             | Purpose                                                               |
-| ------------------ | --------------------------------------------------------------------- |
+| Option | Purpose |
+| ------------------ | --------------------------------------------------------------------- | --------- | ------ | ----------------------------------------------------------- |
 | `--target auto     | laptop                                                                | codespace | local` | Select the execution target; default is automatic fallback. |
-| `--codespace NAME` | Select a named Codespace; otherwise the first available is used.      |
-| `--cwd DIR`        | Set the working directory on the selected target.                     |
-| `--build`          | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
-| `--timeout SECS`   | Set a laptop command timeout.                                         |
-| `--detach`         | Start a laptop command as a job and return its job ID.                |
-| `--print`          | Print the selected plan as JSON without running it.                   |
+| `--codespace NAME` | Select a named Codespace; otherwise the first available is used. |
+| `--cwd DIR` | Set the working directory on the selected target. |
+| `--build` | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
+| `--timeout SECS` | Set a laptop command timeout. |
+| `--detach` | Start a laptop command as a job and return its job ID. |
+| `--print` | Print the selected plan as JSON without running it. |
 
 Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop seat, a reachable laptop, a Codespace, and finally the local environment. An explicit target does not fall back. `--detach` is for laptop jobs; use `fleet laptop-agent poll JOB --wait N` to follow one.
 
@@ -248,10 +254,10 @@ the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
 
 ## `orgs` — GitHub organization registry
 
-| Command | Purpose |
-| --- | --- |
+| Command           | Purpose                                                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
-| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing.                                           |
 
 The registry only makes coverage claims from `GET /app/installations` authenticated
 with that App's JWT and follows every Link page. OAuth-token
@@ -322,6 +328,31 @@ under the same name.
 2 usage/validation · 3 routing unavailable (no service and no
 standalone artifact).
 
+## `kv` — key/value bytes, local first
+
+`fleet kv` stores arbitrary bytes for this session in the host-local store (`<state dir>/kv/local.db`, SQLite WAL). Every row is keyed by the caller's full identity `(owner, context, session, namespace, key)`, so one session never reads another's rows. Values of any size are accepted: up to 1 MiB they are stored inline, and larger values stream into a content-addressed working file beside the store (`local.db.working/`), which `get` streams back and checks. Design: [fleet-kv](../../../doc/2026-11-23T12-45-00Z_design_fleet_kv/2026-11-23T12-45-00Z_design_fleet_kv.md); phase 1 is #13314 and phase 2 (the central store) is #13316.
+
+| Command                                                      | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet kv get --namespace NS KEY`                            | Print the value's bytes exactly: the local overlay first, then the central head (see below). A missing or masked key exits 1 with `not_found`.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `fleet kv set --namespace NS KEY VALUE`                      | Store VALUE (or `--stdin` bytes) as a new local version queued for the sweep; prints the version.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `fleet kv list --namespace NS`                               | One line per key: `KEY<TAB>VERSION<TAB>ORIGIN` with origin `local`, `central` or `both`. `--include-tombstones` adds masked keys; `--verbose` also shows each central row a local row hides (`shadowed-by-local`).                                                                                                                                                                                                                                                                                                                                       |
+| `fleet kv delete --namespace NS KEY`                         | Write a masking tombstone: the key reads absent here and sweeps as a mask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `fleet kv clear-override --namespace NS KEY`                 | Drop the local overlay row, advance its fence and cancel unsent intents; busy for over 5 s is `clear_busy_try_again`.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `fleet kv rebase --namespace NS KEY`                         | Resolve a conflicted key: adopt central's head as its base, cancel its pending intents and queue one new intent for the overlay's value (none after `clear-override`). Prints `rebased onto=V requeued=V\|none`.                                                                                                                                                                                                                                                                                                                                         |
+| `fleet kv revert --namespace NS KEY --to V`                  | Append a new version equal to version V (also `fleet kv revert NS KEY --to V`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `fleet kv sync`                                              | Pull this host's namespace definitions from central, then sweep this session's pending intents into central by compare-and-swap; prints a summary, then each conflict and waiting key. When the last archive checkpoint is over 15 min old (`--archive` forces one), it then archives the writes that did not sweep.                                                                                                                                                                                                                                     |
+| `fleet kv backup`                                            | `fleet kv sync --archive`: checkpoint this session's unswept writes to the central survival archive now. Inline values up to the namespace threshold only; larger ones are listed `protection_unavailable_needs_phase3` and never uploaded. 15 min is an online target, not a recovery point.                                                                                                                                                                                                                                                            |
+| `fleet kv --global <get\|set\|list\|delete>`                 | Read the authoritative central head or write central directly by compare-and-swap; `--expect VERSION` (0 for absent) makes a write conditional. A moved head exits 1 with `conflict`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `fleet kv snapshot DEST`                                     | Write a one-file snapshot of the whole host store (WAL included) with a manifest row; never overwrites DEST.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `fleet kv restore SNAPSHOT`                                  | Restore a snapshot as this host's store after checking it; refuses when a store already exists.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `fleet kv restore --archive`                                 | Adopt this session's last archive checkpoint as new local writes queued to sweep; keys with local history keep it; no checkpoint is `archive_not_found`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `fleet kv namespace define NS (--shared SCOPE \| --private)` | Operators: define NS on central, or update it (`--global-flag`, `--blob-threshold BYTES` up to 1 MiB). Needs the door's `kv-admin` role and never opens the local store. Defining again keeps unchanged settings and raises the policy epoch; changing shared to private or back is refused with `namespace_scope_change`. Hosts see it after their next `sync`.                                                                                                                                                                                         |
+| `fleet kv namespace list`                                    | Operators: one line per central namespace, `NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global\|-`, where SCOPE is `shared:ID` or `private`.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `fleet kv blob gc JUR/TIER [--grace-ms MS] [--purge]`        | Operators: one central GC pass over a blob partition. Marks published blobs no key references, clears marks that gained a reference, and fences the delete of each candidate unreferenced for the grace (default 24 hours). `--purge` then has the blob door remove the bytes of deleted blobs no published row names. Needs `kv-admin`; never opens the local store. Prints `partition=JUR/TIER marked=N cleared=N deleted=N`, `deleted content=DIGEST epoch=N` per delete, and with `--purge` `purged content=DIGEST` lines and `purged=N released=N`. |
+
+The owner and context come only from the launch-identity record the session launcher writes at `<state dir>/kv/launch/<session id>.identity` (a regular file owned by this user, not group- or world-writable, naming the bound session). With no such record every verb but help refuses with `identity_unavailable` (exit 69); `FLEET_CTX_*` and other client-supplied values are never used. The central store is `FLEET_KV_URL` with a bearer token in the file named by `FLEET_KV_TOKEN_FILE`; without them `--global` and `sync` exit 69 with `central_not_configured` before anything is opened, and plain reads stay local. After the first `sync` the host knows which namespaces exist and refuses any other with `unknown_namespace`; a plain `get` that misses locally then reads the caller's central head, cached for at most 1 s. When central cannot be reached a read refuses with `unavailable`, or `stale` when its cached head is older than 1 s; `--allow-stale` reads that cached head anyway and prints its age. `set --global` streams a value above the inline threshold, or any value with `--force-blob`, through the blob upload door and lands its reference by the same compare-and-set as an inline write; a namespace with no blob placement refuses with `no_blob_placement` (exit 69). The whole command line is parsed before anything is opened: unknown arguments are usage errors (exit 2) and touch nothing. Backups: see [Backing up `fleet kv`](../book/operations/kv-backup.md).
+
 ## `laptop-agent` — laptop job broker
 
 | Verb                                                    | Purpose                                            |
@@ -353,6 +384,24 @@ literal recipes in the laptop mechanics doc, not here.
 | `tiers`                                                           | Print the codified form table (T0–T7) and the composition doctrine.                                                                                                       |
 | `exec [--form T1\|T2\|T3] [--timeout SECS] [--cwd DIR] -- CMD...` | Walk T1 → T2 → T3 (or one pinned tier), advancing only when a tier fails to serve; reports the serving tier. `--timeout` is per attempt and always applies (default 120). |
 
+## `host` — registry-backed host selection
+
+`fleet host <name> [--class <agent-class>]` resolves a host through the
+compiled machine registry, builds candidates for each enrolled transport
+and invocation form, then selects through `fleet-pool`. The default class
+is `muse-seats`; supported classes are `muse-seats`, `opencode-lanes`, and
+`external-mcp-clients`. The name `laptop` resolves to the `amd` record.
+
+```sh
+fleet host amd
+fleet host laptop --class opencode-lanes
+```
+
+This command takes a host name directly; it has no `resolve` subcommand.
+It prints the available candidates, the selected transport/form, and the
+pool decision. Unknown hosts or classes with no enrolled offers exit 1;
+usage errors exit 2; a build without the laptop capability exits 69.
+
 ## `commander` — tier T1 (commander/fleet)
 
 | Verb                                          | Purpose                                                                                                                                                                                                                                                                |
@@ -381,11 +430,59 @@ daemon's general client.
 
 ## `ssh` — tier T3 (ssh/fleet)
 
-| Verb                                          | Purpose                                                                                                                                                                                                                           |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
-| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
-| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+| Verb                                          | Purpose                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                                                                                                                                                                                    |
+| `sessions`                                    | List only tmux sessions named `fleet-*`; read-only.                                                                                                                                                                                                                                                                                                                                      |
+| `sweep --idle-for DURATION [--dry-run]`       | Remove detached `fleet-*` sessions idle longer than the supplied duration, comparing tmux activity against the laptop host's clock read over SSH. Duration supports seconds (`s`), minutes (`m`), hours (`h`), days (`d`), or bare seconds. Before each removal, the command rechecks that the exact session has no attached client. Without `--dry-run`, eligible sessions are removed. |
+| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255.                                                                                                                                                        |
+| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                                                                                                                                                                                      |
+
+## `id` — iroh-native ID transport (design #10391 pass 2)
+
+`fleet id session-key [--id-secret <hex>] [--stamp | --node-id]`
+
+Slice 1 (#15430, design §4.1): the session key lifecycle. Mints a
+fresh ephemeral ed25519 node key per session from the OS RNG, or
+adopts the caller-supplied secret verbatim (`--id-secret` /
+`FLEET_ID_SECRET`, 64 hex chars; never persisted). The default
+rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
+`FLEET_ID_SECRET` (in-session only). `--stamp` prints the queue
+stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
+never enters the stamp, a log, or a trip record); `--node-id`
+prints just the NodeId hex. The secret lives in process memory
+only and is zeroized at exit. The `postcard`, `stream`
+and `serve-ws` verbs land as slices 3–5 of the same design
+(#15435, #15436, #15399).
+
+`fleet id proxy-mode [--raw] [--raw-endpoint] [--opaque] [--alpn <alpn>] [--mode <1|2|3|name>]`
+
+Slice 2 (#15434, design §4.2): prints the proxy mode the §4.2
+first-match rule selects — `--mode` override first, then
+`--raw`/raw endpoint → `1 raw`, then `--opaque` or an ALPN the
+initiator does not speak → `2 relay-aware`, else `3 initiator`.
+The initiator speaks `/iroh-meta/3` only; every other ALPN
+selects mode 2. Dial failures are distinct and never downgrade:
+`relay_unreachable` vs `identity_mismatch` (fail closed on a
+peer NodeId that is not the pinned one).
+
+`fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>] [--relay <url>] [--expect-node-id <hex>] <target>`
+
+Slice 2 (#15434, design §4.2): byte-moves a caller-held ticket
+through the selected proxy mode. Mode 1's target (`tcp://host:port`,
+`unix:///path`, or bare `host:port` / `/path`) is spliced to this
+process's stdin/stdout byte for byte; fleet parses nothing and holds
+no iroh key for the flow. Mode 2 takes a peer NodeId as `<target>`,
+plus `--alpn`, `--relay https://…`, and `--expect-node-id`; it dials
+that peer through the configured relay and uses `HTTPS_PROXY` or
+`HTTP_PROXY` (including lowercase spellings) as the CONNECT tunnel
+when set. The post-dial QUIC stream stays opaque. Peer identity and
+relay failures are distinct and fail closed; mode 2 never retries
+through a direct transport. `--relay` / `--expect-node-id` on a
+mode-1 selection are refused, not ignored. Mode 3 through this verb
+is a usage error (the initiator verbs own it). Exit codes: 0 ok ·
+2 usage · 71 relay unreachable · 72 identity mismatch ·
+73 target unreachable.
 
 ## `actions` — live exec sessions in Actions runners
 
@@ -410,6 +507,17 @@ enqueue one command on the session's runner, stream its output,
 exit with the command's exit code (default command timeout
 600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
 form.
+
+`fleet actions exec once [--repo OWNER/REPO] [--target-repo
+OWNER/REPO] [--lease S] [--max-lifespan S] [--timeout S]
+[--broker-url URL] [--context TEXT] [--hide-logs] [--close] --
+<command...>` — the one-shot sugar over start+run: find a live
+session for `--repo` in the local store or start one with the
+start path (same #13765 claim, same handoff — new sessions take
+`--lease`, default 1800 s, where start requires `--timeout` by
+construction), run one command, exit with its code (default
+command `--timeout` 600 s). The session stays open for the next
+`once` unless `--close`.
 
 `fleet actions exec attach <ref>` / `fleet actions exec watch
 <ref>` — stream the session's IO after handoff (watch also

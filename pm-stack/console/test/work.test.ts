@@ -13,6 +13,7 @@ import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Docs, Stamped } from "../src/docs.ts";
+import { STALE_ACT_ERROR } from "../src/edge-proto.ts";
 import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
@@ -948,9 +949,11 @@ describe("what needs the owner's hands", () => {
       updatedAt: "2026-11-20T01:02:03Z",
       hands,
     });
+    const dashPaths: string[] = [];
     const w = world({
-      dash: (path) =>
-        path === "/api/needs-drew.json"
+      dash: (path) => {
+        dashPaths.push(path);
+        return path === "/api/needs-user.json"
           ? {
               fetchedAt: "x",
               complete: true,
@@ -973,12 +976,15 @@ describe("what needs the owner's hands", () => {
                 activeToolCalls: 2,
                 messageCount: 9,
               },
-              { tier: "needs-drew", id: "p", title: "log in", ref: "gh:x/y#1", drewReason: null },
+              { tier: "needs-user", id: "p", title: "log in", ref: "gh:x/y#1", userReason: null },
+              { tier: "needs-drew", id: "legacy", title: "legacy item", ref: "gh:x/y#2", drewReason: null },
               { tier: "needs-orchestrator", title: "not his" },
-            ],
+            ];
+      },
     });
     const work = new Work(w.ops);
     const c = await work.census();
+    expect(dashPaths).toContain("/api/needs-user.json");
     expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
       [`${REPO}#1`, "physical", "Power on the host."],
       [`${REPO}#4`, "payment", ""],
@@ -1011,7 +1017,24 @@ describe("what needs the owner's hands", () => {
         messages: 9,
       },
     ]);
-    expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
+    expect(s.waiting).toEqual([
+      { id: "p", title: "log in", ref: "gh:x/y#1", why: "" },
+      { id: "legacy", title: "legacy item", ref: "gh:x/y#2", why: "" },
+    ]);
+  });
+
+  test("census falls back to the legacy route on older dashboards", async () => {
+    const paths: string[] = [];
+    const w = world({
+      dash: (path) => {
+        paths.push(path);
+        if (path === "/api/needs-user.json") throw new Error("HTTP 404");
+        return { fetchedAt: "legacy", complete: true, items: [] };
+      },
+    });
+    const census = await new Work(w.ops).census();
+    expect(paths).toEqual(["/api/needs-user.json", "/api/needs-drew.json"]);
+    expect(census.at).toBe("legacy");
   });
 
   test("done means the label gone and a comment, only for a repository on the list", async () => {
@@ -1547,6 +1570,7 @@ describe("the state kept ready", () => {
       asks: still,
       questionCount: still,
       questions: still,
+      questionSets: still,
       prs: still,
       priorities: still,
       done: still,
@@ -1896,6 +1920,42 @@ describe("the interface's endpoints", () => {
     await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
     await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
     expect(bare.w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length).toBe(2);
+  });
+
+  test("a host refuses a timely action more than ten minutes old unless the owner said to send it anyway (#13501)", async () => {
+    const { d, audited } = deps();
+    d.named = new Named(memoryStore());
+    const at = Date.now() - 11 * 60_000;
+    const body = (id: string, extra: Record<string, unknown> = {}) => ({
+      kind: "task.cancel",
+      args: { task: 21016, reason: "dup" },
+      id,
+      at,
+      sent: at,
+      ...extra,
+    });
+    const late = await handle(post("/console/api/act", body("0e000000-0000-4000-8000-000000000101")), d);
+    expect([late.status, await late.json()]).toEqual([409, { error: STALE_ACT_ERROR, stale: true }]);
+    // Refused before it began: nothing was recorded as started.
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(0);
+    // Looked at again and sent anyway: it is taken.
+    const sure = await handle(
+      post("/console/api/act", body("0e000000-0000-4000-8000-000000000102", { sure: true })),
+      d,
+    );
+    expect(sure.status).not.toBe(409);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
+    // One that says nothing of when it was done is done now.
+    const now = await handle(
+      post("/console/api/act", {
+        kind: "task.cancel",
+        args: { task: 21016, reason: "dup" },
+        id: "0e000000-0000-4000-8000-000000000103",
+      }),
+      d,
+    );
+    expect(now.status).not.toBe(409);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(2);
   });
 
   test("two arrivals under one name at the same moment: one does it, the other is told it is being done", async () => {

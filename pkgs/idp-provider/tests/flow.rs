@@ -64,9 +64,11 @@ fn harness() -> Harness {
         format!("pbkdf2-sha256$1000${}${}", b64url(salt), b64url(&hash))
     };
     let registry = ProviderConfig {
+        saml_sps: vec![],
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
+            email: None,
             roles: ROLES.iter().map(|s| s.to_string()).collect(),
             identities: vec![Identity {
                 provider: "devtoday-local".to_string(),

@@ -3,6 +3,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@libsql/client": ["./node_modules/@libsql/client"]
+    },
     "types": ["bun"],
     "lib": ["ES2022", "DOM"],
     "strict": true,

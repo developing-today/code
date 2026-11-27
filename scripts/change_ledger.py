@@ -45,8 +45,14 @@ import re
 import sys
 from datetime import datetime
 
-REQUIRED_TEXT_FIELDS = ("timestamp", "pool", "change", "rationale",
-                        "expected_effect", "window")
+REQUIRED_TEXT_FIELDS = (
+    "timestamp",
+    "pool",
+    "change",
+    "rationale",
+    "expected_effect",
+    "window",
+)
 PR_RE = re.compile(r"(?:pull/|#)(\d+)")
 SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
 
@@ -55,22 +61,20 @@ class Parser(argparse.ArgumentParser):
     """argparse that names unaccounted-for arguments per #3352."""
 
     def error(self, message):
-        message = message.replace("unrecognized arguments",
-                                  "unexpected argument")
+        message = message.replace("unrecognized arguments", "unexpected argument")
         super().error(message)
 
 
 def build_parser():
-    parser = Parser(prog="change_ledger.py",
-                    description="Check the pool change-event ledger "
-                                "against config changes (#1339).")
+    parser = Parser(
+        prog="change_ledger.py",
+        description="Check the pool change-event ledger "
+        "against config changes (#1339).",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    check = sub.add_parser("check", help="check a ledger against a "
-                                         "changes file")
-    check.add_argument("--ledger", required=True,
-                       help="path to the ledger JSONL file")
-    check.add_argument("--changes", required=True,
-                       help="path to the changes JSON file")
+    check = sub.add_parser("check", help="check a ledger against a changes file")
+    check.add_argument("--ledger", required=True, help="path to the ledger JSONL file")
+    check.add_argument("--changes", required=True, help="path to the changes JSON file")
     return parser
 
 
@@ -91,24 +95,42 @@ def _event_defects(line_no, event):
         value = event.get(field)
         if field == "timestamp":
             if not _valid_timestamp(value):
-                kind = ("missing_timestamp" if not value
-                        else "bad_timestamp")
-                defects.append({"line": line_no, "kind": kind,
-                                "detail": "timestamp must be ISO-8601"})
+                kind = "missing_timestamp" if not value else "bad_timestamp"
+                defects.append(
+                    {
+                        "line": line_no,
+                        "kind": kind,
+                        "detail": "timestamp must be ISO-8601",
+                    }
+                )
         elif not isinstance(value, str) or not value.strip():
-            defects.append({"line": line_no, "kind": "missing_" + field,
-                            "detail": "event needs a non-empty " + field})
+            defects.append(
+                {
+                    "line": line_no,
+                    "kind": "missing_" + field,
+                    "detail": "event needs a non-empty " + field,
+                }
+            )
     snapshot = event.get("before_snapshot")
     if not isinstance(snapshot, dict) or not snapshot:
-        defects.append({"line": line_no,
-                        "kind": "missing_before_snapshot",
-                        "detail": "event needs a non-empty before_snapshot "
-                                  "object (quota snapshot before the change)"})
+        defects.append(
+            {
+                "line": line_no,
+                "kind": "missing_before_snapshot",
+                "detail": "event needs a non-empty before_snapshot "
+                "object (quota snapshot before the change)",
+            }
+        )
     refs = extract_refs(event.get("change"))
     if not refs:
-        defects.append({"line": line_no, "kind": "unmatchable_change",
-                        "detail": "change must reference a PR number "
-                                  "(#N or pull/N) or a full commit SHA"})
+        defects.append(
+            {
+                "line": line_no,
+                "kind": "unmatchable_change",
+                "detail": "change must reference a PR number "
+                "(#N or pull/N) or a full commit SHA",
+            }
+        )
     return defects
 
 
@@ -123,8 +145,7 @@ def load_changes(path):
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
     if not isinstance(doc, dict) or not isinstance(doc.get("changes"), list):
-        raise ValueError("changes file must be an object with a "
-                         "'changes' list")
+        raise ValueError("changes file must be an object with a 'changes' list")
     return doc
 
 
@@ -171,13 +192,21 @@ def check(ledger_path, changes_path):
             event = json.loads(raw)
         except json.JSONDecodeError as exc:
             report["defects"].append(
-                {"line": line_no, "kind": "malformed_event",
-                 "detail": "not valid JSON: %s" % exc})
+                {
+                    "line": line_no,
+                    "kind": "malformed_event",
+                    "detail": "not valid JSON: %s" % exc,
+                }
+            )
             continue
         if not isinstance(event, dict):
             report["defects"].append(
-                {"line": line_no, "kind": "malformed_event",
-                 "detail": "event must be a JSON object"})
+                {
+                    "line": line_no,
+                    "kind": "malformed_event",
+                    "detail": "event must be a JSON object",
+                }
+            )
             continue
         report["ledger"]["events"] += 1
         defects = _event_defects(line_no, event)
@@ -197,13 +226,14 @@ def check(ledger_path, changes_path):
                 hit = True
         if not hit:
             report["outside_window_events"].append(
-                {"line": line_no, "change": event["change"]})
+                {"line": line_no, "change": event["change"]}
+            )
 
     report["matched"] = len(matched_keys)
-    report["unmatched"] = [c for i, c in enumerate(changes)
-                           if i not in matched_keys]
-    report["exit_code"] = 0 if (not report["unmatched"]
-                                and not report["defects"]) else 1
+    report["unmatched"] = [c for i, c in enumerate(changes) if i not in matched_keys]
+    report["exit_code"] = (
+        0 if (not report["unmatched"] and not report["defects"]) else 1
+    )
     return report
 
 
@@ -213,15 +243,24 @@ def main(argv=None):
         try:
             report = check(args.ledger, args.changes)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("change_ledger.py: error: cannot read changes file "
-                  "%s: %s" % (args.changes, exc), file=sys.stderr)
+            print(
+                "change_ledger.py: error: cannot read changes file "
+                "%s: %s" % (args.changes, exc),
+                file=sys.stderr,
+            )
             return 2
         print(json.dumps(report, indent=2))
-        print("change-event ledger: %d/%d config changes matched, "
-              "%d defective event(s), %d event(s) outside the window"
-              % (report["matched"], report["total_changes"],
-                 len(report["defects"]),
-                 len(report["outside_window_events"])), file=sys.stderr)
+        print(
+            "change-event ledger: %d/%d config changes matched, "
+            "%d defective event(s), %d event(s) outside the window"
+            % (
+                report["matched"],
+                report["total_changes"],
+                len(report["defects"]),
+                len(report["outside_window_events"]),
+            ),
+            file=sys.stderr,
+        )
         return report["exit_code"]
     return 2
 

@@ -4,11 +4,11 @@ This chapter is the whole system on one page: the crates, the surfaces,
 how a file moves, how a world runs, and where data lives. Every other
 part of this book expands one section of this page.
 
-## The workspace: a facade plus 19 crates
+## The workspace: a facade plus 20 crates
 
-`pkgs/id/` is a Rust workspace of 20 packages: the root package `id`
-version `0.1.0` (the facade) and 19 crates under `pkgs/id/crates/`.
-Default members are 17 packages: the root plus 16 crates. The three
+`pkgs/id/` is a Rust workspace of 21 packages: the root package `id`
+version `0.1.0` (the facade) and 20 crates under `pkgs/id/crates/`.
+Default members are 18 packages: the root plus 17 crates. The three
 shell crates, `id-native-shell`, `id-hw-shell`, and `id-tui-shell`, are
 workspace members but not default members, so a plain `cargo build` in
 `pkgs/id/` never acquires the Bevy desktop or shell dependencies. Two vendored
@@ -30,7 +30,7 @@ Dependency direction runs one way, from leaves to surfaces:
 | Foundation        | `id-core`                                                            | The leaf modules everything depends on (10 production dependents): content IDs, the graph record model, signed envelopes, discovery, the port contract vocabulary, and the constants `KEY_FILE = ".iroh-key"`, `CLIENT_KEY_FILE = ".iroh-key-client"`, `SERVE_LOCK = ".iroh-serve.lock"`                                                               |
 | Data              | `id-store`, `id-events`                                              | `id-store`: the blob store, tags, documents, search, and the signed event-header chain. `id-events`: the event store, the group projection, writer sets, and sync gating                                                                                                                                                                               |
 | Platform services | `id-caps`, `id-groups`, `id-sync`, `id-directory`                    | `id-caps`: the capability catalog, execution limits, and the world manifest. `id-groups`: group policy and enforcement, the blob gate, group encryption. `id-sync`: log sync, the meta protocol, FileOps, envelopes, and artifacts. `id-directory`: the home-server directory, invites, keysets, recovery, and seitan admission                        |
-| Worlds and web    | `id-worlds`, `id-web`                                                | `id-worlds`: the world runtime, sessions, the wasmtime sandbox, and cross-world authority (75 `.rs` files, the largest crate). `id-web`: the HTTP and WebSocket server, routes, templates, and markdown                                                                                                                                                |
+| Worlds and web    | `id-worlds`, `id-web`                                                | `id-worlds`: the world runtime, sessions, the wasmtime sandbox, and cross-world authority (107 `.rs` files, the largest crate). `id-web`: the HTTP and WebSocket server, routes, templates, and markdown                                                                                                                                                |
 | Application       | `id-cli`                                                             | Argument parsing, command implementations, the REPL, and the server-config loader                                                                                                                                                                                                                                                                      |
 | Standalone        | `id-config`, `id-currency-registry`, `id-render`, `id-import-notion` | `id-config`: the versioned configuration contract (no production dependents; the facade names it only in dev-dependencies). `id-currency-registry`: the currency control-plane registry (facade only). `id-render`: the rendering pipeline compiler core (no dependents). `id-import-notion`: the Notion importer inventory primitives (no dependents) |
 | Shells            | `id-native-shell`, `id-hw-shell`                                     | The Bevy native reference shell and the ESP32-class hardware shell spike. Both consume the facade with `default-features = false, features = ["world"]`                                                                                                                                                                                                |

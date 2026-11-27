@@ -15,7 +15,11 @@ A repeatable rehearsal driver lives at
 `pm-stack/scripts/restore-rehearsal.sh`. The cutover that precedes a
 post-cutover restore is gated by `pm-stack/scripts/kaneo-cutover.sh`
 (plan §4): promotion is refused unless `pm-stack/scripts/fence-check.sh`
-reports FENCED and the target's table/row counts equal the source's.
+reports FENCED, the target's table/row counts equal the source's, and the
+latest backup record is a complete generation with verified local, R2, and
+Drive copies finished within 36 hours (override only for a documented window
+decision). Pass its path with `--backup-record-file`; the receipt records the
+restore-point timestamp without exposing a DSN.
 
 Failover posture (Drew's #1258 rulings, 2026-11-03): all PM-stack state to
 Supabase `muse-dev2`, nothing laptop-only; **tested cold restore, no warm
@@ -57,9 +61,15 @@ loss, not from when work got convenient.
 
 1. **Declare.** Note the loss time and scope (whole host / single store).
    Fence the old writer if the old host is reachable at all: stop
-   `pm-stack-kaneo-1`, `pm-grist`, `pm-pad`. If unreachable, state that —
-   an unreachable host is fenced by definition, and it must be fenced
-   (services disabled) before it is allowed to rejoin later.
+   `pm-stack-kaneo-1`, `pm-stack-postgres-1`, `pm-grist`, `pm-pad`, and
+   stop the Kaneo manager user service and its retry timer
+   (`systemctl --user stop pm-kaneo.service pm-kaneo.timer`) — the
+   manager runs `deploy.sh` (`compose up`) and revives stopped
+   containers on its next run or timer elapse. Verify with
+   `pm-stack/scripts/fence-check.sh` (FENCED, exit 0). If unreachable,
+   state that — an unreachable host is fenced by definition, and it
+   must be fenced (services disabled) before it is allowed to rejoin
+   later.
 2. **Provision the restore host.** Any clean host with Docker + this repo:
    clone `developing-today/code`, check out the commit the plan names.
 3. **Kaneo.** Restore the `kaneo` database into the target Postgres

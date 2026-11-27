@@ -1,0 +1,94 @@
+{
+  "task": {
+    "id": 23719,
+    "queue": "repo-health-code-pilot",
+    "title": "Deploy and verify the queue coverage reconciliation timer",
+    "priority": 50,
+    "status": "claimed",
+    "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14929",
+    "created_at": "2026-11-25T08:08:03Z",
+    "not_before": null,
+    "worker_id": "repo-worker-code",
+    "claimed_at": "2026-11-25T08:08:35Z",
+    "lease_until": "2026-11-25T12:08:35Z",
+    "lane_id": "code-j",
+    "platform": null,
+    "attempts": 1,
+    "max_attempts": 1000,
+    "claim_provider": null,
+    "claim_model": null,
+    "claim_variant": null,
+    "claim_session_id": null,
+    "progress": {},
+    "payload": {
+      "schema": "repo-task/v1",
+      "kind": "small_fix",
+      "repo": "developing-today/code",
+      "issue": {
+        "number": 14929,
+        "title": "Deploy and run the queue coverage reconciliation from #7016",
+        "url": "https://github.com/developing-today/code/issues/14929",
+        "state_checked_at": "2026-11-25T08:05:00Z"
+      },
+      "problem": "PR #7697 shipped queue-coverage-reconcile.service/.timer and the /coverage client, but the first-run acceptance was pending deployment. Current user unit is not found/inactive, and no first report is recorded.",
+      "evidence": [
+        "PR #7697 body records that the repo-shipped units were not installed and the running broker returned unknown command /coverage.",
+        "Current readback: systemctl --user is-enabled queue-coverage-reconcile.timer -> not-found; is-active -> inactive.",
+        "No existing open issue or queued pilot task for deployment/first-run verification was found."
+      ],
+      "acceptance": [
+        "The active broker endpoint supports the /coverage call used by check_coverage.py; transport/broker failures remain explicit errors.",
+        "The declared service/timer are installed and enabled, with the existing hourly persistent schedule and registry entry intact.",
+        "Run check_coverage.py in observe mode across the four pilot repositories; import uncovered items with the sanctioned CLI path when needed, then verify a zero-uncovered report or an explicit remaining state with live task coverage.",
+        "Save the first verified report and read back the timer enabled/active state."
+      ],
+      "scope": {
+        "include": [
+          "Declarative installation of queue-coverage-reconcile.service/timer",
+          "Broker /coverage availability for the active queue",
+          "First observe/import/verify pass and report"
+        ],
+        "exclude": [
+          "Changing queue coverage semantics or filter rules",
+          "Adding a second schedule outside the existing registry entry"
+        ]
+      },
+      "tests": [
+        "python3 -I scripts/fleet/queue-reconcile/check_coverage.py --observe --state-dir <temporary-directory> validates end-to-end against the broker; verify systemctl --user is-enabled and is-active queue-coverage-reconcile.timer after installation."
+      ],
+      "risk": {
+        "level": "medium",
+        "flags": ["service-deployment"]
+      },
+      "priority_reason": "The sole reconciliation path has not been installed or demonstrated; without the first run, open issues may still lack live queue coverage.",
+      "timebox_minutes": 60,
+      "max_attempts": 1000,
+      "context_refs": [
+        "https://github.com/developing-today/code/issues/14929",
+        "https://github.com/developing-today/code/issues/7016",
+        "https://github.com/developing-today/code/pull/7697",
+        "https://github.com/developing-today/code/blob/main/doc/fleet-schedule-registry.md"
+      ],
+      "dedupe": {
+        "checked_at": "2026-11-25T08:05:00Z",
+        "basis": "No live issue or task for the queue coverage timer installation and first run was found; #7016 remains the completed design/code tracker but its acceptance was not verified in the live environment."
+      },
+      "labels": ["app/fleet", "effort/m", "priority/normal", "queue/queued", "task/fix"]
+    },
+    "blocked_deps": null,
+    "dep_next_recheck_at": null,
+    "dep_blocked_until": null
+  },
+  "history": [
+    {
+      "id": 417201,
+      "kind": "claimed",
+      "created_at": "2026-11-25T08:08:37Z",
+      "session_id": null,
+      "provider": null,
+      "model": null,
+      "variant": null,
+      "trigger": "claim_repo_task_turso"
+    }
+  ]
+}

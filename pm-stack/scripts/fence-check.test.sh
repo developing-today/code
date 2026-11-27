@@ -31,6 +31,8 @@ make_fixtures() {
   # $1 = dir; writes an all-stopped / all-inactive fixture set.
   mkdir -p "$1/units"
   : >"$1/containers.txt"
+  printf 'inactive' >"$1/units/pm-kaneo.service"
+  printf 'inactive' >"$1/units/pm-kaneo.timer"
   printf 'inactive' >"$1/units/docker-pm-grist.service"
   printf 'inactive' >"$1/units/docker-pm-pad.service"
 }
@@ -127,6 +129,98 @@ if "$BASH_BIN" "$CHECK" --units-dir >/dev/null 2>&1; then
   fail 'valueless option exits 2'
 else
   [ "$?" -eq 2 ] && pass 'valueless option exits 2' || fail 'valueless option exits 2'
+fi
+
+# 10. Per-store fencing: Grist is fenced while the other stores are live.
+d="$TMP/per-store-grist"
+make_fixtures "$d"
+printf 'pm-pad running\npm-stack-kaneo-1 running\n' >"$d/containers.txt"
+if out="$("$BASH_BIN" "$CHECK" --store grist --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  case "$out" in
+  FENCED:*) pass 'grist fence ignores Kaneo and Pad writers' ;;
+  *) fail "grist fence ignores Kaneo and Pad writers (got: $out)" ;;
+  esac
+else
+  fail "grist fence ignores Kaneo and Pad writers (exit $?, got: $out)"
+fi
+
+# 11. Per-store fencing: an active Pad unit is named and blocks Pad.
+d="$TMP/per-store-pad"
+make_fixtures "$d"
+printf 'active' >"$d/units/docker-pm-pad.service"
+if out="$("$BASH_BIN" "$CHECK" --store pad --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "pad fence names its own active writer (exit 0, got: $out)"
+else
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:docker-pm-pad.service* ]]; then
+    pass 'pad fence names its own active writer'
+  else
+    fail "pad fence names its own active writer (got: $out)"
+  fi
+fi
+
+# 12. Per-store unit fixtures fail closed when that store's unit is missing.
+d="$TMP/per-store-missing-unit"
+make_fixtures "$d"
+rm "$d/units/docker-pm-grist.service"
+if out="$("$BASH_BIN" "$CHECK" --store grist --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "missing Grist unit fixture fails closed (exit 0, got: $out)"
+else
+  [ "$?" -eq 1 ] && [[ $out == UNFENCED:*docker-pm-grist.service* ]] && pass 'missing Grist unit fixture fails closed' || fail "missing Grist unit fixture fails closed (got: $out)"
+fi
+
+# 13. Unknown store is a usage error.
+if "$BASH_BIN" "$CHECK" --store bogus >/dev/null 2>&1; then
+  fail '--store bogus exits 2'
+else
+  [ "$?" -eq 2 ] && pass '--store bogus exits 2' || fail '--store bogus exits 2'
+fi
+
+# 14. Oracle: an active pm-kaneo.service blocks the Kaneo fence even with
+# every container stopped — the manager (`deploy.sh` via `compose up`)
+# revives stopped containers on its next run, so containers-stopped
+# alone is not a fence (#3989 criterion 3).
+d="$TMP/kaneo-manager-active"
+make_fixtures "$d"
+printf 'active' >"$d/units/pm-kaneo.service"
+if out="$("$BASH_BIN" "$CHECK" --store kaneo --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "active pm-kaneo.service blocks the kaneo fence (exit 0, got: $out)"
+else
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:pm-kaneo.service* ]]; then
+    pass 'active pm-kaneo.service blocks the kaneo fence and names the unit'
+  else
+    fail "active pm-kaneo.service blocks the kaneo fence and names the unit (got: $out)"
+  fi
+fi
+
+# 15. Oracle: an armed pm-kaneo.timer blocks the Kaneo fence even with the
+# service stopped — the 30 min retry elapse re-runs `deploy.sh` and
+# restarts the stack, so the fence must pin the timer too.
+d="$TMP/kaneo-timer-armed"
+make_fixtures "$d"
+printf 'active' >"$d/units/pm-kaneo.timer"
+if out="$("$BASH_BIN" "$CHECK" --store kaneo --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "armed pm-kaneo.timer blocks the kaneo fence (exit 0, got: $out)"
+else
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:pm-kaneo.timer* ]]; then
+    pass 'armed pm-kaneo.timer blocks the kaneo fence and names the unit'
+  else
+    fail "armed pm-kaneo.timer blocks the kaneo fence and names the unit (got: $out)"
+  fi
+fi
+
+# 16. Oracle: the armed timer blocks --store all as well (the cutover
+# promote path checks the full writer set, not a per-store subset).
+d="$TMP/all-timer-armed"
+make_fixtures "$d"
+printf 'active' >"$d/units/pm-kaneo.timer"
+if out="$("$BASH_BIN" "$CHECK" --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
+  fail "armed pm-kaneo.timer blocks the full fence (exit 0, got: $out)"
+else
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:pm-kaneo.timer* ]]; then
+    pass 'armed pm-kaneo.timer blocks the full fence and names the unit'
+  else
+    fail "armed pm-kaneo.timer blocks the full fence and names the unit (got: $out)"
+  fi
 fi
 
 if ((FAILURES)); then

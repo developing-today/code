@@ -530,3 +530,7 @@ Envelopes travel on the `/id-envelope/1` ALPN of the iroh endpoint, not `POST /e
 Tests: 19 envelope tests cover apply-once, permanent refusals, retry on an unreachable recipient, and per-outcome flush accounting. Default features: `cargo test --lib` passes except the 3 `world_compile` tests that need `host.wasm`.
 
 Deferred: causal references on friend-request envelopes, needed for strong-remove concurrency rules.
+
+## Tracking
+
+This record predates the tracking-issue convention. Its work was logged in place, in the Implementation sections above, and no issue was filed for it. The account and replication model that followed it is the [events, groups, delegation, removal, and history design](../2026-10-11T03-44-33Z_design_groups_events_delegation/2026-10-11T03-44-33Z_design_groups_events_delegation.md), which lists this record as related. (Pointer added 2026-11-25 for #13881.)

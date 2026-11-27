@@ -11,17 +11,27 @@
 # deploy: the CLI package (deploy.py wrapped with the registry path).
 {
   lib,
+  stdenv,
   callPackage,
   python3,
   makeWrapper,
   runCommand,
   writeText,
   cloudflared,
+  irohRelayPkg,
   sourceRev ? "dirty",
 }:
 let
   fleetPkgs = callPackage ../fleet { inherit sourceRev; };
-  definitions = import ./services.nix {
+  # Issue #16063: ready-for-agent's payload is an x86_64-linux-only ELF
+  # (pkgs/ready-for-agent declares meta.platforms = [ "x86_64-linux" ]),
+  # so its deploy target is registered only where that payload can be
+  # built and run. On any other system the target is omitted from the
+  # registry entirely — the deploy CLI evaluates, builds, and lists its
+  # remaining targets there without carrying an unrunnable package.
+  readyForAgent = callPackage ../ready-for-agent/package.nix { };
+  readyForAgentSupported = lib.meta.availableOn stdenv.hostPlatform readyForAgent;
+  allDefinitions = import ./services.nix {
     inherit (fleetPkgs) fleet;
     laptopAgent = callPackage ../laptop-agent/package.nix { };
     mcpx = callPackage ../mcpx/package.nix { };
@@ -64,10 +74,32 @@ let
     pmAggregator = callPackage ../pm-aggregator/package.nix { };
     pmProjector = callPackage ../pm-projector/package.nix { };
     pmTunnel = cloudflared;
+    # Issue #14719, slice 1: the self-hosted iroh relay for the
+    # fleet-transport pilot, tunnel mode. nixpkgs carries the binary
+    # (hyphenated attr, so lib/default.nix passes it explicitly);
+    # iroh-relay.nix bundles the kit's tunnel-mode config so the
+    # generic renderer can deploy the target from the entry alone.
+    irohRelay = callPackage ./iroh-relay.nix { inherit irohRelayPkg; };
     # Issue #12909: ready-for-agent, packaged from its pinned npm
     # tarballs — the last of the four #12768 services to register.
-    readyForAgent = callPackage ../ready-for-agent/package.nix { };
+    # (Defined above so the platform gate in #16063 can inspect its
+    # meta.platforms; filtered out of the registry when unsupported.)
+    inherit readyForAgent;
+    # Issue #5767, external-Worker slice: agent-inbox, webhook-gateway,
+    # and webhook-gateway-sink live in dezren39/hatch-personal (source
+    # verdict comment 6974159268), not this repo. Each deploy app
+    # carries the pinned hatch-personal rev and stages the worker dir
+    # at deploy time (sparse checkout — no full clone, no build, no
+    # deploy-time npm install; both workers are dependency-free).
+    agentInboxDeploy = callPackage ../external-workers/agent-inbox-deploy.nix { };
+    webhookGatewayDeploy = callPackage ../external-workers/webhook-gateway-deploy.nix { };
+    webhookGatewaySinkDeploy = callPackage ../external-workers/webhook-gateway-sink-deploy.nix { };
   };
+  definitions =
+    if readyForAgentSupported then
+      allDefinitions
+    else
+      lib.removeAttrs allDefinitions [ "ready-for-agent" ];
   # The registry names each target's store path without depending on it
   # (code#12738): string context would make building the CLI realize every
   # target package, check phases included, before `deploy` itself exists.
@@ -87,6 +119,10 @@ let
 in
 {
   deployTargets = definitions;
+
+  # Whether this system's registry carries the ready-for-agent target
+  # (#16063) — exposed so the flake checks can pin the boundary.
+  deployReadyForAgentSupported = readyForAgentSupported;
 
   deployTargetsJson = registryJson;
 

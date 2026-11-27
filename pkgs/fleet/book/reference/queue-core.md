@@ -1,6 +1,6 @@
 # fleet queue: core verbs
 
-`fleet queue` is the repo work queue: enqueue, claim, and complete tasks through the queue broker. Inside the binary the same surface is the standalone `repo-queue` program, and every per-verb usage string says `repo-queue`, not `fleet queue`; the two spellings are identical. The full command list is: `validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack`.
+`fleet queue` is the repo work queue: enqueue, claim, and complete tasks through the queue broker. Inside the binary the same surface is the standalone `repo-queue` program, and every per-verb usage string says `repo-queue`, not `fleet queue`; the two spellings are identical. The full command list is: `validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, staleness, needs-user, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack`.
 
 Task states are `queued`, `claimed`, `parked`, `blocked`, `needs_review` (live) and `done`, `failed`, `cancelled` (terminal).
 
@@ -96,8 +96,9 @@ Outputs:
   - `revived: existing task <id> (…)` — dedupe hit on a `queued` row whose `updated_at` is fresh (broker revived it in place);
   - `revived: new task <id> (…), predecessor task <pid> (<pstatus>)` — the envelope carried `revived_from`: the key's prior task was terminal, a fresh task was created linked to it;
   - `work already queued: existing task <id> (queue <q>, status <s>) holds <identity>; nothing filed (set payload.dedupe_override to file a deliberate parallel)` — the envelope carried `work_identity_collision`: a _live_ task already holds this work identity (repo, issue, kind family), regardless of dedupe key.
+  - `not filed: dedupe key already belongs to completed task <id> (queue <q>, status <s>); suffix the dedupe key to file this work again, or set payload.dedupe_override for a deliberate parallel` — the envelope carried `dedupe_match` with rule `dedupe_key_terminal`: the `(queue, dedupe_key)` already belongs to a completed task, which absorbs the filing (#13091). The report is the caller's cue to suffix the key and re-file in the same pass; before it existed, the completed row alone read as a successful filing and left `queue/queued` issues with no live task (#10627). A live key holder instead reports rule `dedupe_key_live` under the plain `dedupe hit:` line. The CLI merges `dedupe_match` (and `work_identity_collision`) into the printed row JSON, so machine consumers of the enqueue output see the absorption too.
 
-Dedupe semantics: dedupe is by `(queue, dedupe_key)` among **live** rows (the Turso backend does a read-then-insert check — its `(queue, dedupe_key)` index is deliberately NOT unique). A key held only by terminal rows accepts a new row. A _cancelled_ row is revived in place by enqueue (fields reset, attempts 0, lease deleted, `enqueued` event flagged `revived_from_cancelled`); a _failed_ row deliberately does not revive — re-enqueue of a failed identity files a new row or is an explicit operator action (the `revive` verb).
+Dedupe semantics: dedupe is by `(queue, dedupe_key)` among **live** rows (the Turso backend does a read-then-insert check — its `(queue, dedupe_key)` index is deliberately NOT unique). A key held only by terminal rows accepts a new row — except a **completed** row, which absorbs the filing and returns itself, reported as `dedupe_match` rule `dedupe_key_terminal` (#13091, #10627); failed and cancelled rows revive as described below. A _cancelled_ row is revived in place by enqueue (fields reset, attempts 0, lease deleted, `enqueued` event flagged `revived_from_cancelled`); a _failed_ row deliberately does not revive — re-enqueue of a failed identity files a new row or is an explicit operator action (the `revive` verb).
 
 At enqueue the broker also: enriches a packet that names an issue but carries no `labels` array from the GitHub mirror in the same store; selects the stored priority from label bands (`expedite` → 15, `next-up` → 25 — stored values deliberately not on the packet priority scale); and normalizes `max_attempts` / `required_budget_minutes` from the packet copy into the payload mirror.
 
@@ -145,7 +146,7 @@ task     priority  status  age   dedupe_key                                     
 ## fleet queue claim
 
 ```text
-usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]
+usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]
 ```
 
 | Flag                         | Argument          | Default                                       | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -189,6 +190,24 @@ $ fleet queue claim --worker repo-worker-code --lane code-a
 no claimable task — 0 queued (0 at the attempt cap, 0 not yet due), 0 parked due
 (exit 5)
 ```
+
+**Manual parked claim.** `--task ID --manual-override REASON` deliberately claims an
+under-cap parked task without incrementing attempts. The reason must be non-empty;
+transfer (`--from-session`), handoff picks, and batches cannot be combined with it.
+The task's `result.manual_override` and the `claimed` event's `manual_override`
+record the worker/lane, supplied session, time, reason, and prior status, attempts,
+max-attempts, `not_before`, park reason/kind, wait kind, and ready condition. The live
+wait fields are cleared and unrelated result data is preserved. Without the flag a
+parked by-ID claim still refuses; queued and handed-off by-ID claims keep their
+ordinary behavior. Attempt-capped overrides and supervision handling are separate
+slices.
+
+**Resume hint (storage, #9178 §1).** A packet may carry `resume_session_id`
+(a non-empty session-id string; absent/null means no hint). The broker validates
+the shape at enqueue and persists the trimmed hint on the task row, where it is
+returned on reads and recorded on the `enqueued` event. The claim wire — session
+continuation, fallbacks, and requested-vs-actual audit — is a separate slice;
+until it lands, hinted and hint-less tasks claim exactly as before.
 
 ## fleet queue release
 

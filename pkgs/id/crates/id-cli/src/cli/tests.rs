@@ -135,6 +135,48 @@ fn test_cli_parse_no_args() {
     assert!(cli.log_level.is_none());
 }
 
+/// Oracle: the CLI contract maps retention and store flags without accepting
+/// values outside the store's unsigned 32-bit retention window.
+#[test]
+fn test_cli_parse_compact_retention() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let cli = Cli::try_parse_from(["id", "compact"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Compact { json: false, retain_recent })
+                    if retain_recent == crate::commands::compact::DEFAULT_RETAIN_RECENT
+            ));
+            let cli = Cli::try_parse_from([
+                "id",
+                "--event-store",
+                "events",
+                "compact",
+                "--retain-recent",
+                "0",
+                "--json",
+            ])
+            .unwrap();
+            assert_eq!(cli.event_store, Some(std::path::PathBuf::from("events")));
+            assert!(matches!(
+                cli.command,
+                Some(Command::Compact {
+                    json: true,
+                    retain_recent: 0
+                })
+            ));
+            for invalid in ["-1", "not-a-number", "4294967296"] {
+                assert!(
+                    Cli::try_parse_from(["id", "compact", "--retain-recent", invalid]).is_err()
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// Parse via `normalize_args` on a big-stack thread: building this
 /// CLI's clap tree is deep enough to overflow the default test
 /// thread stack (the #3059 parse tests below spawn a thread for the
@@ -306,7 +348,7 @@ fn test_cli_parse_serve() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -324,14 +366,14 @@ fn test_cli_parse_serve() {
             assert_eq!(world_checkpoint_every, 1000);
             assert_eq!(world_max_open, 256);
             assert_eq!(world_max_sessions, 1024);
-            assert_eq!(world_idle_secs, 600);
+            assert_eq!(world_idle_secs, None);
             assert_eq!(world_boot_window_secs, 600);
-            assert!(world_caps.is_empty());
+            assert_eq!(world_caps, [] as [String; 0]);
             assert_eq!(world_cap_policy, "deny");
             assert!(roc_bin.is_none());
             assert!(roc_platform.is_none());
             assert!(!world_native);
-            assert!(allow_node.is_empty());
+            assert_eq!(allow_node, [] as [String; 0]);
             assert!(!open_writes);
         }
         _ => panic!("Expected Serve command"),
@@ -363,7 +405,7 @@ fn test_cli_parse_serve_with_flags() {
             assert!(!no_gossip);
             assert!(!web);
             assert_eq!(port, 3000);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -822,7 +864,7 @@ fn test_cli_parse_peers_default() {
             assert_eq!(depth, 1);
             assert_eq!(max_peers, 1000);
             assert_eq!(timeout, 30);
-            assert!(bootstrap.is_empty());
+            assert_eq!(bootstrap, [] as [String; 0]);
             assert!(topic.is_none());
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
@@ -991,6 +1033,173 @@ fn test_cli_parse_doc_content() {
 }
 
 #[test]
+fn test_cli_parse_talk_post_and_list() {
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "post",
+        "abc123",
+        "needs a source",
+        "--supersedes",
+        "content/raw-blake3-256.00",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command:
+                TalkCommand::Post {
+                    object,
+                    body,
+                    reply_to,
+                    supersedes,
+                },
+        }) => {
+            assert!(!json);
+            assert_eq!(object, "abc123");
+            assert_eq!(body, "needs a source");
+            assert_eq!(reply_to, None);
+            assert_eq!(supersedes.as_deref(), Some("content/raw-blake3-256.00"));
+        }
+        _ => panic!("Expected Talk::Post command"),
+    }
+
+    // `--json` is global to `talk`: it may follow the subcommand.
+    let cli = Cli::parse_from(["id", "talk", "list", "abc123", "--json"]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command: TalkCommand::List { object },
+        }) => {
+            assert!(json);
+            assert_eq!(object, "abc123");
+        }
+        _ => panic!("Expected Talk::List command"),
+    }
+
+    // A post needs its body.
+    assert!(Cli::try_parse_from(["id", "talk", "post", "abc123"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_talk_thread_steps() {
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "propose",
+        "group1",
+        "object1/key1",
+        "--base",
+        "rev1",
+        "--content",
+        "blob1/key1",
+        "--thread",
+        "thread1",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Propose {
+                    group,
+                    object,
+                    base,
+                    content,
+                    thread,
+                    supersedes,
+                },
+            ..
+        }) => {
+            assert_eq!(group, "group1");
+            assert_eq!(object, "object1/key1");
+            assert_eq!(base, "rev1");
+            assert_eq!(content, "blob1/key1");
+            assert_eq!(thread, "thread1");
+            assert_eq!(supersedes, None);
+        }
+        _ => panic!("Expected Talk::Propose command"),
+    }
+
+    let cli = Cli::parse_from(["id", "talk", "resolve", "group1", "thread1", "--no-action"]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Resolve {
+                    edit,
+                    object,
+                    decision,
+                    no_action,
+                    ..
+                },
+            ..
+        }) => {
+            assert!(no_action);
+            assert_eq!((edit, object, decision), (None, None, None));
+        }
+        _ => panic!("Expected Talk::Resolve command"),
+    }
+    // An edit names its object, and the outcomes exclude each other.
+    assert!(Cli::try_parse_from(["id", "talk", "resolve", "g", "t", "--edit", "e"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "talk",
+            "resolve",
+            "g",
+            "t",
+            "--decision",
+            "b",
+            "--no-action"
+        ])
+        .is_err()
+    );
+
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "accept",
+        "group1",
+        "proposal1",
+        "edit.md",
+        "--media-type",
+        "text/markdown",
+        "--parent",
+        "rev1",
+        "--parent",
+        "rev2",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Accept {
+                    proposal,
+                    file,
+                    media_type,
+                    parents,
+                    ..
+                },
+            ..
+        }) => {
+            assert_eq!(proposal, "proposal1");
+            assert_eq!(file, std::path::PathBuf::from("edit.md"));
+            assert_eq!(media_type, "text/markdown");
+            assert_eq!(parents, vec!["rev1".to_owned(), "rev2".to_owned()]);
+        }
+        _ => panic!("Expected Talk::Accept command"),
+    }
+
+    let cli = Cli::parse_from(["id", "talk", "threads", "group1", "--json"]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command: TalkCommand::Threads { group },
+        }) => {
+            assert!(json);
+            assert_eq!(group, "group1");
+        }
+        _ => panic!("Expected Talk::Threads command"),
+    }
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
@@ -1073,7 +1282,7 @@ fn test_cli_parse_show() {
             assert!(output.is_none());
             assert!(first.is_none());
             assert!(last.is_none());
-            assert!(exclude.is_empty());
+            assert_eq!(exclude, [] as [String; 0]);
         }
         _ => panic!("Expected Show command"),
     }
@@ -2117,6 +2326,93 @@ fn test_cli_parse_world_boot_window() {
 }
 
 #[test]
+fn test_cli_parse_world_partition() {
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-partition",
+        "eu-west",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => {
+            assert_eq!(args.world_partition.as_deref(), Some("eu-west"));
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(args.world_partition.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    for bad in ["", "EU", "eu/us", "../eu", &"a".repeat(64)] {
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-partition", bad]).is_err(),
+            "{bad:?}"
+        );
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--world-partition", "eu"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-host",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--ephemeral",
+            "--world-partition",
+            "eu"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn test_cli_parse_world_host() {
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-host",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(args.world_host),
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert!(!args.world_host),
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--world-host"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-host",
+            "--ephemeral",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn test_cli_parse_id_client() {
     let cli = Cli::parse_from(["id", "id", "--client"]);
     assert!(matches!(cli.command, Some(Command::Id { client: true })));
@@ -2844,6 +3140,43 @@ fn test_cli_parse_world_profile() {
 }
 
 #[test]
+fn test_cli_parse_world_presentation() {
+    let node = "a".repeat(64);
+    let cli = Cli::parse_from(["id", "world", "presentation", &node]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert!(args.set.is_none());
+                assert!(args.admin_token.is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "presentation",
+        &node,
+        "--set",
+        "policy.json",
+        "--admin-token",
+        "adm",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert_eq!(args.set, Some(std::path::PathBuf::from("policy.json")));
+                assert_eq!(args.admin_token, Some("adm".to_owned()));
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
 fn test_cli_parse_world_dev_fuzz() {
     let cli = Cli::parse_from([
         "id",
@@ -3225,4 +3558,170 @@ fn test_cli_parse_keyset_recovery_commands() {
             }
         })
     ));
+}
+
+#[test]
+fn test_cli_parse_host_pin_and_wake_mode() {
+    let cli = Cli::parse_from(["id", "host", "pin", "/data", "w", "--off"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Pin { world, off, .. })) => {
+            assert_eq!(world, "w");
+            assert!(off);
+        }
+        _ => panic!("Expected host pin"),
+    }
+    let cli = Cli::parse_from(["id", "host", "wake-mode", "/data", "w", "operator"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::WakeMode { mode, .. })) => assert_eq!(mode, "operator"),
+        _ => panic!("Expected host wake-mode"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_host_snapshots() {
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--every",
+        "6h",
+        "--keep",
+        "7",
+        "--max-age",
+        "30d",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Snapshots {
+            world,
+            every,
+            keep,
+            max_age,
+            off,
+            inherit,
+            ..
+        })) => {
+            assert_eq!(world, None);
+            assert_eq!(every.as_deref(), Some("6h"));
+            assert_eq!(keep, Some(7));
+            assert_eq!(max_age.as_deref(), Some("30d"));
+            assert!(!off && !inherit);
+        }
+        _ => panic!("Expected host snapshots"),
+    }
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--world",
+        "w",
+        "--inherit",
+    ]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Snapshots { inherit: true, .. }))
+    ));
+    // A cadence needs a keep count, and inherit needs a world.
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--every", "6h"]).is_err());
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--inherit"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "host",
+            "snapshots",
+            "/data",
+            "--off",
+            "--every",
+            "6h",
+            "--keep",
+            "1"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn test_cli_parse_host_key_export_import() {
+    let cli = Cli::parse_from(["id", "host", "key", "/data"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Key { .. }))
+    ));
+    let cli = Cli::parse_from(["id", "host", "export", "/data", "w", "w.export"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Export { world, file, .. })) => {
+            assert_eq!(world, "w");
+            assert_eq!(file, std::path::PathBuf::from("w.export"));
+        }
+        _ => panic!("Expected host export"),
+    }
+    let cli = Cli::parse_from([
+        "id", "host", "import", "/data", "w.export", "--source", "ab",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Import { source, actor, .. })) => {
+            assert_eq!(source, "ab");
+            assert_eq!(actor, "operator");
+        }
+        _ => panic!("Expected host import"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
+}
+
+const HOSTED_BINDING: &str = "0123456789abcdef0123456789abcdef";
+
+fn parse_hosted(args: &[&str]) -> Result<(bool, HostedCommand), clap::Error> {
+    let cli = Cli::try_parse_from(args)?;
+    match cli.command {
+        Some(Command::Hosted { json, command }) => Ok((json, command)),
+        other => panic!("expected `hosted`, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_actions() {
+    for (action, expect) in [("heads", 0), ("push", 1), ("pull", 2)] {
+        let (json, command) = parse_hosted(&[
+            "id",
+            "hosted",
+            action,
+            "--url",
+            "https://id.example/",
+            "--binding",
+            HOSTED_BINDING,
+            "--key-file",
+            "k.key",
+            "--json",
+        ])
+        .expect("hosted parses");
+        assert!(json);
+        let index = match command {
+            HostedCommand::Heads { .. } => 0,
+            HostedCommand::Push { .. } => 1,
+            HostedCommand::Pull { .. } => 2,
+        };
+        assert_eq!(index, expect, "{action}");
+        let target = command.target();
+        assert_eq!(target.url, "https://id.example");
+        assert_eq!(target.binding, HOSTED_BINDING);
+        assert_eq!(target.key_file, Some(std::path::PathBuf::from("k.key")));
+    }
+}
+
+#[test]
+fn test_cli_parse_hosted_rejects_bad_targets() {
+    let parse = |url: &str, binding: &str| {
+        parse_hosted(&["id", "hosted", "push", "--url", url, "--binding", binding])
+    };
+    assert!(parse("https://id.example", HOSTED_BINDING).is_ok());
+    assert!(parse("http://localhost:8787", HOSTED_BINDING).is_ok());
+    assert!(parse("http://127.0.0.1", HOSTED_BINDING).is_ok());
+    assert!(parse("http://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("http://localhost.evil.example", HOSTED_BINDING).is_err());
+    assert!(parse("ftp://id.example", HOSTED_BINDING).is_err());
+    assert!(parse("https://", HOSTED_BINDING).is_err());
+    assert!(parse("https://id.example", "0123456789ABCDEF0123456789ABCDEF").is_err());
+    assert!(parse("https://id.example", "abc").is_err());
 }

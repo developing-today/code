@@ -202,7 +202,16 @@ jobs:
             # No jobs JSON: synthesise one flat entry from the
             # single-shot inputs, so existing callers keep working
             # unchanged.
-            [ -n "$SINGLE_COMMAND" ] || fail "nothing to run: pass the jobs input, or the repo/ref/command inputs"
+            # GitHub permits a manual dispatch without populated inputs.
+            # Treat that as a successful no-op rather than failing setup
+            # before any matrix leg can run.
+            if [ -z "$SINGLE_COMMAND" ]; then
+              echo "::warning::empty org-run dispatch; no jobs were requested"
+              # GitHub rejects a matrix with no combinations, so emit one
+              # sentinel entry and gate the run job on this exact value.
+              echo 'matrix=[{"noop":true}]' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             raw=$(jq -cn --arg repo "$SINGLE_REPO" --arg ref "$SINGLE_REF" --arg command "$SINGLE_COMMAND" \
               '[{repo: $repo, ref: $ref, command: $command}]')
           fi
@@ -292,6 +301,23 @@ jobs:
                 end
             ]' <<<"$legs") || fail "jobs validation failed (see the error above)"
 
+          # Reject abbreviated commit SHAs as refs (#15768): a hex
+          # ref shorter than 40 chars is not a branch or tag, so
+          # checkout turns it into a wildcard refspec
+          # (+refs/heads/<prefix>*) that matches nothing and the leg
+          # dies at fetch with a bare git exit 1. A full 40-char SHA
+          # is fine (checkout fetches it directly); anything shorter
+          # must fail here, in setup, with the reason stated.
+          bad_refs=$(jq -r '
+            [ .[] |
+              if .mode == "together" then
+                .checkouts[] | select(.ref | test("^[0-9a-fA-F]{7,39}$")) | "\(.repo)@\(.ref)"
+              else
+                select(.ref | test("^[0-9a-fA-F]{7,39}$")) | "\(.repo)@\(.ref)"
+              end
+            ] | join(", ")' <<<"$matrix")
+          [ -z "$bad_refs" ] || fail "ref looks like an abbreviated commit SHA: $bad_refs — pass the full 40-character SHA, or a branch or tag name"
+
           echo "resolved $count leg(s):"
           jq -r '.[] |
             if .mode == "together" then
@@ -304,6 +330,7 @@ jobs:
   run:
     name: "run (${{ matrix.repo }} #${{ matrix.idx }})"
     needs: setup
+    if: ${{ needs.setup.outputs.matrix != '[{"noop":true}]' }}
     runs-on: ${{ inputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     # The input is clamped into range so an out-of-range value can
     # never set an absurd timeout; the validate step then fails the

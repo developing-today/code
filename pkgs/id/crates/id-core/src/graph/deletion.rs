@@ -5,6 +5,12 @@
 //! appends signed evidence; a batch is atomic and idempotent. The state is
 //! deliberately local: applying an action to one replica never mutates the
 //! signed evidence or serving state of another replica.
+//!
+//! The #14232 round-trip layer adds a reason-carrying request envelope
+//! delivered to the relevant authority holders (tag author, group admins,
+//! server owners) and Grant/Decline transitions: a grant produces a true
+//! delete under the server's policy path with its own evidence action, a
+//! decline is recorded in evidence and state with no delete.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -33,6 +39,9 @@ pub enum DeletionState {
         prior: Box<DeletionState>,
         ticket_id: u64,
     },
+    /// A delete request was declined by an authority holder; the decline
+    /// is recorded and the object was NOT deleted (#14232).
+    DeleteDeclined { request_id: u64 },
     /// The server's controlled bytes were physically deleted under policy.
     TrueDeletedOnThisServer { receipt_id: u64 },
 }
@@ -80,11 +89,38 @@ impl DeletionEvidence {
     }
 }
 
+/// A reason-carrying delete request as delivered to authority holders
+/// (#14232). The envelope is the delivery record: who the request was
+/// routed to (tag author, group admins, server owners — as actor
+/// labels) and the requester's reason, retained alongside the signed
+/// evidence so a later grant or decline can be checked against it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteRequestEnvelope {
+    /// The request this envelope carries.
+    pub request_id: u64,
+    /// The requester's reason, carried from the request path.
+    pub reason: String,
+    /// Authority holders the request was delivered to.
+    pub delivered_to: Vec<String>,
+}
+
 /// A requested state-machine action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeletionAction {
     /// Author/group request for the next bounded batch.
     Request { request_id: u64 },
+    /// Reason-carrying request delivered to authority holders (#14232).
+    RequestReasoned {
+        request_id: u64,
+        reason: String,
+        delivered_to: Vec<String>,
+    },
+    /// An authority holder grants the request: a true delete under the
+    /// server's policy path, distinct from an admin delete (#14232).
+    Grant { request_id: u64, policy_id: String },
+    /// An authority holder declines the request: recorded, no delete
+    /// (#14232).
+    Decline { request_id: u64, reason: String },
     /// Put a request into the moderation queue.
     Queue { request_id: u64, ticket_id: u64 },
     /// Hide serving in a local projection.
@@ -149,6 +185,7 @@ pub struct DeletionStateMachine {
     object: ObjectId,
     state: DeletionState,
     evidence: Vec<DeletionEvidence>,
+    deliveries: Vec<DeleteRequestEnvelope>,
     applied_batches: BTreeSet<u64>,
     next_sequence: u64,
 }
@@ -161,6 +198,7 @@ impl DeletionStateMachine {
             object,
             state: DeletionState::Available,
             evidence: Vec::new(),
+            deliveries: Vec::new(),
             applied_batches: BTreeSet::new(),
             next_sequence: 0,
         }
@@ -182,6 +220,12 @@ impl DeletionStateMachine {
     #[must_use]
     pub fn evidence(&self) -> &[DeletionEvidence] {
         &self.evidence
+    }
+
+    /// All reason-carrying request envelopes delivered so far (#14232).
+    #[must_use]
+    pub fn deliveries(&self) -> &[DeleteRequestEnvelope] {
+        &self.deliveries
     }
 
     /// Apply one action. Repeating a state-equivalent action is idempotent;
@@ -215,6 +259,100 @@ impl DeletionStateMachine {
                     "delete request requires an available object",
                 )),
             },
+            DeletionAction::RequestReasoned {
+                request_id,
+                reason,
+                delivered_to,
+            } => {
+                checked_label(&reason)?;
+                if delivered_to.is_empty() {
+                    return Err(DeletionError::Invalid(
+                        "a delete request must be delivered to at least one authority holder",
+                    ));
+                }
+                for holder in &delivered_to {
+                    checked_label(holder)?;
+                }
+                match self.state {
+                    DeletionState::Available | DeletionState::DeleteDeclined { .. } => {
+                        self.state = DeletionState::DeleteRequested { request_id };
+                        self.deliveries.push(DeleteRequestEnvelope {
+                            request_id,
+                            reason: reason.clone(),
+                            delivered_to,
+                        });
+                        self.append("delete_requested", actor, request_id, &reason, key)?;
+                        Ok(TransitionOutcome::Applied)
+                    }
+                    DeletionState::DeleteRequested {
+                        request_id: current,
+                    } if current == request_id => Ok(TransitionOutcome::Idempotent),
+                    DeletionState::TrueDeletedOnThisServer { .. } => {
+                        Err(DeletionError::AlreadyDeleted)
+                    }
+                    _ => Err(DeletionError::InvalidTransition(
+                        "reasoned delete request requires an available object",
+                    )),
+                }
+            }
+            DeletionAction::Grant {
+                request_id,
+                policy_id,
+            } => {
+                checked_label(&policy_id)?;
+                match self.state {
+                    DeletionState::DeleteRequested {
+                        request_id: current,
+                    }
+                    | DeletionState::ModerationQueued {
+                        request_id: current,
+                        ..
+                    } if current == request_id => {
+                        self.state = DeletionState::TrueDeletedOnThisServer {
+                            receipt_id: self.next_sequence + 1,
+                        };
+                        self.append(
+                            "delete_granted",
+                            actor,
+                            request_id,
+                            &format!("policy={policy_id};request_id={request_id}"),
+                            key,
+                        )?;
+                        Ok(TransitionOutcome::Applied)
+                    }
+                    DeletionState::TrueDeletedOnThisServer { .. } => {
+                        Ok(TransitionOutcome::Idempotent)
+                    }
+                    _ => Err(DeletionError::InvalidTransition(
+                        "grant requires the matching outstanding delete request",
+                    )),
+                }
+            }
+            DeletionAction::Decline { request_id, reason } => {
+                checked_label(&reason)?;
+                match self.state {
+                    DeletionState::DeleteRequested {
+                        request_id: current,
+                    }
+                    | DeletionState::ModerationQueued {
+                        request_id: current,
+                        ..
+                    } if current == request_id => {
+                        self.state = DeletionState::DeleteDeclined { request_id };
+                        self.append("delete_declined", actor, request_id, &reason, key)?;
+                        Ok(TransitionOutcome::Applied)
+                    }
+                    DeletionState::DeleteDeclined {
+                        request_id: current,
+                    } if current == request_id => Ok(TransitionOutcome::Idempotent),
+                    DeletionState::TrueDeletedOnThisServer { .. } => {
+                        Err(DeletionError::AlreadyDeleted)
+                    }
+                    _ => Err(DeletionError::InvalidTransition(
+                        "decline requires the matching outstanding delete request",
+                    )),
+                }
+            }
             DeletionAction::Queue {
                 request_id,
                 ticket_id,
@@ -373,6 +511,40 @@ impl DeletionStateMachine {
         Ok(TransitionOutcome::Applied)
     }
 
+    /// Record a deletion authorized by the server's clear-marker policy.
+    ///
+    /// This stays crate-private so callers must go through the policy
+    /// evaluator, which checks the configured authority and grace period.
+    pub(crate) fn apply_policy_delete_on_clear(
+        &mut self,
+        actor: &str,
+        policy_id: &str,
+        marker_event_id: &[u8; 32],
+        clear_authority: &str,
+        marker_created_at: u64,
+        key: &SigningKey,
+    ) -> Result<TransitionOutcome, DeletionError> {
+        self.validate_actor(actor)?;
+        checked_label(policy_id)?;
+        if matches!(self.state, DeletionState::TrueDeletedOnThisServer { .. }) {
+            return Ok(TransitionOutcome::Idempotent);
+        }
+        self.state = DeletionState::TrueDeletedOnThisServer {
+            receipt_id: self.next_sequence + 1,
+        };
+        self.append(
+            "policy_deleted_on_clear",
+            actor,
+            0,
+            &format!(
+                "policy={policy_id};clear_marker={};authority={clear_authority};marker_created_at={marker_created_at}",
+                crate::hex::hex_encode(marker_event_id),
+            ),
+            key,
+        )?;
+        Ok(TransitionOutcome::Applied)
+    }
+
     fn validate_actor(&self, actor: &str) -> Result<(), DeletionError> {
         checked_label(actor)
     }
@@ -414,7 +586,10 @@ impl DeletionStateMachine {
 
 fn action_ticket(action: &DeletionAction) -> u64 {
     match action {
-        DeletionAction::Request { request_id } => *request_id,
+        DeletionAction::Request { request_id }
+        | DeletionAction::RequestReasoned { request_id, .. }
+        | DeletionAction::Grant { request_id, .. }
+        | DeletionAction::Decline { request_id, .. } => *request_id,
         DeletionAction::Queue { ticket_id, .. }
         | DeletionAction::Hide { ticket_id }
         | DeletionAction::ClearHide { ticket_id } => *ticket_id,

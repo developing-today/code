@@ -74,12 +74,24 @@ func TestPointDenoRunAtPreparedEnvRendersTheImportMap(t *testing.T) {
 	if err := os.WriteFile(script, []byte("import 'mainpkg'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	foreignDir := filepath.Join(root, "foreign-project")
+	subsetDir := filepath.Join(root, "env-foreign")
+	subsetModules := filepath.Join(subsetDir, "node_modules")
+	if err := os.MkdirAll(subsetModules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeInstalledPackage(t, subsetModules, "foreign-only", `{"name":"foreign-only","main":"index.js"}`, "index.js")
 	prepared := &preflight.PreparedSet{Dir: env, Key: "k", Packages: []preflight.ResolvedPackage{
 		{Name: "mainpkg", Version: "1.0.0"},
 		{Name: "exportstr", Version: "2.0.0"},
 		{Name: "exportcond", Version: "3.0.0"},
 		{Name: "@scope/scoped", Version: "4.0.0"},
-	}}
+	}, PreparedSubsets: []preflight.PreparedSubset{{
+		ManifestPath: filepath.Join(foreignDir, "package.json"),
+		ManifestDir:  foreignDir,
+		Dir:          subsetDir,
+		Packages:     []preflight.ResolvedPackage{{Name: "foreign-only", Version: "9.0.0"}},
+	}}}
 	release, flags, err := pointRunAtPreparedEnv(context.Background(), Options{File: script}, KindDeno, prepared, work, false)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +109,8 @@ func TestPointDenoRunAtPreparedEnvRendersTheImportMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rendered struct {
-		Imports map[string]string `json:"imports"`
+		Imports map[string]string            `json:"imports"`
+		Scopes  map[string]map[string]string `json:"scopes"`
 	}
 	if err := json.Unmarshal(text, &rendered); err != nil {
 		t.Fatal(err)
@@ -120,6 +133,15 @@ func TestPointDenoRunAtPreparedEnvRendersTheImportMap(t *testing.T) {
 	}
 	if _, ok := rendered.Imports["entryless"]; ok {
 		t.Error("an unpinned package with no entry point gets no exact mapping")
+	}
+	foreignScope := fileURL(foreignDir) + "/"
+	foreignImports := rendered.Scopes[foreignScope]
+	wantForeign := "file://" + filepath.Join(subsetModules, "foreign-only", "index.js")
+	if got := foreignImports["foreign-only"]; got != wantForeign {
+		t.Errorf("foreign project scope resolves its own exact package: got %q, want %q", got, wantForeign)
+	}
+	if _, ok := rendered.Imports["foreign-only"]; ok {
+		t.Error("foreign-only package must not leak into the entry project's import map")
 	}
 	if _, err := os.Lstat(filepath.Join(scriptDir, "node_modules")); !os.IsNotExist(err) {
 		t.Errorf("a deno run gets no node_modules link, stat err = %v", err)

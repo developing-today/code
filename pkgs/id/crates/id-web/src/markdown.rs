@@ -280,11 +280,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             let level = json["attrs"]["level"].as_u64().unwrap_or(1).clamp(1, 6);
             #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6 before narrowing
             let level = level as u8;
-            NodeValue::Heading(comrak::nodes::NodeHeading {
-                level,
-                setext: false,
-                closed: false,
-            })
+            NodeValue::Heading(comrak::nodes::NodeHeading::new(level))
         }
 
         "blockquote" => NodeValue::BlockQuote,
@@ -308,32 +304,24 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             // attr and keep the fenced emit below — no retro-guessing.
             if info == "html" && json["attrs"]["htmlBlock"].as_bool() == Some(true) {
                 return Ok(arena.alloc(AstNode::from(NodeValue::HtmlBlock(
-                    comrak::nodes::NodeHtmlBlock {
-                        literal: format!("{content}\n"),
-                        ..Default::default()
-                    },
+                    comrak::nodes::NodeHtmlBlock::new(format!("{content}\n")),
                 ))));
             }
 
-            NodeValue::CodeBlock(Box::new(comrak::nodes::NodeCodeBlock {
-                fenced: true,
-                fence_char: b'`',
-                fence_length: 3,
-                fence_offset: 0,
-                info: info.to_owned(),
-                // #954: comrak's own empty-fence literal is empty; appending
-                // the usual trailing newline here renders a spurious blank
-                // line inside the fence ("```\n\n```").
-                literal: if content.is_empty() {
-                    String::new()
-                } else {
-                    format!("{content}\n")
-                },
-                closed: false,
-            }))
+            // #954: comrak's own empty-fence literal is empty; appending
+            // the usual trailing newline here renders a spurious blank
+            // line inside the fence ("```\n\n```").
+            let literal = if content.is_empty() {
+                String::new()
+            } else {
+                format!("{content}\n")
+            };
+            let mut code_block = comrak::nodes::NodeCodeBlock::fenced(info, literal);
+            code_block.closed = false;
+            NodeValue::CodeBlock(Box::new(code_block))
         }
 
-        "horizontal_rule" => NodeValue::ThematicBreak,
+        "horizontal_rule" => NodeValue::ThematicBreak(Default::default()),
 
         // #1369: YAML front matter (`---` delimiter only; comrak has no
         // TOML `+++` support) carried verbatim in the `text` attr.
@@ -343,12 +331,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
 
         "bullet_list" => {
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
-            NodeValue::List(comrak::nodes::NodeList {
-                list_type: ListType::Bullet,
-                tight,
-                bullet_char: b'-',
-                ..Default::default()
-            })
+            NodeValue::List(comrak::nodes::NodeList::bullet(b'-', tight))
         }
 
         "ordered_list" => {
@@ -357,13 +340,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
             // #1380: carry the delimiter style; absent (legacy docs)
             // defaults to Period in delimiter_from_attrs.
-            NodeValue::List(comrak::nodes::NodeList {
-                list_type: ListType::Ordered,
-                start: order,
+            NodeValue::List(comrak::nodes::NodeList::ordered(
+                order,
+                delimiter_from_attrs(json),
                 tight,
-                delimiter: delimiter_from_attrs(json),
-                ..Default::default()
-            })
+            ))
         }
 
         "list_item" => NodeValue::Item(comrak::nodes::NodeList::default()),
@@ -389,32 +370,19 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             #[allow(clippy::cast_possible_truncation)] // order is typically small
             let order = json["attrs"]["order"].as_u64().map(|o| o as usize);
             match order {
-                Some(start) => NodeValue::List(comrak::nodes::NodeList {
-                    list_type: ListType::Ordered,
+                // #1380: same delimiter carry as ordered_list.
+                Some(start) => NodeValue::List(comrak::nodes::NodeList::ordered(
                     start,
+                    delimiter_from_attrs(json),
                     tight,
-                    // #1380: same delimiter carry as ordered_list.
-                    delimiter: delimiter_from_attrs(json),
-                    ..Default::default()
-                }),
-                None => NodeValue::List(comrak::nodes::NodeList {
-                    list_type: ListType::Bullet,
-                    tight,
-                    bullet_char: b'-',
-                    ..Default::default()
-                }),
+                )),
+                None => NodeValue::List(comrak::nodes::NodeList::bullet(b'-', tight)),
             }
         }
 
         "task_list_item" => {
             let checked = json["attrs"]["checked"].as_bool().unwrap_or(false);
-            NodeValue::TaskItem(comrak::nodes::NodeTaskItem {
-                symbol: checked.then_some('x'),
-                symbol_sourcepos: comrak::nodes::Sourcepos {
-                    start: comrak::nodes::LineColumn { line: 0, column: 0 },
-                    end: comrak::nodes::LineColumn { line: 0, column: 0 },
-                },
-            })
+            NodeValue::TaskItem(comrak::nodes::NodeTaskItem::new(checked.then_some('x')))
         }
 
         "table" => {
@@ -442,12 +410,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 .unwrap_or_default();
             alignments.resize(num_columns, comrak::nodes::TableAlignment::None);
             alignments.truncate(num_columns);
-            NodeValue::Table(Box::new(comrak::nodes::NodeTable {
-                alignments,
-                num_columns,
-                num_rows,
-                num_nonempty_cells: 0,
-            }))
+            let mut table = comrak::nodes::NodeTable::new(alignments);
+            table.num_rows = num_rows;
+            NodeValue::Table(Box::new(table))
         }
 
         "table_row" => {
@@ -457,7 +422,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 .and_then(|arr| arr.first())
                 .and_then(|c| c["type"].as_str())
                 .is_some_and(|t| t == "table_header");
-            NodeValue::TableRow(is_header)
+            NodeValue::TableRow(comrak::nodes::NodeTableRow::new(is_header))
         }
 
         "table_header" | "table_cell" => NodeValue::TableCell,
@@ -509,10 +474,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 NodeValue::HtmlInline(tag)
             } else {
                 // Standard markdown image syntax
-                NodeValue::Image(Box::new(comrak::nodes::NodeLink {
-                    url: src,
-                    title: title.to_owned(),
-                }))
+                NodeValue::Image(Box::new(comrak::nodes::NodeLink::new(src, title)))
             }
         }
 
@@ -525,10 +487,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         // #945: footnote reference atom -> comrak FootnoteReference; the
         // commonmark formatter renders it natively as [^label].
         "footnote_reference" => {
-            NodeValue::FootnoteReference(Box::new(comrak::nodes::NodeFootnoteReference {
-                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
-                ..Default::default()
-            }))
+            NodeValue::FootnoteReference(Box::new(comrak::nodes::NodeFootnoteReference::new(
+                json["attrs"]["label"].as_str().unwrap_or(""),
+            )))
         }
 
         // #945: footnote definition block -> comrak FootnoteDefinition.
@@ -537,10 +498,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         // (comrak requires block children) and the formatter renders them
         // under the [^label]: heading.
         "footnote_definition" => {
-            NodeValue::FootnoteDefinition(comrak::nodes::NodeFootnoteDefinition {
-                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
-                total_references: 0,
-            })
+            NodeValue::FootnoteDefinition(comrak::nodes::NodeFootnoteDefinition::new(
+                json["attrs"]["label"].as_str().unwrap_or(""),
+            ))
         }
 
         "hard_break" => NodeValue::LineBreak,
@@ -674,17 +634,18 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         let mut first_row: Option<&AstNode<'a>> = None;
         let mut has_header_row = false;
         for child in ast_node.children() {
-            if let NodeValue::TableRow(is_header) = &child.data.borrow().value {
+            if let NodeValue::TableRow(row) = &child.data.borrow().value {
                 if first_row.is_none() {
                     first_row = Some(child);
                 }
-                if *is_header {
+                if row.header {
                     has_header_row = true;
                 }
             }
         }
         if !has_header_row && let Some(row) = first_row {
-            row.data.borrow_mut().value = NodeValue::TableRow(true);
+            row.data.borrow_mut().value =
+                NodeValue::TableRow(comrak::nodes::NodeTableRow::new(true));
         }
     }
 
@@ -720,20 +681,19 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         {
             wrappers.push((
                 mark_nesting_rank("link"),
-                NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    // #5745: same save-direction neutralization as above.
-                    url: sanitize_link_url(link_href),
-                    title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
-                })),
+                NodeValue::Link(Box::new(comrak::nodes::NodeLink::new(
+                    sanitize_link_url(link_href),
+                    json["attrs"]["linkTitle"].as_str().unwrap_or(""),
+                ))),
             ));
         }
         if let Some(marks) = json["marks"].as_array() {
             for mark in marks {
                 let mark_type = mark["type"].as_str().unwrap_or("");
                 let wrapper = match mark_type {
-                    "em" => NodeValue::Emph,
-                    "strong" => NodeValue::Strong,
-                    "strikethrough" => NodeValue::Strikethrough,
+                    "em" => NodeValue::Emph(Default::default()),
+                    "strong" => NodeValue::Strong(Default::default()),
+                    "strikethrough" => NodeValue::Strikethrough(Default::default()),
                     _ => continue,
                 };
                 if !wrappers.iter().any(|(_, w)| same_mark_wrapper(w, &wrapper)) {
@@ -766,11 +726,11 @@ fn valid_table_cell_child(value: &NodeValue) -> bool {
         value,
         NodeValue::Text(..)
             | NodeValue::Code(..)
-            | NodeValue::Emph
-            | NodeValue::Strong
+            | NodeValue::Emph(_)
+            | NodeValue::Strong(_)
             | NodeValue::Link(..)
             | NodeValue::Image(..)
-            | NodeValue::Strikethrough
+            | NodeValue::Strikethrough(_)
             | NodeValue::Highlight
             | NodeValue::Insert
             | NodeValue::HtmlInline(..)
@@ -848,9 +808,9 @@ fn collect_cell_text<'a>(node: &'a AstNode<'a>, segments: &mut Vec<String>) {
 fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
     match (a, b) {
         (NodeValue::Link(x), NodeValue::Link(y)) => x.url == y.url && x.title == y.title,
-        (NodeValue::Strong, NodeValue::Strong)
-        | (NodeValue::Emph, NodeValue::Emph)
-        | (NodeValue::Strikethrough, NodeValue::Strikethrough) => true,
+        (NodeValue::Strong(_), NodeValue::Strong(_))
+        | (NodeValue::Emph(_), NodeValue::Emph(_))
+        | (NodeValue::Strikethrough(_), NodeValue::Strikethrough(_)) => true,
         _ => false,
     }
 }
@@ -860,7 +820,10 @@ fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
 fn is_mark_wrapper(value: &NodeValue) -> bool {
     matches!(
         value,
-        NodeValue::Link(..) | NodeValue::Strong | NodeValue::Emph | NodeValue::Strikethrough
+        NodeValue::Link(..)
+            | NodeValue::Strong(_)
+            | NodeValue::Emph(_)
+            | NodeValue::Strikethrough(_)
     )
 }
 
@@ -1059,17 +1022,17 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
     for mark in sorted_marks {
         let mark_type = mark["type"].as_str().unwrap_or("");
         let wrapper_value = match mark_type {
-            "em" => NodeValue::Emph,
-            "strong" => NodeValue::Strong,
-            "strikethrough" => NodeValue::Strikethrough,
+            "em" => NodeValue::Emph(Default::default()),
+            "strong" => NodeValue::Strong(Default::default()),
+            "strikethrough" => NodeValue::Strikethrough(Default::default()),
             "link" => {
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
-                NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    // #5745: same save-direction neutralization as above.
-                    url: sanitize_link_url(href),
-                    title: title.to_owned(),
-                }))
+                // #5745: same save-direction neutralization as above.
+                NodeValue::Link(Box::new(comrak::nodes::NodeLink::new(
+                    sanitize_link_url(href),
+                    title,
+                )))
             }
             // #1045: `code` is skipped here because it is handled
             // below as the innermost node; any other unrecognized mark
@@ -1083,10 +1046,9 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
     // Start with the innermost node: a Code node when a code mark is
     // present, otherwise the plain text node.
     let inner_node = if has_code {
-        arena.alloc(AstNode::from(NodeValue::Code(comrak::nodes::NodeCode {
-            num_backticks: 1,
-            literal: text.to_owned(),
-        })))
+        let mut code = comrak::nodes::NodeCode::new(text);
+        code.num_backticks = 1;
+        arena.alloc(AstNode::from(NodeValue::Code(code)))
     } else {
         arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())))
     };
@@ -1203,7 +1165,10 @@ mod tests {
     fn test_empty_document() {
         let doc = markdown_to_prosemirror("");
         assert_eq!(doc["type"], "doc");
-        assert!(!doc["content"].as_array().unwrap().is_empty());
+        assert_ne!(
+            *doc["content"].as_array().unwrap(),
+            [] as [serde_json::Value; 0]
+        );
     }
 
     #[test]
@@ -6049,7 +6014,7 @@ mod tests {
         // canonical order (strong outside em) must keep it stable.
         let (first, second) = two_saves("***both***\n");
         assert_eq!(first, second);
-        assert!(first.contains("***both***"));
+        assert_eq!(first, "**_both_**\n");
     }
 
     #[test]

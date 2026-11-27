@@ -11,6 +11,27 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 impl WorldCore {
+    /// Release journal bytes to a spilled holder only after its authenticated
+    /// replay cursor reaches the current lease boundary. This check runs on
+    /// the serialized world actor against its live lease, not a host snapshot.
+    pub(crate) fn dispatch_spill_copy(
+        &self,
+        holder: &str,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        super::spill_gate::check_spill_admission(
+            self.write_lease(),
+            holder,
+            epoch,
+            replayed_position,
+            self.clock().now_ms(),
+        )
+        .map_err(|reason| anyhow::anyhow!("spill admission refused: {reason:?}"))?;
+        Ok(journal_copy)
+    }
+
     /// The world's active (non-revoked) participants.
     #[must_use]
     pub(crate) fn participants(&self) -> Vec<Participant> {
@@ -719,6 +740,10 @@ impl WorldCore {
         subject: Option<String>,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
+        self.check_world_boundary(
+            EnforcementPoint::WorldMembership,
+            subject.as_deref().unwrap_or("guest"),
+        )?;
         let active = self
             .capabilities
             .values()
@@ -765,6 +790,26 @@ impl WorldCore {
             },
         );
         Ok((participant, JoinCapability(token)))
+    }
+
+    fn check_world_boundary(&self, point: EnforcementPoint, subject: &str) -> Result<()> {
+        if let Some(gate) = &self.world_boundary_gate {
+            let outcome = gate.check(point, subject);
+            ensure!(
+                outcome.is_allow(),
+                "world operation refused by boundary ({})",
+                outcome.name()
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_blob_boundary_for(&self, participant: Option<u64>) -> Result<()> {
+        let subject = participant
+            .and_then(|id| self.capabilities.get(&id))
+            .and_then(|record| record.subject.as_deref())
+            .unwrap_or("guest");
+        self.check_world_boundary(EnforcementPoint::BlobStorage, subject)
     }
 
     /// Revoke a capability and every capability delegated from it. Returns
@@ -850,6 +895,15 @@ impl WorldCore {
     /// The directory of accounts, groups and friends this world is held to.
     pub const fn directory_mut(&mut self) -> &mut crate::directory::Directory {
         &mut self.directory
+    }
+
+    /// Install the serving app's world boundary gate for membership and blob
+    /// operations. This is runtime wiring and is not part of the journal.
+    pub fn set_world_boundary_gate(
+        &mut self,
+        gate: Arc<dyn id_directory::directory::BoundaryGate>,
+    ) {
+        self.world_boundary_gate = Some(super::WorldBoundaryGateHandle(gate));
     }
 
     /// The directory and the private petnames, borrowed together.
@@ -1530,6 +1584,8 @@ impl WorldCore {
 
     /// Return retained events newer than `after_sequence`, plus the current
     /// cursor. If the cursor fell behind retention, the caller must resnapshot.
+    /// A cursor ahead of the journal can never be continuous (the journal was
+    /// rebuilt or regressed), so it also forces a resnapshot.
     /// The events are the viewer's projection (see [`project_event_for`]), so
     /// their sequences may skip withheld lines: a caller advances to
     /// `current_sequence`, not to the last sequence it was given plus one.
@@ -1538,7 +1594,8 @@ impl WorldCore {
         let participant_id = self.authorize(token, WorldScopes::JOIN)?;
         let scopes = self.viewer_scopes(participant_id);
         let oldest = self.oldest_sequence();
-        let needs_snapshot = after_sequence.saturating_add(1) < oldest;
+        let needs_snapshot =
+            after_sequence.saturating_add(1) < oldest || after_sequence > self.sequence;
         let events = if needs_snapshot {
             Vec::new()
         } else {

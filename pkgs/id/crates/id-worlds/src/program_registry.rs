@@ -482,8 +482,26 @@ fn storage(path: &Path, error: &std::io::Error) -> RegistryError {
 }
 
 /// Write `bytes` to `path` through a sibling temporary file and a rename, so
-/// a crash never leaves a half-written bundle under its final name.
+/// a crash never leaves a half-written bundle under its final name. The
+/// parent directory is synced after the rename: without that, a crash can
+/// lose the rename itself, so `publish`/`unpublish` would report a bundle
+/// (or a withdrawal) durable that the reload in [`Registry::open_dir`]
+/// never sees — and a lost withdrawal makes withdrawn content republishable.
 fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), RegistryError> {
+    write_atomically_with_parent_sync(path, bytes, |dir| {
+        std::fs::File::open(dir)?.sync_all()
+    })
+}
+
+/// [`write_atomically`] with the parent-directory sync step supplied by the
+/// caller, so a test can inject the post-rename sync failure that must be
+/// reported as [`RegistryError::Storage`] instead of acknowledged as durable
+/// (the after-rename stage of `id_core::durable_write`).
+fn write_atomically_with_parent_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), RegistryError> {
     let dir = path
         .parent()
         .ok_or_else(|| RegistryError::Storage(format!("{} has no parent", path.display())))?;
@@ -491,6 +509,13 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), RegistryError> {
     std::io::Write::write_all(&mut staged, bytes).map_err(|e| storage(path, &e))?;
     staged.as_file().sync_all().map_err(|e| storage(path, &e))?;
     staged.persist(path).map_err(|e| storage(path, &e.error))?;
+    sync_parent(dir).map_err(|e| {
+        RegistryError::Storage(format!(
+            "{}: {e} (after rename; the write at {} is not durable)",
+            dir.display(),
+            path.display()
+        ))
+    })?;
     Ok(())
 }
 
@@ -647,7 +672,10 @@ mod tests {
         let chess = bundle(b"chess", "chess", 1, &alice());
         registry.publish(&chess.to_bytes()).unwrap();
         registry.remove(&chess.manifest().content_hash).unwrap();
-        assert!(registry.list(&ListQuery::default()).is_empty());
+        assert_eq!(
+            registry.list(&ListQuery::default()),
+            [] as [BundleRecord; 0]
+        );
         registry
             .publish(&chess.to_bytes())
             .expect("the author may publish again after an operator removal");
@@ -680,6 +708,42 @@ mod tests {
         std::fs::write(&stray, chess.to_bytes()).unwrap();
         let error = Registry::open_dir(dir.path(), AdmitAll).unwrap_err();
         assert_eq!(error.code(), "storage", "{error}");
+    }
+
+    #[test]
+    fn write_atomically_installs_the_bytes_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle.idpb");
+        write_atomically(&path, b"durable bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"durable bytes");
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("bundle.idpb")]);
+    }
+
+    #[test]
+    fn a_parent_sync_failure_after_the_rename_is_reported_not_acknowledged() {
+        // Oracle: the rename alone is not durability. If syncing the parent
+        // directory fails after the rename installed the file, the write
+        // must surface as a storage error (after-rename stage), never Ok —
+        // otherwise publish/unpublish acknowledge a bundle or a withdrawal
+        // that a crash can silently lose.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle.idpb");
+        let error = write_atomically_with_parent_sync(&path, b"bytes", |_dir| {
+            Err(std::io::Error::other("injected parent sync failure"))
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), "storage", "{error}");
+        assert!(
+            error.to_string().contains("after rename"),
+            "the error names the after-rename stage: {error}"
+        );
+        // The rename did land; only its durability is unproven, which is
+        // exactly why the caller must not treat the write as durable.
+        assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
     }
 
     #[test]

@@ -27,6 +27,12 @@ if (extra.length > 1 || (extra[0] !== undefined && !/^[1-9][0-9]{1,4}$/.test(ext
 }
 const port = Number(extra[0] ?? 4897);
 const HOSTNAME = "127.0.0.1";
+// The name the edge routes for. It binds the loopback either way, but
+// it only answers requests that arrive under this name. On this
+// machine the name is the loopback itself; the Android offline check
+// calls the same edge 10.0.2.2 — the emulator's name for the machine
+// it runs on — so the check starts the demo with this set to that.
+const PUBLIC_HOST = process.env.PM_EDGE_DEMO_PUBLIC_HOST ?? HOSTNAME;
 const OWNER = "you@example.com";
 const ISSUER = {
   name: "demo-sign-in",
@@ -86,14 +92,15 @@ const io: Io = {
   host: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : null),
   // Away, the made-up host is away as a laptop asleep is: never reached.
   act: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : "unreached"),
-  publicHost: HOSTNAME,
+  publicHost: PUBLIC_HOST,
   version: "demo",
+  deployedAt: null,
   later: (work) => void work.catch(() => {}),
   now: Date.now,
 };
 
 const link = new EdgeLink({
-  url: `http://${HOSTNAME}:${port}`,
+  url: `http://${PUBLIC_HOST}:${port}`,
   keys: memoryStore(),
   done: memoryStore(),
   // One record with the host's own handler, as on the real host.

@@ -753,7 +753,7 @@ mod tests {
         );
         assigned(&mut manifest);
         let conversion = convert_row(&mut manifest, "row-1").unwrap();
-        assert!(conversion.references.is_empty());
+        assert_eq!(conversion.references, [] as [RelationReference; 0]);
         assert_eq!(conversion.externalised.len(), 1);
         assert_eq!(
             conversion.externalised[0].reason,

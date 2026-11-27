@@ -18,7 +18,7 @@ use crate::algorithm::AlgorithmId;
 use crate::bundle::sha256_hex;
 use crate::error::{CertError, Result};
 use crate::timeparse::Rfc3339;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::prelude::*;
 
@@ -52,6 +52,19 @@ pub struct CertInfo {
     signature: Vec<u8>,
     pub(crate) spki_bytes: Vec<u8>,
     spki_oid: String,
+}
+
+impl CertInfo {
+    /// The raw signature bytes over this certificate's TBS.
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+    /// The subject-key SPKI algorithm OID (dotted string), for error
+    /// detail when a certificate cannot be classified into a trust
+    /// bundle. The classified form is [`CertInfo::subject_algorithm`].
+    pub fn spki_oid(&self) -> &str {
+        &self.spki_oid
+    }
 }
 
 pub fn hex_bytes(bytes: &[u8]) -> String {
@@ -98,7 +111,7 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Classify a subject key from its SPKI OID (+ size for RSA).
-fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
+pub(crate) fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
     match spki_oid {
         "1.3.101.112" => Some(AlgorithmId::Ed25519),
         "1.2.840.10045.2.1" => Some(AlgorithmId::P256),
@@ -283,7 +296,7 @@ impl TrustSelection {
 }
 
 /// One named check in a validation report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
     pub ok: bool,

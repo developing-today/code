@@ -440,3 +440,185 @@ export function unpricedScoredPoints(points) {
         || String(a.effort || "").localeCompare(String(b.effort || ""));
     });
 }
+
+// Cost x Score comparison-line overlays (#1400 remainder). The scatter
+// draws hand-rolled SVG from the visible rows; these helpers compute the
+// overlay polylines in data coordinates from that same row set, so the
+// overlays cannot drift from the dots. The chart's x axis is
+// log10(cost) and its y axis is linear score, so the OLS trend is fit in
+// that same (log10(cost), score) space, and the envelope reuses
+// paretoSet with cost-low / score-high — the chart's own frontier
+// semantics. Smoothing is a centered window-3 moving average on the
+// score coordinate with the endpoints pinned to the exact computed
+// values, so a smoothed line still starts and ends on real data.
+
+// OLS fit of score on log10(cost). Returns the fit plus the observed
+// cost span, or null when fewer than two usable points exist or every
+// cost is identical (no slope to estimate).
+export function costScoreOls(points) {
+  var xs = [], ys = [], costs = [];
+  (points || []).forEach(function (p) {
+    if (p && p.cost != null && p.cost > 0 && p.score != null) {
+      xs.push(Math.log10(p.cost));
+      ys.push(p.score);
+      costs.push(p.cost);
+    }
+  });
+  var n = xs.length;
+  if (n < 2) return null;
+  var sx = 0, sy = 0;
+  var i;
+  for (i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; }
+  var mx = sx / n, my = sy / n;
+  var sxx = 0, sxy = 0;
+  for (i = 0; i < n; i++) { sxx += (xs[i] - mx) * (xs[i] - mx); sxy += (xs[i] - mx) * (ys[i] - my); }
+  if (sxx === 0) return null;
+  return {
+    slope: sxy / sxx,
+    intercept: my - (sxy / sxx) * mx,
+    n: n,
+    costMin: Math.min.apply(null, costs),
+    costMax: Math.max.apply(null, costs),
+  };
+}
+
+function smoothScores(line) {
+  // Centered window-3 moving average on score, endpoints pinned.
+  if (line.length < 3) return line;
+  return line.map(function (pt, i) {
+    if (i === 0 || i === line.length - 1) return pt;
+    return { cost: pt.cost, score: (line[i - 1].score + pt.score + line[i + 1].score) / 3 };
+  });
+}
+
+// Observed upper envelope: the cost/score Pareto frontier (cost low,
+// score high), cost-ascending, deduplicated to one point per cost, then
+// smoothed. A frontier the chart already draws dashed; this is its
+// smoothed overlay twin.
+export function costScoreEnvelope(points) {
+  var valid = (points || []).filter(function (p) { return p && p.cost != null && p.score != null; });
+  if (valid.length < 2) return [];
+  var front = paretoSet(valid, [
+    { get: function (p) { return p.cost; }, better: "low" },
+    { get: function (p) { return p.score; }, better: "high" },
+  ]);
+  var byCost = {};
+  front.forEach(function (p) {
+    if (byCost[p.cost] == null || p.score > byCost[p.cost]) byCost[p.cost] = p.score;
+  });
+  var line = Object.keys(byCost).map(function (c) { return { cost: Number(c), score: byCost[c] }; })
+    .sort(function (a, b) { return a.cost - b.cost; });
+  return smoothScores(line);
+}
+
+// Smoothed upper-tail expectation: per log-cost bin (logEdges, the same
+// binning the band code uses), the mean of the top half of scores — the
+// tail's expectation, not its max — plotted at the bin's log-center,
+// then smoothed. Bins with fewer than two scored points carry no tail
+// estimate and are skipped.
+export function costScoreTail(points, binCount) {
+  var valid = (points || []).filter(function (p) { return p && p.cost != null && p.cost > 0 && p.score != null; });
+  if (valid.length < 2) return [];
+  var edges = logEdges(valid.map(function (p) { return p.cost; }), binCount || 8);
+  if (edges.length < 2) return [];
+  var line = [];
+  for (var i = 0; i < edges.length - 1; i++) {
+    var lo = edges[i], hi = edges[i + 1];
+    var last = i === edges.length - 2;
+    var scores = valid
+      .filter(function (p) { return p.cost >= lo && (last ? p.cost <= hi : p.cost < hi); })
+      .map(function (p) { return p.score; })
+      .sort(function (a, b) { return b - a; });
+    if (scores.length < 2) continue;
+    var tail = scores.slice(0, Math.max(1, Math.floor(scores.length / 2)));
+    var mean = tail.reduce(function (a, b) { return a + b; }, 0) / tail.length;
+    line.push({ cost: Math.sqrt(lo * hi), score: mean });
+  }
+  return smoothScores(line);
+}
+
+// Per-chart point-label modes (#1400 remainder). The three scatter charts
+// (xpl-c1/c2/c3) label a subset of their dots: "key" labels frontier +
+// selected points (the historical behavior, kept as the default), "all"
+// labels every plotted point, and "none" labels nothing. Mode state lives
+// per chart id on the page (S.labelBy); these helpers normalize the raw
+// stored value and decide one point so Bun tests exercise exactly the
+// code the browser runs.
+export function resolveLabelMode(mode) {
+  if (mode === "all" || mode === "none" || mode === "key") return mode;
+  return "key";
+}
+
+export function shouldLabelPoint(mode, onFrontier, isSelected) {
+  var m = resolveLabelMode(mode);
+  if (m === "all") return true;
+  if (m === "none") return false;
+  return !!(onFrontier || isSelected);
+}
+
+// Per-chart third-metric limits + magnification (#1400 remainder). Each of
+// the three scatter charts (xpl-c1/c2/c3) sizes its dots by a third metric
+// (c1: cost, c2: time, c3: score — the chart's sizeMetric). A per-chart
+// limit gates dots on that metric: "unset" keeps everything (the
+// historical behavior, kept as the default), "atmost"/"atleast" keep only
+// dots at or under/over a numeric threshold. The threshold follows the
+// inequality-filter convention: empty or non-numeric means inactive. A dot
+// whose third metric is unmeasured cannot satisfy an active limit, so it
+// is hidden — same rule as applyInequalityFilters. "Per-band limits" cap
+// the plotted dots per score band (at most N kept, in visible order), so a
+// dense band cannot drown the chart. Limit state lives per chart id on the
+// page (S.limitBy[id] = { mode, value, perBand }); magnification state
+// lives alongside it (S.magBy[id] = "fit" | "150" | "200"). These helpers
+// normalize the raw stored values so Bun tests exercise exactly the code
+// the browser runs.
+export function resolveLimitMode(mode) {
+  if (mode === "atmost" || mode === "atleast") return mode;
+  return "unset";
+}
+
+export function limitThreshold(raw) {
+  if (raw === "" || raw == null) return null;
+  var t = Number(raw);
+  return isFinite(t) ? t : null;
+}
+
+export function passesChartLimit(value, mode, threshold) {
+  var m = resolveLimitMode(mode);
+  var t = limitThreshold(threshold);
+  if (m === "unset" || t == null) return true;
+  if (value == null) return false;
+  var v = Number(value);
+  if (!isFinite(v)) return false;
+  return m === "atmost" ? v <= t : v >= t;
+}
+
+export function applyChartLimit(rows, get, spec) {
+  spec = spec || {};
+  var m = resolveLimitMode(spec.mode);
+  var t = limitThreshold(spec.value);
+  if (m === "unset" || t == null) return rows;
+  return rows.filter(function (p) { return passesChartLimit(get(p), m, t); });
+}
+
+export function capPointsPerBand(rows, maxPer, bandOf) {
+  var n = Math.floor(Number(maxPer));
+  if (!(n >= 1)) return rows;
+  var seen = {};
+  return rows.filter(function (p) {
+    var b = "b" + bandOf(p);
+    seen[b] = seen[b] || 0;
+    if (seen[b] >= n) return false;
+    seen[b]++;
+    return true;
+  });
+}
+
+export function resolveMagnify(mag) {
+  if (mag === "150" || mag === "200") return mag;
+  return "fit";
+}
+
+export function magnifyWidth(mag) {
+  var m = resolveMagnify(mag);
+  return m === "fit" ? "" : m + "%";
+}

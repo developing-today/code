@@ -26,15 +26,16 @@ default = []
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 id-core = { path = "../id-core", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 iroh = "1"
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 redb = "=5.0.0"
@@ -44,6 +45,8 @@ thiserror = "2"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+base64 = "0.22"
+rusqlite = { version = "0.43", features = ["bundled"] }
 proptest = "1.12"
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -134,8 +137,3 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
-# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
-# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
-# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
-assert_is_empty = "allow"
-chunks_exact_to_as_chunks = "allow"

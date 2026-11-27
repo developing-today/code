@@ -14,12 +14,15 @@
 //!   exp/nonce; GitHub: the numeric user id), then enforces the
 //!   deny-by-default allowlist in the provider — before any link or
 //!   code exists.
-//! - Linking (#13415): an allowlisted identity the store has never
-//!   seen is linked to the account row by this login, with the link
-//!   written to the identity history and the audit record. An
-//!   identity an operator has unlinked is denied
-//!   (`identity_unlinked`) — unlinking is never silently undone by
-//!   a login.
+//! - Linking (#13415) and enrollment (#15249): an allowlisted
+//!   identity the store has never seen enrolls by this login into
+//!   a fresh account of its own holding only `read-only` (design
+//!   #9086 §4.4), with the link written to the identity history
+//!   and the audit record; the config account's own door
+//!   identities are the ones declared in its config row, seeded
+//!   active at startup. An identity an operator has unlinked is
+//!   denied (`identity_unlinked`) — unlinking is never silently
+//!   undone by a login.
 //! - On success the handler mints one of *our* authorization codes
 //!   (the same code store as the local door) and redirects to the
 //!   relying party. Every outcome — redirect, denial, link — is
@@ -30,8 +33,8 @@ use crate::flow::{
 };
 use crate::registry::{now_unix, random_b64url, url_encode};
 use crate::upstream::{
-    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_upstream_jwks,
-    subject_from_claims, verify_upstream_id_token,
+    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_github_verified_email,
+    fetch_upstream_jwks, subject_from_claims, verified_oidc_email, verify_upstream_id_token,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -182,6 +185,11 @@ pub async fn door_start(
         } else {
             door.config.scopes.join(" ")
         };
+        let scope = if !scope.split_whitespace().any(|s| s == "email") {
+            format!("{scope} email")
+        } else {
+            scope
+        };
         params.push(("response_type", "code".to_string()));
         params.push(("scope", scope));
         if let Some(nonce) = &upstream_nonce {
@@ -197,6 +205,13 @@ pub async fn door_start(
             "read:user".to_string()
         } else {
             door.config.scopes.join(" ")
+        };
+        let scope = if door.config.kind == "github"
+            && !scope.split_whitespace().any(|s| s == "user:email")
+        {
+            format!("{scope} user:email")
+        } else {
+            scope
         };
         params.push(("scope", scope));
     }
@@ -321,8 +336,9 @@ pub async fn door_callback(
         }
     };
 
-    // Resolve the verified upstream identity.
-    let subject = if door.config.kind == "github" {
+    // Resolve the verified upstream identity and, when the upstream
+    // explicitly vouches for it, an email usable only for a pending claim.
+    let (subject, verified_email) = if door.config.kind == "github" {
         let access_token = token_doc["access_token"].as_str().unwrap_or("");
         if access_token.is_empty() {
             return denied(
@@ -337,7 +353,10 @@ pub async fn door_callback(
             );
         }
         match fetch_github_user(&flow.http, &door, access_token).await {
-            Ok(user) => subject_from_claims(&door, &user),
+            Ok(user) => (
+                subject_from_claims(&door, &user),
+                fetch_github_verified_email(&flow.http, &door, access_token).await,
+            ),
             Err(_) => {
                 return denied(
                     flow,
@@ -388,7 +407,10 @@ pub async fn door_callback(
             pending.upstream_nonce.as_deref(),
             now_unix(),
         ) {
-            Ok(claims) => subject_from_claims(&door, &claims),
+            Ok(claims) => (
+                subject_from_claims(&door, &claims),
+                verified_oidc_email(&claims),
+            ),
             Err(_) => {
                 return denied(
                     flow,
@@ -420,8 +442,50 @@ pub async fn door_callback(
     };
     let identity_key = format!("{}:{}", door.identity_provider(), subject);
 
+    // A verified email can propose a link to one uniquely matching
+    // account, but never grants access. This narrow path is checked
+    // only for identities the store has never seen; active, pending,
+    // and unlinked rows continue through the existing allowlist/state gates.
+    if matches!(flow.identities.status(&name, &subject), Ok(None)) {
+        if let Some(email) = verified_email.as_deref() {
+            let matched_account = match flow.identities.account_id_for_email(email) {
+                Ok(account) => account,
+                Err(_) => {
+                    return err_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "identity store unavailable",
+                    );
+                }
+            };
+            if let Some(account_id) = matched_account {
+                if flow
+                    .identities
+                    .register_pending(&name, &subject, &account_id, "email-match")
+                    .is_err()
+                {
+                    return err_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "identity registration failed",
+                    );
+                }
+                return denied(
+                    flow,
+                    &endpoint(&name),
+                    "identity_pending",
+                    &client_id,
+                    &identity_key,
+                    StatusCode::FORBIDDEN,
+                    "access_denied",
+                    "identity is registered and awaiting approval",
+                );
+            }
+        }
+    }
+
     // Deny-by-default gate, enforced in the provider, before any
-    // link or code exists.
+    // direct link or code exists. Email-match above creates pending only.
     if !flow.registry.is_allowlisted(&identity_key) {
         return denied(
             flow,
@@ -435,12 +499,25 @@ pub async fn door_callback(
         );
     }
 
-    // Link state (#13415/#13972): active proceeds; pending is denied
-    // without issuing a code; unlinked is denied (an operator's unlink
-    // is never silently undone); never-seen is linked by this login,
-    // with the event in the identity history and the audit record.
-    match flow.identities.status(&name, &subject) {
-        Ok(Some(ref s)) if s == "active" => {}
+    // Link state (#13415/#13972): active proceeds on the account
+    // its row names; pending is denied without issuing a code;
+    // unlinked is denied (an operator's unlink is never silently
+    // undone); never-seen ENROLLS by this login into a fresh
+    // account of its own holding only `read-only` (#15249, design
+    // #9086 §4.4) — never into the config account, whose declared
+    // identities were seeded at startup — with the event in the
+    // identity history and the audit record.
+    let account_id = match flow.identities.status(&name, &subject) {
+        Ok(Some(ref s)) if s == "active" => match flow.identities.account_id_for(&name, &subject) {
+            Ok(Some(id)) => id,
+            _ => {
+                return err_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "identity store unavailable",
+                );
+            }
+        },
         Ok(Some(ref s)) if s == "pending" => {
             return denied(
                 flow,
@@ -465,35 +542,34 @@ pub async fn door_callback(
                 "identity is not linked to an account",
             );
         }
-        Ok(None) => {
-            let account_id = flow.registry.account.account_id.clone();
-            match flow
-                .identities
-                .link(&name, &subject, &account_id, "door-login")
-            {
-                Ok(event) if event != "none" => {
-                    if flow
-                        .audit
-                        .record("link", "allowed", event, &client_id, &identity_key)
-                        .is_err()
-                    {
-                        return err_json(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "server_error",
-                            "audit write failed",
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {
+        Ok(None) => match flow.identities.enroll_with_email(
+            &name,
+            &subject,
+            "door-login",
+            verified_email.as_deref(),
+        ) {
+            Ok((account_id, event)) => {
+                if flow
+                    .audit
+                    .record("link", "allowed", event, &client_id, &identity_key)
+                    .is_err()
+                {
                     return err_json(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "server_error",
-                        "identity link failed",
+                        "audit write failed",
                     );
                 }
+                account_id
             }
-        }
+            Err(_) => {
+                return err_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "identity enrollment failed",
+                );
+            }
+        },
         Err(_) => {
             return err_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -501,15 +577,17 @@ pub async fn door_callback(
                 "identity store unavailable",
             );
         }
-    }
+    };
 
     // Success: mint one of our own codes, bound to the relying
-    // party's original request, and hand the user back.
+    // party's original request and to the resolved account, and
+    // hand the user back.
     let code = match issue_code(
         flow,
         &pending.client_id,
         &pending.redirect_uri,
         &pending.code_challenge,
+        &account_id,
         &identity_key,
         pending.nonce.as_deref(),
         &pending.scope,

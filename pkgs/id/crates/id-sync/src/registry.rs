@@ -508,6 +508,26 @@ mod tests {
         SignedAnnouncement::sign(&key, announcement).unwrap()
     }
 
+    fn world_expiring(seed: u8, name: &str, seq: u64, expires_at: u64) -> SignedAnnouncement {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let announcement = Announcement {
+            world_id: key.verifying_key().to_bytes(),
+            name: name.to_owned(),
+            description: String::new(),
+            subject: Subject::Endpoint {
+                node_id: [seed; 32],
+                relay: None,
+            },
+            occupancy: Occupancy::HasRoom,
+            tags: Vec::new(),
+            visibility: Visibility::Listed,
+            issued_at: NOW,
+            expires_at,
+            seq,
+        };
+        SignedAnnouncement::sign(&key, announcement).unwrap()
+    }
+
     fn registry(seed: u8, policy: &str) -> Registry {
         Registry::new(SigningKey::from_bytes(&[seed; 32]), policy).unwrap()
     }
@@ -655,6 +675,96 @@ mod tests {
     }
 
     #[test]
+    fn a_third_hop_mirror_verifies_with_only_the_last_hops_counters() {
+        // Oracle: design #16051 §7 mirror rule, interop clause — A
+        // publishes, B mirrors, C fetches from B; C's copy verifies
+        // against B's key, each announcement still verifies against its
+        // own world key, and neither A's nor B's `seq` appears in C's
+        // counters. Expired-at-import announcements are reported and
+        // never cross a hop.
+        let harbor = world(1, "harbor", &["calm"], 1);
+        let gone = world(3, "squat", &[], 1);
+        let mut a = registry(100, "everything");
+        a.include(harbor.clone(), NOW).unwrap();
+        a.delist(id(&gone), "dead", NOW).unwrap();
+        let a_list = a.publish(NOW).unwrap();
+
+        let mut b = registry(101, "calm worlds, mirrored");
+        let report = b
+            .import(&a_list, Some(&a.registry_key()), NOW + 5, |_| true)
+            .unwrap();
+        assert_eq!(report.included, vec![id(&harbor)]);
+        // B adopts A's delisting as a NEW tombstone under B's own key,
+        // its own reason and its own registry_seq — not a forwarding
+        // (§3 rule 3).
+        b.delist(id(&gone), "dead, also here", NOW + 6).unwrap();
+        let b_list = b.publish(NOW + 7).unwrap();
+        let b_seq = b_list.list.seq;
+
+        let mut c = registry(102, "downstream reader");
+        let report = c
+            .import(&b_list, Some(&b.registry_key()), NOW + 10, |_| true)
+            .unwrap();
+        assert_eq!(report.included, vec![id(&harbor)]);
+        // B's tombstone is a notice for C, not an applied veto.
+        assert_eq!(report.source_tombstones, vec![id(&gone)]);
+        let c_list = c.publish(NOW + 10).unwrap();
+        c_list.verify_from(&c.registry_key()).unwrap();
+        assert!(c_list.verify_from(&b.registry_key()).is_err());
+
+        // The announcement crosses both hops byte-for-byte: C, who only
+        // ever saw B's list, can still check it against the world key.
+        let entry = c_list.list.entry(&id(&harbor)).unwrap();
+        assert_eq!(
+            entry.announcement.to_bytes().unwrap(),
+            harbor.to_bytes().unwrap()
+        );
+        entry.announcement.verify_at(NOW + 10).unwrap();
+
+        // C's counters are C's own: neither A's nor B's list seq leaks
+        // into C's published seq or entry registry_seq.
+        assert_ne!(c_list.list.seq, a_list.list.seq);
+        assert_ne!(c_list.list.seq, b_seq);
+        assert_eq!(c_list.list.seq, 1);
+        assert_eq!(entry.registry_seq, 1);
+        // B's adopted tombstone does not cross into C's list.
+        assert!(c_list.list.tombstone(&id(&gone)).is_none());
+        assert_eq!(c_list.list.tombstones.len(), 0);
+
+        // A -> B -> A converges: A re-importing B's list re-verifies the
+        // still self-signed announcement and keeps its own seq.
+        let report = a
+            .import(&b_list, Some(&b.registry_key()), NOW + 11, |_| true)
+            .unwrap();
+        assert!(report.included.is_empty());
+        assert_eq!(report.kept_own, vec![id(&harbor)]);
+        assert_eq!(report.source_tombstones, vec![id(&gone)]);
+        let a_again = a.publish(NOW + 11).unwrap();
+        assert_eq!(a_again.list.seq, a_list.list.seq);
+        assert_eq!(
+            a_again.list.entry(&id(&harbor)).unwrap().announcement,
+            harbor
+        );
+
+        // An announcement that has expired by the time C fetches is
+        // reported and never crosses the hop, even though the mirror
+        // still carries it live.
+        let expiring = world_expiring(4, "fleeting", 1, NOW + 30);
+        let mut short = registry(103, "short-lived");
+        short.include(expiring.clone(), NOW).unwrap();
+        let short_list = short.publish(NOW).unwrap();
+        let mut mirror = registry(104, "mirror");
+        mirror.import(&short_list, None, NOW + 1, |_| true).unwrap();
+        let mirror_list = mirror.publish(NOW + 1).unwrap();
+        assert!(mirror_list.list.entry(&id(&expiring)).is_some());
+        let mut late = registry(105, "late reader");
+        let report = late.import(&mirror_list, None, NOW + 40, |_| true).unwrap();
+        assert_eq!(report.expired, vec![id(&expiring)]);
+        assert!(report.included.is_empty());
+        assert!(late.publish(NOW + 40).unwrap().list.entries.is_empty());
+    }
+
+    #[test]
     fn a_registry_cannot_forge_or_edit_an_announcement() {
         let mut reg = registry(100, "policy");
         reg.include(world(1, "harbor", &[], 1), NOW).unwrap();
@@ -683,7 +793,10 @@ mod tests {
         // A mirror refuses to import from a list that does not verify.
         let mut mirror = registry(101, "mirror");
         assert!(mirror.import(&forged, None, NOW, |_| true).is_err());
-        assert!(mirror.publish(NOW).unwrap().list.entries.is_empty());
+        assert_eq!(
+            mirror.publish(NOW).unwrap().list.entries,
+            [] as [RegistryEntry; 0]
+        );
     }
 
     #[test]
@@ -722,8 +835,8 @@ mod tests {
         reg.include(world(1, "harbor", &[], 1), NOW).unwrap();
         let list = reg.publish(NOW + 3 * DAY).unwrap();
         list.verify().unwrap();
-        assert!(list.list.entries.is_empty());
-        assert!(list.list.tombstones.is_empty());
+        assert_eq!(list.list.entries, [] as [RegistryEntry; 0]);
+        assert_eq!(list.list.tombstones, [] as [Tombstone; 0]);
     }
 
     #[test]

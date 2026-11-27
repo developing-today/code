@@ -224,6 +224,41 @@ func TestUnsupportedRuntimePolicies(t *testing.T) {
 	}
 }
 
+// TestJSCheckGateSuppressesJavaScriptChecking is #1911 slice 2:
+// script.checkJs=false suppresses checking of JavaScript entries without
+// changing TypeScript checking. Oracle: the gate's truth table over
+// entry extensions — only .js/.mjs/.cjs entries skip, and only when
+// checkJs is off.
+func TestJSCheckGateSuppressesJavaScriptChecking(t *testing.T) {
+	for _, tc := range []struct {
+		entry   string
+		checkJs bool
+		want    bool
+	}{
+		{"main.js", true, false},
+		{"main.mjs", true, false},
+		{"main.cjs", true, false},
+		{"main.JS", true, false},
+		{"main.ts", true, false},
+		{"main.mts", true, false},
+		{"main.py", true, false},
+		{"main", true, false},
+		{"main.js", false, true},
+		{"main.mjs", false, true},
+		{"main.cjs", false, true},
+		{"main.JS", false, true},
+		{"main.ts", false, false},
+		{"main.mts", false, false},
+		{"main.py", false, false},
+		{"main", false, false},
+	} {
+		if got := preflight.ShouldSkipJSCheck(tc.entry, tc.checkJs); got != tc.want {
+			t.Errorf("ShouldSkipJSCheck(%q, checkJs=%v) = %v, want %v",
+				tc.entry, tc.checkJs, got, tc.want)
+		}
+	}
+}
+
 func TestMergeCombinesReports(t *testing.T) {
 	a := preflight.CheckEnvPairs([]string{"BROKEN"}, "--env")
 	b := preflight.CheckPaths([]preflight.PathCheck{

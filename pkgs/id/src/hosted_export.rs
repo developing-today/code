@@ -50,7 +50,9 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::hosted_binding::{BindingRecord, HostedBindingService, RebindRecord, hex_encode};
+use crate::hosted_binding::{
+    BindingRecord, BindingStatus, HostedBindingService, RebindRecord, hex_encode,
+};
 
 /// Domain separator for the manifest signature, so a manifest
 /// signature can never be replayed as another record type's.
@@ -68,7 +70,7 @@ fn hex_decode(text: &str, len: usize) -> Option<Vec<u8>> {
     }
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(len);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = char::from(pair[0]).to_digit(16)?;
         let lo = char::from(pair[1]).to_digit(16)?;
         out.push(u8::try_from(hi * 16 + lo).ok()?);
@@ -414,23 +416,85 @@ impl std::error::Error for ExportError {}
 /// What a successful [`verify_import`] established (§6.2 steps 1–3).
 /// Ingest (step 4) proceeds under the platform's normal rules from
 /// here; nothing in this type is a privileged write.
+///
+/// The token is opaque: it is only minted by [`verify_import`] and
+/// is bound to the exact export it verified via
+/// [`export_fingerprint`]. There is no public constructor and the
+/// fields are not mutable, so a caller cannot construct or alter a
+/// token into authorizing a different export — [`crate::hosted_ingest`]
+/// refuses any token whose fingerprint does not match the export
+/// handed in alongside it (#16054).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedImport {
     /// The binding the export belongs to.
-    pub binding_id: String,
+    binding_id: String,
     /// The binding's `sub` assertion, as attested by the service.
-    pub sub: String,
+    sub: String,
     /// The binding's current Iroh root public key, hex.
-    pub iroh_id: String,
+    iroh_id: String,
     /// Verified object count.
-    pub object_count: u64,
+    object_count: u64,
     /// Verified blob count.
-    pub blob_count: u64,
+    blob_count: u64,
     /// True when the export was a service-signed `unkeyed_export`
     /// accepted under operator confirmation.
-    pub unkeyed_export: bool,
+    unkeyed_export: bool,
     /// The §7 choice in force: payloads are client-side ciphertext.
-    pub client_side_encryption: bool,
+    client_side_encryption: bool,
+    /// Canonical fingerprint of the exact verified export
+    /// ([`export_fingerprint`]).
+    export_fingerprint: String,
+}
+
+impl VerifiedImport {
+    /// The binding the export belongs to.
+    #[must_use]
+    pub fn binding_id(&self) -> &str {
+        &self.binding_id
+    }
+
+    /// The binding's `sub` assertion, as attested by the service.
+    #[must_use]
+    pub fn sub(&self) -> &str {
+        &self.sub
+    }
+
+    /// The binding's current Iroh root public key, hex.
+    #[must_use]
+    pub fn iroh_id(&self) -> &str {
+        &self.iroh_id
+    }
+
+    /// Verified object count.
+    #[must_use]
+    pub fn object_count(&self) -> u64 {
+        self.object_count
+    }
+
+    /// Verified blob count.
+    #[must_use]
+    pub fn blob_count(&self) -> u64 {
+        self.blob_count
+    }
+
+    /// True when the export was a service-signed `unkeyed_export`
+    /// accepted under operator confirmation.
+    #[must_use]
+    pub fn unkeyed_export(&self) -> bool {
+        self.unkeyed_export
+    }
+
+    /// The §7 choice in force: payloads are client-side ciphertext.
+    #[must_use]
+    pub fn client_side_encryption(&self) -> bool {
+        self.client_side_encryption
+    }
+
+    /// Canonical fingerprint of the exact verified export.
+    #[must_use]
+    pub fn export_fingerprint(&self) -> &str {
+        &self.export_fingerprint
+    }
 }
 
 /// SHA-256 of the concatenated object hash bytes, objects in
@@ -445,6 +509,118 @@ fn objects_digest(objects: &[ExportObject]) -> String {
         }
     }
     hex_encode(&hasher.finalize())
+}
+
+/// Domain separator for the import fingerprint, so a fingerprint
+/// can never be replayed as another record type's hash.
+pub const IMPORT_FINGERPRINT_DOMAIN: &str = "hosted-import-fingerprint/v1";
+
+fn fingerprint_field(out: &mut Vec<u8>, field: &str) {
+    out.extend_from_slice(&(field.len() as u64).to_be_bytes());
+    out.extend_from_slice(field.as_bytes());
+}
+
+fn fingerprint_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Canonical fingerprint of the exact export: SHA-256 (hex) over a
+/// domain-separated, length-prefixed transcript of the signed
+/// manifest (canonical bytes and signature), the pinned service key,
+/// the binding record with its full history, every rebind record,
+/// and every object and blob entry.
+///
+/// Entry sets feed in canonical order with their lengths, so
+/// carrying order is not significant but any added, removed, or
+/// altered entry — bytes, carried signature, blob reference,
+/// manifest field, or binding/history field — changes the
+/// fingerprint. [`verify_import`] mints it alongside the token, and
+/// [`crate::hosted_ingest::ingest_import`] recomputes it from the
+/// export handed in: a token only authorizes the exact export that
+/// minted it (#16054).
+#[must_use]
+pub fn export_fingerprint(export: &HostedExport) -> String {
+    let mut out = Vec::new();
+    out.extend_from_slice(IMPORT_FINGERPRINT_DOMAIN.as_bytes());
+    // The signed manifest: its canonical bytes already cover the
+    // export ID, binding and key identity, counts, objects digest,
+    // and both trust flags; the signature authenticates them.
+    fingerprint_bytes(&mut out, &export.manifest.canonical_bytes());
+    fingerprint_field(&mut out, &export.manifest.signature);
+    fingerprint_field(&mut out, &export.service_public_key);
+    // The binding record with its history: every field, including
+    // both signatures, so a token cannot move to a rebound or
+    // otherwise mutated binding.
+    let binding = &export.binding;
+    fingerprint_field(&mut out, &binding.binding_id);
+    fingerprint_field(&mut out, &binding.version.to_string());
+    fingerprint_field(&mut out, &binding.sub);
+    fingerprint_field(&mut out, &binding.account_id);
+    fingerprint_field(&mut out, &binding.iroh_id);
+    fingerprint_field(&mut out, &binding.bound_at);
+    fingerprint_field(&mut out, &binding.challenge_id);
+    let transcript = &binding.challenge_transcript;
+    fingerprint_field(&mut out, &transcript.challenge_id);
+    fingerprint_field(&mut out, &transcript.sub);
+    fingerprint_field(&mut out, &transcript.iroh_id);
+    fingerprint_field(&mut out, &transcript.service_id);
+    fingerprint_field(&mut out, &transcript.nonce);
+    fingerprint_field(&mut out, &transcript.issued_at);
+    fingerprint_field(&mut out, &transcript.expires_at);
+    fingerprint_field(&mut out, &binding.key_signature);
+    fingerprint_field(&mut out, &binding.service_attestation);
+    fingerprint_field(
+        &mut out,
+        match binding.status {
+            BindingStatus::Active => "active",
+            BindingStatus::RebindPending => "rebind-pending",
+            BindingStatus::Superseded => "superseded",
+        },
+    );
+    fingerprint_field(
+        &mut out,
+        if binding.client_side_encryption {
+            "cse"
+        } else {
+            "plain"
+        },
+    );
+    for entry in &binding.history {
+        fingerprint_field(&mut out, &entry.iroh_id);
+        fingerprint_field(&mut out, &entry.superseded_at);
+        fingerprint_field(&mut out, &entry.via);
+        fingerprint_field(&mut out, entry.rebind_record_id.as_deref().unwrap_or(""));
+    }
+    // Every rebind record backing the history: canonical bytes plus
+    // both signatures.
+    for record in &export.rebind_records {
+        fingerprint_bytes(&mut out, &record.canonical_bytes());
+        fingerprint_field(&mut out, &record.service_signature);
+        fingerprint_field(&mut out, &record.new_key_countersignature);
+    }
+    // Every object entry: raw bytes (hashed here, not the carried
+    // hash field, so tampered bytes cannot hide behind a re-labelled
+    // hash) plus the carried signer, signature, and blob references
+    // verification already bound to the envelope. Sorted by content
+    // hash: carrying order is canonicalized away.
+    let mut objects: Vec<&ExportObject> = export.objects.iter().collect();
+    objects.sort_by(|a, b| sha256_hex(&a.bytes).cmp(&sha256_hex(&b.bytes)));
+    for object in objects {
+        fingerprint_bytes(&mut out, &object.bytes);
+        fingerprint_field(&mut out, &object.signer);
+        fingerprint_field(&mut out, &object.signature);
+        for blob_ref in &object.blob_refs {
+            fingerprint_field(&mut out, blob_ref);
+        }
+    }
+    // Every blob entry, by the same canonical order.
+    let mut blobs: Vec<&ExportBlob> = export.blobs.iter().collect();
+    blobs.sort_by(|a, b| sha256_hex(&a.bytes).cmp(&sha256_hex(&b.bytes)));
+    for blob in blobs {
+        fingerprint_bytes(&mut out, &blob.bytes);
+    }
+    hex_encode(&Sha256::digest(&out))
 }
 
 /// Assemble an export (§6.1) from a hosted store's contents.
@@ -704,6 +880,7 @@ pub fn verify_import(
         blob_count: manifest.blob_count,
         unkeyed_export: manifest.unkeyed_export,
         client_side_encryption: manifest.client_side_encryption,
+        export_fingerprint: export_fingerprint(export),
     })
 }
 
@@ -752,6 +929,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -808,14 +986,14 @@ mod tests {
     fn export_import_round_trip() {
         let (_svc, export) = sample_export(None);
         let verified = verify_import(&export, false).unwrap();
-        assert_eq!(verified.binding_id, export.binding.binding_id);
-        assert_eq!(verified.sub, SUB);
-        assert_eq!(verified.object_count, 1);
-        assert_eq!(verified.blob_count, 1);
-        assert!(!verified.unkeyed_export);
+        assert_eq!(verified.binding_id(), export.binding.binding_id);
+        assert_eq!(verified.sub(), SUB);
+        assert_eq!(verified.object_count(), 1);
+        assert_eq!(verified.blob_count(), 1);
+        assert!(!verified.unkeyed_export());
         // CSE defaults ON at binding (#2046 ruling) and the export
         // states the choice the data was stored under (§7).
-        assert!(verified.client_side_encryption);
+        assert!(verified.client_side_encryption());
     }
 
     #[test]
@@ -823,7 +1001,7 @@ mod tests {
         let (_svc, export) = sample_export(Some(false));
         assert!(!export.manifest.client_side_encryption);
         let verified = verify_import(&export, false).unwrap();
-        assert!(!verified.client_side_encryption);
+        assert!(!verified.client_side_encryption());
     }
 
     #[test]
@@ -964,7 +1142,7 @@ mod tests {
             Err(ExportError::UnkeyedNotConfirmed)
         );
         let verified = verify_import(&export, true).unwrap();
-        assert!(verified.unkeyed_export);
+        assert!(verified.unkeyed_export());
     }
 
     #[test]
@@ -1028,12 +1206,60 @@ mod tests {
             object.signature,
             hex_encode(&event.header.signature.to_bytes())
         );
-        assert!(cited_content_hashes(&event.bytes).unwrap().is_empty());
+        assert_eq!(
+            cited_content_hashes(&event.bytes).unwrap(),
+            [] as [String; 0]
+        );
         // Bytes that are not a verifiable envelope are refused.
         assert_eq!(
             ExportObject::from_envelope(b"not an envelope".to_vec(), Vec::new()),
             Err(ExportError::ObjectSignatureInvalid)
         );
+    }
+
+    #[test]
+    fn export_fingerprint_covers_every_entry_and_ignores_order() {
+        // #16054: the fingerprint binds the signed manifest, the
+        // binding record, and every entry — but not the carrying
+        // order, which the export format canonicalizes away.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let key = root_key(21);
+        let blob_a = ExportBlob::new(b"content a".to_vec());
+        let blob_b = ExportBlob::new(b"content b".to_vec());
+        let object_a = document_object(&key, &blob_a, b"content a");
+        let object_b = document_object(&key, &blob_b, b"content b");
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object_a, object_b],
+            vec![blob_a, blob_b],
+            Some(&key),
+            "export-fp",
+            CREATED,
+        );
+        let base = export_fingerprint(&export);
+        // Carrying order is canonicalized: reversing the carried
+        // sets changes nothing.
+        let mut reordered = export.clone();
+        reordered.objects.reverse();
+        reordered.blobs.reverse();
+        assert_eq!(export_fingerprint(&reordered), base);
+        // Any covered change — manifest, binding, object bytes,
+        // blob bytes — changes the fingerprint.
+        let mut tampered = export.clone();
+        tampered.manifest.created_at = "2026-01-01T00:00:00Z".to_string();
+        assert_ne!(export_fingerprint(&tampered), base);
+        let mut tampered = export.clone();
+        tampered.binding.sub = "someone-else".to_string();
+        assert_ne!(export_fingerprint(&tampered), base);
+        let mut tampered = export.clone();
+        tampered.objects[0].bytes = b"forged".to_vec();
+        assert_ne!(export_fingerprint(&tampered), base);
+        let mut tampered = export.clone();
+        tampered.blobs[0].bytes = b"forged".to_vec();
+        assert_ne!(export_fingerprint(&tampered), base);
     }
 
     #[test]
@@ -1070,12 +1296,12 @@ mod tests {
         );
         let verified = verify_import(&export, false).unwrap();
         assert_eq!(
-            verified.object_count,
+            verified.object_count(),
             wire["object_count"].as_u64().unwrap()
         );
-        assert_eq!(verified.blob_count, wire["blob_count"].as_u64().unwrap());
-        assert_eq!(verified.object_count, 4);
-        assert_eq!(verified.blob_count, 2);
+        assert_eq!(verified.blob_count(), wire["blob_count"].as_u64().unwrap());
+        assert_eq!(verified.object_count(), 4);
+        assert_eq!(verified.blob_count(), 2);
     }
 
     #[test]
@@ -1199,9 +1425,9 @@ mod tests {
             CREATED,
         );
         let verified = verify_import(&export, false).unwrap();
-        assert_eq!(verified.object_count, 2);
-        assert_eq!(verified.blob_count, 0);
-        assert_eq!(verified.iroh_id, updated.iroh_id);
+        assert_eq!(verified.object_count(), 2);
+        assert_eq!(verified.blob_count(), 0);
+        assert_eq!(verified.iroh_id(), updated.iroh_id);
     }
     // -- binding-record history (§6.2 step 2) -------------------------------
 
@@ -1338,9 +1564,9 @@ mod tests {
             CREATED,
         );
         let verified = verify_import(&export, false).unwrap();
-        assert_eq!(verified.object_count, 2);
-        assert_eq!(verified.blob_count, 1);
-        assert_eq!(verified.iroh_id, binding.iroh_id);
+        assert_eq!(verified.object_count(), 2);
+        assert_eq!(verified.blob_count(), 1);
+        assert_eq!(verified.iroh_id(), binding.iroh_id);
     }
 
     #[test]
@@ -1586,7 +1812,7 @@ mod tests {
         let received: HostedExport = serde_json::from_str(&wire).unwrap();
         assert_eq!(received, export);
         let verified = verify_import(&received, false).unwrap();
-        assert_eq!(verified.object_count, 2);
-        assert_eq!(verified.blob_count, 2);
+        assert_eq!(verified.object_count(), 2);
+        assert_eq!(verified.blob_count(), 2);
     }
 }

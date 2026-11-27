@@ -6,7 +6,7 @@ Source: `pkgs/atlas-search/crates/atlas-core/src/bin/atlas-classify.rs`, with de
 
 Two facts govern everything about this binary, and both are stated plainly here because its own help states neither:
 
-- **Exit code 2 is the only failure code — for everything.** Usage errors _and_ runtime/classification failures all exit 2. This binary has **no exit-1 path**. (`--help` and `--version` are not failures: both print to stdout and exit 0 — see below.)
+- **Exit codes follow the Atlas family contract (#15766): 0 success, 2 usage / invalid invocation, 1 execution failure.** (`--help` and `--version` are not failures: both print to stdout and exit 0 — see below.)
 - **The usage text states the defaults.** Its final line lists every default; the tables below repeat them.
 
 ## Invocation and the strict parser
@@ -21,7 +21,7 @@ usage:
   defaults: --window-days 90; --actor atlas-classify/remainder-sweep; --schema-version 1; --reviewer-model atlas-classify; --reviewer-model-version the crate version; --now the current time; --max-decisions unbounded
 ```
 
-**`--help` / `-h`** prints the usage text to **stdout** and exits **0**, from any position in the argv; **`--version` / `-V`** prints `atlas-classify 0.1.0`, exit 0. Every other invocation shape other than the three documented actions — bare invocation, unknown flags, unknown actions, a flag given twice, a missing flag value — prints the usage text to **stderr** and exits **2**.
+**`--help` / `-h`** prints the usage text to **stdout** and exits **0**, from any position in the argv; **`--version` / `-V`** prints `atlas-classify 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history), exit 0. Every other invocation shape other than the three documented actions — bare invocation, unknown flags, unknown actions, a flag given twice, a missing flag value — prints the usage text to **stderr** and exits **2**.
 
 The global flag:
 
@@ -125,18 +125,19 @@ $ echo $?
 
 ## Failure shapes
 
-All failures print `atlas-classify: &lt;msg&gt;` (or, for usage errors, the usage text) to stderr and exit **2**. There are no other failure shapes.
+All failures print `atlas-classify: &lt;msg&gt;` (or, for usage errors, the usage text) to stderr; usage errors exit **2** and execution failures exit **1**.
 
 - Bare invocation, an unknown action, an unknown flag, a duplicated flag, or a missing flag value: the usage text on stderr, exit 2.
 - `--db` missing, or given twice (`--db given twice`): exit 2.
 - A required action flag missing (e.g. `schema-review` without `--new-schema`): exit 2.
 - A malformed numeric value: an error naming the flag (`--window-days must be an integer`, `--window-days must not be negative`), exit 2.
-- A lowering in `schema-apply` with no reviewed disposition naming a reviewer and rationale: refused, exit 2.
-- Runtime and classification failures — an unreadable corpus, a failed classification write: exit 2, exactly like a usage error. There is no way to distinguish the two classes by exit code; read the message.
+- A lowering in `schema-apply` with no reviewed disposition naming a reviewer and rationale is recorded as `skipped_no_disposition` in the apply report; the command succeeds and exits 0. It is a refused lowering, not a command failure.
+- Runtime and classification failures — an unreadable corpus, a failed classification write: exit 1.
 
 ## Exit codes
 
-| Code | Meaning                                                                                                                  |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Success: the manifest, review batch, or apply report was printed (and written to `--manifest-out` when given).           |
-| 2    | **Everything else** — usage errors, `--help`, and runtime/classification failures alike. This binary has no exit-1 path. |
+| Code | Meaning                                                                                                                |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success: the manifest, review batch, or apply report was printed (and written to `--manifest-out` when given).         |
+| 1    | Execution failure — runtime and classification failures such as an unreadable corpus or failed write.                  |
+| 2    | Usage / invalid invocation — unknown or duplicated flags, missing flag values, malformed flag values, unknown actions. |

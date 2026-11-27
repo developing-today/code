@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "plaza-sdk"
+version = "0.1.0"
+
+[[package]]
 name = "rust-colony"
 version = "0.1.0"
+dependencies = [
+ "plaza-sdk",
+]

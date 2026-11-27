@@ -178,15 +178,27 @@ pub(crate) async fn send_view<I: SessionIo>(
     viewport: Option<Viewport>,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
+    caller_account: Option<&str>,
 ) -> bool {
     let world = service.world();
     let view = match viewport {
         Some(viewport) => {
             let width = u16::try_from(viewport.width).unwrap_or(u16::MAX);
             let height = u16::try_from(viewport.height).unwrap_or(u16::MAX);
-            world.view_at(token.clone(), width, height).await
+            world
+                .view_at_from_session(
+                    token.clone(),
+                    width,
+                    height,
+                    caller_account.map(str::to_owned),
+                )
+                .await
         }
-        None => world.view(token.clone()).await,
+        None => {
+            world
+                .view_from_session(token.clone(), caller_account.map(str::to_owned))
+                .await
+        }
     };
     match view {
         Ok(Some(data)) => {
@@ -472,9 +484,15 @@ mod tests {
 
         // No comparable previous screen, or a resized screen, diffs to
         // nothing: the full view frame already carried the truth.
-        assert!(region_changes(None, &after, region(0, 0, 11, 3)).is_empty());
+        assert_eq!(
+            region_changes(None, &after, region(0, 0, 11, 3)),
+            [] as [serde_json::Value; 0]
+        );
         let resized = screen(&["hello agent"]);
-        assert!(region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)).is_empty());
+        assert_eq!(
+            region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)),
+            [] as [serde_json::Value; 0]
+        );
     }
 
     /// Oracle: #6300 section 4.2 subscription scoping for event diffs —

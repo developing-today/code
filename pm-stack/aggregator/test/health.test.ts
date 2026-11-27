@@ -8,6 +8,8 @@ import { feedSectionStatus, type FleetFeed, type SectionDiagnosis } from "../src
 import {
   buildHealth,
   createProbeCache,
+  dedupeGathererProviders,
+  type QuotaGathererProviderHealth,
   recordRender,
   resolveBuildVersion,
   type HealthInputs,
@@ -198,7 +200,7 @@ describe("buildHealth probes", () => {
     });
   });
 
-  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval and degrades after a missed write", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
     // next interval: this tests the worst-case stop without a five-minute wait.
@@ -225,12 +227,23 @@ describe("buildHealth probes", () => {
       const opts = { fetcher, cache: createProbeCache() };
       const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
       expect(service(before, "fleet-feed").state).toBe("up");
+      // #1116: by the next interval the row says a write is overdue.
       const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
-      expect(service(view, "fleet-feed").state).toBe("stale");
-      expect(view.degraded).toBe(true);
+      expect(service(view, "fleet-feed").state).toBe("late");
       const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
-      expect(html).toContain("past the 5m freshness threshold");
-      expect(html).toContain("stale");
+      expect(html).toContain("past the 5m collector cadence, a write is overdue; stale at 10m");
+      // #14062: one late write adds nothing to the degraded verdict (the
+      // view degrades only as much as it did before the stop); a whole
+      // missed write does, and the status says so.
+      expect(service(view, "fleet-feed").ok).toBe(true);
+      expect(view.degraded).toBe(before.degraded);
+      expect(view.status).toBe(view.degraded ? "degraded" : "ok");
+      const missed = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 10 * 60_000 });
+      expect(service(missed, "fleet-feed").state).toBe("stale");
+      expect(missed.degraded).toBe(true);
+      expect(missed.status).toBe("degraded");
+      const missedHtml = renderHealth(missed, {} as Parameters<typeof renderHealth>[1]);
+      expect(missedHtml).toContain("past the 10m freshness threshold");
     } finally {
       collector.kill();
       await collector.exited;
@@ -608,6 +621,20 @@ afterAll(() => {
 });
 
 describe("health page + extended /api/health (fixtures boot)", () => {
+  test("needs-user census route works and keeps the legacy route available", async () => {
+    const current = await fetch(`http://127.0.0.1:${port}/api/needs-user.json`);
+    const legacy = await fetch(`http://127.0.0.1:${port}/api/needs-drew.json`);
+    expect(current.status).toBe(legacy.status);
+    expect([200, 503]).toContain(current.status);
+    const body = (await current.json()) as { fetchedAt?: string; items?: unknown[]; error?: string };
+    if (current.status === 200) {
+      expect(typeof body.fetchedAt).toBe("string");
+      expect(Array.isArray(body.items)).toBe(true);
+    } else {
+      expect(body.error).toContain("needs-user census unavailable");
+    }
+  });
+
   test("/health renders the topology table with honest fixture states", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     expect(res.status).toBe(200);
@@ -754,5 +781,150 @@ describe("buildHealth version marker (#1150)", () => {
     expect(resolveBuildVersion({})).toBe("unknown");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
+  });
+
+  test("renderHealth surfaces the deployed commit + age from the same view /api/health serves (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const full = "7d3dcebe1e7b3c349db9870aa09ae04f518aa80f";
+    const base = await buildHealth(inputs({ version: full }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const bootAt = new Date(NOW - 3 * 3_600_000).toISOString();
+    const view = { ...base, generatedAt: new Date(NOW).toISOString(), bootAt };
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    // Short SHA visible, full SHA in title + adjacent code element.
+    expect(html).toContain(full.slice(0, 8));
+    expect(html).toContain(full);
+    expect(html).toContain(`title="${full}"`);
+    // Age comes from the same bootAt the API view carries.
+    expect(html).toContain(bootAt);
+    expect(html).toContain("3.0h old");
+    // Page and API cannot disagree: /api/health serves view.version.
+    const apiVersion: string = view.version;
+    expect(apiVersion).toBe(full);
+    expect(html).toContain(apiVersion);
+  });
+
+  test("renderHealth says unknown when no build version was deployed (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const base = await buildHealth(inputs({ version: "unknown" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const html = renderHealth(base, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("Build <strong>unknown</strong>");
+    expect(html).toContain("PM_AGG_BUILD_VERSION");
+  });
+});
+
+describe("quota-gatherer rows (#14062)", () => {
+  const row = (
+    providerId: string,
+    serviceId: string,
+    credentialLabel: string | undefined,
+    state: QuotaGathererProviderHealth["state"] = "ok",
+    lastSyncAt: string | null = "2026-11-26T23:00:00.000Z",
+  ): QuotaGathererProviderHealth => ({
+    providerId,
+    serviceId,
+    state,
+    lastSyncAt,
+    behindBy: null,
+    lagNote: "",
+    ...(credentialLabel === undefined ? {} : { credentialLabel }),
+  });
+
+  test("every door onto one split pool is one row, naming the doors it absorbed", () => {
+    const out = dedupeGathererProviders([
+      row("_openai", "_openai.main", "default"),
+      row("opencode-go", "opencode-go.popesdrew", "popesdrew"),
+      row("_openai.main", "_openai.main", "default"),
+      row("opencode-go.popesdrew", "opencode-go.popesdrew", "OpenCode Go (popesdrew)"),
+      row("opencode.popesdrew", "opencode-go.popesdrew", "OpenCode Zen (popesdrew)"),
+    ]);
+    expect(out.map((r) => r.serviceId)).toEqual(["_openai.main", "opencode-go.popesdrew"]);
+    expect(out[0]?.aliasProviderIds).toEqual(["_openai.main"]);
+    expect(out[1]?.aliasProviderIds).toEqual(["opencode-go.popesdrew", "opencode.popesdrew"]);
+  });
+
+  test("the worst state wins a split pool, and the row keeps its own provider id", () => {
+    const out = dedupeGathererProviders([
+      row("opencode-go.drewrypope", "opencode-go.drewrypope", "OpenCode Go (drewrypope)"),
+      row("opencode.drewrypope", "opencode-go.drewrypope", "OpenCode Zen (drewrypope)", "error", null),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe("error");
+    expect(out[0]?.providerId).toBe("opencode.drewrypope");
+    expect(out[0]?.aliasProviderIds).toEqual(["opencode-go.drewrypope"]);
+  });
+
+  test("distinct pools and per-workspace combined rows stay apart", () => {
+    const out = dedupeGathererProviders([
+      row("_openai", "_openai.main", "default"),
+      row("_openai", "_openai.alt", "OpenAI Alternate"),
+      row("_antigravity", "_antigravity.gemini", undefined),
+      row("_antigravity", "_antigravity.claude-gpt", undefined),
+      row("opencode-go", "opencode-go", "OpenCode Go (drewrypope)"),
+      row("opencode-go", "opencode-go", "OpenCode Go (popesdrew)"),
+      row("_muse", "meta", undefined, "stale"),
+      row("meta", "meta", undefined, "error", null),
+    ]);
+    expect(out).toHaveLength(8);
+    expect(out.every((r) => r.aliasProviderIds === undefined)).toBe(true);
+  });
+
+  // Oracle: only documented split meters share identity; punctuation and
+  // an unknown credential label cannot establish a common account.
+  test("unknown dotted services retain separate credentials", () => {
+    expect(dedupeGathererProviders([
+      row("custom", "custom.pool", "first account"),
+      row("custom", "custom.pool", "second account"),
+    ])).toHaveLength(2);
+  });
+
+  // Oracle: equal-state readings select newest sync without mutating input.
+  test("the newest equal-state reading wins and preserves all aliases", () => {
+    const older = row("_openai", "_openai.main", "default");
+    const newer = row("_openai.main", "_openai.main", "main", "ok", "2026-11-26T23:01:00.000Z");
+    const out = dedupeGathererProviders([older, newer]);
+    expect(out).toEqual([{ ...newer, aliasProviderIds: ["_openai"] }]);
+    expect(older.aliasProviderIds).toBeUndefined();
+    expect(newer.aliasProviderIds).toBeUndefined();
+  });
+
+  // Oracle: the public renderHealth barrel renders one row per known pool,
+  // naming absorbed doors and retaining/escaping the worst reading's error.
+  test("Health HTML renders escaped aliases and the winning error once", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    view.quotaGatherer = {
+      generatedAt: new Date(NOW).toISOString(),
+      tickAt: new Date(NOW).toISOString(),
+      ok: false,
+      providers: [
+        row("alias<script>", "_openai.main", "default"),
+        { ...row("_openai.main", "_openai.main", "main", "error", null), error: "failed <upstream>" },
+      ],
+    };
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("(also <code>alias&lt;script&gt;</code>)");
+    expect(html).not.toContain("alias<script>");
+    expect(html).toContain("failed &lt;upstream&gt;");
+    expect(html.match(/<td>_openai\.main<\/td>/g)).toHaveLength(1);
+  });
+
+  test("an exact repeat of a row is still one row with no alias", () => {
+    const out = dedupeGathererProviders([
+      row("deepseek", "deepseek", undefined, "error", null),
+      row("deepseek", "deepseek", undefined, "ok"),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.state).toBe("error");
+    expect(out[0]?.aliasProviderIds).toBeUndefined();
   });
 });

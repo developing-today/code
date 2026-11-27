@@ -399,8 +399,7 @@ fn extract_repo(
     Ok(counts)
 }
 
-fn run() -> Result<(), String> {
-    let args = parse_args()?;
+fn run_with(args: Args) -> Result<(), String> {
     let observed_date = match &args.observed_date {
         Some(d) => d.clone(),
         None => {
@@ -523,10 +522,22 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if argv.iter().any(|a| a == "--version" || a == "-V") {
-        println!("atlas-github-comments {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "atlas-github-comments {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
         return ExitCode::SUCCESS;
     }
-    match run() {
+    // Family contract (#15766): argument errors exit 2; every
+    // other failure exits 1.
+    let args = match parse_args() {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("atlas-github-comments: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match run_with(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("atlas-github-comments: {e}");

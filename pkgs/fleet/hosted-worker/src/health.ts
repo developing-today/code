@@ -18,6 +18,19 @@ export function buildHealthDocument(config: HostedConfig): Record<string, unknow
     auth: {
       rp_configured: config.rp !== null,
       tenancy_configured: config.tenancy !== null,
+      service_auth_configured: config.serviceAuthConfigured,
+    },
+    // The kv door's readiness (#13316): whether a central primary is
+    // configured at all. A boolean, never the URL or its token.
+    kv: {
+      primary_configured: config.kvLibsqlUrl !== null,
+    },
+    // Metadata durability (#16096): whether QUEUE_D1 is bound, which
+    // is exactly when buildDeps resolves D1MetadataStore over the
+    // fixture (#15456, #14866). Booleans, never the binding.
+    storage: {
+      d1_bound: config.d1Bound,
+      metadata_durable: config.d1Bound,
     },
   };
 }

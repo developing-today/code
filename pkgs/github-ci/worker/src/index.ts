@@ -26,18 +26,28 @@
  *     move the child issue's parent projection in the mirror
  *     (#14170 Q7; the projector also records the change in
  *     github_issue_history, fail-open).
+ *   - pull_request_review: append an agent event and stamp the
+ *     watermark (no mirror row for reviews).
+ * - C2 (#9570, slice C2-S1 #15834): beside each raw fleet event the
+ *   Worker derives its per-kind queue rows (src/derive.ts) into the
+ *   same log and raises the count-leg drain signal (src/drain.ts);
+ *   the 5-minute cron below raises the age leg.
  * - ping: pong. Everything else: 202 ignored.
  */
 import { readBodyUpTo } from "./body";
-import { Turso, iArg, tArg } from "./turso";
+import { Turso, configureTursoGateway, iArg, tArg, type D1Gateway } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
 import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
 import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent, mirrorSubIssueEvent } from "./mirror";
+import { deriveQueueRows, type DerivedRow } from "./derive";
+import { ageSweep, signalOnAppend } from "./drain";
 
 export interface Env extends SinkEnv {
   GITHUB_WEBHOOK_SECRET: string;
   TURSO_PLATFORM_URL: string;
   TURSO_PLATFORM_TOKEN: string;
+  /** d1-gateway Gateway entrypoint; d1gw:// URLs go through it. */
+  D1GW?: D1Gateway;
 }
 
 async function hmacHex(secret: string, body: string): Promise<string> {
@@ -68,6 +78,7 @@ function json(body: unknown, status = 200): Response {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    configureTursoGateway(env.D1GW);
     if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
@@ -104,11 +115,30 @@ export default {
 
     const eventType = req.headers.get("x-github-event") ?? "workflow_run";
     if (eventType === "ping") return new Response("pong", { status: 200 });
+    const deliveryId = req.headers.get("x-github-delivery");
 
     const repo = (payload.repository ?? {}) as Record<string, unknown>;
     const repoName = String(repo.full_name ?? "unknown");
     const isFleet = FLEET_REPOS.has(repoName);
     const nowIso = new Date().toISOString();
+
+    // C2-S1 (#15834): append the derived per-kind queue rows for
+    // this delivery beside the raw event, then raise the count-leg
+    // drain signal (design D4.1). The signal step is fail-open —
+    // the rows are already durable, and a signal error must not
+    // turn a stored event into a 500 that GitHub retries.
+    const appendDerived = async (rows: DerivedRow[]): Promise<void> => {
+      for (const row of rows) {
+        await appendAgentEvent(env, row.kind, row.detail);
+        try {
+          await signalOnAppend(env, row.kind, new Date());
+        } catch (e) {
+          console.error(
+            `github-ci drain count signal failed (${row.kind} ${repoName}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    };
 
     try {
       // ---------------------------------------------------------- push ---
@@ -138,6 +168,7 @@ export default {
         // fatal like the ci_events insert (500 -> GitHub retries).
         if (eventType === "issues") await mirrorIssueEvent(env, payload, repoName);
         else await mirrorPrEvent(env, payload, repoName);
+        await appendDerived(deriveQueueRows(eventType, payload, repoName, deliveryId));
         return json({ ok: true, repo: repoName, event: eventType });
       }
 
@@ -154,6 +185,28 @@ export default {
         await appendAgentEvent(env, "issue_comment", detail);
         await stampDirtyWatermark(env, repoName, "issue_comment", nowIso);
         await mirrorCommentEvent(env, payload, repoName);
+        await appendDerived(deriveQueueRows(eventType, payload, repoName, deliveryId));
+        return json({ ok: true, repo: repoName, event: eventType });
+      }
+
+      // ------------------------------------------ pull_request_review ---
+      // C2-S1 (#15834): reviews are a queued-kind source (pr_review,
+      // mention) but had no intake at all. Append the raw event and
+      // stamp the watermark like the other fleet kinds; there is no
+      // mirror row for reviews.
+      if (eventType === "pull_request_review" && isFleet) {
+        const pr = (payload.pull_request ?? {}) as Record<string, unknown>;
+        const review = (payload.review ?? {}) as Record<string, unknown>;
+        const detail = {
+          repo: repoName,
+          action: String(payload.action ?? ""),
+          number: Number(pr.number ?? 0) || null,
+          review_id: Number(review.id ?? 0) || null,
+          state: (review.state as string) ?? null,
+        };
+        await appendAgentEvent(env, "pull_request_review", detail);
+        await stampDirtyWatermark(env, repoName, "pull_request_review", nowIso);
+        await appendDerived(deriveQueueRows(eventType, payload, repoName, deliveryId));
         return json({ ok: true, repo: repoName, event: eventType });
       }
 
@@ -212,6 +265,10 @@ export default {
           tArg(row.dedupe_key),
         ],
       );
+      // C2-S1 (#15834): a fleet repo's failed default-branch run
+      // derives its ci_failure queue row in the event log (the raw
+      // event's home is the ci_events row just written).
+      if (isFleet) await appendDerived(deriveQueueRows(eventType, payload, repoName, deliveryId));
       return json({
         ok: true,
         repo: repoName,
@@ -223,5 +280,15 @@ export default {
       console.error(`github-ci worker failed (${eventType} ${repoName}): ${msg}`);
       return new Response(`receiver failed: ${msg}`, { status: 500 });
     }
+  },
+
+  // C2 age cron (#15834, design D4.2): every 5 minutes, raise
+  // drain-due for any queued kind whose oldest item has reached its
+  // age threshold — the age leg cannot fire on an append, and it
+  // runs here so the signal is raised even while the Muse host is
+  // down. Registered in doc/fleet-schedule-registry.md (Surface 7).
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    configureTursoGateway(env.D1GW);
+    await ageSweep(env, new Date());
   },
 };

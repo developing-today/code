@@ -8,7 +8,7 @@
 //! against a hermetic fake daemon implementing the same protocol.
 //!
 //! Protocol (option 1 of the design): `stat`, `begin`, `write`,
-//! `commit`, `abort`, `read` — JSON envelopes, 2 MiB raw chunks
+//! `commit`, `abort`, `read`, `copy` — JSON envelopes, 2 MiB raw chunks
 //! base64-encoded, whole-file SHA-256 verified at commit (put) and
 //! after the last chunk (get), deterministic transfer temps
 //! (`.<name>.fleet-part-<sha256[..12]>`) so an interrupted transfer
@@ -347,6 +347,8 @@ impl FilesTransport for BrokerFilesTransport {
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             ClientError::Transport(format!("broker socket {}: {e}", self.socket.display()))
@@ -514,7 +516,13 @@ pub fn put_stream(
             }),
         )?;
         let written = reply.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-        if written != offset + len as u64 {
+        // The daemon reports the durable temp length, which can exceed
+        // this chunk's end when the write replayed already-durable
+        // bytes (an identical interior retry returns the longer tail,
+        // #14601) — so only a shortfall is a divergence. A conflicting
+        // rewrite never reaches this check: the daemon refuses it with
+        // an `error` reply, which `post` already turned into `Err`.
+        if written < offset + len as u64 {
             return Err(ClientError::Transport(format!(
                 "daemon write at offset {offset} reports {written} bytes durably written, expected {}",
                 offset + len as u64
@@ -576,6 +584,111 @@ fn hash_stream(source: &mut dyn ReadSeek) -> Result<(u64, String), ClientError> 
         .seek(SeekFrom::Start(0))
         .map_err(|e| ClientError::Transport(format!("local seek: {e}")))?;
     Ok((total, hasher.finalize_hex()))
+}
+
+#[derive(Debug)]
+pub struct DirectCopyReport {
+    pub size: u64,
+    pub sha256: String,
+    pub resumed_from: u64,
+}
+
+/// Whether an error is the daemon refusing `/files/copy` as an
+/// unknown route — a pre-#14219 daemon. Only that refusal may fall
+/// back to the caller relay; every other failure is real.
+pub fn is_unsupported_direct_copy(error: &ClientError) -> bool {
+    let ClientError::Transport(text) = error else {
+        return false;
+    };
+    text.contains("/files/copy") && text.contains("unknown route")
+}
+
+/// Delegated direct-path copy (#14219): ask the daemon to copy
+/// `source_path` to `dest_path` on its own host. The caller sends
+/// one request; no file bytes transit the caller.
+///
+/// Daemon contract for `POST /files/copy`
+/// `{source, path, sha256, size, mode?}`: the daemon reads the
+/// source (whose size and whole-file SHA-256 the client states
+/// from its `stat`), streams it into the destination's
+/// deterministic temp ([`temp_path_for`] of the destination and
+/// hash — resuming from the temp's existing prefix when it is a
+/// prefix of the source), verifies the temp's hash, and only then
+/// atomically renames it over the destination, applying `mode`
+/// when given. A transfer killed at any point leaves the
+/// destination untouched — at most the temp remains, exactly like
+/// an interrupted `put`. The reply is `{size, sha256}` of the
+/// committed destination.
+///
+/// # Errors
+///
+/// Transport errors from the daemon (including a hash or size
+/// divergence between the reply and the source `stat`); a usage
+/// error when the source is a directory.
+pub fn copy_file_direct(
+    t: &mut dyn FilesTransport,
+    source_path: &str,
+    dest_path: &str,
+    mode: Option<u32>,
+    log: &mut dyn FnMut(&str),
+) -> Result<DirectCopyReport, ClientError> {
+    validate_remote_path(source_path)?;
+    validate_remote_path(dest_path)?;
+    let stat = rpc_stat(t, source_path, true)?;
+    if !stat.exists {
+        return Err(ClientError::Transport(format!(
+            "daemon has no file at {source_path}"
+        )));
+    }
+    if stat.is_dir {
+        return Err(ClientError::Usage(format!(
+            "{source_path} is a directory; recursive copy is deferred in v1 (no daemon listing route)"
+        )));
+    }
+    let sha256 = stat.sha256.clone().ok_or_else(|| {
+        ClientError::Transport("daemon stat returned no sha256 for a direct copy".to_string())
+    })?;
+    // The deterministic temp may already hold a prefix from a
+    // killed earlier attempt; the daemon resumes from it.
+    let temp = temp_path_for(dest_path, &sha256);
+    let mut resumed_from = 0u64;
+    let temp_stat = rpc_stat(t, &temp, false)?;
+    if temp_stat.exists && !temp_stat.is_dir && temp_stat.size <= stat.size {
+        resumed_from = temp_stat.size;
+    }
+    if resumed_from > 0 {
+        log(&format!(
+            "fleet proxy copy: resuming direct {source_path} -> {dest_path} at {resumed_from}/{} bytes",
+            stat.size
+        ));
+    }
+    let mut request = json!({
+        "source": source_path,
+        "path": dest_path,
+        "sha256": sha256,
+        "size": stat.size,
+    });
+    if let Some(mode) = mode {
+        request["mode"] = json!(mode);
+    }
+    let reply = t.post("/files/copy", request)?;
+    let size = reply.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+    let landed_sha = reply
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if size != stat.size || landed_sha != sha256 {
+        return Err(ClientError::Transport(format!(
+            "daemon direct copy reports size {size} sha256 {landed_sha}, expected {} {sha256} (destination not committed)",
+            stat.size
+        )));
+    }
+    Ok(DirectCopyReport {
+        size,
+        sha256,
+        resumed_from,
+    })
 }
 
 /// Upload one local file. This is the verb's real entry: hash
@@ -822,7 +935,7 @@ fn parse_mode(text: &str) -> Result<u32, ClientError> {
         .map_err(|_| ClientError::Usage(format!("--mode {text:?} is not an octal mode")))
 }
 
-fn parse_transfer_args(
+pub(crate) fn parse_transfer_args(
     argv: &[String],
     usage: &str,
 ) -> Result<(bool, bool, Option<u32>, Vec<String>), ClientError> {
@@ -1193,6 +1306,15 @@ mod tests {
         modes: HashMap<String, u32>,
         pending_modes: HashMap<String, u32>,
         write_count: usize,
+        copy_count: usize,
+        read_count: usize,
+        /// When set, `/files/copy` dies after durably writing this
+        /// many bytes into the destination temp — the killed
+        /// transfer oracle for #14219.
+        fail_copy_after: Option<usize>,
+        /// When set, `/files/copy` is an unknown route — a
+        /// pre-#14219 daemon.
+        no_copy_route: bool,
     }
 
     impl FakeDaemon {
@@ -1243,7 +1365,11 @@ mod tests {
                     if slot[offset..offset + overlap] != data[..overlap] {
                         return json!({"error": "conflicting rewrite at offset"});
                     }
-                    slot.truncate(offset + overlap);
+                    // Extend-only: never truncate. When the replay is
+                    // fully interior (`offset + data.len() <= len`), the
+                    // overlapping bytes already matched and there is
+                    // nothing to append; truncating here destroyed the
+                    // durable tail (#14601).
                     slot.extend_from_slice(&data[overlap..]);
                     json!({"size": slot.len() as u64})
                 }
@@ -1270,7 +1396,59 @@ mod tests {
                     self.files.remove(&temp_path_for(path, sha));
                     json!({"ok": true})
                 }
+                "/files/copy" => {
+                    if self.no_copy_route {
+                        return json!({"error": "unknown route /files/copy"});
+                    }
+                    self.copy_count += 1;
+                    let source = body["source"].as_str().unwrap_or("").to_string();
+                    let path = body["path"].as_str().unwrap_or("").to_string();
+                    let sha = body["sha256"].as_str().unwrap_or("").to_string();
+                    let Some(bytes) = self.files.get(&source).cloned() else {
+                        return json!({"error": "no such file"});
+                    };
+                    if sha256_hex(&bytes) != sha
+                        || body["size"].as_u64() != Some(bytes.len() as u64)
+                    {
+                        return json!({"error": "source changed since stat"});
+                    }
+                    // Stream source -> deterministic temp in chunks,
+                    // resuming from a temp that is a prefix of the
+                    // source; commit only on a full hash match, so a
+                    // kill never leaves a partial destination.
+                    let temp = temp_path_for(&path, &sha);
+                    let mut slot = self.files.get(&temp).cloned().unwrap_or_default();
+                    if !bytes.starts_with(&slot) {
+                        slot.clear();
+                    }
+                    let mut offset = slot.len();
+                    while offset < bytes.len() {
+                        let end = (offset + CHUNK_SIZE).min(bytes.len());
+                        if let Some(limit) = self.fail_copy_after {
+                            if limit >= offset && limit < end {
+                                slot.extend_from_slice(&bytes[offset..limit]);
+                                self.files.insert(temp, slot);
+                                return json!({"error": "copy interrupted"});
+                            }
+                        }
+                        slot.extend_from_slice(&bytes[offset..end]);
+                        offset = end;
+                    }
+                    let actual = sha256_hex(&slot);
+                    if actual != sha {
+                        self.files.insert(temp, slot);
+                        return json!({"error": "sha256 mismatch", "actual": actual});
+                    }
+                    self.files.remove(&temp);
+                    if let Some(mode) = body.get("mode").and_then(|v| v.as_u64()) {
+                        self.modes.insert(path.clone(), mode as u32);
+                    }
+                    let size = slot.len() as u64;
+                    self.files.insert(path, slot);
+                    json!({"size": size, "sha256": actual})
+                }
                 "/files/read" => {
+                    self.read_count += 1;
                     let path = body["path"].as_str().unwrap_or("");
                     let offset = body["offset"].as_u64().unwrap_or(0) as usize;
                     let length = body["length"].as_u64().unwrap_or(0) as usize;
@@ -1417,6 +1595,149 @@ mod tests {
     }
 
     #[test]
+    fn interior_identical_replay_preserves_tail_and_reports_len() {
+        // #14601: replaying identical bytes fully interior to the
+        // temp must be a no-op success reporting the durable length —
+        // the fake used to truncate the tail to the replay's end.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport { daemon };
+        let data = patterned_bytes(100);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/i.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        let first = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 0,
+                    "data_b64": b64_encode(&data),
+                }),
+            )
+            .unwrap();
+        assert_eq!(first["size"], 100);
+        // Identical replay of [0, 10) against a 100-byte temp.
+        let replay = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 0,
+                    "data_b64": b64_encode(&data[..10]),
+                }),
+            )
+            .unwrap();
+        assert_eq!(replay["size"], 100);
+        // Mid-temp interior replay likewise reports the durable length.
+        let mid = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 40,
+                    "data_b64": b64_encode(&data[40..50]),
+                }),
+            )
+            .unwrap();
+        assert_eq!(mid["size"], 100);
+        // The tail survived: the full hash still verifies at commit.
+        let committed = t
+            .post(
+                "/files/commit",
+                json!({"path": "/srv/i.bin", "sha256": sha}),
+            )
+            .unwrap();
+        assert_eq!(committed["size"], 100);
+    }
+
+    #[test]
+    fn interior_conflicting_rewrite_refused_and_preserves_temp() {
+        // #14601: a conflicting interior rewrite is refused without
+        // touching the durable bytes.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport { daemon };
+        let data = patterned_bytes(100);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/c.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/c.bin", "sha256": sha, "offset": 0,
+                "data_b64": b64_encode(&data),
+            }),
+        )
+        .unwrap();
+        let mut bad = data[50..60].to_vec();
+        bad[0] ^= 0xFF;
+        let conflict = t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/c.bin", "sha256": sha, "offset": 50,
+                "data_b64": b64_encode(&bad),
+            }),
+        );
+        assert!(conflict.is_err());
+        let committed = t
+            .post(
+                "/files/commit",
+                json!({"path": "/srv/c.bin", "sha256": sha}),
+            )
+            .unwrap();
+        assert_eq!(committed["size"], 100);
+    }
+
+    #[test]
+    fn put_stream_accepts_durable_size_on_identical_replay() {
+        // #14601: when the temp already holds the whole file (a prior
+        // attempt completed its writes but never committed), a fresh
+        // `put_stream` re-sends every chunk and the daemon answers
+        // each with the durable length — the client must accept that
+        // benign replay instead of failing the transfer.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport {
+            daemon: daemon.clone(),
+        };
+        // More than one chunk: the first reply must be strictly larger
+        // than that chunk's end, exercising the client's replay check.
+        let data = patterned_bytes(CHUNK_SIZE + 1000);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/r.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        // Seed the temp with protocol-legal chunk writes, a prior attempt
+        // that never committed.
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/r.bin", "sha256": sha, "offset": 0,
+                "data_b64": b64_encode(&data[..CHUNK_SIZE]),
+            }),
+        )
+        .unwrap();
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/r.bin", "sha256": sha, "offset": CHUNK_SIZE,
+                "data_b64": b64_encode(&data[CHUNK_SIZE..]),
+            }),
+        )
+        .unwrap();
+        // No resume: every chunk is re-sent over durable bytes.
+        let report = put_bytes(&mut t, "/srv/r.bin", &data, false).unwrap();
+        assert_eq!(report.size, data.len() as u64);
+        let mut out: Vec<u8> = Vec::new();
+        let got = get_to_writer(&mut t, "/srv/r.bin", &mut out).unwrap();
+        assert_eq!(got.sha256, report.sha256);
+        assert_eq!(out, data);
+    }
+
+    #[test]
     fn commit_refuses_hash_mismatch_and_keeps_temp() {
         let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
         let mut t = FakeTransport {
@@ -1475,6 +1796,99 @@ mod tests {
         // Missing remote file is a transport error, not an empty get.
         assert!(get_file(&mut t, "/srv/nope", &local, None, true, &mut |_| {}).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Delegated direct copy (#14219) -------------------------------
+    //
+    // Oracles: the destination's sha256 equals the source's (the
+    // issue's acceptance hash), no /files/read or /files/write RPC
+    // carries the bytes (they never transit the caller), and a
+    // killed transfer leaves no partial destination.
+
+    #[test]
+    fn direct_copy_lands_hash_identical_without_caller_transit() {
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport {
+            daemon: daemon.clone(),
+        };
+        let data = patterned_bytes(CHUNK_SIZE + 1234);
+        put_bytes(&mut t, "/srv/src.bin", &data, true).unwrap();
+        let (reads_before, writes_before) = {
+            let d = daemon.lock().unwrap();
+            (d.read_count, d.write_count)
+        };
+        let report = copy_file_direct(
+            &mut t,
+            "/srv/src.bin",
+            "/srv/dst.bin",
+            Some(0o600),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.size, data.len() as u64);
+        assert_eq!(report.sha256, sha256_hex(&data));
+        assert_eq!(report.resumed_from, 0);
+        let d = daemon.lock().unwrap();
+        assert_eq!(d.files.get("/srv/dst.bin"), Some(&data));
+        assert_eq!(d.modes.get("/srv/dst.bin"), Some(&0o600));
+        assert_eq!(d.copy_count, 1);
+        assert_eq!(
+            (d.read_count, d.write_count),
+            (reads_before, writes_before),
+            "direct copy must not move bytes through the caller"
+        );
+    }
+
+    #[test]
+    fn direct_copy_killed_midway_leaves_no_partial_destination_and_resumes() {
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport {
+            daemon: daemon.clone(),
+        };
+        let data = patterned_bytes(500_000);
+        put_bytes(&mut t, "/srv/src.bin", &data, true).unwrap();
+        daemon.lock().unwrap().fail_copy_after = Some(200_000);
+        let killed = copy_file_direct(&mut t, "/srv/src.bin", "/srv/dst.bin", None, &mut |_| {});
+        assert!(matches!(killed, Err(ClientError::Transport(_))));
+        {
+            let d = daemon.lock().unwrap();
+            assert!(
+                !d.files.contains_key("/srv/dst.bin"),
+                "a killed copy must not leave a partial destination"
+            );
+            let temp = temp_path_for("/srv/dst.bin", &sha256_hex(&data));
+            assert_eq!(d.files.get(&temp).map(Vec::len), Some(200_000));
+        }
+        daemon.lock().unwrap().fail_copy_after = None;
+        let report =
+            copy_file_direct(&mut t, "/srv/src.bin", "/srv/dst.bin", None, &mut |_| {}).unwrap();
+        assert_eq!(report.resumed_from, 200_000);
+        assert_eq!(report.sha256, sha256_hex(&data));
+        assert_eq!(
+            daemon.lock().unwrap().files.get("/srv/dst.bin"),
+            Some(&data)
+        );
+    }
+
+    #[test]
+    fn direct_copy_missing_source_and_legacy_daemon_are_distinct_errors() {
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport {
+            daemon: daemon.clone(),
+        };
+        let missing =
+            copy_file_direct(&mut t, "/srv/nope", "/srv/dst.bin", None, &mut |_| {}).unwrap_err();
+        assert!(matches!(missing, ClientError::Transport(_)));
+        assert!(!is_unsupported_direct_copy(&missing));
+
+        put_bytes(&mut t, "/srv/src.bin", b"data", true).unwrap();
+        daemon.lock().unwrap().no_copy_route = true;
+        let legacy = copy_file_direct(&mut t, "/srv/src.bin", "/srv/dst.bin", None, &mut |_| {})
+            .unwrap_err();
+        assert!(
+            is_unsupported_direct_copy(&legacy),
+            "unknown-route refusal must be recognisable for the relay fallback: {legacy:?}"
+        );
     }
 
     #[test]

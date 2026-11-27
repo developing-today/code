@@ -18,7 +18,10 @@
 // material.
 
 import type { RpValidationConfig } from "./jwt.ts";
+import { base64UrlToBytes } from "../../../hosted-primitives/src/encoding.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
+import type { D1DatabaseLike } from "./d1-queue-store.ts";
+import type { R2BucketLike } from "./kv-blobs.ts";
 
 export const HOSTED_VERSION = "0.1.0";
 export const SERVICE_NAME = "fleet-hosted";
@@ -78,6 +81,45 @@ export interface HostedEnv {
   /** Direct-read TTL cap in seconds (#12592): a token's requested
    * lifetime may not exceed it. Defaults to 3600 when unset. */
   DIRECT_READ_MAX_TTL_SECONDS?: string;
+  /** Queue libSQL file (#12589 follow-on): path of the file-backed
+   * local libSQL DB holding the shared fleet-queue schema (#6741).
+   * Empty/unset → the fixture store (tests/local-dev default). A
+   * remote Turso DB is QUEUE_LIBSQL_URL below, not a second schema. */
+  QUEUE_LIBSQL_FILE?: string;
+  /** The remote fleet-queue Turso DB (#14592): the queue verbs run
+   *  against it through the Hrana opener — the production backend,
+   *  the live DB the native broker serves (#6741). A libsql:// or
+   *  https:// URL (wrangler [vars]); takes precedence over
+   *  QUEUE_LIBSQL_FILE when both are set. */
+  QUEUE_LIBSQL_URL?: string;
+  /** The Turso auth token for QUEUE_LIBSQL_URL (a secret binding,
+   *  never committed). Unset for unauthenticated local endpoints. */
+  QUEUE_LIBSQL_AUTH_TOKEN?: string;
+  /** The fleet-kv central primary (#13316): the shared Turso DB the
+   *  kv door forwards catalogued statements to over Hrana. A
+   *  libsql:// or https:// URL (wrangler [vars]); unset → the kv
+   *  door fails closed (503). */
+  KV_LIBSQL_URL?: string;
+  /** The Turso auth token for KV_LIBSQL_URL (a secret binding,
+   *  never committed). Held by the Worker only: kv callers present
+   *  their own RP/agent JWT or kv-scoped service token, never this
+   *  data-plane credential. */
+  KV_LIBSQL_AUTH_TOKEN?: string;
+  /** The fleet-queue D1 database, by binding (#14866): the queue
+   *  verbs run against it through D1QueueStore when the binding is
+   *  present \u2014 the Cloudflare-first data plane. A binding, not a
+   *  value: present when the deployed shape carries it
+   *  (wrangler.toml declares it); its presence is the selection
+   *  signal, and it takes precedence over the Turso/libSQL queue
+   *  backends in buildDeps. Absent \u2192 those backends, unchanged. */
+  QUEUE_D1?: D1DatabaseLike;
+  /** The kv blob bucket (#13318): an R2 binding for the blob upload
+   * door. Absent → that door fails closed (503). */
+  KV_BLOBS?: R2BucketLike;
+  /** The kv blob read-capability key (#13318): a secret, set by name
+   * at deployment, never in wrangler.toml. Absent → the read routes
+   * fail closed (503). */
+  KV_BLOB_CAPABILITY_KEY?: string;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml
@@ -132,8 +174,15 @@ export interface HostedConfig {
   rp: RpValidationConfig | null;
   /** Tenancy directory, or null when none is configured/readable. */
   tenancy: TenancyDirectory | null;
-  /** True only when every auth input is present and parsed. */
+  /** True only when every auth input is present and parsed. Note
+   * (#14978): authenticate() no longer requires this as a whole —
+   * service-token callers need only the tenancy directory; this flag
+   * stays the "full auth (RP + tenancy)" summary for reporting. */
   authConfigured: boolean;
+  /** True when a tenancy directory is configured: service-token
+   * callers can authenticate (#14978 / CF-2b) even before an RP
+   * issuer exists. */
+  serviceAuthConfigured: boolean;
   /** Stamp signature key material (#12586), independent of auth. */
   stamp: StampConfig;
   /** Fleet App rotation configuration (#12585), or null when no
@@ -152,12 +201,39 @@ export interface HostedConfig {
    * (valid) DB ids / mint material are set. Independent of auth,
    * like the stamp material. */
   directRead: DirectReadConfig | null;
+  /** File-backed queue DB path (#12589 follow-on task 23569), or
+   * null when unset — the Worker then wires the fixture store
+   * (local/dev semantics). Named in configuration so the choice is
+   * explicit; the opener that turns the path into a connection is
+   * injected at the worker seam (tests inject node:sqlite — the
+   * Worker bundle itself stays runtime-agnostic). */
+  queueLibsqlFile: string | null;
+  /** The remote fleet-queue Turso DB the queue verbs run against
+   *  through the Hrana opener (#14592) — the production backend.
+   *  Null → the file backend above, or the fixture. */
+  queueLibsqlUrl: string | null;
+  /** The auth token for queueLibsqlUrl (secret, never a [vars]
+   *  value); null for unauthenticated endpoints. */
+  queueLibsqlAuthToken: string | null;
+  /** The fleet-kv central primary (#13316), or null when unset —
+   *  the kv door then fails closed (503). */
+  kvLibsqlUrl: string | null;
+  /** The auth token for kvLibsqlUrl (secret); null for an
+   *  unauthenticated local endpoint. */
+  kvLibsqlAuthToken: string | null;
   /** The PM bridge credential (#14373), or null when unset or too
    * short to be one — the bridge door then fails closed (503). The
    * value is held only to be presented to the bridge; it is never
    * logged or reported. Independent of auth, like the webhook
    * secret. */
   bridge: { token: string } | null;
+  /** True when the QUEUE_D1 binding is present (#16096, #15456,
+   * #14866): buildDeps then resolves D1MetadataStore (and the D1
+   * queue/session/backfill stores) instead of the module-scope
+   * fixtures. A boolean, never the binding itself — the health
+   * door reports it so the live readback gate can check one
+   * public flag instead of reading code. */
+  d1Bound: boolean;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -168,12 +244,7 @@ export function isValidStampKeyId(value: string): boolean {
 
 function b64urlToBytesOrNull(text: string): Uint8Array | null {
   try {
-    const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const bin = atob(padded);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
+    return base64UrlToBytes(text);
   } catch {
     return null;
   }
@@ -267,13 +338,37 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     rp,
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
+    serviceAuthConfigured: tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
     webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
     directRead: parseDirectReadConfig(env),
+    queueLibsqlFile: parseQueueLibsqlFile(env.QUEUE_LIBSQL_FILE),
+    queueLibsqlUrl: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_URL),
+    queueLibsqlAuthToken: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_AUTH_TOKEN),
+    kvLibsqlUrl: parseQueueLibsqlUrl(env.KV_LIBSQL_URL),
+    kvLibsqlAuthToken: parseQueueLibsqlUrl(env.KV_LIBSQL_AUTH_TOKEN),
     bridge: parseBridgeConfig(env),
+    d1Bound: env.QUEUE_D1 != null,
   };
+}
+
+/** The queue libSQL file (#12589 follow-on): a trimmed path, or
+ * null when unset/blank — the fixture default. Whitespace-only is
+ * unconfigured, not a file. */
+function parseQueueLibsqlFile(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** The remote queue Turso URL and its token (#14592): trimmed, or
+ * null when unset/blank — same shape as the file parse above. The
+ * URL's scheme is validated where it is opened (the opener maps
+ * libsql:// → https and lets URL parsing fail loudly there). */
+function parseQueueLibsqlUrl(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
 }
 
 /** The PM bridge credential (#14373): present only when the secret

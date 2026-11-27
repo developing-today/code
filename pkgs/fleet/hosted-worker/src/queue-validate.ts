@@ -183,7 +183,7 @@ export function validateNotBeforeAt(value: Json, field: string, now: number): st
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90];
 export const EXPEDITE_PRIORITY = 15;
 export const NEXT_UP_PRIORITY = 25;
-export const KINDS = ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"];
+export const KINDS = ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice", "prompt"];
 export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today/opencode",
@@ -210,7 +210,8 @@ export const DEDUPE_PATTERNS_DOC =
   "set: repo-health:v1:set:<origin issue>:owed:<repo>\n" +
   "maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n" +
   "second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>\n" +
-  "slice: repo-health:v1:slice:<repo>:issue:<n>:slice-<k>";
+  "slice: repo-health:v1:slice:<repo>:issue:<n>:slice-<k>\n" +
+  "prompt: repo-health:v1:prompt:<repo>:submission:<UUIDv4>";
 
 /** Rust's `{:?}` debug rendering of a list (strings quoted, ", "
  * separators) — the shape several validator messages embed. */
@@ -245,6 +246,13 @@ function manualSchemaErrors(p: Json): string[] {
   const kind = get(obj, "kind");
   if (!(typeof kind === "string" && KINDS.includes(kind))) {
     errs.push(`payload.kind: must be one of ${debugList([...KINDS].sort())}`);
+  }
+  if (get(obj, "kind") === "prompt") {
+    const prompt = get(obj, "prompt");
+    const id = isObj(prompt) ? get(prompt, "id") : undefined;
+    if (typeof id !== "string" || !/^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) {
+      errs.push("payload.prompt.id: must be a canonical prompt:<UUIDv4>");
+    }
   }
   const repo = get(obj, "repo");
   if (!(typeof repo === "string" && FLEET_REPOS.includes(repo))) {
@@ -377,7 +385,13 @@ function manualSchemaErrors(p: Json): string[] {
     isPositiveInt(get(source, "pr")) &&
     typeof get(source, "finding") === "string" &&
     (get(source, "finding") as string) !== "";
-  if (!(hasIssue || hasPrs || hasSet || hasSource)) {
+  const prompt = get(obj, "prompt");
+  const promptId = isObj(prompt) ? get(prompt, "id") : undefined;
+  const hasPromptIdentity =
+    get(obj, "kind") === "prompt" &&
+    typeof promptId === "string" &&
+    /^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(promptId);
+  if (!(hasIssue || hasPrs || hasSet || hasSource || hasPromptIdentity)) {
     errs.push(
       "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
     );
@@ -534,13 +548,19 @@ export function matchDedupe(key: string): DedupeMatch | null {
     }
     return null;
   }
-  for (const fam of ["fix", "triage", "pr-set", "pr", "maintenance", "second-pass", "slice"]) {
+  for (const fam of ["fix", "triage", "pr-set", "pr", "maintenance", "second-pass", "slice", "prompt"]) {
     if (!rest.startsWith(`${fam}:`)) continue;
     const after = rest.slice(fam.length + 1);
     for (const repo of FLEET_REPOS) {
       if (!after.startsWith(`${repo}:`)) continue;
       const tail = after.slice(repo.length + 1);
-      if (fam === "fix" || fam === "triage") {
+      if (fam === "prompt") {
+        const prefix = "submission:";
+        const id = tail.startsWith(prefix) ? tail.slice(prefix.length) : "";
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) {
+          return { family: fam, repo, num: null, nums: null, origin: null, pass: null };
+        }
+      } else if (fam === "fix" || fam === "triage") {
         if (tail.startsWith("issue:")) {
           const num = issueNumberWithDispatchSuffix(tail.slice("issue:".length));
           if (num !== null) return { family: fam, repo, num, nums: null, origin: null, pass: null };
@@ -627,6 +647,8 @@ function kindFamilies(kind: string): string[] | null {
       return ["second-pass"];
     case "feature_slice":
       return ["slice"];
+    case "prompt":
+      return ["prompt"];
     default:
       return null;
   }
@@ -665,6 +687,16 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
   const set = get(payload, "set");
   const hasSet = isObj(set) && Object.keys(set).length > 0;
   const sourceOnly = sourcePr !== null && issueNo === null && prNumbers.length === 0 && !hasSet;
+
+  if (m.family === "prompt") {
+    const prompt = get(payload, "prompt");
+    const id = isObj(prompt) ? get(prompt, "id") : undefined;
+    const expected = typeof id === "string" ? id.replace(/^prompt:/, "") : "";
+    if (key !== `repo-health:v1:prompt:${m.repo}:submission:${expected}`) {
+      errors.push("payload.prompt.id: must match packet.dedupe_key canonical submission identity");
+    }
+    return errors;
+  }
 
   if (m.family === "fix" || m.family === "triage" || m.family === "second-pass" || m.family === "slice") {
     const n = m.num ?? 0;
@@ -758,6 +790,9 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
   const warnings: string[] = [];
   if (!isObj(packet)) {
     return [["packet: must be a JSON object"], warnings];
+  }
+  if (get(packet, "manual_only") !== undefined && typeof get(packet, "manual_only") !== "boolean") {
+    errors.push("packet.manual_only: must be a boolean");
   }
   const payload = get(packet, "payload");
   if (!isObj(payload)) {
@@ -880,6 +915,7 @@ export function taskFromPacket(packet: JsonObject, queue: string): JsonObject {
   const priority: Json = band !== null ? band : ((get(packet, "priority") as Json) ?? null);
   return {
     queue,
+    manual_only: get(packet, "manual_only") === true,
     title: (get(packet, "title") as Json) ?? null,
     body: (get(packet, "body") as Json) ?? null,
     payload,

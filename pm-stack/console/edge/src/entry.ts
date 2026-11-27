@@ -8,6 +8,9 @@
 // behind the tunnel. If the host cannot be reached, an action that may
 // be done late is handed back to the state to hold.
 import { SECURITY, sameEntity } from "../../src/http.ts";
+import { ACT_MS } from "./timings.ts";
+
+export { ACT_MS } from "./timings.ts";
 
 export interface Io {
   /** The object with the state (edge.ts). */
@@ -28,6 +31,8 @@ export interface Io {
   publicHost: string;
   /** What is deployed, for the health check. */
   version: string | null;
+  /** When it was deployed, for the health check. */
+  deployedAt: string | null;
   /** Work that may finish after the response has gone. */
   later: (work: Promise<unknown>) => void;
   now: () => number;
@@ -36,7 +41,6 @@ export interface Io {
 /** How long the host is given: a read, an action (the longest is a 60
  * second unit operation), a page. */
 export const READ_MS = 25_000;
-export const ACT_MS = 75_000;
 export const PAGE_MS = 60_000;
 const POKE_EVERY_MS = 20_000;
 /** When the host was last told that someone is looking. */
@@ -101,9 +105,17 @@ export async function route(request: Request, io: Io): Promise<Response> {
     const body = (await (await io.state(request)).json()) as Record<string, unknown>;
     // The hostname it is built for is said too: the host's setup script
     // will not put any other hostname behind this Worker.
-    return new Response(JSON.stringify({ ...body, version: io.version, host: io.publicHost }), {
-      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
-    });
+    const nowMs = io.now();
+    const deployedAtMs = Date.parse(io.deployedAt ?? "");
+    const hasDeploymentStamp = Number.isFinite(deployedAtMs) && deployedAtMs <= nowMs;
+    const deployedAt = hasDeploymentStamp ? new Date(deployedAtMs).toISOString() : null;
+    const ageSeconds = deployedAt === null ? null : Math.floor((nowMs - deployedAtMs) / 1_000);
+    return new Response(
+      JSON.stringify({ ...body, version: io.version, deployedAt, ageSeconds, host: io.publicHost }),
+      {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
+      },
+    );
   }
 
   const forHost = request.clone() as Request;
@@ -174,19 +186,39 @@ export async function route(request: Request, io: Io): Promise<Response> {
     }
     // The host's answer says what it read again; keep that here, and
     // send the owner the rest.
-    if (!(answer.headers.get("content-type") ?? "").startsWith("application/json")) return answer;
+    if (!(answer.headers.get("content-type") ?? "").startsWith("application/json")) {
+      await tell("/internal/relayed", {
+        id: detail.id,
+        kind: detail.kind,
+        args: detail.args,
+        relayToken: detail.relayToken,
+      });
+      return answer;
+    }
     const body = (await answer.json().catch(() => null)) as Record<string, unknown> | null;
     if (body === null) {
       // The host answered, so it has the name written down, whatever
       // it said: a hold left under the name is settled as by any other
       // answer of the host's, and is nobody else's to do.
-      await tell("/internal/relayed", { id: detail.id });
+      await tell("/internal/relayed", {
+        id: detail.id,
+        kind: detail.kind,
+        args: detail.args,
+        relayToken: detail.relayToken,
+      });
       return offline("the host's answer could not be read");
     }
     const { sections, acts, ...rest } = body;
     // The relayed name is settled even when the host read nothing new:
     // a hold left behind by a lost answer for the same name is dropped.
-    await tell("/internal/relayed", { sections, acts, id: detail.id });
+    await tell("/internal/relayed", {
+      sections,
+      acts,
+      id: detail.id,
+      kind: detail.kind,
+      args: detail.args,
+      relayToken: detail.relayToken,
+    });
     const headers = new Headers(answer.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");

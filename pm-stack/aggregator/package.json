@@ -29,6 +29,7 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@libsql/client": "0.18.0",
     "web-push": "^3.6.7"
   }
 }

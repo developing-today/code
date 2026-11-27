@@ -18,7 +18,7 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
-import type { SettingDiffers } from "./settings.ts";
+import type { OwnerChangeableName, PlatformSettings, SettingDiffers, SettingInForce } from "./settings.ts";
 
 /** What a machine tells the edge in every sync. Who may sign in (the
  * owners, the certificate names, the issuers, the Android signing
@@ -71,6 +71,10 @@ export interface SyncRequest {
    * console older than this: the edge then knows it only as a machine
    * that reports. */
   machine?: MachineReport;
+  /** The revision of the owner's changed settings this machine runs
+   * with, as the edge last said them (0: none, its own). Absent from a
+   * console older than the saying (#14957). */
+  settingsRev?: number;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -131,6 +135,88 @@ export function machineReport(value: unknown): MachineReport | null {
   return actions && sections ? { name: v.name, actions, sections } : null;
 }
 
+/** One machine as the edge knows it for choosing who does an action
+ * (#13492 slice 2): what it says it can do, and whether it is
+ * reachable through a trusted relay path and has reported lately.
+ * A recent report alone does not establish a reachable address. */
+export interface MachineCandidate {
+  /** Stable enrolled key identity; names are display text, not authority. */
+  kid?: string;
+  name: string;
+  actions: string[];
+  connected: boolean;
+}
+
+/** Whether a machine that has said what it can do says it can do
+ * this kind. A machine that has said nothing (a report older than
+ * the saying, read as null) is not answered for by this: the edge
+ * cannot know, and keeps its older behaviour for it. */
+export function machineCanDo(machine: { actions: string[] } | null | undefined, kind: string): boolean {
+  return machine != null && machine.actions.includes(kind);
+}
+
+/** Which machine an action that needs one goes to (#13492 slice 2).
+ * "capable": a connected machine that declares the kind — it alone
+ * is asked. "held": a machine declares the kind but none that does
+ * is connected, so the action is kept for the first such machine by
+ * name, to be handed to it and no other when it reports. "none": no
+ * machine the edge knows declares the kind, so there is nobody to
+ * relay to blindly. An empty list says nothing either way: the
+ * caller keeps its older behaviour for machines that have not said
+ * what they can do. */
+export type MachineSelection =
+  | { state: "capable"; machine: MachineCandidate }
+  | { state: "held"; machine: MachineCandidate }
+  | { state: "none" };
+
+export function selectMachine(machines: readonly MachineCandidate[], kind: string): MachineSelection {
+  const capable = machines.filter((m) => m.actions.includes(kind));
+  const connected = capable.find((m) => m.connected);
+  if (connected) return { state: "capable", machine: connected };
+  if (capable.length > 0) return { state: "held", machine: capable[0] };
+  return { state: "none" };
+}
+
+/** A machine asking to be enrolled under its own key (#13492). The
+ * body travels signed with that key (the signature is in the
+ * `x-pm-signature` header, over the body as sent, as a report's is),
+ * which proves the asker holds the private half; the public half it
+ * presents is the credential its reports will be taken under once the
+ * owner approves. The code the machine shows its owner is the key's
+ * short name (see keyId): the owner approves that code on the Machines
+ * screen, as a phone is linked. */
+export interface EnrollRequest {
+  v: 1;
+  /** Milliseconds, near the edge's own clock (SYNC_SKEW_MS). */
+  at: number;
+  key: PublicKey;
+  /** What the machine says of itself, as in a report. Optional: a
+   * machine may ask before it has anything to say of itself. */
+  machine?: MachineReport;
+}
+
+/** How many machines may be enrolled under their own keys, beside the
+ * first machine whose key the edge learns through the tunnel. */
+export const MAX_MACHINES = 8;
+/** How many enrollment asks may wait for the owner at once. */
+export const MAX_PENDING_MACHINES = 4;
+/** An enrollment ask the owner has not answered in this long is dropped. */
+export const PENDING_MACHINE_MS = 24 * 60 * 60_000;
+
+/** An enrollment ask as it may arrive, checked, or null. */
+export function enrollRequest(value: unknown): EnrollRequest | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object" || v.v !== 1 || typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  const key = publicKey(v.key);
+  if (!key) return null;
+  let machine: MachineReport | undefined;
+  if (v.machine !== undefined && v.machine !== null) {
+    machine = machineReport(v.machine) ?? undefined;
+    if (!machine) return null;
+  }
+  return { v: 1, at: v.at, key, ...(machine ? { machine } : {}) };
+}
+
 /** What the Machines screen is drawn from: the platform's own part,
  * each machine that reports, and what is held for one. */
 export interface MachinesAnswer {
@@ -138,7 +224,22 @@ export interface MachinesAnswer {
   served: "edge" | "machine";
   /** What the platform does with no machine: null when it is not in
    * front, and an empty list of each when it only serves and waits. */
-  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  platform: {
+    primary: boolean;
+    actions: string[];
+    sections: string[];
+    refused: string[];
+    /** Which source each of the platform's settings is in force from,
+     * with its value, the repository's beside it, and for an owner's
+     * change who made it, when, and at which revision: the one place
+     * the owner reads which settings are in force and since when
+     * (#14955). Absent from an answer older than the saying. */
+    settings?: SettingInForce[];
+    /** The revision of the owner's changes these settings are at (0
+     * before any): what a change from the app is made from, so one made
+     * from an older look is refused (#14956). */
+    settingsRev?: number;
+  } | null;
   machines: {
     name: string;
     /** When it last reported, in milliseconds; null if it never has. */
@@ -152,6 +253,34 @@ export interface MachinesAnswer {
      * values and which the platform goes by. Absent when there is none
      * (and from an answer older than the saying). */
     differs?: SettingDiffers[];
+    /** The revision of the owner's changed settings it last said it runs
+     * with (0: its own); null when its console is older than the saying.
+     * Behind the platform's `settingsRev`, it has not taken the owner's
+     * latest change yet (#14957). */
+    settingsRev?: number | null;
+    /** The short name of this machine's key (see keyId): how the owner
+     * tells one machine from another when enrolling or removing one.
+     * Absent from an answer older than the saying (#13492). */
+    kid?: string;
+    /** It reports under a key of its own that the owner enrolled, not
+     * the first machine's key learned through the tunnel. Absent (and
+     * so false) for the first machine, and from an older answer. */
+    enrolled?: boolean;
+  }[];
+  /** Machines that have asked to be enrolled and wait for the owner to
+   * approve them on the Machines screen: the code each shows, which is
+   * the short name of its key. Absent from an answer older than the
+   * saying, and when none are waiting (#13492). */
+  pending?: { kid: string; code: string; name: string; at: number }[];
+  /** Which machine each section the edge keeps came from, and which
+   * machine's copy the app is showing. Absent from an answer older
+   * than the saying (#13492). */
+  sectionsFrom?: {
+    name: string;
+    from: { machine: string; kid: string; at: number; hash: string }[];
+    /** The kid of the machine whose copy is shown, or null when no
+     * machine's copy is: the edge's own read, or nothing yet. */
+    showing: string | null;
   }[];
   /** What the owner did that waits to be done, oldest first, and who
    * each waits for (absent from an answer older than the saying). */
@@ -178,6 +307,12 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
+  /** Display name of the selected machine. Not an identity: duplicate
+   * names are allowed. Delivery authority is forKid below. */
+  for?: string;
+  /** Signing key allowed to take and acknowledge this action. Additive:
+   * older machines need not understand it; the edge enforces delivery. */
+  forKid?: string;
   /** It certainly reached no machine: it was never sent toward one, or
    * the one time it was, what answered in the machine's place said it
    * never arrived. Only then may the platform do it itself. Without
@@ -264,6 +399,11 @@ export interface SyncResponse {
   /** Sections the edge reads itself, and so need not be sent to it.
    * Absent from an edge that reads none. */
   owns?: string[];
+  /** The settings the owner changed from the app, at their revision,
+   * for the machine to run with in place of its own (#14957). Sent
+   * whenever the owner has changed any (an empty `values` once every
+   * change was put back); absent before, and from an older edge. */
+  settings?: { rev: number; values: Partial<Pick<PlatformSettings, OwnerChangeableName>> };
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
@@ -284,12 +424,67 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  // The composer's broaden and offer (#14375) are the owner's words
+  // too: a broaden done late still delivers the send's own remainder
+  // (and nothing, once none is left), and an offer posted late
+  // stands open until its ttl or its slots fill.
+  "message.broaden",
+  "message.offer",
+  // A revocation is the owner's kill switch (#14374): done late it is
+  // still the right act — a credential revoked an hour late is revoked,
+  // and one already revoked answers so — so it is held for a machine
+  // rather than refused while the laptop is away. The edge itself
+  // never revokes: its bridge credential holds the read scope only.
+  "agent.revoke",
+  // Taking back an agent's unused enroll tokens (#14376) is the same
+  // shape: no value travels in it, and done late it is still the right
+  // act. The mints are deliberately NOT here: a mint's answer is the
+  // secret itself, shown once on the screen that asked — held and
+  // done late, the value would reach nobody and be lost, so a mint
+  // asked at the edge while no machine answers is refused, never held.
+  "agent.revoke-enroll",
+  // Removing a wake hook (#14544) is the same shape again: no value
+  // in it, still the right act done late. Setting one is deliberately
+  // NOT here: its arguments carry the hook's token, and a held copy
+  // would keep that value at the edge — so a set asked at the edge
+  // while no machine answers is refused, never held, like the mints.
+  "agent.wake-hook-remove",
   "prompt.enqueue",
   // What the owner says is never lost for want of a machine: it is
   // kept and filed when one is back (or filed here, when the edge can).
   "intake.send",
   "triage.enqueue",
 ]);
+/** Actions on something that may have changed by the time they arrive:
+ * a merge, a deploy, a task's or a unit's state. A device keeps these
+ * and sends them by itself only while they are fresh (`TIMELY` in
+ * public/outbox.js is the same list, and a test holds the two together).
+ * The platform holds every sender to the same rule (#13501). */
+export const TIMELY = new Set(["pr.merge", "deploy.start", "task.cancel", "task.unblock", "unit.act"]);
+/** How long a timely action stays fresh. */
+export const TIMELY_MS = 10 * 60_000;
+/** What a timely action that arrived too late is answered with. */
+export const STALE_ACT_ERROR =
+  "This was done more than ten minutes ago and may no longer apply. Look again, and send it with sure to do it anyway.";
+
+/** Whether an action arrives too late to be done unasked (#13501). The
+ * sender says when the owner did it (`at`, ms since the epoch) and may
+ * say what its own clock read when it sent it (`sent`). It is too late
+ * when either clock says more than ten minutes have passed: the
+ * platform's, which a device whose clock runs slow cannot talk round,
+ * or the device's own, which a device whose clock runs fast cannot hide
+ * from the platform's. One that says `sure` was looked at again by the
+ * owner and goes as it is. One that says nothing of when it was done
+ * claims to be done now, and is taken as that. */
+export function staleAct(kind: string, body: { at?: unknown; sent?: unknown; sure?: unknown }, now: number): boolean {
+  if (!TIMELY.has(kind) || body.sure === true) return false;
+  const at = body.at;
+  if (typeof at !== "number" || !Number.isFinite(at)) return false;
+  if (now - at > TIMELY_MS) return true;
+  const sent = body.sent;
+  return typeof sent === "number" && Number.isFinite(sent) && sent - at > TIMELY_MS;
+}
+
 /** What an action is about, where the order of two matters: a rank set
  * twice, a task moved twice. Two about one thing are done in the order
  * the owner did them: one that may be done late goes behind an earlier
@@ -322,6 +517,26 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       return of("questions", a.set);
     case "pr.merge":
       return of("pr", a.pr);
+    case "agent.revoke": {
+      // One agent's credentials on one surface: two revocations of
+      // the same agent keep the owner's order.
+      const surface = typeof a.surface === "string" ? a.surface : "";
+      const name = typeof a.name === "string" ? a.name : "";
+      return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+    }
+    case "message.broaden":
+      // A batch's broadenings keep the owner's order, like a
+      // revocation's: each delivers what the ones before it left.
+      return of("batch", a.batch);
+    case "agent.revoke-enroll":
+      // One agent's enroll tokens: a later mint for the same agent
+      // does not queue behind this (a mint is never held), but two
+      // take-backs of one agent keep the owner's order.
+      return of("enroll", a.agent);
+    case "agent.wake-hook-remove":
+      // One address's wake hook: two removals of one address keep
+      // the owner's order, as a revocation's do.
+      return of("wake-hook", a.address);
     case "unit.act":
       return of("unit", a.unit);
     default:

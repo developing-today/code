@@ -1,0 +1,7 @@
+<document version="1">
+  <page title="Conditional">
+    <conditional target="web">
+      <text>Web only</text>
+    </conditional>
+  </page>
+</document>

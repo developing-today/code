@@ -1,0 +1,62 @@
+[
+  {
+    "sha": "ad537af27a0c63a5c0d2dccb6546a8cdb3509cda",
+    "filename": "pkgs/mcpx/internal/mcpclient/handoff.go",
+    "status": "modified",
+    "additions": 6,
+    "deletions": 30,
+    "changes": 36,
+    "blob_url": "https://github.com/developing-today/code/blob/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fhandoff.go",
+    "raw_url": "https://github.com/developing-today/code/raw/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fhandoff.go",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fhandoff.go?ref=524715d41524b6297cc30a7c3b9d4bccf9fa5b57",
+    "patch": "@@ -2,13 +2,10 @@ package mcpclient\n \n import (\n \t\"bufio\"\n-\t\"bytes\"\n \t\"encoding/json\"\n \t\"errors\"\n \t\"fmt\"\n \t\"os\"\n-\t\"strconv\"\n-\t\"strings\"\n \t\"syscall\"\n \t\"time\"\n \n@@ -20,8 +17,9 @@ import (\n // process to take the child over without restarting it.\n type StdioHandoff struct {\n \tPID int `json:\"pid\"`\n-\t// StartTime is the child's start time from /proc. With the pid it names\n-\t// one process, so a recycled pid is not mistaken for the child.\n+\t// StartTime is the child's process start time (see procStat; the\n+\t// units are platform-defined). With the pid it names one process,\n+\t// so a recycled pid is not mistaken for the child.\n \tStartTime uint64 `json:\"startTime\"`\n \tLabel     string `json:\"label\"`\n \t// Stdin, Stdout and Stderr are this process's ends of the child's pipes.\n@@ -170,36 +168,14 @@ func childAlive(pid int, start uint64) bool {\n \treturn st == start && state != 'Z'\n }\n \n-// ProcessStartTime is the start time of pid, in clock ticks since boot.\n+// ProcessStartTime is the start time of pid, in the platform's\n+// procStat units (Linux: clock ticks since boot; darwin: microseconds\n+// since the epoch). It is only compared for equality on one machine.\n func ProcessStartTime(pid int) (uint64, error) {\n \tst, _, err := procStat(pid)\n \treturn st, err\n }\n \n-// procStat reads a process's start time and state from /proc/<pid>/stat.\n-func procStat(pid int) (uint64, byte, error) {\n-\traw, err := os.ReadFile(\"/proc/\" + strconv.Itoa(pid) + \"/stat\")\n-\tif err != nil {\n-\t\treturn 0, 0, err\n-\t}\n-\t// The command name is parenthesised and may contain spaces or parens,\n-\t// so fields are counted from the last ')'.\n-\ti := bytes.LastIndexByte(raw, ')')\n-\tif i < 0 {\n-\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat\", pid)\n-\t}\n-\tfields := strings.Fields(string(raw[i+1:]))\n-\t// fields[0] is field 3 (state); starttime is field 22.\n-\tif len(fields) < 20 || len(fields[0]) != 1 {\n-\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat\", pid)\n-\t}\n-\tstart, err := strconv.ParseUint(fields[19], 10, 64)\n-\tif err != nil {\n-\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat: %w\", pid, err)\n-\t}\n-\treturn start, fields[0][0], nil\n-}\n-\n // Detach stops the read loop and gives the transport to the caller. Nothing\n // pending is failed, so the session is intact for whoever resumes it.\n func (c *Client) Detach() (*Handoff, error) {"
+  },
+  {
+    "sha": "e2b52aa0591872af7defcb96c632029ffedf9933",
+    "filename": "pkgs/mcpx/internal/mcpclient/procstat_darwin.go",
+    "status": "added",
+    "additions": 31,
+    "deletions": 0,
+    "changes": 31,
+    "blob_url": "https://github.com/developing-today/code/blob/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_darwin.go",
+    "raw_url": "https://github.com/developing-today/code/raw/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_darwin.go",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_darwin.go?ref=524715d41524b6297cc30a7c3b9d4bccf9fa5b57",
+    "patch": "@@ -0,0 +1,31 @@\n+package mcpclient\n+\n+import (\n+\t\"fmt\"\n+\n+\t\"golang.org/x/sys/unix\"\n+)\n+\n+// procStat reads a process's start time and state from the kernel via\n+// sysctl kern.proc.pid — darwin has no /proc (#7063). The start time is\n+// microseconds since the epoch (p_starttime). Its units differ from the\n+// Linux clock-tick value, which is fine: a start time is only ever\n+// compared for equality against another reading taken on the same\n+// machine and platform, to tell a recycled pid from the original\n+// process.\n+func procStat(pid int) (uint64, byte, error) {\n+\tkp, err := unix.SysctlKinfoProc(\"kern.proc.pid\", pid)\n+\tif err != nil {\n+\t\treturn 0, 0, fmt.Errorf(\"sysctl kern.proc.pid %d: %w\", pid, err)\n+\t}\n+\tstart := uint64(kp.Proc.P_starttime.Sec)*1_000_000 + uint64(kp.Proc.P_starttime.Usec)\n+\tstate := byte('R')\n+\t// SZOMB from <sys/proc.h>: the process has exited and is awaiting\n+\t// collection by its parent. x/sys/unix does not export the\n+\t// constant for darwin, so it is spelled out here.\n+\tconst szomb = 5\n+\tif kp.Proc.P_stat == szomb {\n+\t\tstate = 'Z'\n+\t}\n+\treturn start, state, nil\n+}"
+  },
+  {
+    "sha": "bab3ae7a25ce065895f61d752fcb892e229e4835",
+    "filename": "pkgs/mcpx/internal/mcpclient/procstat_linux.go",
+    "status": "added",
+    "additions": 34,
+    "deletions": 0,
+    "changes": 34,
+    "blob_url": "https://github.com/developing-today/code/blob/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_linux.go",
+    "raw_url": "https://github.com/developing-today/code/raw/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_linux.go",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_linux.go?ref=524715d41524b6297cc30a7c3b9d4bccf9fa5b57",
+    "patch": "@@ -0,0 +1,34 @@\n+package mcpclient\n+\n+import (\n+\t\"bytes\"\n+\t\"fmt\"\n+\t\"os\"\n+\t\"strconv\"\n+\t\"strings\"\n+)\n+\n+// procStat reads a process's start time and state from /proc/<pid>/stat.\n+// The start time is in clock ticks since boot.\n+func procStat(pid int) (uint64, byte, error) {\n+\traw, err := os.ReadFile(\"/proc/\" + strconv.Itoa(pid) + \"/stat\")\n+\tif err != nil {\n+\t\treturn 0, 0, err\n+\t}\n+\t// The command name is parenthesised and may contain spaces or parens,\n+\t// so fields are counted from the last ')'.\n+\ti := bytes.LastIndexByte(raw, ')')\n+\tif i < 0 {\n+\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat\", pid)\n+\t}\n+\tfields := strings.Fields(string(raw[i+1:]))\n+\t// fields[0] is field 3 (state); starttime is field 22.\n+\tif len(fields) < 20 || len(fields[0]) != 1 {\n+\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat\", pid)\n+\t}\n+\tstart, err := strconv.ParseUint(fields[19], 10, 64)\n+\tif err != nil {\n+\t\treturn 0, 0, fmt.Errorf(\"unparseable /proc/%d/stat: %w\", pid, err)\n+\t}\n+\treturn start, fields[0][0], nil\n+}"
+  },
+  {
+    "sha": "5b481895f0ff955b73f85ffef99f41195d92f071",
+    "filename": "pkgs/mcpx/internal/mcpclient/procstat_other.go",
+    "status": "added",
+    "additions": 16,
+    "deletions": 0,
+    "changes": 16,
+    "blob_url": "https://github.com/developing-today/code/blob/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_other.go",
+    "raw_url": "https://github.com/developing-today/code/raw/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_other.go",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_other.go?ref=524715d41524b6297cc30a7c3b9d4bccf9fa5b57",
+    "patch": "@@ -0,0 +1,16 @@\n+//go:build !linux && !darwin\n+\n+package mcpclient\n+\n+import (\n+\t\"errors\"\n+\t\"runtime\"\n+)\n+\n+// procStat has no implementation on this platform: process start-time\n+// identity is available on Linux (/proc) and darwin (sysctl kern.proc)\n+// only, so handoff detach/adopt fails explicitly here instead of\n+// reading a /proc that does not exist (#7063).\n+func procStat(pid int) (uint64, byte, error) {\n+\treturn 0, 0, errors.New(\"process start time unavailable on \" + runtime.GOOS)\n+}"
+  },
+  {
+    "sha": "2265202bbffb092760e384ad47f4b3e858e9e94a",
+    "filename": "pkgs/mcpx/internal/mcpclient/procstat_test.go",
+    "status": "added",
+    "additions": 38,
+    "deletions": 0,
+    "changes": 38,
+    "blob_url": "https://github.com/developing-today/code/blob/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_test.go",
+    "raw_url": "https://github.com/developing-today/code/raw/524715d41524b6297cc30a7c3b9d4bccf9fa5b57/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_test.go",
+    "contents_url": "https://api.github.com/repos/developing-today/code/contents/pkgs%2Fmcpx%2Finternal%2Fmcpclient%2Fprocstat_test.go?ref=524715d41524b6297cc30a7c3b9d4bccf9fa5b57",
+    "patch": "@@ -0,0 +1,38 @@\n+package mcpclient\n+\n+import (\n+\t\"os\"\n+\t\"runtime\"\n+\t\"testing\"\n+)\n+\n+// TestProcStatSelf checks procStat against this test process.\n+// Oracle: the kernel's own record of the running test process — it\n+// must exist, have a non-zero start time, agree with\n+// ProcessStartTime, and not be a zombie.\n+func TestProcStatSelf(t *testing.T) {\n+\tif runtime.GOOS != \"linux\" && runtime.GOOS != \"darwin\" {\n+\t\tt.Skipf(\"procStat has no implementation on %s (linux/darwin only, #7063)\", runtime.GOOS)\n+\t}\n+\tpid := os.Getpid()\n+\tstart, state, err := procStat(pid)\n+\tif err != nil {\n+\t\tt.Fatalf(\"procStat(self): %v\", err)\n+\t}\n+\tif start == 0 {\n+\t\tt.Fatal(\"procStat(self): start time is zero\")\n+\t}\n+\tif state == 'Z' {\n+\t\tt.Fatal(\"procStat(self): running test process reported as zombie\")\n+\t}\n+\tagain, err := ProcessStartTime(pid)\n+\tif err != nil {\n+\t\tt.Fatalf(\"ProcessStartTime(self): %v\", err)\n+\t}\n+\tif again != start {\n+\t\tt.Fatalf(\"start time not stable: procStat %d, ProcessStartTime %d\", start, again)\n+\t}\n+\tif _, _, err := procStat(-1); err == nil {\n+\t\tt.Fatal(\"procStat(-1): expected an error for a nonexistent pid\")\n+\t}\n+}"
+  }
+]
