@@ -55,6 +55,14 @@
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
 //!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
+//!      SECRETS_BROKER_TLS_CERT_FILE + SECRETS_BROKER_TLS_KEY_FILE
+//!      (optional PEM identity on TCP only; unset preserves plaintext;
+//!      configured TCP dual-accepts TLS and Phase 0 plaintext). Authenticated
+//!      /health adds trust_bundle_clients (peer IP, presented version,
+//!      last-seen and age); public health retains its historical payload.
+//!      Presented is client-reported, not a server-verified validation claim.
+//!      Client TLS adoption and local independent renewal remain separate;
+//!      production enablement stays gated on #9155.
 //!      SECRETS_BROKER_WATERMARK_FILE (default
 //!      ~/.config/secrets-broker/watermark, #13948 S2),
 //!      SECRETS_BROKER_TTL_S (default 900, minimum 30 — validated
@@ -146,6 +154,45 @@ struct State {
     /// cache, not inside it, so refresh/watermark semantics are
     /// untouched (#13948).
     projects: RwLock<HashMap<String, String>>,
+    // Peer IP + presented version, not an authenticated client identity.
+    trust_bundle_clients: Mutex<std::collections::BTreeMap<(std::net::IpAddr, Option<u32>), u64>>,
+}
+
+/// Only authenticated TLS observations enter the inventory. Versions are
+/// client-reported, never a server-verified claim about client validation.
+fn handle_http(
+    state: &Arc<State>,
+    token: &str,
+    req: &crate::uds_http::HttpRequest,
+) -> (u16, Value) {
+    if token_matches(req.header("X-Agent-Token"), token)
+        && req.transport.kind == crate::uds_http::RequestTransportKind::TcpTls
+        && let Some(ip) = req.transport.peer_ip
+    {
+        let mut versions = req
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("X-Fleet-Trust-Bundle-Version"));
+        let version = match (versions.next(), versions.next()) {
+            (Some((_, raw)), None) => raw.parse::<u32>().ok().filter(|v| *v > 0),
+            _ => None,
+        };
+        let now = now_unix();
+        state
+            .trust_bundle_clients
+            .lock()
+            .unwrap()
+            .entry((ip, version))
+            .and_modify(|seen| *seen = (*seen).max(now))
+            .or_insert(now);
+    }
+    handle_request(
+        state,
+        token,
+        &req.method,
+        &req.target,
+        req.header("X-Agent-Token"),
+    )
 }
 
 /// The outcome slot of one in-flight read-through fetch: the leader
@@ -1084,18 +1131,26 @@ fn handle_request(
                 "total": p.total,
             })
         });
-        (
-            if serving { 200 } else { 503 },
-            json!({
-                "ok": serving,
-                "serving": serving,
-                "secrets": state.secrets.read().unwrap().len(),
-                "last_refresh_unix": last_refresh_unix,
-                "refreshing": *state.refreshing.read().unwrap(),
-                "refresh_progress": refresh_progress,
-                "oldest_secret_age_seconds": oldest_secret_age_seconds,
-            }),
-        )
+        let mut body = json!({
+            "ok": serving,
+            "serving": serving,
+            "secrets": state.secrets.read().unwrap().len(),
+            "last_refresh_unix": last_refresh_unix,
+            "refreshing": *state.refreshing.read().unwrap(),
+            "refresh_progress": refresh_progress,
+            "oldest_secret_age_seconds": oldest_secret_age_seconds,
+        });
+        if token_matches(provided_token, token) {
+            body["trust_bundle_clients"] = Value::Array(state.trust_bundle_clients.lock().unwrap()
+                .iter().map(|((ip, version), seen)| json!({
+                    "client_ip": ip.to_string(),
+                    "trust_bundle_version": version,
+                    "version_status": if version.is_some() { "presented" } else { "unverified" },
+                    "last_seen_unix": seen,
+                    "age_seconds": now.saturating_sub(*seen),
+                })).collect());
+        }
+        (if serving { 200 } else { 503 }, body)
     } else if !token_matches(provided_token, token) {
         (401, json!({"error": "unauthorized"}))
     } else if method == "GET" && path == "/secrets" {
@@ -1311,6 +1366,15 @@ pub fn run() -> i32 {
         }
     };
 
+    // Validate optional identity before starting any refresh or listener.
+    let tls = match crate::broker_tls::BrokerTlsServer::from_env_prefix("SECRETS_BROKER") {
+        Ok(tls) => tls,
+        Err(error) => {
+            eprintln!("secrets-broker: {error}");
+            return 2;
+        }
+    };
+
     // The durable watermark (#13948 §5.1): the previous process's
     // refresh-start-minus-skew, reloaded here so a restart resumes
     // delta filtering where the last successful refresh left off. A
@@ -1339,6 +1403,7 @@ pub fn run() -> i32 {
         refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
         projects: RwLock::new(HashMap::new()),
+        trust_bundle_clients: Mutex::new(std::collections::BTreeMap::new()),
     });
 
     // Background refresh loop: initial load + TTL refresh,
@@ -1405,13 +1470,7 @@ pub fn run() -> i32 {
                         })
                     },
                     move |req| {
-                        let (status, value) = handle_request(
-                            &st,
-                            &tok,
-                            &req.method,
-                            &req.target,
-                            req.header("X-Agent-Token"),
-                        );
+                        let (status, value) = handle_http(&st, &tok, req);
                         crate::uds_http::log_ctx_trip("secrets-broker", req, status);
                         (
                             status,
@@ -1435,39 +1494,35 @@ pub fn run() -> i32 {
     }
 
     let pre_token = token.clone();
-    crate::tcp_http::serve(
-        server,
-        move |head| {
-            pre_body_refusal(
-                &head.method,
-                &head.target,
-                head.header("X-Agent-Token"),
-                &pre_token,
-                head.header("Content-Length")
-                    .and_then(|v| v.parse::<u64>().ok()),
-            )
-            .map(|(status, value)| {
-                (
-                    status,
-                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                )
-            })
-        },
-        move |req| {
-            let (status, value) = handle_request(
-                &state,
-                &token,
-                &req.method,
-                &req.target,
-                req.header("X-Agent-Token"),
-            );
-            crate::uds_http::log_ctx_trip("secrets-broker", req, status);
+    let precheck = move |head: &crate::uds_http::HttpRequest| {
+        pre_body_refusal(
+            &head.method,
+            &head.target,
+            head.header("X-Agent-Token"),
+            &pre_token,
+            head.header("Content-Length")
+                .and_then(|v| v.parse::<u64>().ok()),
+        )
+        .map(|(status, value)| {
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
             )
-        },
-    );
+        })
+    };
+    let handler = move |req: &crate::uds_http::HttpRequest| {
+        let (status, value) = handle_http(&state, &token, req);
+        crate::uds_http::log_ctx_trip("secrets-broker", req, status);
+        (
+            status,
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        )
+    };
+    if let Some(tls) = tls {
+        crate::tcp_http::serve_tls(server, tls, precheck, handler);
+    } else {
+        crate::tcp_http::serve(server, precheck, handler);
+    }
     0
 }
 
@@ -1585,6 +1640,7 @@ mod tests {
             refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
             projects: RwLock::new(HashMap::new()),
+            trust_bundle_clients: Mutex::new(std::collections::BTreeMap::new()),
         })
     }
 
@@ -1597,6 +1653,116 @@ mod tests {
         assert_eq!(body["trust_bundle_clients"], json!([]));
         let (_, public) = handle_request(&state, "tok", "GET", "/health", None);
         assert!(public.get("trust_bundle_clients").is_none());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn trust_health_never_promotes_unvalidated_transports(version in 1u32..u32::MAX, tls in proptest::bool::ANY, authenticated in proptest::bool::ANY, uds in proptest::bool::ANY) {
+            // Oracle invariant: only token-authenticated TCP TLS can add a
+            // presented version, regardless of a forged header on other legs.
+            use crate::uds_http::{HttpRequest, RequestTransport, RequestTransportKind};
+            let state = empty_state();
+            let request = HttpRequest {
+                method: "GET".into(), target: "/health".into(), body: vec![],
+                headers: vec![("X-Agent-Token".into(), if authenticated { "tok" } else { "wrong" }.into()), ("X-Fleet-Trust-Bundle-Version".into(), version.to_string())],
+                transport: RequestTransport { kind: if uds { RequestTransportKind::Uds } else if tls { RequestTransportKind::TcpTls } else { RequestTransportKind::TcpPlain }, peer_ip: Some("127.0.0.1".parse().unwrap()) },
+            };
+            handle_http(&state, "tok", &request);
+            proptest::prop_assert_eq!(state.trust_bundle_clients.lock().unwrap().len(), usize::from(authenticated && tls && !uds));
+        }
+    }
+
+    #[test]
+    fn trust_health_real_tls_and_plaintext_boundary() {
+        // Oracle: real rustls authenticated requests retain both stale and
+        // current presented versions; plaintext and wrong tokens add nothing.
+        use std::io::{Read, Write};
+        let state = empty_state();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let server = Arc::new(
+            crate::broker_tls::BrokerTlsServer::from_pem(
+                cert.cert.pem().as_bytes(),
+                cert.signing_key.serialize_pem().as_bytes(),
+            )
+            .unwrap(),
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.cert.der().clone()).unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let config = Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::clone(&state);
+        std::thread::spawn(move || {
+            crate::tcp_http::serve_tls(
+                listener,
+                server,
+                |req| {
+                    pre_body_refusal(
+                        &req.method,
+                        &req.target,
+                        req.header("X-Agent-Token"),
+                        "tok",
+                        None,
+                    )
+                    .map(|(status, body)| (status, serde_json::to_vec(&body).unwrap()))
+                },
+                move |req| {
+                    let (status, body) = handle_http(&observed, "tok", req);
+                    (status, serde_json::to_vec(&body).unwrap())
+                },
+            )
+        });
+        let request = |version: Option<u32>, token: &str, tls: bool| {
+            let stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut stream: crate::broker_tls::BoxedStream = if tls {
+                let conn = rustls::ClientConnection::new(
+                    Arc::clone(&config),
+                    "localhost".try_into().unwrap(),
+                )
+                .unwrap();
+                Box::new(rustls::StreamOwned::new(conn, stream))
+            } else {
+                Box::new(stream)
+            };
+            let version = version
+                .map(|v| format!("X-Fleet-Trust-Bundle-Version: {v}\r\n"))
+                .unwrap_or_default();
+            write!(stream, "GET /health HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\n{version}Connection: close\r\n\r\n").unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            serde_json::from_str::<Value>(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+        };
+        request(Some(7), "tok", true);
+        request(Some(8), "tok", true);
+        request(Some(99), "wrong", true);
+        request(Some(99), "tok", false);
+        let health = request(None, "tok", true);
+        let reports = health["trust_bundle_clients"].as_array().unwrap();
+        assert_eq!(reports.len(), 3);
+        for version in [7, 8] {
+            assert!(reports.iter().any(|r| r["trust_bundle_version"] == version
+                && r["version_status"] == "presented"
+                && r["last_seen_unix"].is_u64()));
+        }
+        assert!(reports.iter().any(|r| r["trust_bundle_version"].is_null() && r["version_status"] == "unverified"));
+        assert!(
+            request(Some(99), "wrong", true)
+                .get("trust_bundle_clients")
+                .is_none()
+        );
     }
 
     #[test]
