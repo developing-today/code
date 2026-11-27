@@ -227,6 +227,13 @@ export interface HostedConfig {
    * logged or reported. Independent of auth, like the webhook
    * secret. */
   bridge: { token: string } | null;
+  /** True when the QUEUE_D1 binding is present (#16096, #15456,
+   * #14866): buildDeps then resolves D1MetadataStore (and the D1
+   * queue/session/backfill stores) instead of the module-scope
+   * fixtures. A boolean, never the binding itself — the health
+   * door reports it so the live readback gate can check one
+   * public flag instead of reading code. */
+  d1Bound: boolean;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -343,6 +350,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     kvLibsqlUrl: parseQueueLibsqlUrl(env.KV_LIBSQL_URL),
     kvLibsqlAuthToken: parseQueueLibsqlUrl(env.KV_LIBSQL_AUTH_TOKEN),
     bridge: parseBridgeConfig(env),
+    d1Bound: env.QUEUE_D1 != null,
   };
 }
 
