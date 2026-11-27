@@ -12,6 +12,7 @@ use id_caps::agent_majority::{
     Entrant, PresenceRoster, ProfileStore, Visitors, WorldProfile, starter_visitor_role,
 };
 use id_caps::role_config::RoleRegistry;
+use id_caps::surface_host::{RetryOutcome, SurfaceHost};
 use id_caps::task_delegation::{Assignee, TaskDelegation, delegation_board};
 use id_caps::work_surfaces::{
     ConflictModel, DocumentDefinition, DocumentPermissions, EditOp, ItemDraft, SurfaceActor,
@@ -250,6 +251,91 @@ fn concurrent_document_edits_refuse_stale_decisions_and_preserve_history() {
             .iter()
             .any(|event| event.outcome.starts_with("refused:"))
     );
+}
+
+#[test]
+fn edit_with_retry_reconciles_after_a_concurrent_writer_wins() {
+    let registry = registry();
+    let owner = SurfaceActor::owner(OWNER);
+    let mut surfaces = WorkSurfaces::new(WORLD);
+    surfaces
+        .define_document(
+            &owner,
+            DocumentDefinition {
+                name: "retry-notes".to_owned(),
+                conflict_model: ConflictModel::AppendOnly,
+                roles: BTreeMap::from([(
+                    "participant".to_owned(),
+                    DocumentPermissions {
+                        read: true,
+                        edit: true,
+                        review: false,
+                    },
+                )]),
+            },
+            T0,
+        )
+        .unwrap();
+    let host = SurfaceHost::new(surfaces);
+    let concurrent_writer = actor(3, "participant");
+    let mut injected_concurrent_write = false;
+    let result = host
+        .edit_with_retry(
+            &registry,
+            &actor(1, "participant"),
+            "retry-notes",
+            3,
+            T0 + 1,
+            |view, stale| {
+                if !injected_concurrent_write {
+                    injected_concurrent_write = true;
+                    let seen = view.revision;
+                    host.write(
+                        &concurrent_writer,
+                        &id_caps::work_surfaces::SurfaceId::Document("retry-notes".to_owned()),
+                        T0 + 1,
+                        |surfaces| {
+                            surfaces.edit_document(
+                                &registry,
+                                &concurrent_writer,
+                                "retry-notes",
+                                EditOp::Append {
+                                    text: "other agent;".to_owned(),
+                                },
+                                seen,
+                                T0 + 1,
+                            )
+                        },
+                    )
+                    .unwrap();
+                    Some(EditOp::Append {
+                        text: "initial plan;".to_owned(),
+                    })
+                } else {
+                    assert!(
+                        stale.is_some(),
+                        "retry callback receives the stale-decision evidence"
+                    );
+                    Some(EditOp::Append {
+                        text: "reconciled plan".to_owned(),
+                    })
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        RetryOutcome::Edited {
+            revision: 2,
+            rejections: 1
+        }
+    );
+    let surfaces = host.into_surfaces();
+    let final_view = surfaces
+        .document(&registry, &actor(1, "participant"), "retry-notes", T0 + 2)
+        .unwrap();
+    assert_eq!(final_view.content, "other agent;reconciled plan");
+    assert_eq!(final_view.history.len(), 2);
 }
 
 #[test]
