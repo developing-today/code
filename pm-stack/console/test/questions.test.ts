@@ -173,8 +173,20 @@ describe("the edge, with the laptop away", () => {
     // IDs and state as it returned them, with the laptop never asked.
     expect(found?.sets.map((s) => s.setId)).toEqual(["set-a", "set-b"]);
     const assembled = JSON.parse((await edge.docs.doc("questions")).body) as {
-      questionSets?: { sets: { setId: string; state: unknown }[] };
+      questionSets?: {
+        source: string;
+        laptopRequired: boolean;
+        definitions: string;
+        note: string;
+        sets: { setId: string; state: unknown }[];
+      };
     };
+    expect(assembled.questionSets).toMatchObject({
+      source: "decision-events",
+      laptopRequired: false,
+      definitions: "unavailable",
+      note: expect.stringContaining("still need the laptop"),
+    });
     expect(assembled.questionSets?.sets.map((s) => s.setId)).toEqual(["set-a", "set-b"]);
     expect(assembled.questionSets?.sets.map((s) => s.state)).toEqual([
       {
