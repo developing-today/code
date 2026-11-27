@@ -384,6 +384,7 @@ mod tests {
                     "pool",
                     "launched-by",
                     "remaining-budget-minutes",
+                    "manual-override",
                 ],
                 &["handoff", "bind"],
             )
