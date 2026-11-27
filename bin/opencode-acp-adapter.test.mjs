@@ -38,6 +38,7 @@ function startStubServe(script) {
   let statusResponseDelay = 0;
   let onStatusRequest = null;
   let promptAsyncResponseDelay = 0;
+  let hangSessionCreate = false;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -54,6 +55,9 @@ function startStubServe(script) {
     },
     setPromptAsyncDelay: (ms) => {
       promptAsyncResponseDelay = ms;
+    },
+    hangSessionCreate: () => {
+      hangSessionCreate = true;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -102,6 +106,8 @@ function startStubServe(script) {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/session') {
+        // #15982: a hung serve accepts the request and never answers.
+        if (hangSessionCreate) return;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
@@ -271,6 +277,21 @@ test('session/new creates the session on the shared serve with cwd as directory'
   const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
   assert.ok(create, 'stub serve saw POST /api/session');
   assert.deepEqual(create.body, { location: { directory: '/home/user/code' } });
+});
+
+test('a hung serve call times out instead of wedging session/new (#15982)', async (t) => {
+  // Oracle: with the stub serve never answering POST /api/session,
+  // serveJson's AbortSignal.timeout budget (300ms via env) must turn
+  // the hang into a typed error naming the method+pathname, so the
+  // ACP request rejects promptly instead of never settling.
+  const { stub, acp } = await setup(t, textEvents(), { OPENCODE_ACP_SERVE_TIMEOUT_MS: '300' });
+  stub.controls.hangSessionCreate();
+  const started = Date.now();
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> timed out after 300ms/,
+  );
+  assert.ok(Date.now() - started < 5000, 'session/new rejected within the timeout budget, not never');
 });
 
 test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {

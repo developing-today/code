@@ -9,7 +9,7 @@ import {
   admissionContext,
   type AdmissionContext,
 } from "../src/admission-gate.ts";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 // Mirror of crates/id-core/tests/admission_gate.rs: the same
 // actor table and the same scenario → rejection-class table, so

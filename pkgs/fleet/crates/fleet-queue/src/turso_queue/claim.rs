@@ -186,9 +186,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         let ins = t.exec(
-            "INSERT INTO tasks (queue, manual_only, title, body, payload, metadata, dedupe_key, priority, \
+            "INSERT INTO tasks (queue, manual_only, resume_session_id, title, body, payload, metadata, dedupe_key, priority, \
                status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 Arg::Int(if task.get("manual_only").and_then(Value::as_bool).unwrap_or(false) {
@@ -196,6 +196,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 } else {
                     0
                 }),
+                arg_str(task.get("resume_session_id").and_then(|v| v.as_str())),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
                 arg_str(task.get("body").and_then(|v| v.as_str())),
                 Arg::Text(
@@ -275,7 +276,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             Some("enqueue_repo_task"),
             Some(id),
             "enqueued",
-            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false), "resume_session_id": task.get("resume_session_id").cloned().unwrap_or(Value::Null)}),
         )?;
         seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
