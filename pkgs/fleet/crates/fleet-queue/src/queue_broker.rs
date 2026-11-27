@@ -15,7 +15,11 @@
 //!      or unix://<path> for the secrets broker's socket, #6218),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
-//!      read-only hosted-door probe at POST /door-health).
+//!      read-only hosted-door probes at POST /door-health,
+//!      POST /door-list, POST /door-show for per-task rows, the
+//!      POST /door-shadow dual-read comparison, and
+//!      POST /door-timeline for per-task event history in the
+//!      CF-2b shadow comparison.
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -23,8 +27,10 @@
 //! the only backend: QUEUE_BROKER_BACKEND may be unset or `turso`;
 //! any other value is a startup config error (exit 3).
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
@@ -33,9 +39,9 @@ struct State {
     secrets_url: String,
     secrets_token: String,
     agent: ureq::Agent,
-    /// Optional, read-only hosted-door probe (#14987). Queue traffic
-    /// continues to use Turso until a later cutover explicitly routes
-    /// verbs through this client.
+    /// Optional, read-only hosted-door probes (#14987 CF-2b shadow
+    /// comparison). Queue traffic continues to use Turso until a later
+    /// cutover explicitly routes verbs through this client.
     hosted_door: Option<HostedQueueDoor>,
     /// Filled by the startup thread once the Turso token resolves and
     /// the schema is ensured (#12247); until then queue verbs answer
@@ -43,15 +49,29 @@ struct State {
     turso: std::sync::OnceLock<crate::turso_queue::TursoBackend>,
     /// Why the backend is not ready yet: the latest startup failure.
     turso_pending: Mutex<String>,
+    /// Last trust-bundle observations by direct-TCP peer IP and presented
+    /// version. Keeping versions separate prevents a newer process on the
+    /// same host from hiding an older process during rollover. `None` records
+    /// an authenticated TLS request that made no valid version claim.
+    trust_bundle_clients: Mutex<BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>>,
     /// #13765: the coordinator sweep must never overlap itself — a
     /// slow GitHub pass skips instead of piling a second grant loop
     /// onto the same counters.
     coord_sweep_running: Mutex<bool>,
 }
 
-/// Authenticated client for the hosted queue door. This first slice
-/// exposes only a diagnostic probe; it deliberately does not switch
-/// the broker's authoritative store or forward queue writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrustBundleClientReport {
+    last_seen_unix: u64,
+}
+
+/// Authenticated client for the hosted queue door. This slice
+/// exposes diagnostic read-only probes (`/door-health`,
+/// `/door-list`, `/door-show`, the `/door-shadow` dual-read
+/// comparison, and `/door-timeline` per-task event history)
+/// for the CF-2b shadow
+/// comparison; it deliberately does not switch the broker's
+/// authoritative store or forward queue writes.
 struct HostedQueueDoor {
     base_url: String,
     token: String,
@@ -86,17 +106,114 @@ impl HostedQueueDoor {
     }
 
     fn health(&self, request: &Value) -> Result<Value, String> {
-        let url = format!("{}/v1/queue/health", self.base_url);
+        self.forward("health", request)
+    }
+
+    /// Forward one read-only verb to the hosted door (#14987 CF-2b):
+    /// POST /v1/queue/<verb> with a Bearer service token and the
+    /// original JSON request; the door's broker-envelope response is
+    /// returned intact so a shadow comparison can diff it against the
+    /// Turso plane. Only `health`, `list`, `show`, `shadow`, and
+    /// `timeline` are exposed as broker `/door-*` routes today.
+    fn forward(&self, verb: &str, request: &Value) -> Result<Value, String> {
+        let url = format!("{}/v1/queue/{verb}", self.base_url);
         let mut response = self
             .agent
             .post(&url)
             .header("Authorization", &format!("Bearer {}", self.token))
             .send_json(request.clone())
-            .map_err(|e| format!("hosted queue door health request failed: {e}"))?;
+            .map_err(|e| format!("hosted queue door {verb} request failed: {e}"))?;
         response
             .body_mut()
             .read_json::<Value>()
-            .map_err(|e| format!("hosted queue door health response was invalid JSON: {e}"))
+            .map_err(|e| format!("hosted queue door {verb} response was invalid JSON: {e}"))
+    }
+}
+
+/// The ids of one `/list` row set that the other side does not
+/// carry, ascending, capped so a fully diverged plane cannot blow
+/// up the envelope.
+const SHADOW_DIFF_SAMPLE: usize = 25;
+
+/// Compare the two `/list` envelopes a shadow read returns —
+/// local Turso plane first, hosted door second — by task id
+/// (#14987 CF-2b shadow window). Reports the counts each plane
+/// answered, the ids present on exactly one side, and whether the
+/// planes diverge; `complete` is false when either window is
+/// truncated or a row carries no numeric id, so a partial read
+/// can never certify equality. Rows are compared by id only: a
+/// status/payload drift inside the same id set is migration
+/// follow-up, not a cutover blocker at this layer.
+fn shadow_diff(local: &Value, door: &Value) -> Result<Value, String> {
+    let local_rows =
+        crate::client::list_rows(local).map_err(|e| format!("local /list unreadable: {e}"))?;
+    let door_rows =
+        crate::client::list_rows(door).map_err(|e| format!("door /list unreadable: {e}"))?;
+    fn ids(rows: &[Value]) -> (BTreeSet<i64>, usize) {
+        let set: BTreeSet<i64> = rows
+            .iter()
+            .filter_map(|row| row.get("id")?.as_i64())
+            .collect();
+        let unkeyed = rows.len() - set.len();
+        (set, unkeyed)
+    }
+    let (local_ids, unkeyed_local) = ids(&local_rows);
+    let (door_ids, unkeyed_door) = ids(&door_rows);
+    let mut only_in_turso: Vec<i64> = local_ids.difference(&door_ids).copied().collect();
+    let mut only_in_door: Vec<i64> = door_ids.difference(&local_ids).copied().collect();
+    only_in_turso.truncate(SHADOW_DIFF_SAMPLE);
+    only_in_door.truncate(SHADOW_DIFF_SAMPLE);
+    let truncated = |resp: &Value| {
+        resp.get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let complete = !truncated(local) && !truncated(door) && unkeyed_local == 0 && unkeyed_door == 0;
+    // Unkeyed rows cannot be matched across planes, so they count
+    // as divergence: the evidence is insufficient to cut over on.
+    let divergent = !only_in_turso.is_empty()
+        || !only_in_door.is_empty()
+        || unkeyed_local > 0
+        || unkeyed_door > 0;
+    Ok(json!({
+        "divergent": divergent,
+        "complete": complete,
+        "turso_rows": local_rows.len(),
+        "door_rows": door_rows.len(),
+        "turso_total": crate::client::list_total(local),
+        "door_total": crate::client::list_total(door),
+        "only_in_turso": only_in_turso,
+        "only_in_door": only_in_door,
+        "unkeyed_turso_rows": unkeyed_local,
+        "unkeyed_door_rows": unkeyed_door,
+    }))
+}
+
+/// Dual-read shadow comparison for the CF-2b shadow window
+/// (#14987): answer the same `/list` request from the local Turso
+/// plane (the path live traffic uses) and from the hosted door,
+/// and report the divergence the cutover decision needs. Read-only:
+/// neither plane is written, and live traffic keeps using Turso.
+fn door_shadow(st: &State, req: &Value) -> Value {
+    let Some(door) = st.hosted_door.as_ref() else {
+        return fail(3, "hosted queue door is not configured");
+    };
+    let Some(turso) = st.turso.get() else {
+        let why = st
+            .turso_pending
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        return fail(3, format!("queue backend not ready: {why}"));
+    };
+    let local = crate::turso_queue::dispatch(turso, "/list", req);
+    let remote = match door.forward("list", req) {
+        Ok(resp) => resp,
+        Err(e) => return fail(3, e),
+    };
+    match shadow_diff(&local, &remote) {
+        Ok(diff) => ok(diff),
+        Err(e) => fail(3, format!("shadow comparison: {e}")),
     }
 }
 
@@ -1154,6 +1271,83 @@ fn history_cursor_page(
     }))
 }
 
+const TRUST_BUNDLE_VERSION_HEADER: &str = "X-Fleet-Trust-Bundle-Version";
+
+/// Record an authenticated TLS TCP peer's presented version, or an unverified
+/// observation when it makes no single positive version claim. The version
+/// is client-reported, not a client identity or a server-side validation
+/// result. Plaintext, UDS, unauthenticated requests, and missing peer IPs
+/// cannot create either kind of observation.
+fn record_trust_bundle_client(
+    clients: &mut BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>,
+    transport: crate::uds_http::RequestTransport,
+    headers: &[(String, String)],
+    authenticated: bool,
+    now_unix: u64,
+) -> bool {
+    if !authenticated || transport.kind != crate::uds_http::RequestTransportKind::TcpTls {
+        return false;
+    }
+    let Some(client_ip) = transport.peer_ip else {
+        return false;
+    };
+    let mut version_headers = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(TRUST_BUNDLE_VERSION_HEADER));
+    let version = match (version_headers.next(), version_headers.next()) {
+        (None, None) => None,
+        (Some((_, raw_version)), None) => raw_version
+            .parse::<u32>()
+            .ok()
+            .filter(|version| *version > 0),
+        _ => None,
+    };
+
+    clients
+        .entry((client_ip, version))
+        .and_modify(|report| {
+            report.last_seen_unix = report.last_seen_unix.max(now_unix);
+        })
+        .or_insert(TrustBundleClientReport {
+            last_seen_unix: now_unix,
+        });
+    true
+}
+
+fn trust_bundle_health_payload(
+    clients: &BTreeMap<(IpAddr, Option<u32>), TrustBundleClientReport>,
+    now_unix: u64,
+) -> Value {
+    let clients = clients
+        .iter()
+        .map(|((client_ip, version), report)| {
+            json!({
+                "client_ip": client_ip.to_string(),
+                "trust_bundle_version": version,
+                "version_status": if version.is_some() { "presented" } else { "unverified" },
+                "last_seen_unix": report.last_seen_unix,
+                "age_seconds": now_unix.saturating_sub(report.last_seen_unix),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"service": "queue-broker", "trust_bundle_clients": clients})
+}
+
+fn queue_broker_health(st: &State) -> Value {
+    let clients = st
+        .trust_bundle_clients
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    trust_bundle_health_payload(&clients, now_unix_seconds())
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -1167,9 +1361,22 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             let (errors, warnings) = crate::validate::validate_packet(&packet);
             ok(json!({"errors": errors, "warnings": warnings}))
         }
-        "/healthz" => ok(json!({"service": "queue-broker"})),
+        "/healthz" => ok(queue_broker_health(st)),
         "/door-health" => match &st.hosted_door {
             Some(door) => door.health(req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
+        "/door-list" => match &st.hosted_door {
+            Some(door) => door.forward("list", req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
+        "/door-show" => match &st.hosted_door {
+            Some(door) => door.forward("show", req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
+        "/door-shadow" => door_shadow(st, req),
+        "/door-timeline" => match &st.hosted_door {
+            Some(door) => door.forward("timeline", req).unwrap_or_else(|e| fail(3, e)),
             None => fail(3, "hosted queue door is not configured"),
         },
         _ => {
@@ -1282,46 +1489,61 @@ fn request_ctx_scope(
 /// tiny_http requests to this function and the UDS loop adapts
 /// Unix-socket requests; routes and auth are identical on both
 /// transports by construction. Returns (status, JSON body).
-fn handle_request(
-    st: &State,
-    token: &str,
-    method: &str,
-    target: &str,
-    provided_token: Option<&str>,
-    body: &[u8],
-) -> (u16, Value) {
-    let path = target.split('?').next().unwrap_or("");
-    if method == "GET" && path == "/healthz" {
-        (200, ok(json!({"service": "queue-broker"})))
-    } else if !actions_exec_agent_call(path, provided_token)
-        && !token_matches(provided_token, token)
-    {
-        (401, json!({"error": "unauthorized"}))
-    } else if method != "POST" {
-        (405, json!({"error": "POST only"}))
-    } else {
-        match std::str::from_utf8(body) {
-            Ok(buf) => {
-                let mut parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
-                // #13774: _oidc_jwt is broker-injected, never
-                // client-supplied — strip any spoofed copy from
-                // every body, then inject the header token on
-                // agent-path calls for the verbs to verify.
-                if let Some(obj) = parsed.as_object_mut() {
-                    obj.remove("_oidc_jwt");
-                    if actions_exec_agent_call(path, provided_token) {
-                        if let Some(tok) = provided_token {
-                            obj.insert("_oidc_jwt".to_string(), Value::String(tok.to_string()));
-                        }
+fn handle_request(st: &State, token: &str, request: &crate::uds_http::HttpRequest) -> (u16, Value) {
+    let path = request.target.split('?').next().unwrap_or("");
+    let provided_token = request.header("X-Agent-Token");
+    if request.method == "GET" && path == "/healthz" {
+        // This unauthenticated endpoint is a liveness probe. Keep rollout
+        // inventory behind the ordinary broker-token POST route below.
+        return (200, ok(json!({"service": "queue-broker"})));
+    }
+
+    let token_authenticated = token_matches(provided_token, token);
+    if !actions_exec_agent_call(path, provided_token) && !token_authenticated {
+        return (401, json!({"error": "unauthorized"}));
+    }
+    if request.method != "POST" {
+        return (405, json!({"error": "POST only"}));
+    }
+    // Only the ordinary broker token path is used for the trust-version
+    // report. OIDC action calls remain authenticated by their own verifier,
+    // but are not bundle-health clients. The transport metadata is set by
+    // the TCP/UDS adapters, never by request headers.
+    if token_authenticated {
+        let mut clients = st
+            .trust_bundle_clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        record_trust_bundle_client(
+            &mut clients,
+            request.transport,
+            &request.headers,
+            true,
+            now_unix_seconds(),
+        );
+    }
+
+    match std::str::from_utf8(&request.body) {
+        Ok(buf) => {
+            let mut parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+            // #13774: _oidc_jwt is broker-injected, never
+            // client-supplied — strip any spoofed copy from
+            // every body, then inject the header token on
+            // agent-path calls for the verbs to verify.
+            if let Some(obj) = parsed.as_object_mut() {
+                obj.remove("_oidc_jwt");
+                if actions_exec_agent_call(path, provided_token) {
+                    if let Some(tok) = provided_token {
+                        obj.insert("_oidc_jwt".to_string(), Value::String(tok.to_string()));
                     }
                 }
-                (200, dispatch(st, path, &parsed))
             }
-            Err(e) => (
-                400,
-                json!({"ok": false, "exit": 2, "error": format!("bad body: {e}")}),
-            ),
+            (200, dispatch(st, path, &parsed))
         }
+        Err(e) => (
+            400,
+            json!({"ok": false, "exit": 2, "error": format!("bad body: {e}")}),
+        ),
     }
 }
 
@@ -1413,6 +1635,7 @@ pub fn run() -> i32 {
         hosted_door,
         turso: std::sync::OnceLock::new(),
         turso_pending: Mutex::new("starting".to_string()),
+        trust_bundle_clients: Mutex::new(BTreeMap::new()),
         coord_sweep_running: Mutex::new(false),
     });
 
@@ -1540,14 +1763,7 @@ pub fn run() -> i32 {
                     },
                     move |req| {
                         let _ctx = request_ctx_scope(req);
-                        let (status, value) = handle_request(
-                            &st,
-                            &tok,
-                            &req.method,
-                            &req.target,
-                            req.header("X-Agent-Token"),
-                            &req.body,
-                        );
+                        let (status, value) = handle_request(&st, &tok, req);
                         crate::uds_http::log_ctx_trip("queue-broker", req, status);
                         (
                             status,
@@ -1609,14 +1825,7 @@ pub fn run() -> i32 {
     };
     let handler = move |req: &crate::uds_http::HttpRequest| {
         let _ctx = request_ctx_scope(req);
-        let (status, value) = handle_request(
-            &state,
-            &token,
-            &req.method,
-            &req.target,
-            req.header("X-Agent-Token"),
-            &req.body,
-        );
+        let (status, value) = handle_request(&state, &token, req);
         crate::uds_http::log_ctx_trip("queue-broker", req, status);
         (
             status,
@@ -1633,6 +1842,241 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn test_state() -> State {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        State {
+            secrets_url: String::new(),
+            secrets_token: String::new(),
+            agent,
+            hosted_door: None,
+            turso: std::sync::OnceLock::new(),
+            turso_pending: Mutex::new("test backend".to_string()),
+            trust_bundle_clients: Mutex::new(BTreeMap::new()),
+            coord_sweep_running: Mutex::new(false),
+        }
+    }
+
+    #[test]
+    fn health_serializes_stale_client_version_and_age() {
+        // Oracle: an old client's presented version remains visible with
+        // last-seen and age data, so a rollover operator can identify it.
+        let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
+        let reports = BTreeMap::from([
+            (
+                (client_ip, Some(7)),
+                TrustBundleClientReport {
+                    last_seen_unix: 100,
+                },
+            ),
+            (
+                (client_ip, Some(8)),
+                TrustBundleClientReport {
+                    last_seen_unix: 9_000,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            trust_bundle_health_payload(&reports, 10_000),
+            json!({
+                "service": "queue-broker",
+                "trust_bundle_clients": [
+                    {
+                        "client_ip": "100.64.0.12",
+                        "trust_bundle_version": 7,
+                        "version_status": "presented",
+                        "last_seen_unix": 100,
+                        "age_seconds": 9_900
+                    },
+                    {
+                        "client_ip": "100.64.0.12",
+                        "trust_bundle_version": 8,
+                        "version_status": "presented",
+                        "last_seen_unix": 9_000,
+                        "age_seconds": 1_000
+                    }
+                ]
+            })
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn trust_version_observation_requires_tls_auth_and_peer(
+            kind in 0u8..3,
+            authenticated in any::<bool>(),
+            has_peer in any::<bool>(),
+            has_header in any::<bool>(),
+            version in any::<u32>(),
+            malformed in any::<bool>(),
+            duplicate in any::<bool>(),
+        ) {
+            // Oracle: only an authenticated TLS request with a server-
+            // observed peer can create an observation. One positive,
+            // unambiguous header records a presented version; every other
+            // such request is visible as unverified.
+            let kind = match kind {
+                0 => crate::uds_http::RequestTransportKind::Uds,
+                1 => crate::uds_http::RequestTransportKind::TcpPlain,
+                _ => crate::uds_http::RequestTransportKind::TcpTls,
+            };
+            let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
+            let transport = crate::uds_http::RequestTransport {
+                kind,
+                peer_ip: has_peer.then_some(client_ip),
+            };
+            let mut headers = has_header
+                .then(|| {
+                    (
+                        TRUST_BUNDLE_VERSION_HEADER.to_string(),
+                        if malformed {
+                            "not-a-version".to_string()
+                        } else {
+                            version.to_string()
+                        },
+                    )
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+            if duplicate && has_header {
+                headers.push((
+                    TRUST_BUNDLE_VERSION_HEADER.to_string(),
+                    version.to_string(),
+                ));
+            }
+            let mut reports = BTreeMap::new();
+
+            let recorded = record_trust_bundle_client(
+                &mut reports,
+                transport,
+                &headers,
+                authenticated,
+                1234,
+            );
+            let expected_observation = kind == crate::uds_http::RequestTransportKind::TcpTls
+                && authenticated
+                && has_peer;
+            prop_assert_eq!(recorded, expected_observation);
+            prop_assert_eq!(reports.len(), usize::from(expected_observation));
+            if expected_observation {
+                let expected_version = if has_header && !duplicate && !malformed && version > 0 {
+                    Some(version)
+                } else {
+                    None
+                };
+                let report = reports.get(&(client_ip, expected_version)).unwrap();
+                prop_assert_eq!(report.last_seen_unix, 1234);
+            }
+        }
+    }
+
+    #[test]
+    fn handler_records_only_authorized_tls_version_and_health_returns_it() {
+        // Oracle: the direct-TCP TLS+token request updates health; a wrong
+        // token, plaintext header spoof, and UDS header do not create a
+        // version report; a later TLS request without a version is retained
+        // separately as an unverified observation.
+        let state = test_state();
+        let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
+        let request = |kind, token: &str, version: Option<&str>| {
+            let mut headers = vec![("X-Agent-Token".to_string(), token.to_string())];
+            if let Some(version) = version {
+                headers.push((TRUST_BUNDLE_VERSION_HEADER.to_string(), version.to_string()));
+            }
+            crate::uds_http::HttpRequest {
+                method: "POST".to_string(),
+                target: "/validate".to_string(),
+                headers,
+                body: br#"{"packet":{}}"#.to_vec(),
+                transport: crate::uds_http::RequestTransport {
+                    kind,
+                    peer_ip: Some(client_ip),
+                },
+            }
+        };
+
+        let tls = request(
+            crate::uds_http::RequestTransportKind::TcpTls,
+            "token",
+            Some("17"),
+        );
+        assert_eq!(handle_request(&state, "token", &tls).0, 200);
+        let report = queue_broker_health(&state)["trust_bundle_clients"][0].clone();
+        assert_eq!(report["client_ip"], "100.64.0.12");
+        assert_eq!(report["trust_bundle_version"], 17);
+
+        let bad_token = request(
+            crate::uds_http::RequestTransportKind::TcpTls,
+            "wrong",
+            Some("99"),
+        );
+        assert_eq!(handle_request(&state, "token", &bad_token).0, 401);
+        let plain = request(
+            crate::uds_http::RequestTransportKind::TcpPlain,
+            "token",
+            Some("99"),
+        );
+        assert_eq!(handle_request(&state, "token", &plain).0, 200);
+        let uds = request(
+            crate::uds_http::RequestTransportKind::Uds,
+            "token",
+            Some("99"),
+        );
+        assert_eq!(handle_request(&state, "token", &uds).0, 200);
+        let break_glass = request(crate::uds_http::RequestTransportKind::TcpTls, "token", None);
+        assert_eq!(handle_request(&state, "token", &break_glass).0, 200);
+
+        let clients = &queue_broker_health(&state)["trust_bundle_clients"];
+        assert_eq!(clients.as_array().unwrap().len(), 2);
+        let clients = clients.as_array().unwrap();
+        assert!(clients.iter().any(|client| {
+            client["trust_bundle_version"] == 17 && client["version_status"] == "presented"
+        }));
+        assert!(clients.iter().any(|client| {
+            client["trust_bundle_version"].is_null() && client["version_status"] == "unverified"
+        }));
+
+        let mut authenticated_health =
+            request(crate::uds_http::RequestTransportKind::TcpTls, "token", None);
+        authenticated_health.target = "/healthz".to_string();
+        let (status, health) = handle_request(&state, "token", &authenticated_health);
+        assert_eq!(status, 200);
+        assert_eq!(health, ok(queue_broker_health(&state)));
+    }
+
+    #[test]
+    fn unauthenticated_get_healthz_only_reports_liveness() {
+        // Oracle: a public liveness probe never exposes peer IPs, versions,
+        // or last-seen timestamps from the authenticated rollout inventory.
+        let state = test_state();
+        let client_ip = "100.64.0.12".parse::<IpAddr>().unwrap();
+        state.trust_bundle_clients.lock().unwrap().insert(
+            (client_ip, Some(17)),
+            TrustBundleClientReport {
+                last_seen_unix: 1234,
+            },
+        );
+        let request = crate::uds_http::HttpRequest {
+            method: "GET".to_string(),
+            target: "/healthz".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::TcpPlain,
+                peer_ip: Some(client_ip),
+            },
+        };
+
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body, ok(json!({"service": "queue-broker"})));
+        assert!(body.get("trust_bundle_clients").is_none());
+    }
 
     #[test]
     fn door_health_uses_authenticated_hosted_queue_contract() {
@@ -1700,6 +2144,403 @@ mod tests {
             "hosted request includes the requested queue: {request:?}"
         );
         assert_eq!(response, json!({"ok": true, "rows": []}));
+    }
+
+    #[test]
+    fn door_list_forwards_authenticated_hosted_queue_contract() {
+        // Oracle (#14987 CF-2b shadow read): the broker forwards a
+        // read-only list probe as POST /v1/queue/list with a Bearer
+        // service token and the original JSON request; the door's
+        // broker-envelope response is returned intact so a shadow
+        // comparison can diff it against the Turso plane.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 21\r\nconnection: close\r\n\r\n{\"ok\":true,\"rows\":[]}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .forward("list", &json!({"queue": "repo-health-code-pilot"}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/list HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("repo-health-code-pilot"),
+            "hosted request includes the requested queue: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "rows": []}));
+    }
+
+    #[test]
+    fn shadow_diff_reports_id_set_divergence() {
+        // Oracle (#14987 CF-2b shadow window): identical id sets
+        // certify no divergence; an id on exactly one side is
+        // reported on that side; a truncated window or an unkeyed
+        // row withholds the completeness certificate.
+        let local =
+            json!({"ok": true, "rows": [{"id": 1}, {"id": 2}], "total": 2, "truncated": false});
+        let door =
+            json!({"ok": true, "rows": [{"id": 2}, {"id": 3}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&local, &door).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(true));
+        assert_eq!(diff["turso_rows"], json!(2));
+        assert_eq!(diff["door_rows"], json!(2));
+        assert_eq!(diff["only_in_turso"], json!([1]));
+        assert_eq!(diff["only_in_door"], json!([3]));
+
+        let same =
+            json!({"ok": true, "rows": [{"id": 1}, {"id": 2}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&same, &same).unwrap();
+        assert_eq!(diff["divergent"], json!(false));
+        assert_eq!(diff["complete"], json!(true));
+
+        let truncated = json!({"ok": true, "rows": [{"id": 1}], "total": 2, "truncated": true});
+        let diff = shadow_diff(&same, &truncated).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(false));
+
+        let unkeyed = json!({"ok": true, "rows": [{"id": 1}, {"title": "no id"}], "total": 2, "truncated": false});
+        let diff = shadow_diff(&unkeyed, &unkeyed).unwrap();
+        assert_eq!(diff["divergent"], json!(true));
+        assert_eq!(diff["complete"], json!(false));
+        assert_eq!(diff["unkeyed_turso_rows"], json!(1));
+
+        assert!(shadow_diff(&json!({"ok": true}), &same).is_err());
+        assert!(shadow_diff(&same, &json!({"ok": true})).is_err());
+    }
+
+    #[test]
+    fn door_shadow_without_door_is_config_error() {
+        // Oracle: POST /door-shadow without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-shadow".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_shadow_without_backend_is_not_ready() {
+        // Oracle: POST /door-shadow with the door configured but
+        // the Turso backend still resolving answers exit 3 without
+        // touching the network — the backend check runs before any
+        // door call.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let mut state = test_state();
+        state.hosted_door = Some(HostedQueueDoor {
+            base_url: "https://door.invalid".into(),
+            token: "service-token".into(),
+            agent,
+        });
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-shadow".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("backend not ready")
+        );
+    }
+
+    #[test]
+    fn door_list_without_door_is_config_error() {
+        // Oracle: POST /door-list without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-list".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_timeline_forwards_authenticated_hosted_queue_contract() {
+        // Oracle (#14942 CF-2 shadow read): the broker forwards a
+        // read-only timeline probe as POST /v1/queue/timeline with a
+        // Bearer service token and the original JSON request; the
+        // door's broker-envelope response is returned intact so a
+        // shadow comparison can diff one task's event history
+        // against the Turso plane.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 23\r\nconnection: close\r\n\r\n{\"ok\":true,\"events\":[]}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .forward("timeline", &json!({"task_id": 23710}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/timeline HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("23710"),
+            "hosted request includes the requested task: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "events": []}));
+    }
+
+    #[test]
+    fn door_timeline_without_door_is_config_error() {
+        // Oracle: POST /door-timeline without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-timeline".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"task_id":23710}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_show_forwards_authenticated_hosted_queue_contract() {
+        // Oracle (#14942 CF-2b shadow read): the broker forwards a
+        // read-only show probe as POST /v1/queue/show with a Bearer
+        // service token and the original JSON request; the door's
+        // broker-envelope response is returned intact so a shadow
+        // comparison can diff one task row against the Turso plane.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 23\r\nconnection: close\r\n\r\n{\"ok\":true,\"task\":null}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door.forward("show", &json!({"task_id": 23710})).unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/show HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("23710"),
+            "hosted request includes the requested task id: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "task": null}));
+    }
+
+    #[test]
+    fn door_show_without_door_is_config_error() {
+        // Oracle: POST /door-show without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-show".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"task_id":23710}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
     }
 
     #[test]

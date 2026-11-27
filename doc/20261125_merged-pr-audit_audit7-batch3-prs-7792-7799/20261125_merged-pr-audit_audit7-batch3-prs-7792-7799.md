@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7792 | #5845 | `audit:complete` | Delivers the Obsidian importer decision record: mapping/loss/refusal behavior, links, frontmatter/tags, canvas degradation, re-import deduplication, and a nine-group corpus specification. The issue is closed with this design. |
-| #7793 | #7791 | `audit:complete` | Restores the dogfood plugin copy from its source of truth, including the parser parity fix, test block and `biome.json`; verifies clean diffs and the synced plugin tests. The trigger-less/disabled guard is separately tracked as #7794. |
-| #7797 | #5910 | `audit:complete` | Settles the KDL presentation surfaces for export, human upload and agent statements, with trust/staging rules, one pipeline and explicit deferred work owned by sibling issues. |
-| #7798 | #6215 | `audit:complete` | Adds role-socket path helpers and per-role transport parsing with the documented precedence and unknown-field rejection, plus tests. Runtime client switching is outside this configuration issue's acceptance. |
-| #7799 | #6901 | `audit:complete` | Extends create readback verification to compare body, open state and requested labels, adds failure-mode tests, and matches the documented fleet-paperwork contract. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                    |
+| -------------: | -------------: | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7792 |          #5845 | `audit:complete` | Delivers the Obsidian importer decision record: mapping/loss/refusal behavior, links, frontmatter/tags, canvas degradation, re-import deduplication, and a nine-group corpus specification. The issue is closed with this design.          |
+|          #7793 |          #7791 | `audit:complete` | Restores the dogfood plugin copy from its source of truth, including the parser parity fix, test block and `biome.json`; verifies clean diffs and the synced plugin tests. The trigger-less/disabled guard is separately tracked as #7794. |
+|          #7797 |          #5910 | `audit:complete` | Settles the KDL presentation surfaces for export, human upload and agent statements, with trust/staging rules, one pipeline and explicit deferred work owned by sibling issues.                                                            |
+|          #7798 |          #6215 | `audit:complete` | Adds role-socket path helpers and per-role transport parsing with the documented precedence and unknown-field rejection, plus tests. Runtime client switching is outside this configuration issue's acceptance.                            |
+|          #7799 |          #6901 | `audit:complete` | Extends create readback verification to compare body, open state and requested labels, adds failure-mode tests, and matches the documented fleet-paperwork contract.                                                                       |
 
 ## Slice state
 

@@ -101,3 +101,19 @@ export function zoomChartView(st: ChartViewState, factor: number, fx: number | n
 export function panChartView(st: ChartViewState, dx: number, dy: number, width: number, height: number): boolean;
 export function resetChartView(st: ChartViewState): void;
 export function chartClickSuppressed(rawStamp: string | number | null | undefined, now: number): boolean;
+export type LabelMode = "key" | "all" | "none";
+export function resolveLabelMode(mode: unknown): LabelMode;
+export function shouldLabelPoint(mode: unknown, onFrontier: boolean, isSelected: boolean): boolean;
+export type ChartLimitMode = "unset" | "atmost" | "atleast";
+export function resolveLimitMode(mode: unknown): ChartLimitMode;
+export function limitThreshold(raw: unknown): number | null;
+export function passesChartLimit(value: number | null | undefined, mode: unknown, threshold: unknown): boolean;
+export function applyChartLimit<T>(
+  rows: T[],
+  get: (row: T) => number | null | undefined,
+  spec: { mode?: unknown; value?: unknown } | null | undefined,
+): T[];
+export function capPointsPerBand<T>(rows: T[], maxPer: unknown, bandOf: (row: T) => string | number): T[];
+export type ChartMagnify = "fit" | "150" | "200";
+export function resolveMagnify(mag: unknown): ChartMagnify;
+export function magnifyWidth(mag: unknown): string;

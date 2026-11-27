@@ -42,6 +42,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   compact      Reclaim live-class event bytes with one retention pass
 //!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
 //!   talk         Talk pages: post on and list an object's discussion
 //!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
@@ -577,6 +578,17 @@ pub struct ServeArgs {
     /// Most world sessions at once, across every world.
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
+    /// Most worlds one account may hold at once (#1067, F12.10
+    /// per-account quotas). `0` = no per-account bound: accounts share
+    /// the hub-wide ceiling under the existing rules alone.
+    #[arg(long, default_value_t = 0, requires = "world")]
+    pub world_max_per_account: u32,
+    /// Most storage bytes one account may be charged at once (#1067,
+    /// F12.10 per-account quotas). `0` = no per-account bound: the hub
+    /// owns the ledger and the write paths charge it once the
+    /// measurement slice lands.
+    #[arg(long, default_value_t = 0, requires = "world")]
+    pub world_storage_max_per_account: u64,
     /// Close durable worlds that no session used for this many seconds
     /// (they reopen from their journal on demand). Defaults to 600, or to
     /// 900 under `--world-host`. `0` keeps them open, and is refused under
@@ -1540,6 +1552,29 @@ pub enum Command {
         #[command(subcommand)]
         command: ClaimCommand,
     },
+    /// Reclaim live-class bytes in the event store with one retention pass (#2056).
+    ///
+    /// The production caller for `LocalEvents::compact` (#5534, #2036 §4.6, criterion 8):
+    /// drops the bytes of applied `chat.message.v1` events below the per-author retain
+    /// frontier, keeping durable kinds, checkpoints and each author's most recent events.
+    /// A compacted event keeps its presence, applied verdict and causal edges as a
+    /// residue. Fails clearly while `id serve` holds the single-opener store.
+    /// This is node-wide across all channels and permanently removes eligible message bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id compact
+    /// id compact --retain-recent 50 --json
+    /// ```
+    Compact {
+        /// Print JSON instead of a line.
+        #[arg(long, global = true)]
+        json: bool,
+        /// How many of each author's most recent applied events are always kept.
+        #[arg(long, default_value_t = crate::commands::compact::DEFAULT_RETAIN_RECENT)]
+        retain_recent: u32,
+    },
     /// Walk a typed graph snapshot: neighbors, backlinks, threads,
     /// history, or a bounded path (native graph navigation, #7612).
     ///
@@ -1914,10 +1949,11 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
-    /// Revoke a device key, given as its hex public key. Records it signed
-    /// before the revocation stay valid history.
+    /// Revoke a device key, given as its hex public key or scanned
+    /// `id:keyset-device?...` payload. Records it signed before the
+    /// revocation stay valid history.
     Revoke {
-        /// The device's hex public key, as `id keyset show` prints it.
+        /// The device's hex public key or its scanned QR payload.
         device_key: String,
         /// Why it was revoked, kept in the record.
         #[arg(long, default_value = "revoked")]

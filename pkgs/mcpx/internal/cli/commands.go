@@ -224,7 +224,10 @@ func (a *App) CmdTypes(ctx context.Context, args []string) error {
 	return nil
 }
 
-// ensureSchemas triggers a fetch for namespaces that have never been read.
+// ensureSchemas blocks for the selected namespaces when they have never been
+// read. An explicit --ns selection is a first use (#1868 point 3 slice 2):
+// it awaits that namespace's schema read instead of serving a stub, while
+// the implicit ensureAnySchemas path only starts the read in the background.
 //
 // Selectors may name a tool ("chrome_devtools.click"); only the namespace part
 // is validated here, because whether a tool exists is a question for the
@@ -798,7 +801,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err := a.ensureSchemas(ctx, c, ns); err != nil {
 			return err
 		}
-	} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+	} else if err := a.ensureRunSchemas(ctx, c); err != nil {
 		return err
 	}
 
@@ -1115,6 +1118,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	opts.TypeCheckDefaulted = shape.checkDefaulted
 	opts.TypeCheckOnError = shape.checkOnError
 	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
+	opts.CheckJs = shape.checkJs
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -1400,14 +1404,33 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// ensureAnySchemas fetches schemas when a namespace has none yet.
+// ensureRunSchemas blocks until every known namespace has been read at
+// least once. A run snapshots the client at generation time: unlike a tool
+// call, which awaits its schema read daemon-side, a client generated from
+// a cold cache bakes lazy namespaces in, and the script then sees an empty
+// tools list. The wait happens only on a cold cache; a warm run pays
+// nothing beyond the namespace listing.
+func (a *App) ensureRunSchemas(ctx context.Context, c *Client) error {
+	known, err := c.Namespaces(ctx, a.Profile)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(known))
+	for _, n := range known {
+		names = append(names, n.Namespace)
+	}
+	return a.ensureSchemas(ctx, c, names)
+}
+
+// ensureAnySchemas starts a schema read when a namespace has none yet and
+// returns without waiting for it (#1868 point 3 slice 2).
 //
-// It used to stop at the first namespace that was cached, so a server whose
-// first fetch was still in flight -- an adapter, which is mcpx spawning
-// itself, is reliably slower than a small upstream -- was silently missing
-// from the generated client while its neighbours were present. A namespace
-// whose fetch failed has an error to show instead and is not retried here,
-// or every command would pay for one broken server.
+// Cached namespaces serve immediately from the generated typed stubs (PR
+// #12027); the first use of a cold namespace awaits its schema read
+// daemon-side via CallGenerated, so no entry path pays a blocking full
+// Refresh up front. A namespace whose fetch failed has an error to show
+// instead and is not retried here, or every command would pay for one
+// broken server; its error surfaces via `mcpx ls` without hanging.
 func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 	known, err := c.Namespaces(ctx, a.Profile)
 	if err != nil {
@@ -1422,9 +1445,25 @@ func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 	if !missing {
 		return nil
 	}
-	a.notice("reading tool schemas for the first time...")
-	_, err = c.Refresh(ctx)
-	return err
+	a.notice("reading tool schemas in the background; cached namespaces are ready now...")
+	a.startBackgroundRefresh(c)
+	return nil
+}
+
+// startBackgroundRefresh re-reads schemas without making the caller wait.
+// The context is detached: cancelling the invoking command must not cancel
+// the read another command is about to use. Errors stay on the daemon and
+// surface through the next `mcpx ls` instead of failing this command.
+func (a *App) startBackgroundRefresh(c *Client) {
+	timeout := a.Settings().Duration("daemon.refreshTimeout")
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		_, _ = c.Refresh(ctx)
+	}()
 }
 
 // buildPrelude imports the client and binds each namespace as a bare
@@ -1747,7 +1786,15 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 		names = append(names, name)
 	}
 	var outcomes []mcpclient.SupervisorScanOutcome
-	for attempt := 0; ; attempt++ {
+	// A stopped daemon's detach lands only once its pools finish
+	// draining, which takes up to limits.execDrainTimeout after the
+	// shutdown began — while waitUntilStopped above already returned,
+	// because the HTTP listener closes first. So a refusal can persist
+	// for the whole drain window; retry until it is over rather than
+	// for a fixed few attempts, or the reap gives up mid-drain and the
+	// child outlives the stop it was cut by.
+	deadline := time.Now().Add(defaults.ExecDrainTimeout + 5*time.Second)
+	for {
 		outcomes = mcpclient.ReapSupervisors(stateDir, names, nil)
 		refused := false
 		for _, o := range outcomes {
@@ -1755,10 +1802,10 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 				refused = true
 			}
 		}
-		if !refused || attempt >= 20 {
+		if !refused || !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(defaults.SupervisorReapRetry)
 	}
 	reaped := 0
 	for _, o := range outcomes {
@@ -2485,6 +2532,7 @@ type scriptShape struct {
 	// checkDefaulted says the check is on only because run's
 	// per-command default switched it on (#1868 point 4).
 	checkDefaulted             bool
+	checkJs                    bool
 	imports, importsOnDynamic  string
 	importsOnMissing           string
 	importsCrossProject        string
@@ -2612,6 +2660,7 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	sh.typecheck = scriptCheckFor(f.command, a.Settings().String("script.check"), checkExplicit)
 	sh.checkOnError = a.Settings().String("script.checkOnError")
 	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
+	sh.checkJs = a.Settings().Bool("script.checkJs")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.

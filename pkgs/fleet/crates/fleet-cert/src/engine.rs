@@ -27,7 +27,7 @@ use crate::model::{
     ParentRef, RootCreateRequest,
 };
 use crate::naming::{GenerationPartition, slugify};
-use crate::profile::{check_broker_sans, resolve_profile, KeyCustody, SanPolicy};
+use crate::profile::{KeyCustody, SanPolicy, check_broker_sans, resolve_profile};
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
@@ -185,6 +185,15 @@ pub enum CaSigner {
     MlDsa(Box<MlDsa44Signer>),
 }
 
+impl CaSigner {
+    pub(crate) fn public_key_matches(&self, expected: &[u8]) -> bool {
+        match self {
+            CaSigner::Classical(key) => rcgen::PublicKeyData::der_bytes(key) == expected,
+            CaSigner::MlDsa(key) => rcgen::PublicKeyData::der_bytes(key.as_ref()) == expected,
+        }
+    }
+}
+
 /// Load a signing key from an explicit signer source: the PKCS#8
 /// file named `file_name` inside `source.key_dir`. This is the only
 /// key-loading path in the crate (§24.3).
@@ -234,7 +243,7 @@ fn random_serial() -> SerialNumber {
 /// everything else as UTF8String. Creation and later reconstruction
 /// (when a stored CA signs again) use this same function, so issuer
 /// names in children byte-match the CA's subject.
-fn distinguished_name(
+pub(crate) fn distinguished_name(
     organization: &str,
     country: &str,
     ou: Option<&str>,
@@ -441,6 +450,7 @@ fn base_manifest(
         key_location: key_location.to_string(),
         cross_signing,
         certificates: Vec::new(),
+        revocations: Vec::new(),
         files: Vec::new(),
         warnings,
     })
@@ -2628,7 +2638,14 @@ pub fn validate_leaf(
         .ok_or_else(|| CertError::manifest("no CERTIFICATE block in leaf"))?;
     let leaf = parse_cert(&der)?;
     let pool = collect_pool(pool_bundles)?;
-    Ok(validate_chain(&leaf, &pool, trust, at))
+    let mut report = validate_chain(&leaf, &pool, trust, at);
+    let mut revocations = crate::revoke::collect_revocations(pool_bundles);
+    revocations.extend(leaf_bundle.manifest.revocations.iter().cloned());
+    if let Some(check) = crate::revoke::revoked_check(&report.path_fingerprints, &revocations, at) {
+        report.valid = false;
+        report.checks.push(check);
+    }
+    Ok(report)
 }
 
 /// Fingerprint helper kept public for reports.

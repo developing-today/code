@@ -35,7 +35,9 @@ use iroh_blobs::api::Store as BlobStore;
 
 use crate::chain;
 use crate::event_store::{EventStore, Ingest, Refusal, StoreError};
-use crate::hosted_export::{ExportBlob, ExportObject, HostedExport, VerifiedImport};
+use crate::hosted_export::{
+    ExportBlob, ExportObject, HostedExport, VerifiedImport, export_fingerprint,
+};
 
 /// What ingest did with one entry of the export.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,16 +250,19 @@ async fn place_blob(blobs: &BlobStore, blob: &ExportBlob) -> EntryOutcome {
 /// Ingest a verified export into the target node (§6.2 step 4).
 ///
 /// `verified` is the token [`crate::hosted_export::verify_import`]
-/// minted for this export; it must name the export's binding, key,
+/// minted for this export: it must name the export's binding, key,
 /// entry counts, §7 client-side-encryption choice, and its
-/// `unkeyed_export` trust decision must match the manifest's.
+/// `unkeyed_export` trust decision must match the manifest's — and,
+/// first of all, its [`crate::hosted_export::export_fingerprint`]
+/// must match the export handed in, so a token minted for one
+/// export can never authorize ingesting another (#16054).
 /// `now_ms` is the importing node's clock, handed to the event
 /// store like any other ingest's.
 ///
 /// # Errors
 ///
 /// Returns [`ImportError::VerificationMismatch`] — ingesting
-/// nothing — when the token does not name this export, and
+/// nothing — when the token does not name this exact export, and
 /// [`ImportError::Store`] when the event store itself fails. A
 /// refusal of an individual entry is reported in the returned
 /// [`ImportReport`], never as an error.
@@ -268,12 +273,13 @@ pub async fn ingest_import(
     verified: &VerifiedImport,
     now_ms: u64,
 ) -> Result<ImportReport, ImportError> {
-    if verified.binding_id != export.manifest.binding_id
-        || verified.iroh_id != export.manifest.iroh_id
-        || verified.object_count != export.objects.len() as u64
-        || verified.blob_count != export.blobs.len() as u64
-        || verified.unkeyed_export != export.manifest.unkeyed_export
-        || verified.client_side_encryption != export.manifest.client_side_encryption
+    if verified.export_fingerprint() != export_fingerprint(export)
+        || verified.binding_id() != export.manifest.binding_id
+        || verified.iroh_id() != export.manifest.iroh_id
+        || verified.object_count() != export.objects.len() as u64
+        || verified.blob_count() != export.blobs.len() as u64
+        || verified.unkeyed_export() != export.manifest.unkeyed_export
+        || verified.client_side_encryption() != export.manifest.client_side_encryption
     {
         return Err(ImportError::VerificationMismatch);
     }
@@ -375,8 +381,15 @@ mod tests {
     /// events and a `document.put` citing one blob. Returns the
     /// events and the blob bytes.
     fn source_chain() -> (Vec<Event>, Vec<u8>) {
+        source_chain_with(b"the document the export carries")
+    }
+
+    /// The same chain shape over different document bytes, so two
+    /// exports can share identity, keys, counts, and trust flags
+    /// while carrying different entries.
+    fn source_chain_with(document: &[u8]) -> (Vec<Event>, Vec<u8>) {
         let key = p2p_key(SEED);
-        let content = b"the document the export carries".to_vec();
+        let content = document.to_vec();
         let first = chain::sign(&key, 0, None, None, ext("message")).unwrap();
         let second = chain::sign(&key, 1, Some(first.id), None, ext("message")).unwrap();
         let mut doc_ext = ext(DOCUMENT_KIND);
@@ -385,15 +398,20 @@ mod tests {
         (vec![first, second, third], content)
     }
 
-    /// Build a verified export over `events` from a fresh binding,
-    /// as the hosted service would produce it. When `blob_bytes` is
-    /// given, the export carries that one blob and the chain's
-    /// `document.put` event cites it.
-    fn make_export(events: &[Event], blob_bytes: Option<&[u8]>) -> HostedExport {
+    /// Build an export over `events` from a fresh binding for
+    /// `sub` with the §7 choice `cse`, as the hosted service would
+    /// produce it. When `blob_bytes` is given, the export carries
+    /// that one blob and the chain's `document.put` event cites it.
+    fn make_export_for(
+        sub: &str,
+        events: &[Event],
+        blob_bytes: Option<&[u8]>,
+        cse: Option<bool>,
+    ) -> HostedExport {
         let mut service = HostedBindingService::with_seed("hosted.example", [9u8; 32]);
-        service.signup_account(SUB, None, "free").unwrap();
+        service.signup_account(sub, None, "free").unwrap();
         let binding = service
-            .complete_browser_ceremony(SUB, &dalek_key(SEED), None)
+            .complete_browser_ceremony(sub, &dalek_key(SEED), cse)
             .unwrap();
         let blob = blob_bytes.map(|bytes| ExportBlob::new(bytes.to_vec()));
         let objects: Vec<ExportObject> = events
@@ -416,6 +434,14 @@ mod tests {
             "export-1",
             CREATED,
         )
+    }
+
+    /// Build a verified export over `events` from a fresh binding,
+    /// as the hosted service would produce it. When `blob_bytes` is
+    /// given, the export carries that one blob and the chain's
+    /// `document.put` event cites it.
+    fn make_export(events: &[Event], blob_bytes: Option<&[u8]>) -> HostedExport {
+        make_export_for(SUB, events, blob_bytes, None)
     }
 
     #[tokio::test]
@@ -550,8 +576,19 @@ mod tests {
     async fn a_token_for_another_export_is_refused_before_any_write() {
         let (events, content) = source_chain();
         let export = make_export(&events, Some(&content));
-        let mut wrong = verify_import(&export, false).unwrap();
-        wrong.binding_id = "another-binding".to_owned();
+        // The token is opaque: the only way to hold a token for a
+        // different export is to verify one. Same root key and
+        // entry shapes, but a different binding record.
+        let other = make_export_for("other-subject-9", &events, Some(&content), None);
+        let wrong = verify_import(&other, false).unwrap();
+        assert_ne!(
+            wrong.binding_id(),
+            verify_import(&export, false).unwrap().binding_id()
+        );
+        assert_ne!(
+            wrong.export_fingerprint(),
+            verify_import(&export, false).unwrap().export_fingerprint()
+        );
         let (_dir, mut target) = open_store();
         let blobs = blob_store();
         let err = ingest_import(&mut target, &blobs, &export, &wrong, 0)
@@ -561,14 +598,19 @@ mod tests {
         // Nothing landed.
         let author = *p2p_key(SEED).verifying_key().as_bytes();
         assert!(target.event(&author, 0).unwrap().is_none());
+        assert!(blobs.get_bytes(BlobHash::new(&content)).await.is_err());
     }
 
     #[tokio::test]
     async fn a_token_with_a_different_cse_choice_is_refused_before_any_write() {
         let (events, content) = source_chain();
         let export = make_export(&events, Some(&content));
-        let mut wrong = verify_import(&export, false).unwrap();
-        wrong.client_side_encryption = !wrong.client_side_encryption;
+        // Same root key and entry shapes, but the binding stored
+        // the data as plaintext: the token's §7 choice disagrees
+        // with the export's.
+        let plain = make_export_for("plain-subject-2", &events, Some(&content), Some(false));
+        let wrong = verify_import(&plain, false).unwrap();
+        assert!(!wrong.client_side_encryption());
         let (_dir, mut target) = open_store();
         let blobs = blob_store();
         let err = ingest_import(&mut target, &blobs, &export, &wrong, 0)
@@ -581,6 +623,92 @@ mod tests {
         let author = *p2p_key(SEED).verifying_key().as_bytes();
         assert!(target.event(&author, 0).unwrap().is_none());
         assert!(blobs.get_bytes(BlobHash::new(&content)).await.is_err());
+    }
+
+    /// Two exports from ONE binding with identical identity,
+    /// keys, counts, and trust flags but different entries
+    /// (#16054): the same chain shape over different document
+    /// bytes, so the exports differ only in their third event and
+    /// their blob.
+    fn make_same_binding_pair() -> (HostedExport, HostedExport) {
+        let mut service = HostedBindingService::with_seed("hosted.example", [9u8; 32]);
+        service.signup_account(SUB, None, "free").unwrap();
+        let binding = service
+            .complete_browser_ceremony(SUB, &dalek_key(SEED), None)
+            .unwrap();
+        let build = |events: &[Event], blob_bytes: &[u8], export_id: &str| {
+            let blob = ExportBlob::new(blob_bytes.to_vec());
+            let objects: Vec<ExportObject> = events
+                .iter()
+                .map(|event| {
+                    let refs = match event.header.extensions.kind.as_str() {
+                        DOCUMENT_KIND => vec![blob.hash.clone()],
+                        _ => Vec::new(),
+                    };
+                    ExportObject::from_envelope(event.bytes.clone(), refs).unwrap()
+                })
+                .collect();
+            build_export(
+                &service,
+                &binding,
+                Vec::new(),
+                objects,
+                vec![blob],
+                Some(&dalek_key(SEED)),
+                export_id,
+                CREATED,
+            )
+        };
+        let (events_a, content_a) = source_chain();
+        let (events_b, content_b) = source_chain_with(b"a different document payload");
+        (
+            build(&events_a, &content_a, "export-a"),
+            build(&events_b, &content_b, "export-b"),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_token_cannot_cross_to_a_same_shape_export_with_different_entries() {
+        // #16054: the token is bound to the exact export. Identity,
+        // counts, and trust flags all match across this pair, so
+        // only the fingerprint can refuse the cross-use.
+        let (export_a, export_b) = make_same_binding_pair();
+        let token_a = verify_import(&export_a, false).unwrap();
+        let token_b = verify_import(&export_b, false).unwrap();
+        assert_eq!(token_a.binding_id(), token_b.binding_id());
+        assert_eq!(token_a.iroh_id(), token_b.iroh_id());
+        assert_eq!(token_a.object_count(), token_b.object_count());
+        assert_eq!(token_a.blob_count(), token_b.blob_count());
+        assert_eq!(token_a.unkeyed_export(), token_b.unkeyed_export());
+        assert_eq!(
+            token_a.client_side_encryption(),
+            token_b.client_side_encryption()
+        );
+        assert_ne!(token_a.export_fingerprint(), token_b.export_fingerprint());
+
+        // The mismatched token writes nothing: no events, no blobs.
+        let (_dir, mut target) = open_store();
+        let blobs = blob_store();
+        let err = ingest_import(&mut target, &blobs, &export_a, &token_b, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ImportError::VerificationMismatch));
+        let author = *p2p_key(SEED).verifying_key().as_bytes();
+        for seq in 0..3 {
+            assert!(target.event(&author, seq).unwrap().is_none());
+        }
+        for export in [&export_a, &export_b] {
+            for blob in &export.blobs {
+                assert!(blobs.get_bytes(BlobHash::new(&blob.bytes)).await.is_err());
+            }
+        }
+
+        // The exact token/export pair still imports whole.
+        let report = ingest_import(&mut target, &blobs, &export_a, &token_a, 0)
+            .await
+            .unwrap();
+        assert!(report.is_complete(), "report: {report:?}");
+        assert_eq!(report.applied(), 4); // 3 objects + 1 blob
     }
 
     /// Build the keyed and unkeyed shapes of one export from a
@@ -637,7 +765,7 @@ mod tests {
         assert_eq!(keyed.blobs.len(), unkeyed.blobs.len());
 
         let keyed_token = verify_import(&keyed, false).unwrap();
-        assert!(!keyed_token.unkeyed_export);
+        assert!(!keyed_token.unkeyed_export());
         let (_dir, mut target) = open_store();
         let blobs = blob_store();
         let err = ingest_import(&mut target, &blobs, &unkeyed, &keyed_token, 0)
@@ -652,7 +780,7 @@ mod tests {
         // confirmation for the unkeyed export does not authorize
         // ingesting the keyed export either.
         let unkeyed_token = verify_import(&unkeyed, true).unwrap();
-        assert!(unkeyed_token.unkeyed_export);
+        assert!(unkeyed_token.unkeyed_export());
         let err = ingest_import(&mut target, &blobs, &keyed, &unkeyed_token, 0)
             .await
             .unwrap_err();
@@ -665,7 +793,7 @@ mod tests {
         let (events, content) = source_chain();
         let (_keyed, unkeyed) = make_keyed_and_unkeyed_exports(&events, Some(&content));
         let verified = verify_import(&unkeyed, true).unwrap();
-        assert!(verified.unkeyed_export);
+        assert!(verified.unkeyed_export());
         let (_dir, mut target) = open_store();
         let blobs = blob_store();
         let report = ingest_import(&mut target, &blobs, &unkeyed, &verified, 0)

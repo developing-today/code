@@ -14,11 +14,16 @@ path = "src/main.rs"
 name = "atlas-stage"
 path = "src/bin/atlas-stage.rs"
 
+[features]
+# Native memory-lancedb reading for `atlas-stage ingest-memory-lancedb`
+# (atlas-core's `lancedb` feature; needs protoc to build).
+lancedb = ["atlas-core/lancedb"]
+
 [dependencies]
 atlas-core = { path = "../atlas-core" }
 atlas-proto = { path = "../atlas-proto" }
 atlas-embed = { path = "../atlas-embed" }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "string"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"

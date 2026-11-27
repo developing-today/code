@@ -239,10 +239,55 @@ async function main() {
     "snapshot plus ordered tail must have no duplicate, gap, or reorder",
   );
 
+  // #15538 slice 3: one signed-shaped event through tenant A's own D1
+  // binding, read back with its chain head, then proven unreadable
+  // through tenant B's binding. Isolation is structural: two separate
+  // D1 databases, no tenant selector inside either.
+  const tenantAuthor = "aa".repeat(32);
+  const tenantId = "bb".repeat(32);
+  const tenantBytesHex = Buffer.from("signed-event-bytes-0", "utf8").toString("hex");
+  const tenantAppend = await fetch(`${baseUrl}/tenant-append?tenant=a`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ author: tenantAuthor, seq: 0, id: tenantId, bytes_hex: tenantBytesHex }),
+    signal: abortSignal(),
+  });
+  if (!tenantAppend.ok) assert.fail(`tenant append failed: ${await responseError(tenantAppend)}`);
+  const appended = await tenantAppend.json();
+  assert.equal(appended.head, tenantId, "tenant append must report the new head");
+  assert.equal(appended.next_seq, 1, "tenant append must advance the head to 1");
+
+  const tenantEvent = await fetch(
+    `${baseUrl}/tenant-event?tenant=a&author=${tenantAuthor}&seq=0`,
+    { signal: abortSignal() },
+  );
+  if (!tenantEvent.ok) assert.fail(`tenant event read failed: ${await responseError(tenantEvent)}`);
+  const eventBody = await tenantEvent.json();
+  assert.equal(eventBody.id, tenantId, "tenant A binding must return the appended event id");
+  assert.equal(eventBody.bytes_hex, tenantBytesHex, "tenant A binding must return the exact event bytes");
+
+  const tenantHead = await fetch(`${baseUrl}/tenant-head?tenant=a&author=${tenantAuthor}`, {
+    signal: abortSignal(),
+  });
+  if (!tenantHead.ok) assert.fail(`tenant head read failed: ${await responseError(tenantHead)}`);
+  assert.deepEqual(await tenantHead.json(), { next_seq: 1, head: tenantId });
+
+  const crossEvent = await fetch(`${baseUrl}/tenant-event?tenant=b&author=${tenantAuthor}&seq=0`, {
+    signal: abortSignal(),
+  });
+  assert.equal(crossEvent.status, 404, "tenant B binding must not read tenant A's event");
+  const crossHead = await fetch(`${baseUrl}/tenant-head?tenant=b&author=${tenantAuthor}`, {
+    signal: abortSignal(),
+  });
+  if (!crossHead.ok) assert.fail(`tenant B head read failed: ${await responseError(crossHead)}`);
+  assert.deepEqual(await crossHead.json(), { next_seq: 0, head: null });
+
   console.log("D1 journal-fit smoke: PASS");
   console.log("  append ordinals: 1, 2, 3");
   console.log("  bookmark carried to a fresh request: read-your-write PASS");
   console.log("  snapshot + ordered tail: byte-identical JSONL, no gap/duplicate/reorder");
+  console.log("  event/head round trip through tenant A binding: PASS");
+  console.log("  cross-binding isolation (tenant B reads nothing): PASS");
 }
 
 function onSignal(signal) {

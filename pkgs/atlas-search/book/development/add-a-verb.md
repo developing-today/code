@@ -208,28 +208,11 @@ and updating it is part of the change, not a workaround.
 
 ### 4. The gate and identity consequences — read before building
 
-This surface has **no per-client identity**, and a new tool inherits
-that fact:
+MCP may now resolve an audit identity from per-agent credentials, but its search policy is still shared:
 
-- The gate is checked once, in `src/index.ts`, before dispatch: one
-  shared gate token (secret name `GATE_TOKEN`) for every gated route,
-  `/mcp` included. A valid check yields a boolean — no caller name, no
-  per-agent credential. `mcp.ts` receives only a `SearchEnv`
-  (`{ QUERY_CACHE }`); it never sees the token.
-- Every MCP caller therefore shares the one hosted identity: disclosure
-  context `hosted-per-user`, sensitivity ceiling `personal`, both
-  compile-time constants in `src/space.ts` that no request field, header
-  or environment variable can change, pinned into the cache key and
-  verified against the service's reported `effective_ceiling` before a
-  result may be cached.
-- So: a tool that needs a different ceiling, a different context,
-  per-agent scoping or an audit identity **cannot be improvised on this
-  endpoint**. Per-agent identity stamping, per-agent ceilings and corpus
-  scoping are later slices of #8625, explicitly not built yet. A tool
-  that is a write, or an operator/audit surface, does not belong here at
-  all — the standing precedent is that cache purge (a write) and cache
-  inspect (an operator surface) are deliberately **not** MCP tools and
-  live on the gated REST surface in [The Worker HTTP API](../reference/worker-api.md).
+- The MCP gate in `src/index.ts` accepts `AGENT_TOKENS` (a secret JSON map of stable agent ids to distinct bearer tokens) when configured. The token is resolved to an agent id before dispatch; caller-provided identity fields are ignored. Without the map, `GATE_TOKEN` remains the compatibility credential and resolves to `hosted-per-user`.
+- That authenticated id is used only in the query audit log. Every MCP caller still shares the outbound disclosure context `hosted-per-user` and sensitivity ceiling `personal`, compile-time constants in `src/space.ts`; per-agent ceilings and corpus filtering are not implemented yet.
+- So: a tool that needs a different ceiling, a different context or per-agent corpus scoping **cannot be improvised on this endpoint**. The MCP search logs identity, but the per-agent policy remainder is still #8625 work. A tool that is a write, or an operator/audit surface, does not belong here at all — cache purge (a write) and cache inspect (an operator surface) remain on the gated REST surface in [The Worker HTTP API](../reference/worker-api.md).
 
 If the tool passes that test — read-only, safe at the `personal`
 ceiling, safe for every gate holder to call — build it by the steps

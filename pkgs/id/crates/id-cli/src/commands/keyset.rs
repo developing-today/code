@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
@@ -21,10 +21,10 @@ use crate::cli::KeysetCommand;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::hex::hex_encode;
 use id_directory::keyset::{AdminKeyState, KeysetEntry, KeysetState};
-use id_directory::keyset_file::{KeysetFile, CLIENT_KEYSET_FILE, KEYSET_FILE};
+use id_directory::keyset_file::{CLIENT_KEYSET_FILE, KEYSET_FILE, KeysetFile};
 use id_directory::keyset_pairing::{DeviceQr, EnrolAccept, EnrolOffer};
 use id_directory::restored_key::{
-    self, RestoreStatus, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE,
+    self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE, RestoreStatus,
 };
 use id_events::groups::Key;
 use id_groups::encryption::DeviceSets;
@@ -126,15 +126,10 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
         KeysetCommand::Revoke {
             device_key, reason, ..
         } => {
-            file.append(
-                &key,
-                KeysetEntry::DeviceRevoked {
-                    device_key: device_key.clone(),
-                    reason,
-                },
-                None,
-            )?;
-            println!("Revoked device {device_key}.");
+            let device = parse_revoke_device(&device_key)?;
+            let revoked_key = device.device_key.clone();
+            file.revoke_scanned(&key, &device, &reason)?;
+            println!("Revoked device {revoked_key}.");
         }
         KeysetCommand::Rotate {
             new_admin_key_file, ..
@@ -198,6 +193,16 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_revoke_device(text: &str) -> Result<DeviceQr> {
+    if text.trim().starts_with("id:keyset-device?") {
+        DeviceQr::parse(text)
+    } else {
+        Ok(DeviceQr {
+            device_key: text.to_owned(),
+        })
+    }
 }
 
 fn public_hex(key: &SigningKey) -> String {
@@ -447,5 +452,20 @@ mod tests {
             read_key_file(&good).unwrap().to_bytes(),
             SigningKey::from_bytes(&[7; 32]).to_bytes()
         );
+    }
+
+    #[test]
+    fn revoke_accepts_a_device_qr_or_the_existing_hex_argument() {
+        let device = SigningKey::from_bytes(&[7; 32]);
+        let qr = DeviceQr::for_key(&device).qr_payload();
+        assert_eq!(
+            parse_revoke_device(&qr).unwrap(),
+            DeviceQr::for_key(&device)
+        );
+        assert_eq!(
+            parse_revoke_device(&public_hex(&device)).unwrap(),
+            DeviceQr::for_key(&device)
+        );
+        assert!(parse_revoke_device("id:keyset-device?device=invalid").is_err());
     }
 }

@@ -1,14 +1,34 @@
 // The signed event codec (src/event.ts) and the Ed25519 seam.
 //
 // Oracle: chain.rs's decode rules, and cross-language fixtures —
-// events signed by the Rust signer in
-// pkgs/id/tests/bridge_fixtures.rs are pinned here byte for byte,
-// and the TypeScript-signed events below are pinned there.
+// Rust- and TypeScript-signed events share one byte-exact fixture
+// file consumed by both language suites.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { encodeCanonical, type CborValue } from "../src/canonical-cbor.ts";
+import { readFileSync } from "node:fs";
+import { encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 import { bytesToHex, hexToBytes, importIdKey, verifyEd25519 } from "../src/ed25519.ts";
 import { decodeEvent, Malformed, parseEvent, signEvent } from "../src/event.ts";
+
+interface BridgeEventVector {
+  name: string;
+  bytes_hex: string;
+  id_hex: string;
+  author_hex?: string;
+  kind?: string;
+  checkpoint_segment_seq?: number;
+}
+
+interface SharedVectors {
+  bridge_events: {
+    typescript_signed: BridgeEventVector[];
+    rust_signed: BridgeEventVector[];
+  };
+}
+
+const SHARED_VECTORS = JSON.parse(
+  readFileSync(new URL("../../tests/fixtures/hosted-second-version-g1.json", import.meta.url), "utf8"),
+) as SharedVectors;
 
 const seed = (n: number) => new Uint8Array(32).fill(n);
 
@@ -34,6 +54,15 @@ test("sign and decode round-trip a chain", async () => {
   const again = await decodeEvent(a.bytes);
   assert.equal(again.id, a.id);
   assert.equal(parseEvent(b.bytes).id, b.id);
+});
+
+test("shared TypeScript-signed bridge fixtures decode in TypeScript", async () => {
+  const vectors = SHARED_VECTORS.bridge_events.typescript_signed;
+  assert.equal(vectors.length, 2, "shared bridge fixture retains both TypeScript-signed events");
+  for (const vector of vectors) {
+    const decoded = await decodeEvent(hexToBytes(vector.bytes_hex));
+    assert.equal(decoded.id, vector.id_hex, vector.name);
+  }
 });
 
 test("a corrupted signature is refused", async () => {
@@ -178,33 +207,27 @@ test("structural extension rules (parseEvent, signature aside)", () => {
 });
 
 test("Rust-signed events verify and decode (cross-language fixtures)", async () => {
-  // Pinned from pkgs/id/tests/bridge_fixtures.rs
-  // (rust_signed_events_for_the_hosted_bridge, run on the laptop
-  // under the fleet build lock): key seed [7;32], so the two
-  // implementations are pinned to each other in both directions.
-  const r1 = hexToBytes(
-    "86015820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c5840d2734c4edc475ae59e4a0c1564d2d56c947a5745a11875a7a9024d92cc87d8a5ba60585efb192b968346b5ec659f825d8cffc778a1b610e8407eaa7b5dc1ef000000a4646b696e64676d657373616765656166746572806567726f7570f666646f6d61696e6c69642e6576656e74732e7631",
-  );
-  const r2 = hexToBytes(
-    "88015820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c5840d8b48098f2f9342ad54e061477d3f99f1b98a4fc442d054126ec789a6602ccd8c89b8f8725a23072f38897f5925e29eada3a713c5ff3327385c4254ce9117f0209582057560fde78cf6da97615969f90f2589f568d389140542e5e6a427d27f3b907ac015820e53b05183acd33ee8377ac6017a013ea111652baed8945d84d80c8cbc2a062e9a4646b696e64676d657373616765656166746572815820e53b05183acd33ee8377ac6017a013ea111652baed8945d84d80c8cbc2a062e96567726f7570f666646f6d61696e6c69642e6576656e74732e7631",
-  );
-  const r3 = hexToBytes(
-    "87015820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c58405821b6cca2465408ef2e9f041c4f6c9533cb4ba266359583842e928d3c60fee6aaa5de818ed7ca63851dc24cbc6b9eb4406520f7ded3b25ab2136785ba30b10200025820698b10b97ad8e72a5dfd52356af286dd5161937666af047aba9fd673757d901aa5646b696e647273657373696f6e2e636865636b706f696e74656166746572806567726f7570f666646f6d61696e6c69642e6576656e74732e76316a636865636b706f696e74a266686561646572a7656e6f6e636558209a277e65f53a6cd9c4a2e31528a78713dd6cc6dab1118f50b6e2c41ded113cda67707572706f73656e636f6c6c61622065646974696e67696d61635f73636f70656e5065725061727469636970616e746a73657373696f6e5f69645820b9ca9e3c221d11c13424731063c2fca488c5cf507d92af6bf04375cb52371d226a737461727465645f6d731903e86c7061727469636970616e7473815820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c726d61635f6b65795f636f6d6d69746d656e745820a53d167ccd3f9fffbe81f6024547c2551bcf221f62f7f289b92940f10d974c87677365676d656e74a764726f6f74582092a2b787a06d7272df43eaf87acc3b9c1d315d79d599d61c285983483e43199866656e645f6d73190af06873746172745f6d731903e86a61756469745f626c6f62f66b6576656e745f636f756e741901006b7365676d656e745f736571006f707265765f636865636b706f696e74f6",
-  );
+  const vectors = SHARED_VECTORS.bridge_events.rust_signed;
+  assert.equal(vectors.length, 3, "shared bridge fixture retains all Rust-signed events");
+  const [r1Vector, r2Vector, r3Vector] = vectors;
+  assert.ok(r1Vector && r2Vector && r3Vector);
+  const r1 = hexToBytes(r1Vector.bytes_hex);
+  const r2 = hexToBytes(r2Vector.bytes_hex);
+  const r3 = hexToBytes(r3Vector.bytes_hex);
   const d1 = await decodeEvent(r1);
-  assert.equal(d1.id, "e53b05183acd33ee8377ac6017a013ea111652baed8945d84d80c8cbc2a062e9");
-  assert.equal(d1.authorHex, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
+  assert.equal(d1.id, r1Vector.id_hex);
+  assert.equal(d1.authorHex, r1Vector.author_hex);
   assert.equal(d1.seq, 0);
   const d2 = await decodeEvent(r2);
-  assert.equal(d2.id, "698b10b97ad8e72a5dfd52356af286dd5161937666af047aba9fd673757d901a");
+  assert.equal(d2.id, r2Vector.id_hex);
   assert.equal(d2.seq, 1);
   assert.equal(d2.backlinkHex, d1.id);
   assert.deepEqual(d2.afterHex, [d1.id]);
   const d3 = await decodeEvent(r3);
-  assert.equal(d3.id, "1131869a4e2f550e4a8fbddd7d4edae53d971969ef02e7f685951c7fbdc67e46");
-  assert.equal(d3.kind, "session.checkpoint");
+  assert.equal(d3.id, r3Vector.id_hex);
+  assert.equal(d3.kind, r3Vector.kind);
   assert.ok(d3.checkpoint);
-  assert.equal(d3.checkpoint.segmentSeq, 0n);
+  assert.equal(d3.checkpoint.segmentSeq, BigInt(r3Vector.checkpoint_segment_seq!));
   assert.equal(d3.checkpoint.prev, null);
 });
 

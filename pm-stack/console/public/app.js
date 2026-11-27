@@ -102,7 +102,7 @@ function toast(message, bad, undo) {
 
 /** Ask before acting. Resolves to the typed text ("" when none is asked
  * for), or null when the person backs out. */
-function ask({ title, text, label, okLabel, danger, required, value }) {
+function ask({ title, text, label, okLabel, danger, required, value, trim = true }) {
   const dialog = $("ask");
   const input = $("ask-input");
   const ok = $("ask-ok");
@@ -115,7 +115,7 @@ function ask({ title, text, label, okLabel, danger, required, value }) {
   ok.textContent = okLabel || "Confirm";
   ok.className = danger ? "danger" : "";
   return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? (trim ? input.value.trim() : input.value) : null), {
       once: true,
     });
     // A dialog keeps its last return value: clear it, or Escape after an
@@ -1110,6 +1110,9 @@ let shown = 12;
 const pending = new Map();
 /** Choices ticked on a many-answer question, kept across redraws. */
 const picks = new Map();
+/** Exact submitted words, until the platform or durable outbox accepts
+ * the answer. A refused send must not turn reopening into retyping. */
+const answerDrafts = new Map();
 
 /** Answer after a short pause, so a slip of the thumb can be undone. */
 function later(key, label, send) {
@@ -1136,6 +1139,7 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
+  const draft = answerDrafts.get(key);
   // Out of the list while it is on its way, whatever is read meanwhile.
   sendingAnswers.add(key);
   let out;
@@ -1160,6 +1164,9 @@ async function sendAnswer(kind, args, key, said) {
     else if (out.state === "kept") toast(out.note);
     else if (said) toast(said);
     picks.delete(key);
+    // An older send must not erase words submitted while it was away,
+    // even if the person submitted the same words twice.
+    if (answerDrafts.get(key) === draft) answerDrafts.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
@@ -1249,8 +1256,11 @@ function questionCard(q) {
         {
           class: "small ghost",
           onclick: async () => {
-            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true });
-            if (text) sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true, value: answerDrafts.get(key)?.text, trim: false });
+            if (text?.trim()) {
+              answerDrafts.set(key, { text });
+              sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            }
           },
         },
         "Write an answer",
@@ -1264,12 +1274,37 @@ function questionCard(q) {
   );
 }
 
+/** The decision sets the edge discovered at the decision-events
+ * Worker itself (#13491): there even while the laptop is away, and
+ * said to be discovery only — a set's questions, and answering them,
+ * still come with the laptop's report. */
+function questionSetsNodes(doc) {
+  const found = doc.questionSets;
+  if (!found || !Array.isArray(found.sets) || !found.sets.length) return [];
+  return [
+    card(
+      h("h3", {}, "Decision sets, read at the edge"),
+      h("p", { class: "meta" }, found.note || ""),
+      ...found.sets.map((s) =>
+        h(
+          "p",
+          { class: "meta" },
+          `${s.setId} · ${s.events} events · last ${s.lastType ?? "nothing"} ${s.lastTs ?? ""}`.trim() +
+            (s.state ? ` · ${s.state.fannedOut ?? "—"} fanned out` : " · its state could not be read"),
+        ),
+      ),
+    ),
+  ];
+}
+
 function viewQuestions() {
   const doc = docs.questions;
   if (!doc) return [empty("Loading the questions…")];
   const all = doc.questions?.open || [];
   const out = [...notices(doc)];
-  if (!all.length) return [...out, empty("No open questions.")];
+  const discovered = questionSetsNodes(doc);
+  if (!all.length) return [...out, ...discovered, empty("No open questions.")];
+  out.push(...discovered);
   // Every recommendation at once: the fleet put these with an answer it
   // recommends, and one word from the owner takes them all. Done a set
   // at a time, as accepting one set is, so whatever cannot go now is
@@ -2546,6 +2581,18 @@ export function runSaid(run, now = Date.now()) {
   return [state, ago(run.at, now), String(run.commit || "").slice(0, 7), run.byHand ? "started by hand" : null].filter(Boolean).join(" · ");
 }
 
+/** The stores the migration workflow can run against (#14256), as its
+ * own choices name them; `stand-in` is the CI proof, not a store. */
+export const MIGRATABLE_STORES = new Set(["fleet-queue", "fleet-platform", "fleet-mirror", "voice-line-ledger"]);
+
+/** A store's last migration run, in a line (#14256): none yet, or the
+ * run as runSaid says it, with a failure said as a failure. */
+export function migrationSaid(run, now = Date.now()) {
+  if (!run) return { text: "No migration has been run from here yet.", tone: "" };
+  const said = runSaid(run, now);
+  return run.failed ? { text: `Last migration failed: ${said}`, tone: "warn" } : { text: `Last migration: ${said}`, tone: "" };
+}
+
 /** What is being served, in a sentence, from the edge's health answer:
  * which commit Cloudflare serves, and whether the laptop runs the same. */
 export function servingSaid(health) {
@@ -2634,13 +2681,17 @@ const REFUSED_SAID = {
   "ask.send": "sending a prompt",
   "ask.reply": "replying on a prompt",
   "ask.close": "closing a prompt",
+  "prompt.enqueue": "filing a prompt's task in the queue",
   "issue.comment": "commenting on an issue",
   "need.comment": "commenting on something that needs you",
   "hands.done": "marking something for your hands done",
   "issue.rank": "ranking an issue",
   "task.move": "moving a task",
+  "task.cancel": "cancelling a task",
+  "task.unblock": "unblocking a task",
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
+  "store.migrate": "starting a store migration",
   "intake.send": "filing a note, a bug or a change",
   "read.board": "reading the board",
   "read.prs": "reading the pull requests",
@@ -2650,6 +2701,7 @@ const REFUSED_SAID = {
   "read.done": "reading what was finished",
   "read.agents": "reading the agents list",
   "read.pipeline": "reading the unread instructions",
+  "read.questionSets": "reading the question sets",
 };
 
 /** What the edge says of doing the core itself, read from its public
@@ -2823,6 +2875,7 @@ const CAN_SAID = {
   "task.unblock": "unblock a task",
   "pr.merge": "merge",
   "deploy.start": "start a deploy",
+  "store.migrate": "start a store migration",
   "intake.send": "file a note, a bug or a change",
   "question.answer": "record an answer",
   "question.defer": "hand a question back",
@@ -3070,6 +3123,9 @@ async function viewMachines() {
       card(
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
+        machine.kid ? h("p", { class: "meta" }, `Key ${machine.kid}`) : null,
+        ...held.filter((item) => machine.kid && item.forKid === machine.kid).map((item) =>
+          h("p", { class: "meta" }, `Waiting here: ${Outbox.sayOf(item.kind, item.args)}`)),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
         s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
@@ -3100,6 +3156,7 @@ async function viewMachines() {
       card(
         h("h3", {}, Outbox.sayOf(item.kind, item.args)),
         h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        item.forKid ? h("p", { class: "meta" }, `For ${item.for || "a machine"} · key ${item.forKid}`) : null,
         heldWaitsSaid(item.waits) ? h("p", { class: "meta" }, heldWaitsSaid(item.waits)) : null,
         h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
       ),
@@ -3111,7 +3168,7 @@ async function viewMachines() {
       h(
         "p",
         { class: "meta" },
-        "One machine can be connected today: the one the tunnel leads to, whose key is the only one Cloudflare takes reports under. Connecting others, each under its own key and with what it can do, is not built yet.",
+        "Each enrolled machine reports under its own key. Actions go only to a machine that says it can do them. The tunnel machine can be asked directly; other machines take their waiting actions with their next report.",
       ),
     ),
   );
@@ -3267,11 +3324,42 @@ export function platformCounts(workers) {
 async function viewPlatform() {
   // When the store tokens run out is a machine's to read; with none
   // reporting, the Workers still show.
-  const [p, held, live] = await Promise.all([
+  const [p, held, live, migrations] = await Promise.all([
     api(freshly("platform")),
     api("tokens").catch((error) => ({ error: error.message })),
     api(freshly("stores")).catch((error) => ({ error: error.message })),
+    api(freshly("store-migrations")).catch((error) => ({ error: error.message })),
   ]);
+  // Each store's last migration run, and a way to start one (#14256):
+  // the run goes to GitHub's migration workflow, which alone reads the
+  // store's token. A real store needs its name typed back.
+  const migrated = migrations?.runs && typeof migrations.runs === "object" ? migrations.runs : {};
+  const migrationLine = (store) => {
+    if (migrations?.error) return h("p", { class: "why" }, `Its last migration could not be read: ${migrations.error}`);
+    const run = migrated[store];
+    const said = migrationSaid(run);
+    return h("p", { class: said.tone === "warn" ? "why" : "meta" }, run?.url ? ext(run.url, said.text) : said.text);
+  };
+  const migrate = (store) => async (e) => {
+    const typed = await ask({
+      title: `Migrate ${store}?`,
+      text: "GitHub applies the shared-schema migrations to this store. Migrations already applied are skipped, and a failed migration stops the run and shows here as failed.",
+      label: `Type ${store} to confirm`,
+      required: true,
+      okLabel: "Migrate",
+      danger: true,
+    });
+    if (typed === null) return;
+    act("store.migrate", { store, confirm_store: typed }, "Migration started", e.target);
+  };
+  const proof = async (e) => {
+    const yes = await ask({
+      title: "Run the migration proof?",
+      text: "GitHub runs the migration tests, applies the migrations twice to a throwaway store, and checks that a broken migration fails. No real store is touched.",
+      okLabel: "Run it",
+    });
+    if (yes !== null) act("store.migrate", { store: "stand-in" }, "Migration proof started", e.target);
+  };
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -3294,6 +3382,14 @@ async function viewPlatform() {
   ];
   const stores = Array.isArray(live?.stores) ? live.stores : [];
   out.push(h("h2", {}, `Stores${stores.length ? ` (${stores.length})` : ""}`));
+  out.push(
+    card(
+      h("h3", {}, "Migration proof"),
+      h("p", { class: "meta" }, "The stand-in run proves the migrations against a throwaway store before any real store is migrated."),
+      migrationLine("stand-in"),
+      h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: proof }, "Run the proof")),
+    ),
+  );
   if (live?.error) out.push(card(h("p", { class: "why" }, `The stores could not be asked: ${live.error}`)));
   if (!live?.error && stores.length === 0) out.push(card(h("p", { class: "meta" }, "The list of stores names none.")));
   if (live?.malformed) {
@@ -3317,6 +3413,9 @@ async function viewPlatform() {
         h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
         ...said.lines.map((line) => h("p", { class: "meta" }, line)),
         h("p", { class: "meta" }, `Used by ${(s.usedBy || []).join(", ")}.`),
+        ...(MIGRATABLE_STORES.has(s.name)
+          ? [migrationLine(s.name), h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: migrate(s.name) }, "Migrate"))]
+          : []),
       ),
     );
   }

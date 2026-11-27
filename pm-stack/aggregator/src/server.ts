@@ -41,7 +41,16 @@ import { dismissDecisionSets, listOpenDecisionSets, sweepDecisionSets } from "./
 import { listStackHealthDown, readStackHealthStates } from "./stack-health.ts";
 import { buildHealth, pageRenderHealth, recordRender } from "./health.ts";
 import { resolveBwsSecret } from "./secrets.ts";
-import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import {
+  buildEpicSlugMap,
+  isConfirmedParentAbsent,
+  openMetadataStore,
+  parseNativeParentResponse,
+  type EpicSlugMap,
+  type IngestionItem,
+  type NativeParentLookup,
+} from "./metadata-ingestion.ts";
+import { fleetMetadataDbPath } from "./metadata-db.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { requireHome } from "./home.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
@@ -109,6 +118,7 @@ import {
   eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { startActionsExecApplier } from "./actions-exec-apply.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
 import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
@@ -160,6 +170,7 @@ import {
   emptyUsageView,
 } from "./server-wiring.ts";
 import { json, jsonCompact, html, serviceWorkerResponse } from "./server-respond.ts";
+import { paginateSearchResults, parseSearchPagination, SEARCH_DEFAULT_LIMIT } from "./search-view.ts";
 import { questionsHtml, PWA_MANIFEST } from "./server-pages.ts";
 import {
   boardContext,
@@ -235,14 +246,15 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
   }
 }
 
-const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ??
-  join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDbPath = fleetMetadataDbPath();
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
   db: metadataDb,
   epicSlugs: async (item: IngestionItem): Promise<EpicSlugMap> => {
+    // #16011: server-side kind/epic filtering, so the catalog covers all
+    // matching epics instead of filtering after an unfiltered 1000-item
+    // scan window.
     const output = await runMetadataFleet([
       "gh",
       "issue",
@@ -251,6 +263,8 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
       item.repo,
       "--state",
       "all",
+      "--label",
+      "kind/epic",
       "--limit",
       "1000",
       "--json",
@@ -258,17 +272,25 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     ]);
     const rows: unknown = JSON.parse(output);
     if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
-    const slugs: EpicSlugMap = new Map();
-    for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
-      if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
-      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
-      if (!labels.includes("kind/epic")) continue;
-      for (const label of labels) {
-        const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
-        if (slug && !slugs.has(slug)) slugs.set(slug, { repo: item.repo, number: row.number as number });
-      }
+    return buildEpicSlugMap(rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[], item.repo);
+  },
+  resolveNativeParent: async (item: { repo: string; number: number }): Promise<NativeParentLookup> => {
+    // #16011: same authoritative contract as the sweeper — a confirmed
+    // 404 means no native parent (null); anything else is retryable
+    // (undefined) and the handler answers non-2xx without writes.
+    let stdout: string;
+    try {
+      stdout = await runMetadataFleet([
+        "gh",
+        "api",
+        `repos/${item.repo}/issues/${item.number}/parent`,
+        "--jq",
+        "{number: .number, repo_url: .repository_url}",
+      ]);
+    } catch (error) {
+      return isConfirmedParentAbsent(error) ? null : undefined;
     }
-    return slugs;
+    return parseNativeParentResponse(stdout);
   },
   writeBack: async (item, body) => {
     await withMetadataTempFile("pm-metadata-webhook-", body, async (path) => {
@@ -283,6 +305,81 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
         path,
       ]);
     });
+  },
+  readCurrent: async (item) => {
+    // Stale-snapshot protection (issue #16012): re-read the live item
+    // the snapshot check ran on, mapped like the sweeper's fetchOne so
+    // the recompute sees the same shape. Null (fetch failure or
+    // unparseable shape) skips the write-back; the stored row stands
+    // and the sweeper converges on its next pass. The native parent is
+    // carried over: the webhook path never resolves it (the sweeper's
+    // native-parent lookup covers that on its pass).
+    const command = item.kind === "issue" ? "issue" : "pr";
+    const fields =
+      item.kind === "issue"
+        ? "number,title,body,labels,milestone,state,author,createdAt,updatedAt,closedAt"
+        : "number,title,body,labels,milestone,state,author,createdAt,updatedAt,closedAt,mergedAt";
+    let raw: unknown;
+    try {
+      const output = await runMetadataFleet([
+        "gh",
+        command,
+        "view",
+        String(item.number),
+        "--repo",
+        item.repo,
+        "--json",
+        fields,
+      ]);
+      raw = JSON.parse(output) as unknown;
+    } catch {
+      return null;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const viewed = raw as {
+      number?: unknown;
+      title?: unknown;
+      body?: unknown;
+      labels?: (string | { name?: unknown })[];
+      milestone?: { title?: unknown; dueOn?: unknown } | null;
+      state?: unknown;
+      author?: { login?: unknown } | null;
+      createdAt?: unknown;
+      updatedAt?: unknown;
+      closedAt?: unknown;
+      mergedAt?: unknown;
+    };
+    if (!Number.isSafeInteger(viewed.number) || (viewed.number as number) !== item.number) return null;
+    if (
+      typeof viewed.title !== "string" ||
+      typeof viewed.createdAt !== "string" ||
+      typeof viewed.updatedAt !== "string"
+    ) {
+      return null;
+    }
+    return {
+      repo: item.repo,
+      number: item.number,
+      kind: item.kind,
+      title: viewed.title,
+      body: typeof viewed.body === "string" ? viewed.body : null,
+      labels: (viewed.labels ?? [])
+        .map((label) => (typeof label === "string" ? label : String(label.name ?? "")))
+        .filter(Boolean),
+      milestoneTitle: typeof viewed.milestone?.title === "string" ? viewed.milestone.title : null,
+      milestoneDueOn: typeof viewed.milestone?.dueOn === "string" ? viewed.milestone.dueOn : null,
+      state: String(viewed.state ?? "OPEN").toUpperCase(),
+      author: typeof viewed.author?.login === "string" ? viewed.author.login : "unknown",
+      createdAt: viewed.createdAt,
+      updatedAt: viewed.updatedAt,
+      closedAt:
+        typeof viewed.closedAt === "string"
+          ? viewed.closedAt
+          : typeof viewed.mergedAt === "string"
+            ? viewed.mergedAt
+            : null,
+      nativeParent: item.nativeParent ?? null,
+    };
   },
   enqueueTriage: async (packet) => {
     await withMetadataTempFile("pm-metadata-triage-", JSON.stringify(packet, null, 2), async (path) => {
@@ -981,8 +1078,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/search") {
     const started = performance.now();
     const { query, results, items, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    // #14060 slice 2: render one bounded page (default cap), with the
+    // true total in the heading — a common-word query rendered every
+    // match (941 KB HTML measured).
+    const page = paginateSearchResults(results, { limit: SEARCH_DEFAULT_LIMIT, offset: 0 });
     const body = await withSearchTiming(timings, "render", () =>
-      renderSearch(query, results, items, prov(), provDetail()),
+      renderSearch(query, page.page, items, prov(), provDetail(), page.total),
     );
     timings.total = performance.now() - started;
     return withSearchTimings(html(body), timings);
@@ -990,8 +1091,18 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/api/search.json") {
     const started = performance.now();
     const { query, results, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    // #14060 slice 2: paginate + cap the payload (limit/offset params,
+    // default 50, max 200); `total` stays the full match count.
+    const searchPage = paginateSearchResults(results, parseSearchPagination(url.searchParams));
     const response = await withSearchTiming(timings, "serialize", () =>
-      json({ query: query.trim(), total: results.length, results }),
+      json({
+        query: query.trim(),
+        total: searchPage.total,
+        results: searchPage.page,
+        limit: searchPage.limit,
+        offset: searchPage.offset,
+        remainingAfterPage: searchPage.remainingAfterPage,
+      }),
     );
     timings.total = performance.now() - started;
     return withSearchTimings(response, timings);
@@ -1002,7 +1113,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
     return json({
       records: view.records,
-      identities: identitiesFromRecords(records),
+      // #14060 slice 2: identities are one entry PER RECORD, so scoping
+      // them to the whole store shipped ~28k entries (the bulk of the
+      // measured 6.7 MB twin) beside a 100-record page. The page's own
+      // identities are what a consumer of this page can act on; the
+      // full list stays available from /api/author-identities.
+      identities: identitiesFromRecords(view.records),
       total: view.matched,
       totalAll: view.totalAll,
       hiddenByWindow: view.hiddenByWindow,
@@ -1059,7 +1175,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       source.orchestration().catch(() => null),
     ]);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
+    const briefs = buildBriefs(pool, {
+      comments: briefComments,
+      orchestration,
+      orchestrationStatus,
+      ruling: await projectTrustRuling(),
+    });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));
@@ -1433,13 +1554,17 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
-  if (path === "/api/needs-drew.json") {
-    // #1226: the Needs-Drew label census as data — open user/review +
+  if (path === "/api/needs-user.json" || path === "/api/needs-drew.json") {
+    // #1226: the Needs User label census as data — open user/review +
     // user/escalated items across the four repos with per-source
-    // status and freshness. 503 when this source cannot census, so a
-    // consumer never mistakes "unavailable" for "nothing waiting".
+    // status and freshness. Keep the old path as an alias for deployed
+    // clients; both names return the same response shape.
+    const legacyPath = path === "/api/needs-drew.json";
     const census = (await source.needsDrew?.().catch(() => null)) ?? null;
-    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    if (!census) {
+      const name = legacyPath ? "needs-drew" : "needs-user";
+      return json({ error: `${name} census unavailable from this source` }, 503);
+    }
     return json(census);
   }
   if (path === "/api/attention.json") {
@@ -1975,6 +2100,17 @@ if (cfg.source === "live") {
 // Shutdown is tied to process signals inside the wiring.
 if (cfg.source === "live") {
   startPmCoreSchedulers({ feedFile: cfg.feedFile });
+}
+
+// #14043 S3: the answer applier carries recorded broker answers to the
+// queue broker's signed decide verb (live mode only).
+if (cfg.source === "live") {
+  startActionsExecApplier({
+    needsDrewFile: cfg.needsDrewFile,
+    applyFile: cfg.actionsExecApplyFile,
+    brokerUrl: cfg.queueBrokerUrl,
+    brokerTokenFile: cfg.queueBrokerTokenFile,
+  });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their

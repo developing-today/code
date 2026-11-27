@@ -242,6 +242,14 @@ SPOOL_CAP = _parse_startup_int(
 PUMP_SETTLE_S = 2
 EXEC_TIMEOUT_DEFAULT = 120
 EXEC_TIMEOUT_MAX = 600
+# Bound on one server-side long-poll wait for GET /jobs/<job>
+# (developing-today/code#5757): the request is held at most this long,
+# returning sooner on output or completion. A quiet ~60 s job then costs
+# 2 trips (50 s + remainder), >=5x fewer than the 10 pre-long-poll
+# backoff trips, while completion is still reported within about a
+# second. Must match LONG_POLL_WAIT_S in
+# pkgs/fleet/crates/fleet-laptop-agent/src/lib.rs.
+JOBS_WAIT_MAX_S = 50
 # Exec grace window (#15420, design #10356 section 3.4): with
 # grace_s > 0 a dropped /exec client leaves its command running for
 # grace_s seconds, during which GET /jobs/<trip> attaches to it as an
@@ -1104,6 +1112,16 @@ def job_state(job):
     return job["state"]
 
 
+def clamp_poll_wait(wait_s):
+    """Bound one GET /jobs/<job> long-poll wait (#5757).
+
+    The request is held at most JOBS_WAIT_MAX_S seconds, returning
+    sooner on output or completion; larger asks are clamped, not
+    rejected, so old and new clients stay interoperable.
+    """
+    return min(wait_s, JOBS_WAIT_MAX_S)
+
+
 def job_public(job, out_off=0, err_off=0):
     state = job_state(job)
     try:
@@ -1634,10 +1652,24 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 out_off = int(q.get("out_off", [0])[0])
                 err_off = int(q.get("err_off", [0])[0])
+                wait_s = int(q.get("wait_s", [0])[0])
             except (TypeError, ValueError):
-                raise ValueError("out_off/err_off must be integers")
+                raise ValueError("out_off/err_off/wait_s must be integers")
             if out_off < 0 or err_off < 0:
                 raise ValueError("out_off/err_off must be >= 0")
+            if wait_s < 0:
+                raise ValueError("wait_s must be >= 0")
+            deadline = time.monotonic() + clamp_poll_wait(wait_s)
+            while True:
+                result = job_public(job, out_off, err_off)
+                if (
+                    result["state"] == "done"
+                    or result["stdout"]
+                    or result["stderr"]
+                    or time.monotonic() >= deadline
+                ):
+                    return self._send(200, result)
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             if job.get("kind") == "exec":
                 # Reading an exec's spool is `fleet http attach`: it
                 # turns the exec into an ordinary job, so its grace
@@ -2302,7 +2334,7 @@ BIND_RETRY_CAP_S = 15.0
 
 def bind_retry_delay(attempt):
     """Delay before the retry after `attempt` failures (0-based)."""
-    return min(BIND_RETRY_BASE_S * (2**min(attempt, 4)), BIND_RETRY_CAP_S)
+    return min(BIND_RETRY_BASE_S * (2 ** min(attempt, 4)), BIND_RETRY_CAP_S)
 
 
 def is_retryable_bind_error(exc):

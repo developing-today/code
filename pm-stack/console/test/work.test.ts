@@ -949,9 +949,11 @@ describe("what needs the owner's hands", () => {
       updatedAt: "2026-11-20T01:02:03Z",
       hands,
     });
+    const dashPaths: string[] = [];
     const w = world({
-      dash: (path) =>
-        path === "/api/needs-drew.json"
+      dash: (path) => {
+        dashPaths.push(path);
+        return path === "/api/needs-user.json"
           ? {
               fetchedAt: "x",
               complete: true,
@@ -974,12 +976,15 @@ describe("what needs the owner's hands", () => {
                 activeToolCalls: 2,
                 messageCount: 9,
               },
-              { tier: "needs-drew", id: "p", title: "log in", ref: "gh:x/y#1", drewReason: null },
+              { tier: "needs-user", id: "p", title: "log in", ref: "gh:x/y#1", userReason: null },
+              { tier: "needs-drew", id: "legacy", title: "legacy item", ref: "gh:x/y#2", drewReason: null },
               { tier: "needs-orchestrator", title: "not his" },
-            ],
+            ];
+      },
     });
     const work = new Work(w.ops);
     const c = await work.census();
+    expect(dashPaths).toContain("/api/needs-user.json");
     expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
       [`${REPO}#1`, "physical", "Power on the host."],
       [`${REPO}#4`, "payment", ""],
@@ -1012,7 +1017,24 @@ describe("what needs the owner's hands", () => {
         messages: 9,
       },
     ]);
-    expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
+    expect(s.waiting).toEqual([
+      { id: "p", title: "log in", ref: "gh:x/y#1", why: "" },
+      { id: "legacy", title: "legacy item", ref: "gh:x/y#2", why: "" },
+    ]);
+  });
+
+  test("census falls back to the legacy route on older dashboards", async () => {
+    const paths: string[] = [];
+    const w = world({
+      dash: (path) => {
+        paths.push(path);
+        if (path === "/api/needs-user.json") throw new Error("HTTP 404");
+        return { fetchedAt: "legacy", complete: true, items: [] };
+      },
+    });
+    const census = await new Work(w.ops).census();
+    expect(paths).toEqual(["/api/needs-user.json", "/api/needs-drew.json"]);
+    expect(census.at).toBe("legacy");
   });
 
   test("done means the label gone and a comment, only for a repository on the list", async () => {
@@ -1548,6 +1570,7 @@ describe("the state kept ready", () => {
       asks: still,
       questionCount: still,
       questions: still,
+      questionSets: still,
       prs: still,
       priorities: still,
       done: still,

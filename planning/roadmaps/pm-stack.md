@@ -32,7 +32,6 @@ The roadmap of record is this file and its siblings in `planning/roadmaps/`. The
 | Projector and link registry (Turso)                  | planned     | A webhook-fed projector joining GitHub issue, Kaneo task, Pad item, and roadmap row by ID. Never a source of truth.                                                                                         | #1184  |
 | Aggregator UI: cross-repo WIP board and roadmap view | in-progress | Read-mostly and disposable: if it rots, every layer underneath still works standalone. The aggregator service exists and reads this repo's roadmap data today; the cross-repo board is the remaining scope. | #1184  |
 | A second machine under its own key                   | shaped      | Machines are enrolled from the app, and each action goes to one that can do it.                                                                                                                             | #13492 |
-| Platform settings applied from Actions               | proposed    | The hostname, its sign-in, its route and the edge's tokens no longer depend on a script on the laptop.                                                                                                      | #13495 |
 
 ## Later
 

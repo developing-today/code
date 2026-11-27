@@ -12,7 +12,7 @@
 
 use std::fmt;
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 
 use crate::canonical_cbor::{CborError, Value, decode_canonical, encode_canonical};
 use crate::id_shape::{ContentId, DIGEST_BYTES, HashProfile, IdShapeError};
@@ -294,7 +294,7 @@ impl SignedWorldDefinition {
             .map_err(|_error| WorldDefinitionError::BadKey)?;
         let signature = Signature::from_bytes(&self.signature);
         let preimage = signature_preimage(&self.definition, &self.signer_key, &self.domain)?;
-        key.verify(&preimage, &signature)
+        key.verify_strict(&preimage, &signature)
             .map_err(|_error| WorldDefinitionError::BadSignature)
     }
 

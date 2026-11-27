@@ -111,7 +111,13 @@ function lazySchema(client: D1Client, ddl: string[]): () => Promise<void> {
   return () => {
     ready ??= (async () => {
       for (const sql of ddl) await client.execute({ sql, args: [] });
-    })();
+    })().catch((error) => {
+      // An outage during first use must not poison this store for the
+      // isolate's lifetime: ingestion retries the missing stamp later.
+      // All schema statements are idempotent, including partial success.
+      ready = null;
+      throw error;
+    });
     return ready;
   };
 }

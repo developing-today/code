@@ -159,16 +159,23 @@ class AlignmentHandler:
     def _thread_participates(self, thread_ts: str | None) -> bool:
         if not thread_ts:
             return False
-        return self.conn.execute(
-            "SELECT 1 FROM alignment_participating_threads "
-            "WHERE channel_id=? AND thread_ts=? LIMIT 1",
-            (self.channel_id, thread_ts),
-        ).fetchone() is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM alignment_participating_threads "
+                "WHERE channel_id=? AND thread_ts=? LIMIT 1",
+                (self.channel_id, thread_ts),
+            ).fetchone()
+            is not None
+        )
 
     def _triggered(self, event: dict[str, Any]) -> bool:
         if event.get("type") != "message" or event.get("channel") != self.channel_id:
             return False
-        if event.get("subtype") in {"bot_message", "message_changed", "message_deleted"}:
+        if event.get("subtype") in {
+            "bot_message",
+            "message_changed",
+            "message_deleted",
+        }:
             return False
         user_id = event.get("user") or event.get("bot_id")
         if not user_id or user_id == self.bot_user_id:
@@ -182,7 +189,9 @@ class AlignmentHandler:
         )
         return owner_mention or thread_reply
 
-    def handle_event(self, event: dict[str, Any], sender: Sender | None = None) -> str | None:
+    def handle_event(
+        self, event: dict[str, Any], sender: Sender | None = None
+    ) -> str | None:
         """Record one Slack message and queue its ACK/BLOCKED reply.
 
         Replayed Slack events are harmless: the (channel, message ts) key
@@ -207,12 +216,22 @@ class AlignmentHandler:
             previous = self.conn.execute(
                 "SELECT * FROM alignment_requests WHERE request_id=?", (supplied_id,)
             ).fetchone()
-            if previous and previous["thread_ts"] == thread_ts and previous["state"] == "blocked":
-                owner = _safe_slack_text(fields.get("owner") or previous["owner"] or user_id)
+            if (
+                previous
+                and previous["thread_ts"] == thread_ts
+                and previous["state"] == "blocked"
+            ):
+                owner = _safe_slack_text(
+                    fields.get("owner") or previous["owner"] or user_id
+                )
                 scope = _safe_slack_text(fields.get("scope") or previous["scope"] or "")
-                evidence = _safe_slack_text(fields.get("evidence") or previous["evidence"] or "")
+                evidence = _safe_slack_text(
+                    fields.get("evidence") or previous["evidence"] or ""
+                )
                 missing = [
-                    name for name, value in (("scope", scope), ("evidence", evidence)) if not value
+                    name
+                    for name, value in (("scope", scope), ("evidence", evidence))
+                    if not value
                 ]
                 state = "blocked" if missing else "acknowledged"
                 now = utc_now()
@@ -223,15 +242,21 @@ class AlignmentHandler:
                         f"Missing: {', '.join(missing)}"
                     )
                 else:
-                    reply = (
-                        f"ACK {supplied_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
-                    )
+                    reply = f"ACK {supplied_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
                 key = _outbox_key(self.channel_id, message_ts, state)
                 with self.conn:
                     self.conn.execute(
                         "UPDATE alignment_requests SET owner=?,scope=?,evidence=?,state=?,"
                         "missing_json=?,updated_at=? WHERE request_id=?",
-                        (owner, scope, evidence, state, json.dumps(missing), now, supplied_id),
+                        (
+                            owner,
+                            scope,
+                            evidence,
+                            state,
+                            json.dumps(missing),
+                            now,
+                            supplied_id,
+                        ),
                     )
                     self.conn.execute(
                         "INSERT INTO alignment_processed_events VALUES (?,?,?,?)",
@@ -246,16 +271,20 @@ class AlignmentHandler:
                     self.deliver_pending(sender)
                 return supplied_id
 
-        request_id = supplied_id or f"alignment-{message_ts.replace('.', '-') }"
+        request_id = supplied_id or f"alignment-{message_ts.replace('.', '-')}"
         if self.conn.execute(
             "SELECT 1 FROM alignment_requests WHERE request_id=?", (request_id,)
         ).fetchone():
-            request_id = f"{request_id}-{message_ts.replace('.', '-') }"
+            request_id = f"{request_id}-{message_ts.replace('.', '-')}"
 
         owner = _safe_slack_text(fields.get("owner") or user_id)
         scope = _safe_slack_text(fields.get("scope") or "")
         evidence = _safe_slack_text(fields.get("evidence") or "")
-        missing = [name for name, value in (("scope", scope), ("evidence", evidence)) if not value]
+        missing = [
+            name
+            for name, value in (("scope", scope), ("evidence", evidence))
+            if not value
+        ]
         state = "blocked" if missing else "acknowledged"
         now = utc_now()
 
@@ -266,17 +295,26 @@ class AlignmentHandler:
                 f"Missing: {', '.join(missing)}"
             )
         else:
-            reply = (
-                f"ACK {request_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
-            )
+            reply = f"ACK {request_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
         key = _outbox_key(self.channel_id, message_ts, state)
         with self.conn:
             self.conn.execute(
                 "INSERT INTO alignment_requests "
                 "(request_id,channel_id,source_ts,thread_ts,owner,scope,evidence,state,"
                 "missing_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (request_id, self.channel_id, message_ts, thread_ts, owner, scope,
-                 evidence, state, json.dumps(missing), now, now),
+                (
+                    request_id,
+                    self.channel_id,
+                    message_ts,
+                    thread_ts,
+                    owner,
+                    scope,
+                    evidence,
+                    state,
+                    json.dumps(missing),
+                    now,
+                    now,
+                ),
             )
             self.conn.execute(
                 "INSERT INTO alignment_participating_threads VALUES (?,?,?)",
@@ -303,7 +341,11 @@ class AlignmentHandler:
         evidence: list[str],
         sender: Sender | None = None,
     ) -> None:
-        if not result.strip() or not evidence or any(not item.strip() for item in evidence):
+        if (
+            not result.strip()
+            or not evidence
+            or any(not item.strip() for item in evidence)
+        ):
             raise ValueError("RESULT requires a non-empty result and evidence link")
         row = self.conn.execute(
             "SELECT * FROM alignment_requests WHERE request_id=?", (request_id,)
@@ -311,7 +353,9 @@ class AlignmentHandler:
         if row is None:
             raise KeyError(f"unknown alignment request {request_id}")
         if row["state"] != "acknowledged":
-            raise ValueError(f"request {request_id} is {row['state']}, not acknowledged")
+            raise ValueError(
+                f"request {request_id} is {row['state']}, not acknowledged"
+            )
         result_text = _safe_slack_text(result)
         safe_evidence = [_safe_slack_text(item) for item in evidence]
         text = (
@@ -338,16 +382,22 @@ class AlignmentHandler:
         """Deliver staged messages at least once; sender dedupes by key."""
         rows = self.conn.execute(
             "SELECT * FROM alignment_outbox WHERE sent_ts IS NULL "
-            "ORDER BY created_at,idempotency_key LIMIT ?", (limit,)
+            "ORDER BY created_at,idempotency_key LIMIT ?",
+            (limit,),
         ).fetchall()
         sent = failed = 0
         for row in rows:
             try:
                 response = sender.send(
-                    row["channel_id"], row["thread_ts"], row["text"], row["idempotency_key"]
+                    row["channel_id"],
+                    row["thread_ts"],
+                    row["text"],
+                    row["idempotency_key"],
                 )
                 if not response.get("ok"):
-                    raise RuntimeError(str(response.get("error", "sender rejected message")))
+                    raise RuntimeError(
+                        str(response.get("error", "sender rejected message"))
+                    )
                 with self.conn:
                     self.conn.execute(
                         "UPDATE alignment_outbox SET sent_ts=?, attempts=attempts+1, "
@@ -395,7 +445,8 @@ class AlignmentHandler:
         after_id = int(row[0])
         events = self.conn.execute(
             "SELECT id,payload FROM collected_events WHERE channel=? AND id>? "
-            "ORDER BY id LIMIT ?", (self.channel_id, after_id, limit)
+            "ORDER BY id LIMIT ?",
+            (self.channel_id, after_id, limit),
         ).fetchall()
         handled = ignored = 0
         for item in events:
@@ -434,18 +485,22 @@ class SlackApiSender:
             raise ValueError("SLACK_BOT_TOKEN is required")
         self.token = token
 
-    def send(self, channel: str, thread_ts: str, text: str, idempotency_key: str) -> dict[str, Any]:
+    def send(
+        self, channel: str, thread_ts: str, text: str, idempotency_key: str
+    ) -> dict[str, Any]:
         if channel != ALIGNMENT_CHANNEL_ID:
             raise ValueError("alignment handler may only send to #alignment")
         client_msg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
-        body = urllib.parse.urlencode({
-            "channel": channel,
-            "thread_ts": thread_ts,
-            "text": text,
-            "client_msg_id": client_msg_id,
-            "unfurl_links": "false",
-            "unfurl_media": "false",
-        }).encode()
+        body = urllib.parse.urlencode(
+            {
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "text": text,
+                "client_msg_id": client_msg_id,
+                "unfurl_links": "false",
+                "unfurl_media": "false",
+            }
+        ).encode()
         req = urllib.request.Request(
             API_BASE + "chat.postMessage",
             data=body,
@@ -468,10 +523,14 @@ class StageSender:
     def __init__(self):
         self.messages: dict[str, tuple[str, str, str, str]] = {}
 
-    def send(self, channel: str, thread_ts: str, text: str, idempotency_key: str) -> dict[str, Any]:
+    def send(
+        self, channel: str, thread_ts: str, text: str, idempotency_key: str
+    ) -> dict[str, Any]:
         if channel != ALIGNMENT_CHANNEL_ID:
             return {"ok": False, "error": "channel is outside staged #alignment scope"}
-        self.messages.setdefault(idempotency_key, (channel, thread_ts, text, idempotency_key))
+        self.messages.setdefault(
+            idempotency_key, (channel, thread_ts, text, idempotency_key)
+        )
         return {"ok": True, "ts": f"staged-{len(self.messages)}"}
 
 
@@ -479,14 +538,18 @@ def run_stage() -> dict[str, Any]:
     """Run one complete request without Slack, credentials, or network I/O."""
     sender = StageSender()
     handler = AlignmentHandler(
-        ":memory:", channel_id=ALIGNMENT_CHANNEL_ID,
-        owner_user_id=ALIGNMENT_OWNER_USER_ID, bot_user_id="U0CBTJGQQSZ",
+        ":memory:",
+        channel_id=ALIGNMENT_CHANNEL_ID,
+        owner_user_id=ALIGNMENT_OWNER_USER_ID,
+        bot_user_id="U0CBTJGQQSZ",
     )
     event = {
-        "type": "message", "channel": ALIGNMENT_CHANNEL_ID, "ts": "stage.001",
+        "type": "message",
+        "channel": ALIGNMENT_CHANNEL_ID,
+        "ts": "stage.001",
         "user": ALIGNMENT_OWNER_USER_ID,
         "text": "<@U0CBTJGQQSZ>\nID: stage-6651\nOwner: @drew\n"
-                "Scope: verify the staged handler\nEvidence: fixture://alignment/6651",
+        "Scope: verify the staged handler\nEvidence: fixture://alignment/6651",
     }
     request_id = handler.handle_event(event, sender)
     handler.complete_request(
@@ -504,12 +567,22 @@ def run_stage() -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("stage", help="run one offline staged ACK/RESULT request", allow_abbrev=False)
-    watch = sub.add_parser("watch", help="consume the collector SQLite store", allow_abbrev=False)
+    sub.add_parser(
+        "stage", help="run one offline staged ACK/RESULT request", allow_abbrev=False
+    )
+    watch = sub.add_parser(
+        "watch", help="consume the collector SQLite store", allow_abbrev=False
+    )
     watch.add_argument("--db", default=DEFAULT_DB)
-    watch.add_argument("--bot-user-id", default=os.environ.get("ALIGNMENT_HANDLER_BOT_USER_ID"))
+    watch.add_argument(
+        "--bot-user-id", default=os.environ.get("ALIGNMENT_HANDLER_BOT_USER_ID")
+    )
     watch.add_argument("--poll-seconds", type=float, default=5.0)
-    result = sub.add_parser("result", help="post a completed request result in its thread", allow_abbrev=False)
+    result = sub.add_parser(
+        "result",
+        help="post a completed request result in its thread",
+        allow_abbrev=False,
+    )
     result.add_argument("--db", default=DEFAULT_DB)
     result.add_argument("--request-id", required=True)
     result.add_argument("--text", required=True)
@@ -526,7 +599,8 @@ def main(argv: list[str] | None = None) -> int:
     sender = SlackApiSender(token)
     if args.command == "result":
         store = AlignmentHandler(
-            args.db, owner_user_id=ALIGNMENT_OWNER_USER_ID,
+            args.db,
+            owner_user_id=ALIGNMENT_OWNER_USER_ID,
             bot_user_id=os.environ.get("ALIGNMENT_HANDLER_BOT_USER_ID", "U0CBTJGQQSZ"),
         )
         try:
@@ -540,7 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be greater than zero")
     if not args.bot_user_id:
-        print("alignment-handler: --bot-user-id or ALIGNMENT_HANDLER_BOT_USER_ID is required", file=sys.stderr)
+        print(
+            "alignment-handler: --bot-user-id or ALIGNMENT_HANDLER_BOT_USER_ID is required",
+            file=sys.stderr,
+        )
         return 78
     store = AlignmentHandler(
         args.db, owner_user_id=ALIGNMENT_OWNER_USER_ID, bot_user_id=args.bot_user_id

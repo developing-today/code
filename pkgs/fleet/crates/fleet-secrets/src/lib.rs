@@ -48,6 +48,18 @@
 //!     environment only, and non-interactive callers run with the
 //!     variable unset or empty — the fallback was dead exactly
 //!     when it was needed (the other half of 2026-11-15).
+//!
+//! Backend selection (#14151): the secrets broker is Bitwarden-only
+//! (its refresh and read-through speak `bws`; see
+//! `fleet-queue`'s `secrets_broker`). 1Password stays a
+//! **client-chain-only** source ([`OpSource`]): the broker serves
+//! one shared vault cache keyed by name, and an op backend would
+//! need a second per-seat credential, a second refresh loop, and a
+//! merge rule for names present in both vaults — all for a seat
+//! that already resolves the same names locally through this
+//! crate. The broker's `/secrets` listing therefore never carries
+//! a 1Password-only name; 1Password-only seats resolve through
+//! the client chain below.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -101,6 +113,10 @@ pub enum SecretError {
         name: String,
         errors: Vec<SecretError>,
     },
+    /// The store/vault selection itself is not usable (#10358 S3):
+    /// an unknown store, or a vault with no store. The verb maps it
+    /// to a usage error (exit 2). Carries no secret material.
+    InvalidSelection(String),
 }
 
 impl std::fmt::Display for SecretError {
@@ -120,6 +136,9 @@ impl std::fmt::Display for SecretError {
                 name,
                 detail,
             } => write!(f, "secret {name:?} unavailable via {source}: {detail}"),
+            SecretError::InvalidSelection(detail) => {
+                write!(f, "invalid secrets store selection: {detail}")
+            }
             SecretError::Chain { name, errors } => {
                 write!(
                     f,
@@ -278,6 +297,126 @@ impl Scope {
     }
 }
 
+/// Which store a call reads from (#10358 D8, S3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StoreKind {
+    /// No store named anywhere: today's chain exactly (D1).
+    #[default]
+    Auto,
+    /// Broker legs and `bws`; never `op`.
+    Bitwarden,
+    /// `op` only.
+    OnePassword,
+}
+
+/// A resolved store + vault selection (#10358 D8/D9, S3): which
+/// chain a call uses, and the vault inside that store — a Bitwarden
+/// project id for [`StoreKind::Bitwarden`], a 1Password vault for
+/// [`StoreKind::OnePassword`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreSelection {
+    pub store: StoreKind,
+    pub vault: Option<String>,
+}
+
+impl StoreSelection {
+    /// The environment variable that names the store; it beats
+    /// `[secrets] store` in `fleet.toml` (D9).
+    pub const STORE_ENV: &'static str = "FLEET_SECRETS_STORE";
+    /// The environment variable that names the vault; it beats
+    /// `[secrets] vault` in `fleet.toml` (D9).
+    pub const VAULT_ENV: &'static str = "FLEET_SECRETS_VAULT";
+
+    /// No selection: the historical chain exactly (D1).
+    pub fn auto() -> StoreSelection {
+        StoreSelection::default()
+    }
+
+    /// Resolve one setting from its three sources in D9 precedence:
+    /// flag, then environment, then config. An empty or blank value
+    /// in any source counts as unset and falls through.
+    fn pick<'a>(
+        flag: Option<&'a str>,
+        env: Option<&'a str>,
+        config: Option<&'a str>,
+    ) -> Option<&'a str> {
+        [flag, env, config]
+            .into_iter()
+            .flatten()
+            .find(|v| !v.trim().is_empty())
+            .map(|v| v.trim())
+    }
+
+    /// The selection from explicit flag, environment and config
+    /// values (each the raw value of its source, `None` when the
+    /// source does not name one). An unknown store, or a vault with
+    /// no store, is [`SecretError::InvalidSelection`].
+    pub fn from_sources(
+        flag_store: Option<&str>,
+        flag_vault: Option<&str>,
+        env_store: Option<&str>,
+        env_vault: Option<&str>,
+        config_store: Option<&str>,
+        config_vault: Option<&str>,
+    ) -> Result<StoreSelection, SecretError> {
+        let store_raw = Self::pick(flag_store, env_store, config_store);
+        let vault = Self::pick(flag_vault, env_vault, config_vault).map(str::to_string);
+        let store = match store_raw {
+            None => StoreKind::Auto,
+            Some("bitwarden") => StoreKind::Bitwarden,
+            Some("1password") => StoreKind::OnePassword,
+            Some(other) => {
+                return Err(SecretError::InvalidSelection(format!(
+                    "unknown store {other:?}: expected \"bitwarden\" or \"1password\""
+                )));
+            }
+        };
+        if vault.is_some() && store == StoreKind::Auto {
+            return Err(SecretError::InvalidSelection(
+                "a vault is set but no store is: set a store (\"bitwarden\" or \
+                 \"1password\") alongside the vault"
+                    .to_string(),
+            ));
+        }
+        Ok(StoreSelection { store, vault })
+    }
+
+    /// The selection for a resolved config plus per-call flags:
+    /// `$FLEET_SECRETS_STORE` / `$FLEET_SECRETS_VAULT` sit between
+    /// the flags and `[secrets] store` / `vault` (D9).
+    pub fn from_flags_and_config(
+        flag_store: Option<&str>,
+        flag_vault: Option<&str>,
+        config: &fleet_config::Config,
+    ) -> Result<StoreSelection, SecretError> {
+        let env_store = std::env::var(Self::STORE_ENV).ok();
+        let env_vault = std::env::var(Self::VAULT_ENV).ok();
+        Self::from_sources(
+            flag_store,
+            flag_vault,
+            env_store.as_deref(),
+            env_vault.as_deref(),
+            config.secrets.store.as_deref(),
+            config.secrets.vault.as_deref(),
+        )
+    }
+
+    /// The selection a resolved config runs with when no per-call
+    /// flags exist (the bridge's reads and writes).
+    pub fn from_config(config: &fleet_config::Config) -> Result<StoreSelection, SecretError> {
+        Self::from_flags_and_config(None, None, config)
+    }
+
+    /// The Bitwarden project a `bitwarden` selection is scoped to,
+    /// if a vault is set.
+    pub fn bitwarden_project(&self) -> Option<&str> {
+        match self.store {
+            StoreKind::Bitwarden => self.vault.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 /// The pseudo-name a listing's errors carry: a listing has no single
 /// secret to name.
 const LIST_PSEUDO_NAME: &str = "names";
@@ -286,9 +425,25 @@ const LIST_PSEUDO_NAME: &str = "names";
 /// unscoped listing never sends the parameter, so it works against old
 /// and new brokers alike.
 pub fn list_path(scope: &Scope) -> String {
-    match scope.prefix() {
-        None => "/secrets".to_string(),
-        Some(prefix) => format!("/secrets?prefix={}", query_encode(prefix)),
+    list_path_scoped(scope, &StoreSelection::auto())
+}
+
+/// The broker route a listing in `scope` under `selection` asks for
+/// (#10358 S3): beside `prefix`, a `bitwarden` selection with a vault
+/// sends `project=<id>`, so the broker answers only that project's
+/// names. With neither set the path is exactly `/secrets`.
+pub fn list_path_scoped(scope: &Scope, selection: &StoreSelection) -> String {
+    let mut params: Vec<String> = Vec::new();
+    if let Some(prefix) = scope.prefix() {
+        params.push(format!("prefix={}", query_encode(prefix)));
+    }
+    if let Some(project) = selection.bitwarden_project() {
+        params.push(format!("project={}", query_encode(project)));
+    }
+    if params.is_empty() {
+        "/secrets".to_string()
+    } else {
+        format!("/secrets?{}", params.join("&"))
     }
 }
 
@@ -503,8 +658,11 @@ impl Resolver {
     /// where the secrets-broker's own socket answers (the laptop,
     /// #6218), the direct source comes first: there is no session
     /// broker there. On the sandbox the probe selects TCP, no
-    /// direct source is inserted, and the chain is exactly the
-    /// historical broker-protocol-then-`bws` shape.
+    /// direct source is inserted, and the broker leg is the
+    /// historical broker-protocol shape. Behind the broker leg come
+    /// the `bws` fallback and, where a vault is named (env
+    /// `FLEET_OP_VAULT` or `[secrets] op_vault`, #14151), the
+    /// client-side op source.
     pub fn default_chain(config: &fleet_config::Config) -> Resolver {
         let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
         // Exactly one broker leg owns the retry budget: the first
@@ -525,10 +683,64 @@ impl Resolver {
                 .with_retry_policy(broker_retry),
         ));
         sources.push(Box::new(BwsSource::new()));
-        if let Some(op) = OpSource::from_environment() {
+        if let Some(op) = OpSource::from_config(config) {
             sources.push(Box::new(op));
         }
         Resolver::new(sources)
+    }
+
+    /// The chain for a store selection (#10358 D8, S3).
+    ///
+    /// * `Auto` is [`Resolver::default_chain`] exactly (D1).
+    /// * `Bitwarden` is the broker legs and `bws`, with no `op` leg;
+    ///   with a vault, the `bws` leg matches only that project. The
+    ///   broker legs are unfiltered on `get` (D7: one full name is
+    ///   already exact); the project filter applies to `list`.
+    /// * `OnePassword` is `op` only, in the selection's vault, or in
+    ///   `$FLEET_OP_VAULT` when the selection names no vault. With no
+    ///   usable vault the chain is empty and every resolve fails as a
+    ///   chain error rather than falling back to another store.
+    pub fn chain_for(config: &fleet_config::Config, selection: &StoreSelection) -> Resolver {
+        match selection.store {
+            StoreKind::Auto => Self::default_chain(config),
+            StoreKind::Bitwarden => {
+                let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
+                let mut broker_retry = RetryPolicy::default();
+                if let Some(direct) = DirectBrokerSource::from_config(config) {
+                    sources.push(Box::new(direct));
+                    broker_retry = RetryPolicy::NONE;
+                }
+                sources.push(Box::new(
+                    BrokerSource::new(config.broker_socket(), config.secrets_token_file())
+                        .with_retry_policy(broker_retry),
+                ));
+                let bws = match selection.vault.as_deref() {
+                    Some(project) => BwsSource::with_project(project.to_string()),
+                    None => BwsSource::new(),
+                };
+                sources.push(Box::new(bws));
+                Resolver::new(sources)
+            }
+            StoreKind::OnePassword => {
+                let vault = selection
+                    .vault
+                    .clone()
+                    .or_else(|| std::env::var(OpSource::VAULT_ENV).ok());
+                let field = std::env::var(OpSource::FIELD_ENV).ok();
+                let sources: Vec<Box<dyn SecretSource>> = match OpSource::from_values(
+                    vault.as_deref(),
+                    field.as_deref(),
+                    // Self-loaded token (#14151), same as the default
+                    // chain: an explicit 1Password selection must not
+                    // need a shell wrapper either.
+                    Box::new(OpTokenRunner::from_environment()),
+                ) {
+                    Some(op) => vec![Box::new(op)],
+                    None => Vec::new(),
+                };
+                Resolver::new(sources)
+            }
+        }
     }
 
     /// Resolve a caller's name inside a scope: the name is mapped to
@@ -650,7 +862,18 @@ impl BrokerSource {
     /// sends exactly today's `GET /secrets`. The names come back as
     /// the broker stored them; the caller applies [`Scope::display`].
     pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
-        let response = self.request(&list_path(scope), LIST_PSEUDO_NAME)?;
+        self.list_names_scoped(scope, &StoreSelection::auto())
+    }
+
+    /// The names listing for a scope under a store selection
+    /// (#10358 S3): a `bitwarden` vault adds `project=<id>` beside
+    /// `prefix` (see [`list_path_scoped`]).
+    pub fn list_names_scoped(
+        &self,
+        scope: &Scope,
+        selection: &StoreSelection,
+    ) -> Result<Vec<String>, SecretError> {
+        let response = self.request(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(response.status, &response.body, scope)
     }
 
@@ -860,7 +1083,17 @@ impl DirectBrokerSource {
     /// The scoped names listing over the direct socket, as
     /// [`BrokerSource::list_names_in`].
     pub fn list_names_in(&self, scope: &Scope) -> Result<Vec<String>, SecretError> {
-        let (status, body) = self.get(&list_path(scope), LIST_PSEUDO_NAME)?;
+        self.list_names_scoped(scope, &StoreSelection::auto())
+    }
+
+    /// The scoped names listing under a store selection, as
+    /// [`BrokerSource::list_names_scoped`].
+    pub fn list_names_scoped(
+        &self,
+        scope: &Scope,
+        selection: &StoreSelection,
+    ) -> Result<Vec<String>, SecretError> {
+        let (status, body) = self.get(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(status, &body, scope)
     }
 }
@@ -1239,17 +1472,46 @@ impl CommandRunner for BwsTokenRunner {
 /// secrets broker's own cache refresh uses.
 pub struct BwsSource {
     runner: Box<dyn CommandRunner>,
+    /// The Bitwarden project reads are scoped to (#10358 D8, S3):
+    /// when set, only listing entries whose `projectId` equals it
+    /// can match. `None` is today's unfiltered behaviour.
+    project_id: Option<String>,
 }
 
 impl BwsSource {
     pub fn new() -> BwsSource {
         BwsSource {
             runner: Box::new(BwsTokenRunner::from_environment()),
+            project_id: None,
+        }
+    }
+
+    /// A source scoped to one Bitwarden project (the `bitwarden`
+    /// store selection's vault).
+    pub fn with_project(project_id: String) -> BwsSource {
+        BwsSource {
+            runner: Box::new(BwsTokenRunner::from_environment()),
+            project_id: Some(project_id),
         }
     }
 
     pub fn with_runner(runner: Box<dyn CommandRunner>) -> BwsSource {
-        BwsSource { runner }
+        BwsSource {
+            runner,
+            project_id: None,
+        }
+    }
+
+    /// A source with an explicit runner scoped to one project —
+    /// the fake-runner test seam for [`BwsSource::with_project`].
+    pub fn with_runner_and_project(
+        runner: Box<dyn CommandRunner>,
+        project_id: String,
+    ) -> BwsSource {
+        BwsSource {
+            runner,
+            project_id: Some(project_id),
+        }
     }
 }
 
@@ -1289,6 +1551,14 @@ impl SecretSource for BwsSource {
         })?;
         let mut found_id: Option<String> = None;
         for item in items {
+            // #10358 D8: a project-scoped source sees only its own
+            // project's entries; an entry in another project (or
+            // with no project recorded) is not a match.
+            if let Some(project) = self.project_id.as_deref() {
+                if item.get("projectId").and_then(|p| p.as_str()) != Some(project) {
+                    continue;
+                }
+            }
             if item.get("key").and_then(|k| k.as_str()) == Some(name) {
                 let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
                     unavailable(
@@ -1410,6 +1680,21 @@ impl BwsStore {
         Some(BwsStore::new(project_id))
     }
 
+    /// The store for a config under a store selection (#10358 D8,
+    /// S3): a `bitwarden` selection's vault is the write project,
+    /// overriding both `$FLEET_BWS_PROJECT_ID` and
+    /// `[secrets] bws_project_id`. Any other selection keeps
+    /// [`BwsStore::from_config`]'s behaviour exactly.
+    pub fn from_config_for(
+        config: &fleet_config::Config,
+        selection: &StoreSelection,
+    ) -> Option<BwsStore> {
+        if let Some(project) = selection.bitwarden_project() {
+            return Some(BwsStore::new(project.to_string()));
+        }
+        Self::from_config(config)
+    }
+
     /// Store `value` under `name`, replacing any existing secret of
     /// that name in the project. Errors are value-free.
     pub fn store(&self, name: &str, value: &str) -> Result<(), SecretError> {
@@ -1479,6 +1764,102 @@ impl BwsStore {
     }
 }
 
+/// The 1Password service-account token for an `op` child,
+/// resolved from an env value and a home dir: the env value when
+/// non-empty, else the on-disk token files (the seat's
+/// `.config/op/service-account-token`, then
+/// `.config/1password/service-account-token`). This is the `op`
+/// analogue of the broker-mirroring [`bws_token_from`] lookup, so
+/// the op leg works for non-interactive callers without a shell
+/// wrapper pre-loading the variable (#14151). The token is
+/// returned trimmed; empty files and an empty env value count as
+/// absent. Fleet never fetches this token from a vault itself: a
+/// seat that keeps it in Bitwarden loads it into one of these
+/// places (env or file) once, outside this crate.
+fn op_token_from(env_value: Option<&str>, home: &Path) -> Option<String> {
+    if let Some(t) = env_value {
+        if !t.trim().is_empty() {
+            return Some(t.trim().to_string());
+        }
+    }
+    for rel in [
+        ".config/op/service-account-token",
+        ".config/1password/service-account-token",
+    ] {
+        if let Ok(t) = std::fs::read_to_string(home.join(rel)) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The ambient lookup: this process's env + the fleet home dir.
+fn op_service_account_token() -> Option<String> {
+    op_token_from(
+        std::env::var("OP_SERVICE_ACCOUNT_TOKEN").ok().as_deref(),
+        &fleet_config::Config::home_dir(),
+    )
+}
+
+/// A [`CommandRunner`] that hands the child the resolved 1Password
+/// service-account token explicitly, mirroring [`BwsTokenRunner`]
+/// (including its bounded subprocess wait, #14040). Before this
+/// runner existed, the op leg inherited the ambient environment
+/// only, so non-interactive callers without a shell wrapper
+/// pre-loading `OP_SERVICE_ACCOUNT_TOKEN` failed every op read.
+/// The runner always controls the variable: set from the resolved
+/// token, or removed when no token resolves.
+pub struct OpTokenRunner {
+    token: Option<String>,
+    timeout: Duration,
+}
+
+impl OpTokenRunner {
+    pub fn from_environment() -> OpTokenRunner {
+        OpTokenRunner {
+            token: op_service_account_token(),
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    pub fn with_token(token: Option<String>) -> OpTokenRunner {
+        OpTokenRunner {
+            token,
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// The same runner with a caller-chosen subprocess ceiling --
+    /// the shape tests use to prove a never-exiting child fails
+    /// within the bound without waiting out the production one.
+    pub fn with_timeout(mut self, timeout: Duration) -> OpTokenRunner {
+        self.timeout = timeout;
+        self
+    }
+}
+
+impl CommandRunner for OpTokenRunner {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        match &self.token {
+            Some(token) => {
+                cmd.env("OP_SERVICE_ACCOUNT_TOKEN", token);
+            }
+            None => {
+                cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN");
+            }
+        }
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
+        if !out.status.success() {
+            return Err(format!("exit status {}", out.status));
+        }
+        String::from_utf8(out.stdout).map_err(|_| "output not utf8".to_string())
+    }
+}
+
 /// Source 3, opt-in: the 1Password CLI. One read per name:
 /// `op read --no-newline op://<vault>/<name>/<field>`, so the item
 /// title in the vault is the fleet secret name. It joins the default
@@ -1532,7 +1913,30 @@ impl OpSource {
         Self::from_values(
             vault.as_deref(),
             field.as_deref(),
-            Box::new(ProcessRunner::new()),
+            Box::new(OpTokenRunner::from_environment()),
+        )
+    }
+
+    /// The source for a resolved fleet config (#14151): `[secrets]
+    /// op_vault` / `op_field` name the vault, with `FLEET_OP_VAULT` /
+    /// `FLEET_OP_FIELD` beating the file when both are set. The
+    /// credential is the same self-loaded service-account token as
+    /// [`OpSource::from_environment`].
+    pub fn from_config(config: &fleet_config::Config) -> Option<OpSource> {
+        let env_vault = std::env::var(Self::VAULT_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let env_field = std::env::var(Self::FIELD_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let vault = env_vault.or_else(|| config.secrets_op_vault());
+        let field = env_field.or_else(|| config.secrets_op_field());
+        Self::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(OpTokenRunner::from_environment()),
         )
     }
 
@@ -1546,6 +1950,44 @@ impl OpSource {
     /// The secret reference `op read` is given for a name.
     pub fn reference(&self, name: &str) -> String {
         format!("op://{}/{}/{}", self.vault, name, self.field)
+    }
+
+    /// The vault this source reads from.
+    pub fn vault(&self) -> &str {
+        &self.vault
+    }
+
+    /// The names in the vault (#10358 D8, S3): one
+    /// `op item list --vault <v> --format json` call, titles only —
+    /// no item values are ever requested. A reply that is not a JSON
+    /// array of objects with string `title`s is a source failure,
+    /// never a confident empty listing.
+    pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op",
+            name: LIST_PSEUDO_NAME.to_string(),
+            detail,
+        };
+        let raw = self
+            .runner
+            .run(
+                "op",
+                &["item", "list", "--vault", &self.vault, "--format", "json"],
+            )
+            .map_err(|d| unavailable(format!("op item list: {d}")))?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| unavailable("op item list: output is not JSON".to_string()))?;
+        let items = parsed
+            .as_array()
+            .ok_or_else(|| unavailable("op item list: output is not a JSON array".to_string()))?;
+        let mut names = Vec::with_capacity(items.len());
+        for item in items {
+            let title = item.get("title").and_then(|t| t.as_str()).ok_or_else(|| {
+                unavailable("op item list: an item has no string \"title\"".to_string())
+            })?;
+            names.push(title.to_string());
+        }
+        Ok(names)
     }
 }
 
@@ -1743,6 +2185,251 @@ mod tests {
         let names =
             names_from_listing(200, &serde_json::json!({"names": ["42.a"]}), &scoped).unwrap();
         assert_eq!(names, ["42.a"]);
+    }
+
+    // ---- StoreSelection (#10358 S3, design record D8/D9) ----
+
+    fn selection(
+        flag_store: Option<&str>,
+        flag_vault: Option<&str>,
+        env_store: Option<&str>,
+        env_vault: Option<&str>,
+        config_store: Option<&str>,
+        config_vault: Option<&str>,
+    ) -> Result<StoreSelection, SecretError> {
+        StoreSelection::from_sources(
+            flag_store,
+            flag_vault,
+            env_store,
+            env_vault,
+            config_store,
+            config_vault,
+        )
+    }
+
+    #[test]
+    fn selection_precedence_is_flag_then_env_then_config() {
+        // Oracle: design record D9's table, read row by row.
+        let s = selection(
+            Some("1password"),
+            Some("flag-vault"),
+            Some("bitwarden"),
+            Some("env-vault"),
+            Some("bitwarden"),
+            Some("config-vault"),
+        )
+        .unwrap();
+        assert_eq!(s.store, StoreKind::OnePassword);
+        assert_eq!(s.vault.as_deref(), Some("flag-vault"));
+        let s = selection(
+            None,
+            None,
+            Some("bitwarden"),
+            Some("env-vault"),
+            Some("1password"),
+            Some("config-vault"),
+        )
+        .unwrap();
+        assert_eq!(s.store, StoreKind::Bitwarden);
+        assert_eq!(s.vault.as_deref(), Some("env-vault"));
+        let s = selection(
+            None,
+            None,
+            None,
+            None,
+            Some("bitwarden"),
+            Some("config-vault"),
+        )
+        .unwrap();
+        assert_eq!(s.store, StoreKind::Bitwarden);
+        assert_eq!(s.vault.as_deref(), Some("config-vault"));
+        // Nothing anywhere: auto, no vault.
+        assert_eq!(
+            selection(None, None, None, None, None, None).unwrap(),
+            StoreSelection::auto()
+        );
+        // A blank flag counts as unset and falls through to env.
+        let s = selection(Some(""), None, Some("bitwarden"), None, None, None).unwrap();
+        assert_eq!(s.store, StoreKind::Bitwarden);
+    }
+
+    #[test]
+    fn selection_refuses_a_vault_without_a_store_and_an_unknown_store() {
+        // The vault may arrive from a different source than the
+        // (absent) store: the resolved pair is what is judged.
+        let err = selection(None, Some("v"), None, None, None, None).unwrap_err();
+        assert!(matches!(err, SecretError::InvalidSelection(_)), "{err}");
+        let err = selection(None, None, None, Some("v"), None, None).unwrap_err();
+        assert!(matches!(err, SecretError::InvalidSelection(_)), "{err}");
+        let err = selection(Some("vaultwarden"), None, None, None, None, None).unwrap_err();
+        assert!(matches!(err, SecretError::InvalidSelection(_)), "{err}");
+        // A flag store rescues an env vault.
+        let s = selection(Some("bitwarden"), None, None, Some("v"), None, None).unwrap();
+        assert_eq!(s.bitwarden_project(), Some("v"));
+    }
+
+    #[test]
+    fn list_path_scoped_adds_project_beside_prefix() {
+        let bw = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: Some("proj-1".to_string()),
+        };
+        assert_eq!(
+            list_path_scoped(&Scope::none(), &bw),
+            "/secrets?project=proj-1"
+        );
+        assert_eq!(
+            list_path_scoped(&Scope::prefixed("42").unwrap(), &bw),
+            "/secrets?prefix=42&project=proj-1"
+        );
+        // No vault, or a non-bitwarden store: no project parameter,
+        // and the unscoped path is exactly today's.
+        let bw_no_vault = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: None,
+        };
+        assert_eq!(list_path_scoped(&Scope::none(), &bw_no_vault), "/secrets");
+        assert_eq!(
+            list_path_scoped(&Scope::none(), &StoreSelection::auto()),
+            list_path(&Scope::none())
+        );
+    }
+
+    /// A runner that answers `bws secret list` with fixed entries
+    /// carrying `projectId`s, and `bws secret get` by id.
+    struct FakeBwsProjects(Vec<serde_json::Value>);
+
+    impl CommandRunner for FakeBwsProjects {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "bws");
+            match args {
+                ["secret", "list", "-o", "json"] => {
+                    Ok(serde_json::Value::Array(self.0.clone()).to_string())
+                }
+                ["secret", "get", id, "-o", "json"] => {
+                    let entry = self
+                        .0
+                        .iter()
+                        .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(id))
+                        .ok_or("exit status 1")?;
+                    let mut got = entry.clone();
+                    got["value"] = serde_json::json!(format!("value-of-{id}"));
+                    Ok(got.to_string())
+                }
+                _ => Err("exit status 2".to_string()),
+            }
+        }
+    }
+
+    #[test]
+    fn bws_source_with_a_project_matches_only_that_project() {
+        // Oracle: design record D8 — with a vault, `bws` matches
+        // only entries whose projectId equals it.
+        let entries = vec![
+            serde_json::json!({"id": "id-1", "key": "alpha", "projectId": "proj-1"}),
+            serde_json::json!({"id": "id-2", "key": "beta", "projectId": "proj-2"}),
+            serde_json::json!({"id": "id-3", "key": "gamma"}),
+        ];
+        let scoped = BwsSource::with_runner_and_project(
+            Box::new(FakeBwsProjects(entries.clone())),
+            "proj-1".to_string(),
+        );
+        assert_eq!(scoped.resolve("alpha").unwrap().expose(), "value-of-id-1");
+        // Same name-space, wrong project: not found, never the
+        // other project's value.
+        assert!(matches!(
+            scoped.resolve("beta"),
+            Err(SecretError::NotFound { source: "bws", .. })
+        ));
+        // No project recorded: not a match under a project scope.
+        assert!(matches!(
+            scoped.resolve("gamma"),
+            Err(SecretError::NotFound { source: "bws", .. })
+        ));
+        // Unscoped, every entry matches as today.
+        let unscoped = BwsSource::with_runner(Box::new(FakeBwsProjects(entries)));
+        assert_eq!(unscoped.resolve("beta").unwrap().expose(), "value-of-id-2");
+    }
+
+    /// A runner that records `op` calls and answers `item list`.
+    struct FakeOpList(std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>);
+
+    impl CommandRunner for FakeOpList {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "op");
+            self.0
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            Ok(serde_json::json!([{"title": "alpha"}, {"title": "beta"}]).to_string())
+        }
+    }
+
+    #[test]
+    fn op_source_lists_titles_from_its_vault() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let source =
+            OpSource::from_values(Some("vault-a"), None, Box::new(FakeOpList(calls.clone())))
+                .unwrap();
+        assert_eq!(source.list_names().unwrap(), ["alpha", "beta"]);
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls[0],
+            ["item", "list", "--vault", "vault-a", "--format", "json"]
+        );
+    }
+
+    #[test]
+    fn bws_store_vault_overrides_the_configured_write_project() {
+        // Oracle: design record D8 — writes through BwsStore use
+        // the selection's vault as the project, overriding
+        // bws_project_id.
+        let mut config = fleet_config::Config::default();
+        config.secrets.bws_project_id = Some("config-project".to_string());
+        let bw = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: Some("vault-project".to_string()),
+        };
+        let store = BwsStore::from_config_for(&config, &bw).unwrap();
+        assert_eq!(store.project_id, "vault-project");
+        // No vault in the selection: the configured project stands.
+        let bw_no_vault = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: None,
+        };
+        let store = BwsStore::from_config_for(&config, &bw_no_vault).unwrap();
+        assert_eq!(store.project_id, "config-project");
+    }
+
+    #[test]
+    fn chain_composition_follows_the_store_value() {
+        // Oracle: design record D8's chain column. Source names are
+        // the observable composition.
+        let config = fleet_config::Config::default();
+        let names = |r: &Resolver| -> Vec<&'static str> {
+            r.sources.iter().map(|s| s.source_name()).collect()
+        };
+        // Auto: exactly default_chain's composition.
+        assert_eq!(
+            names(&Resolver::chain_for(&config, &StoreSelection::auto())),
+            names(&Resolver::default_chain(&config))
+        );
+        // Bitwarden: broker legs + bws, and no op leg — even though
+        // this process may have FLEET_OP_VAULT set, the selection's
+        // chain is built without consulting it.
+        let bw = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: Some("proj-1".to_string()),
+        };
+        let bw_names = names(&Resolver::chain_for(&config, &bw));
+        assert!(bw_names.contains(&"bws"), "{bw_names:?}");
+        assert!(!bw_names.contains(&"op"), "{bw_names:?}");
+        // 1Password: op only.
+        let op = StoreSelection {
+            store: StoreKind::OnePassword,
+            vault: Some("vault-a".to_string()),
+        };
+        assert_eq!(names(&Resolver::chain_for(&config, &op)), ["op"]);
     }
 
     /// A chain source that records the name it was asked for.
@@ -3150,19 +3837,127 @@ mod tests {
     }
 
     #[test]
-    fn op_answers_when_the_sources_before_it_cannot() {
-        let (op, _) = op_source(Some("fleet"), None, Ok("from-op".to_string()));
-        let resolver = Resolver::new(vec![
-            Box::new(FakeSource {
-                name: "bws",
-                result: Err(SecretError::Unavailable {
-                    source: "bws",
-                    name: "wanted.name".to_string(),
-                    detail: "bws secret list: spawn failed: NotFound".to_string(),
-                }),
-            }),
-            Box::new(op.unwrap()),
-        ]);
-        assert_eq!(resolver.resolve("wanted.name").unwrap().expose(), "from-op");
+    fn op_token_prefers_a_nonempty_env_value() {
+        let dir = test_temp_dir("op-token-env");
+        assert_eq!(
+            op_token_from(Some("  env-token  "), &dir).as_deref(),
+            Some("env-token")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_falls_back_to_the_token_files() {
+        let dir = test_temp_dir("op-token-file");
+        let config_dir = dir.join(".config/op");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("service-account-token"), "file-token\n").unwrap();
+        assert_eq!(op_token_from(None, &dir).as_deref(), Some("file-token"));
+        // An empty (or whitespace) env value counts as absent —
+        // the 2026-11-15 shape for the bws twin, mirrored here.
+        assert_eq!(op_token_from(Some(""), &dir).as_deref(), Some("file-token"));
+        assert_eq!(
+            op_token_from(Some("   "), &dir).as_deref(),
+            Some("file-token")
+        );
+        // The second path is the fallback for the fallback.
+        std::fs::remove_dir_all(&dir).ok();
+        let dir = test_temp_dir("op-token-file-alt");
+        let alt_dir = dir.join(".config/1password");
+        std::fs::create_dir_all(&alt_dir).unwrap();
+        std::fs::write(alt_dir.join("service-account-token"), "alt-token\n").unwrap();
+        assert_eq!(op_token_from(None, &dir).as_deref(), Some("alt-token"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_absent_everywhere_is_none() {
+        let dir = test_temp_dir("op-token-none");
+        assert_eq!(op_token_from(None, &dir), None);
+        assert_eq!(op_token_from(Some(""), &dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn op_token_runner_controls_the_child_env() {
+        // /bin/sh reports whether the variable is set in its
+        // environment: the runner must set it from the resolved
+        // token, and must remove it when no token resolved (so a
+        // stale ambient value cannot leak through either).
+        let probe = |runner: &OpTokenRunner| -> String {
+            runner
+                .run(
+                    "sh",
+                    &[
+                        "-c",
+                        "if [ -n \"$OP_SERVICE_ACCOUNT_TOKEN\" ]; then echo set; else echo unset; fi",
+                    ],
+                )
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(
+            probe(&OpTokenRunner::with_token(Some(
+                "fixture-token".to_string()
+            ))),
+            "set"
+        );
+        assert_eq!(probe(&OpTokenRunner::with_token(None)), "unset");
+    }
+
+    #[test]
+    fn op_token_runner_times_out_a_hanging_child() {
+        let runner = OpTokenRunner::with_token(None).with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn op_from_config_prefers_env_then_file() {
+        // Env manipulation is process-wide: save and restore so
+        // parallel tests never observe our values.
+        let saved_vault = std::env::var("FLEET_OP_VAULT").ok();
+        let saved_field = std::env::var("FLEET_OP_FIELD").ok();
+        unsafe {
+            std::env::remove_var("FLEET_OP_VAULT");
+            std::env::remove_var("FLEET_OP_FIELD");
+        }
+        let mut config = fleet_config::Config::default();
+        config.secrets.op_vault = Some("file-vault".to_string());
+        config.secrets.op_field = Some("password".to_string());
+        // File values turn the source on with the configured field.
+        let source = OpSource::from_config(&config).expect("file vault turns op on");
+        assert_eq!(source.reference("a.b"), "op://file-vault/a.b/password");
+        // Env beats the file when both are set; a blank env value
+        // counts as absent, not as a vault.
+        unsafe {
+            std::env::set_var("FLEET_OP_VAULT", " env-vault ");
+            std::env::set_var("FLEET_OP_FIELD", "  ");
+        }
+        let source = OpSource::from_config(&config).expect("env vault turns op on");
+        assert_eq!(source.reference("a.b"), "op://env-vault/a.b/password");
+        // Neither names a vault: the source stays off.
+        unsafe {
+            std::env::remove_var("FLEET_OP_VAULT");
+            std::env::remove_var("FLEET_OP_FIELD");
+        }
+        let config = fleet_config::Config::default();
+        assert!(OpSource::from_config(&config).is_none());
+        // Restore the ambient values.
+        unsafe {
+            match saved_vault {
+                Some(v) => std::env::set_var("FLEET_OP_VAULT", v),
+                None => std::env::remove_var("FLEET_OP_VAULT"),
+            }
+            match saved_field {
+                Some(v) => std::env::set_var("FLEET_OP_FIELD", v),
+                None => std::env::remove_var("FLEET_OP_FIELD"),
+            }
+        }
     }
 }

@@ -50,7 +50,9 @@ use tokio_rustls::{TlsConnector, client::TlsStream};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{WebSocketStream, client_async, tungstenite::client::IntoClientRequest};
 
-use super::serve_proxy::{Frame, FrameDecoder, MAX_FRAME_BODY};
+use super::serve_proxy::{Frame, FrameDecoder, FrameType, MAX_FRAME_BODY};
+use super::serve_proxy_mux::StreamIdMap;
+use super::serve_proxy_route::LiveLeg;
 
 /// Largest wire representation of one frame (4-byte length prefix plus
 /// the largest body the codec accepts). The WebSocket leg refuses
@@ -454,11 +456,105 @@ pub async fn establish_websocket_leg(
     establish_websocket_leg_over(tls, &url).await
 }
 
+/// Async frame surface shared by the established byte-stream and WebSocket
+/// transports. This is generic (not a trait object) so duplex-based tests and
+/// production TLS streams use the same pump without boxing or payload copies.
+#[allow(async_fn_in_trait)]
+pub trait ServeProxyTransport {
+    async fn send_typed_frame(&mut self, frame: &Frame) -> Result<()>;
+    async fn recv_typed_frame(&mut self) -> Result<Option<Frame>>;
+}
+
+impl<S> ServeProxyTransport for ByteStreamLeg<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    async fn send_typed_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.send_frame(frame).await
+    }
+
+    async fn recv_typed_frame(&mut self) -> Result<Option<Frame>> {
+        self.recv_frame().await
+    }
+}
+
+impl<S> ServeProxyTransport for WebSocketLeg<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    async fn send_typed_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.send_frame(frame).await
+    }
+
+    async fn recv_typed_frame(&mut self) -> Result<Option<Frame>> {
+        self.recv_frame().await
+    }
+}
+
+/// Drain one leg's ordered scheduler into its established transport. The
+/// [`LiveLeg`] remains the single owner of credit and scheduling; a transport
+/// failure returns immediately and never logs or persists frame payloads.
+pub async fn flush_live_leg<T: ServeProxyTransport>(
+    live: &mut LiveLeg,
+    transport: &mut T,
+) -> Result<usize> {
+    let mut sent = 0;
+    while let Some(frame) = live.pop_next() {
+        transport
+            .send_typed_frame(&frame)
+            .await
+            .context("writing scheduled serve-proxy frame")?;
+        sent += 1;
+    }
+    Ok(sent)
+}
+
+/// Read one complete typed frame from either established leg class.
+pub async fn receive_typed_frame<T: ServeProxyTransport>(
+    transport: &mut T,
+) -> Result<Option<Frame>> {
+    transport.recv_typed_frame().await
+}
+
+/// Which side of a broker's paired legs supplied a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairedLegSide {
+    Left,
+    Right,
+}
+
+/// Map a frame from one leg's numbering into the peer leg's numbering and
+/// enqueue it through the peer's `LiveLeg`. WINDOW_UPDATE is consumed by the
+/// source-side LiveLeg (it grants broker send credit on that leg) and is not
+/// forwarded. Stream mappings are installed by the broker when it accepts an
+/// OPEN and chooses the destination-leg ID.
+pub fn route_paired_frame(
+    source: &mut LiveLeg,
+    destination: &mut LiveLeg,
+    stream_ids: &StreamIdMap,
+    from: PairedLegSide,
+    frame: Frame,
+) -> Result<(), Frame> {
+    if frame.ty == FrameType::WindowUpdate {
+        return source.apply_window_update(&frame);
+    }
+    let mapped = match from {
+        PairedLegSide::Left => stream_ids.left_to_right_frame(frame)?,
+        PairedLegSide::Right => stream_ids.right_to_left_frame(frame)?,
+    };
+    if mapped.ty == FrameType::Data {
+        destination.send_data(mapped)
+    } else {
+        destination.enqueue_control(mapped)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::serve_proxy::{FrameType, MAX_DATA_PAYLOAD};
+    use crate::serve_proxy_scheduler::StreamPriority;
     use tokio::net::TcpListener;
 
     /// The frame sequence every leg oracle round-trips: one frame of
@@ -788,5 +884,86 @@ mod tests {
         server.write_all(&wire[..6]).await.unwrap();
         drop(server);
         assert!(leg.recv_frame().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn live_leg_routes_and_schedules_mapped_frames_over_byte_stream() {
+        let mut left_live = LiveLeg::new();
+        let mut right_live = LiveLeg::new();
+        assert!(left_live.open_stream(1, StreamPriority::Bulk));
+        assert!(right_live.open_stream(4, StreamPriority::Bulk));
+        let mut ids = StreamIdMap::default();
+        assert!(ids.register(1, 4));
+
+        route_paired_frame(
+            &mut left_live,
+            &mut right_live,
+            &ids,
+            PairedLegSide::Left,
+            Frame::data(1, 7, b"ciphertext".to_vec()).unwrap(),
+        )
+        .unwrap();
+        route_paired_frame(
+            &mut left_live,
+            &mut right_live,
+            &ids,
+            PairedLegSide::Left,
+            Frame::new(FrameType::Ping, 0, 0, Vec::new()).unwrap(),
+        )
+        .unwrap();
+
+        let (broker_stream, peer_stream) = tokio::io::duplex(4096);
+        let mut transport = ByteStreamLeg::new(broker_stream);
+        assert_eq!(
+            flush_live_leg(&mut right_live, &mut transport)
+                .await
+                .unwrap(),
+            2
+        );
+
+        let mut peer = ByteStreamLeg::new(peer_stream);
+        let control = receive_typed_frame(&mut peer).await.unwrap().unwrap();
+        assert_eq!(
+            control.ty,
+            FrameType::Ping,
+            "control must preempt queued DATA"
+        );
+        let data = receive_typed_frame(&mut peer).await.unwrap().unwrap();
+        assert_eq!((data.ty, data.stream_id, data.seq), (FrameType::Data, 4, 7));
+        assert_eq!(data.payload, b"ciphertext");
+    }
+
+    #[tokio::test]
+    async fn live_leg_round_trips_typed_frames_over_websocket_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut leg = WebSocketLeg::new(socket);
+            let received = leg.recv_frame().await.unwrap().unwrap();
+            assert_eq!(
+                (received.ty, received.stream_id, received.seq),
+                (FrameType::Data, 3, 9)
+            );
+            assert_eq!(received.payload, b"encrypted-bytes");
+            leg.send_frame(&received).await.unwrap();
+        });
+
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let mut transport = establish_websocket_leg_over(tcp, &format!("ws://{addr}/serve-proxy"))
+            .await
+            .unwrap();
+        let mut live = LiveLeg::new();
+        assert!(live.open_stream(3, StreamPriority::Interactive));
+        live.send_data(Frame::data(3, 9, b"encrypted-bytes".to_vec()).unwrap())
+            .unwrap();
+        assert_eq!(flush_live_leg(&mut live, &mut transport).await.unwrap(), 1);
+        let echoed = receive_typed_frame(&mut transport).await.unwrap().unwrap();
+        assert_eq!(
+            echoed,
+            Frame::data(3, 9, b"encrypted-bytes".to_vec()).unwrap()
+        );
+        peer.await.unwrap();
     }
 }

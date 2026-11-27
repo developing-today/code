@@ -43,15 +43,17 @@ database moving mid-run cannot smear the copy.
 
 ## Legs
 
-| Source (laptop-local)                      | Home                         | Token (Bitwarden name)                      | Schedule                                                                             |
-| ------------------------------------------ | ---------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `~/.local/state/pm-projector/projector.db` | `laptop-backup-pm-projector` | `turso.laptop-backup-pm-projector-rw-token` | `laptop-db-backup-pm-projector.timer`, Sundays 05:40 + up to 30 min randomized delay |
-| `~/.local/state/fleet/metadata.db` | `laptop-backup-fleet-metadata` | `turso.laptop-backup-fleet-metadata-rw-token` | `laptop-db-backup-fleet-metadata.timer`, Sundays 06:20 + up to 30 min randomized delay |
+| Source (laptop-local)                               | Home                            | Token (Bitwarden name)                         | Schedule                                                                                |
+| --------------------------------------------------- | ------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `~/.local/state/pm-projector/projector.db`          | `laptop-backup-pm-projector`    | `turso.laptop-backup-pm-projector-rw-token`    | `laptop-db-backup-pm-projector.timer`, Sundays 05:40 + up to 30 min randomized delay    |
+| `~/.local/state/fleet/metadata.db`                  | `laptop-backup-fleet-metadata`  | `turso.laptop-backup-fleet-metadata-rw-token`  | `laptop-db-backup-fleet-metadata.timer`, Sundays 06:20 + up to 30 min randomized delay  |
+| `~/.opencode-mem/data/user-prompts.db`              | `laptop-backup-user-prompts`    | `turso.laptop-backup-user-prompts-rw-token`    | `laptop-db-backup-user-prompts.timer`, Sundays 07:00 + up to 30 min randomized delay    |
+| `~/.local/share/t3code/userdata/statev2.sqlite`     | `laptop-backup-t3code-statev2`  | `turso.laptop-backup-t3code-statev2-rw-token`  | `laptop-db-backup-t3code-statev2.timer`, Sundays 07:40 + up to 30 min randomized delay  |
+| `~/.local/share/ready-for-agent/ready-for-agent.db` | `laptop-backup-ready-for-agent` | `turso.laptop-backup-ready-for-agent-rw-token` | `laptop-db-backup-ready-for-agent.timer`, Sundays 08:20 + up to 30 min randomized delay |
 
-The remaining qualifying databases from the #13459 inventory
-(user-prompts.db, t3code statev2.sqlite,
-ready-for-agent.db) get their own legs under #13474 by the same
-pattern: one home, one token, one wrapper, one timer each.
+All five qualifying databases from the #13459 inventory now have
+legs under #13474 by the same pattern: one home, one token, one
+wrapper, one timer each.
 
 ## Credentials
 

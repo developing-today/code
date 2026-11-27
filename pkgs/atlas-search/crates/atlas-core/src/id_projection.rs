@@ -29,6 +29,8 @@
 //! rejected or quarantined batch projects exactly like a published
 //! one.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::attestation::{BatchOutcome, BatchStatement};
@@ -75,6 +77,37 @@ pub struct ProjectedRun {
     pub claims: Vec<ProjectedClaim>,
     /// The last claim's subject — the chain head a replayer pins
     /// (§6.1). `None` for an empty run.
+    pub batch_chain_head: Option<String>,
+}
+
+/// Immutable Atlas and publisher inputs needed to reproduce one
+/// projection run (§6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionRunPins {
+    /// Maximum ingested `version_seq` per file at the snapshot boundary.
+    pub atlas_snapshot_marker: BTreeMap<String, u64>,
+    /// Batch-chain head at the start of this run, if the run continues a
+    /// previously published chain.
+    pub batch_chain_head: Option<String>,
+    /// Stable public key identifier used to attribute emitted claims.
+    pub publisher_key_id: String,
+    /// Projection mapping version selected for this run.
+    pub projection_version: String,
+}
+
+/// Replayable record of a projector run. The caller persists this value
+/// atomically with its publication unit; without the pins, output alone
+/// is not sufficient evidence for replay (§6.1, §6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionRunLog {
+    /// Stable identifier assigned by the caller before projection.
+    pub run_id: String,
+    /// Complete input pins used for the run.
+    pub pins: ProjectionRunPins,
+    /// Emissions in source order; a row's document and relations must be
+    /// committed as one unit by the publisher (§6.4).
+    pub claims: Vec<ProjectedClaim>,
+    /// Resulting chain head, distinct from the input head in `pins`.
     pub batch_chain_head: Option<String>,
 }
 
@@ -141,6 +174,167 @@ pub fn project_run(statements: &[BatchStatement]) -> Result<ProjectedRun> {
         claims,
         batch_chain_head,
     })
+}
+
+/// Projects and records a run together with every input needed to replay
+/// it (§6.1). The first statement must continue exactly the pinned batch
+/// chain head; otherwise the snapshot and batch inputs do not describe a
+/// coherent run.
+pub fn project_run_with_pins(
+    run_id: impl Into<String>,
+    statements: &[BatchStatement],
+    pins: ProjectionRunPins,
+) -> Result<ProjectionRunLog> {
+    let run_id = run_id.into();
+    if run_id.trim().is_empty() {
+        return Err(refuse("id_projection: run id must not be empty"));
+    }
+    if pins.publisher_key_id.trim().is_empty() {
+        return Err(refuse("id_projection: publisher key id must not be empty"));
+    }
+    if pins.projection_version != PROJECTION_VERSION {
+        return Err(refuse(format!(
+            "id_projection: unsupported projection version {:?}",
+            pins.projection_version
+        )));
+    }
+    if statements
+        .first()
+        .and_then(|statement| statement.predicate.prior_attestation.as_deref())
+        != pins.batch_chain_head.as_deref()
+    {
+        return Err(refuse(
+            "id_projection: first batch does not continue the pinned batch-chain head",
+        ));
+    }
+
+    let projected = project_run(statements)?;
+    Ok(ProjectionRunLog {
+        run_id,
+        pins,
+        claims: projected.claims,
+        batch_chain_head: projected.batch_chain_head,
+    })
+}
+
+/// Outcome of replaying one logged run (§6.1): re-projection from the
+/// logged pins plus the caller-supplied statements must reproduce the
+/// logged emissions byte for byte, or replay refuses with the first
+/// divergence named. Replay is deterministic — the same pins and the
+/// same statements always yield the same claims — so a replayer that
+/// re-fetches the pinned inputs (snapshot marker, batch chain) can
+/// verify a run without trusting its logged outputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayReport {
+    /// The replayed run id, echoed from the log.
+    pub run_id: String,
+    /// Number of claims re-projected and compared.
+    pub claims_replayed: usize,
+    /// The reproduced chain head, equal to the logged head.
+    pub batch_chain_head: Option<String>,
+}
+
+/// Replays a logged run: re-projects `statements` under the logged
+/// pins and requires byte-identical emissions and head.
+///
+/// Fails closed: a pin mismatch (wrong chain head, key id, version),
+/// a statement mismatch (different bytes, order, or count), or a head
+/// mismatch refuses the whole replay, never a prefix.
+///
+/// # Errors
+///
+/// [`Error::Fatal`] when the replayed projection diverges from the
+/// log in pins, claims, or head.
+pub fn replay_run_from_pins(
+    log: &ProjectionRunLog,
+    statements: &[BatchStatement],
+) -> Result<ReplayReport> {
+    let replayed = project_run_with_pins(log.run_id.clone(), statements, log.pins.clone())?;
+    if replayed.claims.len() != log.claims.len() {
+        return Err(refuse(format!(
+            "id_projection: replay of run {:?} diverged: {} statements project to {} claims, log holds {}",
+            log.run_id,
+            statements.len(),
+            replayed.claims.len(),
+            log.claims.len(),
+        )));
+    }
+    for (position, (replayed_claim, logged_claim)) in
+        replayed.claims.iter().zip(log.claims.iter()).enumerate()
+    {
+        if replayed_claim != logged_claim {
+            return Err(refuse(format!(
+                "id_projection: replay of run {:?} diverged at claim {position} (batch {:?})",
+                log.run_id, logged_claim.batch_id,
+            )));
+        }
+    }
+    if replayed.batch_chain_head != log.batch_chain_head {
+        return Err(refuse(format!(
+            "id_projection: replay of run {:?} diverged: reproduced head {:?} != logged head {:?}",
+            log.run_id, replayed.batch_chain_head, log.batch_chain_head,
+        )));
+    }
+    Ok(ReplayReport {
+        run_id: log.run_id.clone(),
+        claims_replayed: replayed.claims.len(),
+        batch_chain_head: replayed.batch_chain_head,
+    })
+}
+
+/// On-demand historical backfill request over a stated batch range
+/// (§8 item 3 pull default, §6.4 ordering): the consumer names the
+/// batches it needs in chain order; the projector publishes exactly
+/// those claims. Late or backfilled rows publish when observed — the
+/// batch chain makes ordering reconstructible regardless of arrival
+/// order, so the stated range order (not history storage order) is
+/// the publication order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackfillRequest {
+    /// Stable identifier for this backfill run, assigned by the caller.
+    pub run_id: String,
+    /// The stated historical range: batch ids in chain order. An empty
+    /// range backfills nothing and yields an empty log.
+    pub batch_ids: Vec<String>,
+}
+
+/// Projects a stated historical range on demand (§8.3): looks each
+/// requested batch id up in `history`, then projects the ordered
+/// statements as one run under `pins`.
+///
+/// Fails closed: an unknown batch id, a range that does not continue
+/// the pinned batch-chain head, or a broken link inside the range
+/// refuses the whole backfill, never a prefix. Each backfilled claim
+/// is one atomic publication unit — it recomputes from its statement
+/// rows alone (§6.4), and the returned log is the unit manifest the
+/// caller persists with the publication.
+///
+/// # Errors
+///
+/// [`Error::Fatal`] when the run id is empty, any requested batch id
+/// is absent from `history`, or the ordered range breaks the batch
+/// chain.
+pub fn backfill_range(
+    request: BackfillRequest,
+    history: &BTreeMap<String, BatchStatement>,
+    pins: ProjectionRunPins,
+) -> Result<ProjectionRunLog> {
+    if request.run_id.trim().is_empty() {
+        return Err(refuse("id_projection: backfill run id must not be empty"));
+    }
+    let mut statements = Vec::with_capacity(request.batch_ids.len());
+    for batch_id in &request.batch_ids {
+        match history.get(batch_id) {
+            Some(statement) => statements.push(statement.clone()),
+            None => {
+                return Err(refuse(format!(
+                    "id_projection: backfill of run {:?} refuses unknown batch {batch_id:?}",
+                    request.run_id,
+                )));
+            }
+        }
+    }
+    project_run_with_pins(request.run_id, &statements, pins)
 }
 
 #[cfg(test)]
@@ -401,6 +595,282 @@ mod tests {
         let run = project_run(&[]).unwrap();
         assert!(run.claims.is_empty());
         assert_eq!(run.batch_chain_head, None);
+    }
+
+    /// Oracle: a logged run preserves every replay input pin alongside
+    /// the exact deterministic emissions, so serialization carries the
+    /// same inputs a verifier needs to reproduce the run.
+    #[test]
+    fn logged_run_persists_replay_pins_and_emissions() {
+        let statement = BatchStatement::new(
+            vec![subject("shard-0:chunk-1", 0x11)],
+            vec![material("repo@abc:path", 0x22)],
+            predicate("batch-1", BatchOutcome::Published),
+        );
+        let pins = ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: None,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        };
+
+        let log = project_run_with_pins("run-1", &[statement.clone()], pins.clone()).unwrap();
+        let encoded = serde_json::to_vec(&log).unwrap();
+        let decoded: ProjectionRunLog = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.run_id, "run-1");
+        assert_eq!(decoded.pins, pins);
+        assert_eq!(decoded.claims, project_run(&[statement]).unwrap().claims);
+        assert_eq!(
+            decoded.batch_chain_head,
+            decoded.claims.last().map(|claim| claim.subject.clone())
+        );
+    }
+
+    fn logged_run(statements: &[BatchStatement], head: Option<String>) -> ProjectionRunLog {
+        let pins = ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: head,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        };
+        project_run_with_pins("run-1", statements, pins).unwrap()
+    }
+
+    fn two_chained() -> (BatchStatement, BatchStatement) {
+        let first = BatchStatement::new(
+            vec![subject("shard-0:chunk-1", 0x11)],
+            vec![material("repo@abc:path", 0x22)],
+            predicate("batch-1", BatchOutcome::Published),
+        );
+        let first_digest = first.envelope_digest().unwrap();
+        let second = chained(
+            BatchStatement::new(
+                vec![subject("shard-0:chunk-2", 0x33)],
+                vec![material("repo@abc:path", 0x22)],
+                predicate("batch-2", BatchOutcome::Published),
+            ),
+            &first_digest,
+        );
+        (first, second)
+    }
+
+    /// Oracle §6.1: replay from the logged pins plus the same
+    /// statements reproduces the logged emissions byte for byte —
+    /// through a serialize/deserialize round trip, as a verifier
+    /// reading a persisted log would.
+    #[test]
+    fn replay_from_pins_reproduces_logged_emissions() {
+        let (first, second) = two_chained();
+        let statements = vec![first, second];
+        let log = logged_run(&statements, None);
+        let persisted = serde_json::to_vec(&log).unwrap();
+        let loaded: ProjectionRunLog = serde_json::from_slice(&persisted).unwrap();
+
+        let report = replay_run_from_pins(&loaded, &statements).unwrap();
+        assert_eq!(report.run_id, "run-1");
+        assert_eq!(report.claims_replayed, 2);
+        assert_eq!(report.batch_chain_head, loaded.batch_chain_head);
+        assert_eq!(
+            report.batch_chain_head.as_deref(),
+            Some(loaded.claims[1].subject.as_str())
+        );
+    }
+
+    /// Oracle §6.1, negative: replaying against different statements
+    /// refuses, even when the substitute chain is itself well-formed
+    /// (only the pinned run's inputs reproduce its emissions).
+    #[test]
+    fn replay_refuses_substituted_statements() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second];
+        let log = logged_run(&statements, None);
+
+        let impostor = BatchStatement::new(
+            vec![subject("shard-0:chunk-9", 0x99)],
+            vec![],
+            predicate("batch-2", BatchOutcome::Published),
+        );
+        let impostor = chained(impostor, &first.envelope_digest().unwrap());
+        assert!(replay_run_from_pins(&log, &[first, impostor]).is_err());
+    }
+
+    /// Oracle §6.1, negative: statements that do not continue the
+    /// pinned batch-chain head refuse at the pin check, before any
+    /// claim comparison.
+    #[test]
+    fn replay_refuses_statements_off_the_pinned_head() {
+        let (first, second) = two_chained();
+        let statements = vec![first, second.clone()];
+        let log = logged_run(&statements, None);
+
+        // The second statement alone names a prior head the pins do
+        // not pin, so replay refuses without comparing claims.
+        assert!(replay_run_from_pins(&log, std::slice::from_ref(&second)).is_err());
+    }
+
+    fn backfill_history(statements: &[BatchStatement]) -> BTreeMap<String, BatchStatement> {
+        statements
+            .iter()
+            .map(|statement| {
+                (
+                    statement.predicate.batch.batch_id.clone(),
+                    statement.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn backfill_pins(head: Option<String>) -> ProjectionRunPins {
+        ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: head,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        }
+    }
+
+    /// Oracle §8.3 + §6.4 ordering: a backfill over a stated historical
+    /// range publishes exactly the requested claims in chain order —
+    /// byte-identical to projecting the same statements as a live run.
+    #[test]
+    fn backfill_over_stated_range_reproduces_live_run_claims() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second.clone()];
+        let history = backfill_history(&statements);
+
+        let live = project_run_with_pins("live-1", &statements, backfill_pins(None)).unwrap();
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-1".to_owned(),
+                batch_ids: vec![
+                    first.predicate.batch.batch_id.clone(),
+                    second.predicate.batch.batch_id.clone(),
+                ],
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+
+        assert_eq!(backfilled.run_id, "backfill-1");
+        assert_eq!(backfilled.claims, live.claims);
+        assert_eq!(backfilled.batch_chain_head, live.batch_chain_head);
+        // Ordering is reconstructible from the chain, not arrival
+        // order: history storage order does not matter, the stated
+        // range order governs publication.
+        assert_eq!(
+            backfilled.claims[0].batch_id,
+            first.predicate.batch.batch_id
+        );
+        assert_eq!(
+            backfilled.claims[1].prior_attestation.as_deref(),
+            Some(backfilled.claims[0].subject.as_str())
+        );
+    }
+
+    /// Oracle §6.4 atomicity: every backfilled claim is one complete
+    /// publication unit — it recomputes from its statement rows alone —
+    /// and the backfill log persists as one serializable manifest.
+    #[test]
+    fn backfilled_claims_are_atomic_units_under_one_manifest() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second.clone()];
+        let history = backfill_history(&statements);
+
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-atomic".to_owned(),
+                batch_ids: vec![
+                    first.predicate.batch.batch_id.clone(),
+                    second.predicate.batch.batch_id.clone(),
+                ],
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+
+        for (claim, statement) in backfilled.claims.iter().zip(statements.iter()) {
+            assert_recomputes(claim, statement);
+        }
+        let encoded = serde_json::to_vec(&backfilled).unwrap();
+        let decoded: ProjectionRunLog = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, backfilled);
+        assert_eq!(
+            decoded.batch_chain_head,
+            decoded.claims.last().map(|claim| claim.subject.clone())
+        );
+    }
+
+    /// Fails closed: a backfill naming a batch outside the stated
+    /// history refuses the whole range, never a prefix.
+    #[test]
+    fn backfill_refuses_unknown_batch_id() {
+        let (first, second) = two_chained();
+        let history = backfill_history(&[first.clone(), second]);
+        assert!(
+            backfill_range(
+                BackfillRequest {
+                    run_id: "backfill-unknown".to_owned(),
+                    batch_ids: vec![
+                        first.predicate.batch.batch_id.clone(),
+                        "batch-never-ingested".to_owned(),
+                    ],
+                },
+                &history,
+                backfill_pins(None),
+            )
+            .is_err()
+        );
+    }
+
+    /// Fails closed: a stated range that skips a chain link refuses —
+    /// ordering gaps are never silently published as contiguous.
+    #[test]
+    fn backfill_refuses_range_with_skipped_link() {
+        let (first, second) = two_chained();
+        let third = chained(
+            BatchStatement::new(
+                vec![subject("shard-0:chunk-3", 0x44)],
+                vec![material("repo@abc:path", 0x22)],
+                predicate("batch-3", BatchOutcome::Published),
+            ),
+            &second.envelope_digest().unwrap(),
+        );
+        let history = backfill_history(&[first.clone(), second, third.clone()]);
+        // Requesting first + third skips the middle link.
+        assert!(
+            backfill_range(
+                BackfillRequest {
+                    run_id: "backfill-gap".to_owned(),
+                    batch_ids: vec![
+                        first.predicate.batch.batch_id.clone(),
+                        third.predicate.batch.batch_id.clone(),
+                    ],
+                },
+                &history,
+                backfill_pins(None),
+            )
+            .is_err()
+        );
+    }
+
+    /// An empty stated range backfills nothing: no claims, no head.
+    #[test]
+    fn empty_backfill_range_yields_empty_log() {
+        let history = BTreeMap::new();
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-empty".to_owned(),
+                batch_ids: Vec::new(),
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+        assert!(backfilled.claims.is_empty());
+        assert_eq!(backfilled.batch_chain_head, None);
     }
 
     proptest! {

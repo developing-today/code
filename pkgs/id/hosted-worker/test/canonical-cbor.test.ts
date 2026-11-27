@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   CborError,
@@ -8,7 +9,7 @@ import {
   encodeCanonical,
   validateRecord,
   type CborValue,
-} from "../src/canonical-cbor.ts";
+} from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 // The golden table is shared with the Rust suite
 // (crates/id-core/tests/canonical_cbor_vectors.rs): same logical
@@ -16,9 +17,7 @@ import {
 // asserted by both suites against this one fixed table.
 
 const uint = (value: bigint): CborValue => ({ kind: "uint", value });
-const int = (value: bigint): CborValue => ({ kind: "int", value });
 const text = (value: string): CborValue => ({ kind: "text", value });
-const bytes = (value: number[]): CborValue => ({ kind: "bytes", value: new Uint8Array(value) });
 
 function toHex(data: Uint8Array): string {
   return [...data].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -30,60 +29,58 @@ function fromHex(hexText: string): Uint8Array {
   return out;
 }
 
-const GOLDEN: [CborValue, string][] = [
-  [uint(0n), "00"],
-  [uint(1n), "01"],
-  [uint(10n), "0a"],
-  [uint(23n), "17"],
-  [uint(24n), "1818"],
-  [uint(100n), "1864"],
-  [uint(1000n), "1903e8"],
-  [uint(1_000_000n), "1a000f4240"],
-  [uint(0xffffffffffffffffn), "1bffffffffffffffff"],
-  [int(-1n), "20"],
-  [int(-10n), "29"],
-  [int(-100n), "3863"],
-  [int(-1000n), "3903e7"],
-  [{ kind: "bool", value: false }, "f4"],
-  [{ kind: "bool", value: true }, "f5"],
-  [{ kind: "null" }, "f6"],
-  [bytes([]), "40"],
-  [bytes([1, 2]), "420102"],
-  [text(""), "60"],
-  [text("a"), "6161"],
-  [text("hello"), "6568656c6c6f"],
-  [{ kind: "array", value: [] }, "80"],
-  [{ kind: "array", value: [uint(1n), uint(2n), uint(3n)] }, "83010203"],
-  [{ kind: "map", value: [] }, "a0"],
-  [{ kind: "map", value: [[text("a"), uint(1n)]] }, "a1616101"],
-  [
-    {
-      kind: "map",
-      value: [
-        [text("b"), uint(2n)],
-        [text("a"), uint(1n)],
-      ],
-    },
-    "a2616101616202",
-  ],
-  [
-    {
-      kind: "map",
-      value: [
-        [text("generation"), uint(7n)],
-        [text("parent"), { kind: "null" }],
-        [text("payload"), bytes([0xde, 0xad])],
-      ],
-    },
-    "a366706172656e74f6677061796c6f616442dead6a67656e65726174696f6e07",
-  ],
-];
+type FixtureValue =
+  | { kind: "null" }
+  | { kind: "bool"; value: boolean }
+  | { kind: "uint" | "int"; value: string }
+  | { kind: "bytes"; value: string }
+  | { kind: "text"; value: string }
+  | { kind: "array"; value: FixtureValue[] }
+  | { kind: "map"; value: [FixtureValue, FixtureValue][] };
+
+interface SharedVectors {
+  canonical_cbor: { name: string; value: FixtureValue; encoded_hex: string }[];
+}
+
+const SHARED_VECTORS = JSON.parse(
+  readFileSync(new URL("../../tests/fixtures/hosted-second-version-g1.json", import.meta.url), "utf8"),
+) as SharedVectors;
+
+function fromFixture(value: FixtureValue): CborValue {
+  switch (value.kind) {
+    case "null":
+      return { kind: "null" };
+    case "bool":
+      return { kind: "bool", value: value.value };
+    case "uint":
+    case "int":
+      return { kind: value.kind, value: BigInt(value.value) };
+    case "bytes":
+      return { kind: "bytes", value: fromHex(value.value) };
+    case "text":
+      return { kind: "text", value: value.value };
+    case "array":
+      return { kind: "array", value: value.value.map(fromFixture) };
+    case "map":
+      return {
+        kind: "map",
+        value: value.value.map(([key, item]) => [fromFixture(key), fromFixture(item)] as [CborValue, CborValue]),
+      };
+  }
+}
+
+const GOLDEN = SHARED_VECTORS.canonical_cbor.map(({ name, value, encoded_hex }) => [
+  fromFixture(value),
+  encoded_hex,
+  name,
+] as const);
 
 test("golden vectors encode and decode byte-exactly", () => {
-  for (const [value, wantHex] of GOLDEN) {
-    assert.equal(toHex(encodeCanonical(value)), wantHex, `encode ${wantHex}`);
+  assert.equal(GOLDEN.length, 27, "shared canonical CBOR fixture retains every vector");
+  for (const [value, wantHex, name] of GOLDEN) {
+    assert.equal(toHex(encodeCanonical(value)), wantHex, `encode ${name}`);
     const decoded = decodeCanonical(fromHex(wantHex));
-    assert.equal(toHex(encodeCanonical(decoded)), wantHex, `round-trip ${wantHex}`);
+    assert.equal(toHex(encodeCanonical(decoded)), wantHex, `round-trip ${name}`);
   }
 });
 

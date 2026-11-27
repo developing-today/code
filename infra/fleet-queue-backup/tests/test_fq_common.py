@@ -152,25 +152,37 @@ class TestForeignKeys(unittest.TestCase):
         target.execute("PRAGMA foreign_keys = ON")
         target.executescript("BEGIN;\n" + dump + "COMMIT;\n")
         self.assertEqual(counts, {"child": 1, "batches": 1})
-        self.assertEqual(target.execute("SELECT batch_id FROM child").fetchall(), [("b1",)])
+        self.assertEqual(
+            target.execute("SELECT batch_id FROM child").fetchall(), [("b1",)]
+        )
 
 
 class TestRowidPaging(unittest.TestCase):
     def test_rowid_paging_skips_gaps_and_keeps_order(self):
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE t (n INTEGER)")
-        conn.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(fq_common.PAGE_ROWS + 3)])
+        conn.executemany(
+            "INSERT INTO t VALUES (?)", [(i,) for i in range(fq_common.PAGE_ROWS + 3)]
+        )
         conn.execute("DELETE FROM t WHERE n % 7 = 0")
         conn.commit()
         want = [(str(r[0]),) for r in conn.execute("SELECT n FROM t ORDER BY rowid")]
-        self.assertEqual(list(fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "t", 1)), want)
+        self.assertEqual(
+            list(fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "t", 1)), want
+        )
 
     def test_without_rowid_falls_back_to_offset(self):
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE w (k TEXT PRIMARY KEY) WITHOUT ROWID")
-        conn.executemany("INSERT INTO w VALUES (?)", [(f"k{i:04d}",) for i in range(fq_common.PAGE_ROWS + 2)])
+        conn.executemany(
+            "INSERT INTO w VALUES (?)",
+            [(f"k{i:04d}",) for i in range(fq_common.PAGE_ROWS + 2)],
+        )
         conn.commit()
-        self.assertEqual(len(list(fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "w", 1))), fq_common.PAGE_ROWS + 2)
+        self.assertEqual(
+            len(list(fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "w", 1))),
+            fq_common.PAGE_ROWS + 2,
+        )
 
 
 if __name__ == "__main__":

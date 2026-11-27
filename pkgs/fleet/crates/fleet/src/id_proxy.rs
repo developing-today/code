@@ -1,19 +1,12 @@
 //! The `fleet id` proxy modes, build slice 2 of design #10391
 //! (pass 2, §5 slice 2; issue #15434): the §4.2 mode-selection rule,
-//! the distinct never-downgrade dial failure modes, the CONNECT
-//! request/response shape for the relay dialer in constrained
-//! egress, and the opaque splice both proxy modes byte-move with.
+//! distinct never-downgrade dial failures, CONNECT-proxied relay
+//! dialing, and opaque stream splicing.
 //!
-//! What this slice does NOT do: the live iroh dial itself. That
-//! dial needs slice 1's key on the wire together with the relay
-//! fixture, and lands with the initiator work in slices 3–4
-//! (#15435, #15436). What lands here is everything about the dial
-//! that is decidable without a network: which mode a request gets
-//! (§4.2 first-match), how a failed dial is reported (distinctly,
-//! never as a downgrade to another mode), the CONNECT bytes a
-//! CONNECT-only egress proxy sees, and the byte-identical splice
-//! (mode 1 byte-moves a caller-held ticket through it; the stock
-//! peer needs no special code because the splice parses nothing).
+//! Mode 1 splices stdio to a plain TCP or Unix target. Mode 2
+//! initiates an authenticated Iroh QUIC connection through the
+//! configured relay (and the standard HTTP CONNECT proxy when set),
+//! then byte-moves the payload without interpreting it.
 //!
 //! The §4.2 contract implemented here:
 //!
@@ -265,6 +258,558 @@ pub fn run_proxy_mode(args: &[String]) -> i32 {
     0
 }
 
+/// Exit codes for `fleet id proxy` (§4.7: distinct, never a
+/// silent fallback or downgrade). 2 is usage; 69 is the house
+/// `EX_UNAVAILABLE` for a mode selected but not yet landed.
+pub const EXIT_MODE_UNAVAILABLE: i32 = 69;
+/// The relay (or the CONNECT shim in front of it) could not be
+/// reached, refused the CONNECT, or answered non-200 (mode 2).
+pub const EXIT_RELAY_UNREACHABLE: i32 = 71;
+/// The dialed peer's NodeId did not match `--expect-node-id`
+/// (mode 2) — fail closed, never downgrade.
+pub const EXIT_IDENTITY_MISMATCH: i32 = 72;
+/// The mode-1 raw target could not be connected.
+pub const EXIT_TARGET_UNREACHABLE: i32 = 73;
+
+impl DialFailure {
+    /// The process exit code for this fail-closed dial failure.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            DialFailure::RelayUnreachable => EXIT_RELAY_UNREACHABLE,
+            DialFailure::IdentityMismatch => EXIT_IDENTITY_MISMATCH,
+        }
+    }
+}
+
+/// A mode-1 target: a plain endpoint fleet byte-moves to. Fleet
+/// parses nothing on these streams and holds no iroh key for the
+/// flow (§4.2 mode 1, the `ssh -W`-style hop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Tcp(String),
+    Unix(String),
+}
+
+/// Parse a target argument. `tcp://host:port`, `unix:///path`,
+/// a bare `host:port`, or a bare `/path` are accepted; all explicit
+/// ordinary endpoints count as raw endpoints for the §4.2 rule
+/// (second element of the return).
+pub fn parse_target(s: &str) -> Result<(Target, bool), String> {
+    if let Some(rest) = s.strip_prefix("tcp://") {
+        if rest.is_empty() {
+            return Err("tcp:// target needs a host:port".to_string());
+        }
+        Ok((Target::Tcp(rest.to_string()), true))
+    } else if let Some(rest) = s.strip_prefix("unix://") {
+        if rest.is_empty() {
+            return Err("unix:// target needs a path".to_string());
+        }
+        Ok((Target::Unix(rest.to_string()), true))
+    } else if s.contains("://") {
+        Err(format!(
+            "unsupported target scheme in '{s}' (want tcp://, unix://, host:port, or /path)"
+        ))
+    } else if s.starts_with('/') {
+        Ok((Target::Unix(s.to_string()), true))
+    } else if s.contains(':') {
+        Ok((Target::Tcp(s.to_string()), true))
+    } else {
+        Err(format!(
+            "cannot tell what target '{s}' is (want tcp://, unix://, host:port, or /path)"
+        ))
+    }
+}
+
+/// Validate a `--expect-node-id` pin: exactly 64 hex characters
+/// (a 32-byte NodeId, the §4.1 form). A malformed pin is a usage
+/// error, never an identity mismatch and never ignored.
+pub fn parse_expect_node_id(s: &str) -> Result<[u8; 32], String> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 64 {
+        return Err(format!(
+            "--expect-node-id must be 64 hex characters (32 bytes), got {}",
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+        let hi = hex_val(pair[0])?;
+        let lo = hex_val(pair[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_val(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err("--expect-node-id must be hex".to_string()),
+    }
+}
+
+/// One end of a mode-1 duplex splice. Fleet parses nothing on
+/// these streams; the splice half-closes a direction on EOF so
+/// the peer sees the caller's end-of-input instead of a hung
+/// stream.
+pub enum End {
+    Tcp(std::net::TcpStream),
+    Unix(std::os::unix::net::UnixStream),
+    /// The caller's own stdin/stdout (the `ssh -W`-style hop).
+    Stdio {
+        input: std::io::Stdin,
+        output: std::io::Stdout,
+    },
+}
+
+impl End {
+    pub fn stdio() -> Self {
+        End::Stdio {
+            input: std::io::stdin(),
+            output: std::io::stdout(),
+        }
+    }
+
+    fn try_clone(&self) -> std::io::Result<End> {
+        match self {
+            End::Tcp(s) => Ok(End::Tcp(s.try_clone()?)),
+            End::Unix(s) => Ok(End::Unix(s.try_clone()?)),
+            End::Stdio { .. } => Ok(End::stdio()),
+        }
+    }
+
+    fn shutdown_write(&self) {
+        match self {
+            End::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            }
+            End::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            }
+            End::Stdio { .. } => {}
+        }
+    }
+
+    fn shutdown_both(&self) {
+        match self {
+            End::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            End::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            End::Stdio { .. } => {}
+        }
+    }
+
+    fn can_cancel_read(&self) -> bool {
+        !matches!(self, End::Stdio { .. })
+    }
+}
+
+impl Read for End {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            End::Tcp(s) => s.read(buf),
+            End::Unix(s) => s.read(buf),
+            End::Stdio { input, .. } => input.read(buf),
+        }
+    }
+}
+
+impl Write for End {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            End::Tcp(s) => s.write(buf),
+            End::Unix(s) => s.write(buf),
+            // `Stdout` is line-buffered when attached to a terminal.
+            // A proxy stream must deliver short binary frames even
+            // when they contain no newline and neither side closes.
+            End::Stdio { output, .. } => {
+                let n = output.write(buf)?;
+                output.flush()?;
+                Ok(n)
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            End::Tcp(s) => s.flush(),
+            End::Unix(s) => s.flush(),
+            End::Stdio { output, .. } => output.flush(),
+        }
+    }
+}
+
+/// Splice two ends together, byte for byte, in both directions
+/// at once (mode 1). A direction that reaches EOF half-closes the
+/// other end's write side. If the peer closes first, socket input
+/// is cancelled; process stdin cannot be cancelled and its reader
+/// is detached so the proxy can return.
+pub fn splice_duplex(mut left: End, mut right: End) -> std::io::Result<()> {
+    let mut left_clone = left.try_clone()?;
+    let mut right_clone = right.try_clone()?;
+    let forward = std::thread::spawn(move || {
+        let n = std::io::copy(&mut left_clone, &mut right_clone)
+            .and_then(|n| right_clone.flush().map(|()| n));
+        right_clone.shutdown_write();
+        if n.is_err() {
+            left_clone.shutdown_both();
+            right_clone.shutdown_both();
+        }
+        n
+    });
+    let backward_n = std::io::copy(&mut right, &mut left).and_then(|n| left.flush().map(|()| n));
+    left.shutdown_write();
+    if let Err(error) = backward_n {
+        left.shutdown_both();
+        right.shutdown_both();
+        // An interactive stdin read cannot be cancelled by a socket
+        // shutdown. Do not wait for it after the other direction fails;
+        // the CLI returns this error and exits, ending that reader.
+        return Err(error);
+    }
+    // Peer EOF means the proxy is done even when a caller keeps stdin
+    // open. Shutdown interrupts socket readers; process stdin has no
+    // equivalent cancellation, so detach that reader and let the CLI
+    // return (and then exit) rather than hanging on `join`.
+    left.shutdown_both();
+    right.shutdown_write();
+    if left.can_cancel_read() {
+        forward
+            .join()
+            .unwrap_or(Err(std::io::Error::other("splice thread panicked")))?;
+    } else {
+        drop(forward);
+    }
+    Ok(())
+}
+
+/// Connect a mode-1 target. Failure is exit 73
+/// ([`EXIT_TARGET_UNREACHABLE`]) — distinct from a relay
+/// failure, per §4.7.
+pub fn connect_target(target: &Target) -> Result<End, (i32, String)> {
+    match target {
+        Target::Tcp(addr) => std::net::TcpStream::connect(addr)
+            .map(End::Tcp)
+            .map_err(|e| {
+                (
+                    EXIT_TARGET_UNREACHABLE,
+                    format!("target-unreachable: tcp {addr}: {e}"),
+                )
+            }),
+        Target::Unix(path) => std::os::unix::net::UnixStream::connect(path)
+            .map(End::Unix)
+            .map_err(|e| {
+                (
+                    EXIT_TARGET_UNREACHABLE,
+                    format!("target-unreachable: unix {path}: {e}"),
+                )
+            }),
+    }
+}
+
+fn mode2_endpoint_builder(
+    key: &crate::id_key::SessionKey,
+    relay: &iroh::RelayUrl,
+    proxy: Option<url::Url>,
+) -> iroh::endpoint::Builder {
+    let relay_config = iroh::RelayConfig::new(relay.clone(), None);
+    let relays = iroh::RelayMap::from(relay_config);
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(key.secret_bytes()))
+        .relay_mode(iroh::RelayMode::Custom(relays))
+        // A mode-2 dial must stay on the pinned relay path. It must not
+        // escape a failed CONNECT tunnel through direct UDP.
+        .clear_ip_transports();
+    match proxy {
+        Some(proxy) => builder.proxy_url(proxy),
+        None => builder.proxy_from_env(),
+    }
+}
+
+fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> DialFailure {
+    match error {
+        iroh::endpoint::ConnectError::Connecting {
+            source:
+                iroh::endpoint::ConnectingError::HandshakeFailure {
+                    source: iroh::endpoint::AuthenticationError::RemoteId { .. },
+                    ..
+                },
+            ..
+        } => DialFailure::IdentityMismatch,
+        _ => DialFailure::RelayUnreachable,
+    }
+}
+
+async fn dial_mode2(
+    endpoint: &iroh::Endpoint,
+    target: iroh::EndpointId,
+    pinned: [u8; 32],
+    relay: &iroh::RelayUrl,
+    alpn: &[u8],
+) -> Result<iroh::endpoint::Connection, DialFailure> {
+    if ensure_peer_identity(&pinned, target.as_bytes()).is_err() {
+        return Err(DialFailure::IdentityMismatch);
+    }
+    let addr = iroh::EndpointAddr::new(target).with_relay_url(relay.clone());
+    let conn = endpoint
+        .connect(addr, alpn)
+        .await
+        .map_err(|error| classify_connect_error(&error))?;
+    ensure_peer_identity(&pinned, conn.remote_id().as_bytes())?;
+    Ok(conn)
+}
+
+fn run_mode2(
+    target: iroh::EndpointId,
+    pinned: [u8; 32],
+    relay: iroh::RelayUrl,
+    alpn: String,
+    key: crate::id_key::SessionKey,
+) -> Result<(), (i32, String)> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            (
+                EXIT_RELAY_UNREACHABLE,
+                format!("cannot start iroh runtime: {error}"),
+            )
+        })?;
+    runtime.block_on(async move {
+        let endpoint = mode2_endpoint_builder(&key, &relay, None)
+            .bind()
+            .await
+            .map_err(|error| {
+                (
+                    EXIT_RELAY_UNREACHABLE,
+                    format!("relay-unreachable: {error}"),
+                )
+            })?;
+        let conn = dial_mode2(&endpoint, target, pinned, &relay, alpn.as_bytes())
+            .await
+            .map_err(|failure| (failure.exit_code(), failure.to_string()))?;
+        let (send, recv) = conn.open_bi().await.map_err(|error| {
+            (
+                EXIT_RELAY_UNREACHABLE,
+                format!("relay-unreachable: {error}"),
+            )
+        })?;
+        let mut local = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+        let mut remote = tokio::io::join(recv, send);
+        tokio::io::copy_bidirectional(&mut local, &mut remote)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                (
+                    EXIT_RELAY_UNREACHABLE,
+                    format!("relay-unreachable: {error}"),
+                )
+            })
+    })
+}
+
+const PROXY_USAGE: &str = "\
+Usage: fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>]
+                      [--relay <url>] [--expect-node-id <hex>] <target>
+
+Byte-move to an ID peer under the design #10391 §4.2 mode rule
+(first match wins): --mode overrides all; --raw or a raw endpoint
+path -> mode 1 (raw proxy); --opaque or an ALPN fleet does not
+know -> mode 2 (relay-aware proxy); otherwise mode 3 (initiator,
+served by 'fleet id postcard'/'fleet id stream', not this verb).
+
+  <target>        mode 1: TCP/Unix endpoint; mode 2: peer NodeId (64 hex)
+  --alpn <alpn>   target protocol (required for mode 2; fleet knows /iroh-meta/3)
+  --relay <url>   HTTPS relay URL for the mode-2 dial
+                  HTTP(S)_PROXY env vars configure the CONNECT proxy
+  --expect-node-id <hex>
+                  pin the peer NodeId for the mode-2 dial; a
+                  mismatch fails closed (exit 72), never downgrades
+
+Mode 1 splices this process's stdin/stdout to the target,
+byte for byte; fleet parses nothing. Mode 2 dials the pinned peer
+through the relay and the standard HTTP CONNECT proxy when configured,
+then splices opaque QUIC stream bytes. Exit codes: 0 ok · 2 usage ·
+69 mode unavailable · 71 relay unreachable · 72 identity
+mismatch · 73 target unreachable.";
+
+/// `fleet id proxy` — see [`PROXY_USAGE`]. Returns a process
+/// exit code. The first element of `args` is the literal
+/// `"proxy"` (retained by the `id` domain router in `main.rs`).
+pub fn run(args: &[String]) -> i32 {
+    let mut rest = args.iter();
+    match rest.next().map(|s| s.as_str()) {
+        Some("proxy") => {}
+        Some(other) => {
+            eprintln!("error: unknown 'fleet id' command '{other}'\n\n{PROXY_USAGE}");
+            return 2;
+        }
+        None => {
+            eprintln!("error: 'fleet id proxy' needs a <target>\n\n{PROXY_USAGE}");
+            return 2;
+        }
+    }
+    let mut req = ProxyRequest::default();
+    let mut target_arg: Option<String> = None;
+    let mut expect: Option<[u8; 32]> = None;
+    let mut relay: Option<String> = None;
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--help" | "-h" | "help" => {
+                println!("{PROXY_USAGE}");
+                return 0;
+            }
+            "--raw" => req.raw = true,
+            "--opaque" => req.opaque = true,
+            "--mode" => match rest.next().and_then(|v| Mode::parse(v)) {
+                Some(m) => req.mode_override = Some(m),
+                None => {
+                    eprintln!("error: --mode must be one of 1, 2, 3, raw, relay-aware, initiator");
+                    return 2;
+                }
+            },
+            "--alpn" => match rest.next() {
+                Some(v) => req.alpn = Some(v.clone()),
+                None => {
+                    eprintln!("error: --alpn needs a value");
+                    return 2;
+                }
+            },
+            "--relay" => match rest.next() {
+                Some(v) => relay = Some(v.clone()),
+                None => {
+                    eprintln!("error: --relay needs a value");
+                    return 2;
+                }
+            },
+            "--expect-node-id" => match rest.next() {
+                Some(v) => match parse_expect_node_id(v) {
+                    Ok(pin) => expect = Some(pin),
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return 2;
+                    }
+                },
+                None => {
+                    eprintln!("error: --expect-node-id needs a value");
+                    return 2;
+                }
+            },
+            other if other.starts_with("--") => {
+                eprintln!("error: unknown argument '{other}'\n\n{PROXY_USAGE}");
+                return 2;
+            }
+            other => {
+                if target_arg.is_some() {
+                    eprintln!("error: exactly one <target> is allowed\n\n{PROXY_USAGE}");
+                    return 2;
+                }
+                target_arg = Some(other.to_string());
+            }
+        }
+    }
+    let target_text = target_arg.unwrap_or_default();
+    let raw_target = if target_text.is_empty() {
+        None
+    } else {
+        parse_target(&target_text).ok()
+    };
+    req.raw_endpoint = raw_target.is_some();
+    let mode = select_mode(&req);
+    match mode {
+        Mode::Raw => {
+            if expect.is_some() || relay.is_some() {
+                eprintln!(
+                    "error: --expect-node-id/--relay belong to the mode-2 dial; mode 1 cannot honor them (refusing, not ignoring)"
+                );
+                return 2;
+            }
+            let target = match raw_target {
+                Some((target, _)) => target,
+                None => {
+                    eprintln!("error: mode 1 needs a TCP or Unix <target>\n\n{PROXY_USAGE}");
+                    return 2;
+                }
+            };
+            match connect_target(&target) {
+                Ok(end) => match splice_duplex(End::stdio(), end) {
+                    Ok(_) => 0,
+                    Err(e) => {
+                        eprintln!("error: splice failed: {e}");
+                        EXIT_TARGET_UNREACHABLE
+                    }
+                },
+                Err((code, msg)) => {
+                    eprintln!("error: {msg}");
+                    code
+                }
+            }
+        }
+        Mode::RelayAware => {
+            let target_bytes = match parse_expect_node_id(&target_text) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "error: mode 2 <target> must be the peer NodeId in 64-digit hex: {error}"
+                    );
+                    return 2;
+                }
+            };
+            let pinned = match expect {
+                Some(pin) => pin,
+                None => {
+                    eprintln!("error: mode 2 requires --expect-node-id");
+                    return 2;
+                }
+            };
+            let relay = match relay.and_then(|value| value.parse::<iroh::RelayUrl>().ok()) {
+                Some(relay) => relay,
+                None => {
+                    eprintln!("error: mode 2 requires a valid --relay https://… URL");
+                    return 2;
+                }
+            };
+            let alpn = match req.alpn {
+                Some(alpn) if !alpn.is_empty() => alpn,
+                _ => {
+                    eprintln!("error: mode 2 requires --alpn");
+                    return 2;
+                }
+            };
+            let target = match iroh::EndpointId::from_bytes(&target_bytes) {
+                Ok(target) => target,
+                Err(error) => {
+                    eprintln!("error: invalid mode-2 peer NodeId: {error}");
+                    return 2;
+                }
+            };
+            let key = match crate::id_key::SessionKey::from_env() {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("error: cannot create ID session key: {error}");
+                    return 2;
+                }
+            };
+            match run_mode2(target, pinned, relay, alpn, key) {
+                Ok(()) => 0,
+                Err((code, error)) => {
+                    eprintln!("error: {error}");
+                    code
+                }
+            }
+        }
+        Mode::Initiator => {
+            eprintln!(
+                "error: mode 3 (initiator) is not a proxy mode; use 'fleet id postcard' or 'fleet id stream' (design #10391 §4.7)"
+            );
+            2
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +994,350 @@ mod tests {
         assert!(head.starts_with("CONNECT relay.example:443 HTTP/1.1\r\n"));
         assert!(head.contains("Host: relay.example:443\r\n"));
         assert!(head.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn proxy_exit_codes_are_distinct_and_stable() {
+        let mut codes = vec![
+            EXIT_MODE_UNAVAILABLE,
+            EXIT_RELAY_UNREACHABLE,
+            EXIT_IDENTITY_MISMATCH,
+            EXIT_TARGET_UNREACHABLE,
+        ];
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), 4, "proxy exit codes must be distinct");
+        assert_eq!(DialFailure::RelayUnreachable.exit_code(), 71);
+        assert_eq!(DialFailure::IdentityMismatch.exit_code(), 72);
+    }
+
+    #[test]
+    fn target_parsing_marks_bare_forms_raw() {
+        assert_eq!(
+            parse_target("tcp://127.0.0.1:9"),
+            Ok((Target::Tcp("127.0.0.1:9".into()), true))
+        );
+        assert_eq!(
+            parse_target("unix:///tmp/sock"),
+            Ok((Target::Unix("/tmp/sock".into()), true))
+        );
+        assert_eq!(
+            parse_target("127.0.0.1:9"),
+            Ok((Target::Tcp("127.0.0.1:9".into()), true))
+        );
+        assert_eq!(
+            parse_target("/tmp/sock"),
+            Ok((Target::Unix("/tmp/sock".into()), true))
+        );
+        assert!(parse_target("iroh://ticket").is_err());
+        assert!(parse_target("just-a-name").is_err());
+    }
+
+    #[test]
+    fn explicit_scheme_target_selects_raw_mode_without_flags() {
+        let (target, raw_endpoint) = parse_target("tcp://127.0.0.1:9").expect("target");
+        assert_eq!(target, Target::Tcp("127.0.0.1:9".into()));
+        assert_eq!(
+            select_mode(&ProxyRequest {
+                raw_endpoint,
+                ..ProxyRequest::default()
+            }),
+            Mode::Raw
+        );
+    }
+
+    #[test]
+    fn expect_node_id_pin_is_strict() {
+        let ok = parse_expect_node_id(&"ab".repeat(32)).expect("64 hex");
+        assert_eq!(ok, [0xab; 32]);
+        for bad in [
+            "",
+            "ab",
+            &"ab".repeat(31),
+            &"ab".repeat(33),
+            &"zz".repeat(32),
+        ] {
+            assert!(parse_expect_node_id(bad).is_err(), "input: {bad:?}");
+        }
+    }
+
+    fn proxy_args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn proxy_mode2_requires_peer_pin_relay_and_alpn_before_networking() {
+        let peer = "ab".repeat(32);
+        assert_eq!(run(&proxy_args(&["proxy", "--mode", "2", &peer])), 2);
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "2",
+                "--expect-node-id",
+                &peer,
+                &peer
+            ])),
+            2
+        );
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "2",
+                "--expect-node-id",
+                &peer,
+                "--relay",
+                "https://relay.example:443",
+                &peer,
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn proxy_mode1_refuses_mode2_flags_instead_of_ignoring_them() {
+        let pin = "ab".repeat(32);
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "1",
+                "--expect-node-id",
+                &pin,
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "1",
+                "--relay",
+                "https://relay.example:443",
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn proxy_mode3_through_this_verb_is_a_usage_error() {
+        assert_eq!(
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "3",
+                "--alpn",
+                "/iroh-meta/3",
+                "127.0.0.1:9"
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn unreachable_raw_target_is_the_distinct_73_error() {
+        // Bind then drop a listener to get a port nothing serves.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        drop(listener);
+        match connect_target(&Target::Tcp(addr.clone())) {
+            Err((code, _)) => assert_eq!(code, EXIT_TARGET_UNREACHABLE),
+            Ok(_) => panic!("connect to a dead port must fail"),
+        }
+        // The verb itself maps the same failure to exit 73.
+        assert_eq!(
+            run(&proxy_args(&["proxy", "--mode", "1", &addr])),
+            EXIT_TARGET_UNREACHABLE
+        );
+    }
+
+    /// Deterministic byte stream (splitmix64) — the fixture's
+    /// oracle is byte identity, not the generator.
+    fn fixture_bytes(n: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                (z ^ (z >> 31)) as u8
+            })
+            .collect()
+    }
+
+    /// Mode 1's acceptance shape: an echo peer (a "stock peer"
+    /// that needs no special code) behind the duplex splice;
+    /// bytes the caller sends come back identical, in both
+    /// directions. The
+    /// caller side is a loopback TCP pair standing in for stdio
+    /// so the test does not touch the process's real stdin/out.
+    #[test]
+    fn raw_splice_duplex_moves_bytes_identically_both_ways() {
+        use std::io::{Read as _, Write as _};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        // Echo server: one accepted connection, echo until EOF.
+        let echo_listener = TcpListener::bind("127.0.0.1:0").expect("bind echo");
+        let echo_addr = echo_listener.local_addr().expect("addr");
+        let echo = std::thread::spawn(move || {
+            let (mut s, _) = echo_listener.accept().expect("accept");
+            let mut output = s.try_clone().expect("clone");
+            std::io::copy(&mut s, &mut output).expect("echo copy");
+        });
+        // Caller pair: driver <-> splice-left.
+        let pair_listener = TcpListener::bind("127.0.0.1:0").expect("bind pair");
+        let pair_addr = pair_listener.local_addr().expect("addr");
+        let mut driver = TcpStream::connect(pair_addr).expect("connect pair");
+        let (splice_left, _) = pair_listener.accept().expect("accept pair");
+        let splice_right = TcpStream::connect(echo_addr).expect("connect echo");
+
+        let splice_thread = std::thread::spawn(move || {
+            splice_duplex(End::Tcp(splice_left), End::Tcp(splice_right))
+        });
+
+        let payload = fixture_bytes(1 << 20, 42);
+        let mut driver_clone = driver.try_clone().expect("clone driver");
+        let payload_clone = payload.clone();
+        let writer = std::thread::spawn(move || {
+            driver_clone
+                .write_all(&payload_clone)
+                .expect("write payload");
+            driver_clone.shutdown(Shutdown::Write).expect("half-close");
+        });
+        let mut echoed = Vec::new();
+        driver.read_to_end(&mut echoed).expect("read echo");
+        writer.join().expect("writer");
+        splice_thread.join().expect("splice").expect("splice ok");
+        echo.join().expect("echo");
+
+        assert_eq!(echoed, payload, "bytes must survive the splice identical");
+    }
+
+    /// Oracle: authenticated Iroh peer identity plus byte-identical opaque
+    /// payload. The CONNECT-only proxy records the target authority and
+    /// rejects every non-CONNECT request, proving relay traffic used the
+    /// tunnel rather than direct UDP or an HTTP proxy fallback.
+    #[tokio::test]
+    async fn mode2_dials_stock_peer_through_connect_proxy_and_preserves_tls_payload() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        const ALPN: &[u8] = b"fleet-id-proxy-test/1";
+        let (relay_map, relay_url, _relay_server) = iroh::test_utils::run_relay_server()
+            .await
+            .expect("local relay");
+        let ca = iroh::tls::CaTlsConfig::insecure_skip_verify();
+        let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Custom(relay_map))
+            .clear_ip_transports()
+            .ca_tls_config(ca.clone())
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("peer endpoint");
+        let target = server.id();
+
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy listener");
+        let proxy_addr = proxy_listener.local_addr().expect("proxy address");
+        let (authority_tx, authority_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let Ok((mut client, _)) = proxy_listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                if client.read_exact(&mut byte).await.is_err() {
+                    return;
+                }
+                request.push(byte[0]);
+                if request.len() > 8192 {
+                    return;
+                }
+            }
+            let head = String::from_utf8_lossy(&request);
+            let Some(authority) = head
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("CONNECT "))
+                .and_then(|line| line.strip_suffix(" HTTP/1.1"))
+            else {
+                let _ = client
+                    .write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                    .await;
+                return;
+            };
+            let _ = authority_tx.send(authority.to_string());
+            let Ok(mut relay) = tokio::net::TcpStream::connect(authority).await else {
+                let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                return;
+            };
+            if client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_ok()
+            {
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut relay).await;
+            }
+        });
+
+        let server_for_peer = server.clone();
+        let peer = tokio::spawn(async move {
+            let incoming = server_for_peer.accept().await.expect("incoming connection");
+            let connection = incoming.await.expect("authenticated client");
+            let (send, mut recv) = connection.accept_bi().await.expect("opaque stream");
+            let payload = recv.read_to_end(1 << 20).await.expect("read payload");
+            let mut send = send;
+            send.write_all(&payload).await.expect("echo payload");
+            send.finish().expect("finish echo");
+            connection.closed().await;
+            payload
+        });
+
+        let relay_for_client = relay_url.clone();
+        let client_key = crate::id_key::SessionKey::from_secret_hex(&"11".repeat(32))
+            .expect("valid session key");
+        let proxy_url = url::Url::parse(&format!("http://{proxy_addr}")).expect("proxy URL");
+        let client = mode2_endpoint_builder(&client_key, &relay_for_client, Some(proxy_url))
+            .ca_tls_config(ca)
+            .bind()
+            .await
+            .expect("client endpoint");
+        let connection = dial_mode2(&client, target, *target.as_bytes(), &relay_url, ALPN)
+            .await
+            .expect("relay-aware authenticated connection");
+        assert_eq!(
+            connection.remote_id(),
+            target,
+            "TLS peer identity is pinned"
+        );
+        assert!(matches!(
+            dial_mode2(&client, target, [0x22; 32], &relay_url, ALPN).await,
+            Err(DialFailure::IdentityMismatch)
+        ));
+
+        let payload = fixture_bytes(64 * 1024, 0x15434);
+        let (mut send, mut recv) = connection.open_bi().await.expect("open opaque stream");
+        send.write_all(&payload)
+            .await
+            .expect("write opaque payload");
+        send.finish().expect("finish opaque payload");
+        let echoed = recv.read_to_end(1 << 20).await.expect("read echo");
+        assert_eq!(echoed, payload, "opaque stream bytes are unchanged");
+        assert_eq!(
+            authority_rx.await.expect("CONNECT observed"),
+            format!(
+                "{}:{}",
+                relay_url.host_str().expect("relay host"),
+                relay_url.port_or_known_default().expect("relay port")
+            )
+        );
+        client.close().await;
+        server.close().await;
+        assert_eq!(peer.await.expect("peer task"), payload);
     }
 }

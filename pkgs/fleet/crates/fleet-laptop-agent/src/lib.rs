@@ -28,6 +28,14 @@ pub const TARGET_PORT: u16 = 4799;
 pub const TIMEOUT_EXIT: i32 = 124;
 /// Local deadline = remote timeout + this grace (`TRANSPORT_GRACE_S`).
 pub const TRANSPORT_GRACE_S: u64 = 15;
+/// Bound on one server-side long-poll wait for `GET /jobs/<job>`
+/// (developing-today/code#5757): the client asks for at most this many
+/// seconds per trip, and both the daemon and the SSH fallback leg hold
+/// the request up to this long, returning sooner on output or
+/// completion. A quiet ~60 s job then costs 2 trips (50 s + remainder),
+/// >=5x fewer than the 10 pre-long-poll backoff trips, while completion
+/// is still reported within about a second.
+pub const LONG_POLL_WAIT_S: u64 = 50;
 /// Time the deadline path may spend asking the daemon to cancel.
 pub const CANCEL_BUDGET_S: u64 = 3;
 /// Per-stream capture cap the daemon applies to /exec output.

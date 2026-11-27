@@ -91,14 +91,21 @@ def run_pass(plan, prior, export, now):
     retry = []
     for name in names:
         if name in CLASS_A:
-            retry.append({"database": name, "reason": "class-A database in a class-B pass"})
+            retry.append(
+                {"database": name, "reason": "class-A database in a class-B pass"}
+            )
             continue
         try:
             got = export(name)
         except Miss as exc:
             retry.append({"database": name, "reason": str(exc)})
         except Exception as exc:
-            retry.append({"database": name, "reason": "unexpected error: %s" % type(exc).__name__})
+            retry.append(
+                {
+                    "database": name,
+                    "reason": "unexpected error: %s" % type(exc).__name__,
+                }
+            )
         else:
             exported.append({"database": name, **got})
     return {
@@ -126,11 +133,33 @@ def main(argv=None):
         description="Run one due-cohort Turso export pass and write its run record (#13456).",
         allow_abbrev=False,
     )
-    parser.add_argument("--plan", required=True, metavar="FILE", help="planner JSON (turso-mesh-cohorts.py output)")
-    parser.add_argument("--exporter", required=True, metavar="CMD", help="read-only exporter executable; run as CMD DATABASE")
-    parser.add_argument("--retry", metavar="FILE", help="previous run record whose retry list is included in this pass")
-    parser.add_argument("--timeout", type=int, default=3600, metavar="SECS", help="per-database exporter timeout (default 3600)")
-    parser.add_argument("--out", metavar="FILE", help="write the run record here instead of stdout")
+    parser.add_argument(
+        "--plan",
+        required=True,
+        metavar="FILE",
+        help="planner JSON (turso-mesh-cohorts.py output)",
+    )
+    parser.add_argument(
+        "--exporter",
+        required=True,
+        metavar="CMD",
+        help="read-only exporter executable; run as CMD DATABASE",
+    )
+    parser.add_argument(
+        "--retry",
+        metavar="FILE",
+        help="previous run record whose retry list is included in this pass",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=3600,
+        metavar="SECS",
+        help="per-database exporter timeout (default 3600)",
+    )
+    parser.add_argument(
+        "--out", metavar="FILE", help="write the run record here instead of stdout"
+    )
     args = parser.parse_args(argv)
 
     if args.timeout <= 0:
@@ -142,8 +171,16 @@ def main(argv=None):
     except ValueError as exc:
         print("turso-mesh-export-pass: %s" % exc, file=sys.stderr)
         return 2
-    if not isinstance(plan, dict) or "databases" not in plan or "date" not in plan or "cohort" not in plan:
-        print("turso-mesh-export-pass: plan is not a planner dry-run output", file=sys.stderr)
+    if (
+        not isinstance(plan, dict)
+        or "databases" not in plan
+        or "date" not in plan
+        or "cohort" not in plan
+    ):
+        print(
+            "turso-mesh-export-pass: plan is not a planner dry-run output",
+            file=sys.stderr,
+        )
         return 2
 
     exporter = [args.exporter]

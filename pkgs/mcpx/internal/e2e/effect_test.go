@@ -131,6 +131,7 @@ var implementedEffectProbes = map[string]string{
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
 	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
+	"script.checkJs":                     "TestScriptCheckJsDecidesWhetherJavaScriptIsChecked",
 	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
 	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
@@ -281,6 +282,7 @@ var implementedEffectProbes = map[string]string{
 	"http.remoteIdleConns":               "TestHTTPIdleConnectionPoolSettingsChangeReuse",
 	"http.idleConnTimeout":               "TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection",
 	"transport.bearerToken":              "TestTransportBearerTokenGatesTheDaemon",
+	"auth.mode":                          "TestAuthModeRequiredGatesTCPButNotTheSocket",
 	"transport.allowedOrigins":           "TestTransportAllowedOriginsAreServed",
 	"transport.sessionMetaKeys":          "TestTransportSessionMetaKeysNameTheSession",
 	"transport.sseKeepAlive":             "TestTransportSSEKeepAliveCommentsOnAQuietStream",
@@ -327,6 +329,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestScriptPrefixIsReachableFromTheEnvironment":                                  TestScriptPrefixIsReachableFromTheEnvironment,
 	"TestScriptTypecheckOnRefusesATypeError":                                         TestScriptTypecheckOnRefusesATypeError,
 	"TestScriptCheckOnErrorDecidesOnACheckError":                                     TestScriptCheckOnErrorDecidesOnACheckError,
+	"TestScriptCheckJsDecidesWhetherJavaScriptIsChecked":                             TestScriptCheckJsDecidesWhetherJavaScriptIsChecked,
 	"TestScriptImportsCrossProjectDecidesAForeignProjectEdge":                        TestScriptImportsCrossProjectDecidesAForeignProjectEdge,
 	"TestScriptImportsOnMissingDecidesOnAMissingPackage":                             TestScriptImportsOnMissingDecidesOnAMissingPackage,
 	"TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage":                 TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage,
@@ -519,6 +522,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection":                           TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection,
 	"TestTransportAllowedOriginsAreServed":                                           TestTransportAllowedOriginsAreServed,
 	"TestTransportBearerTokenGatesTheDaemon":                                         TestTransportBearerTokenGatesTheDaemon,
+	"TestAuthModeRequiredGatesTCPButNotTheSocket":                                    TestAuthModeRequiredGatesTCPButNotTheSocket,
 	"TestTransportSSEKeepAliveCommentsOnAQuietStream":                                TestTransportSSEKeepAliveCommentsOnAQuietStream,
 	"TestTransportSessionMetaKeysNameTheSession":                                     TestTransportSessionMetaKeysNameTheSession,
 	"TestTransportStdioDrainBoundsServeShutdown":                                     TestTransportStdioDrainBoundsServeShutdown,
@@ -673,6 +677,53 @@ func TestScriptCheckOnErrorDecidesOnACheckError(t *testing.T) {
 	}
 	if strings.Contains(out, "does not type check") || !strings.Contains(out, "not a number") {
 		t.Fatalf("run should stay quiet and run the script:\n%s", out)
+	}
+}
+
+// TestScriptCheckJsDecidesWhetherJavaScriptIsChecked is the effect probe
+// for script.checkJs. A // @ts-check JavaScript entry whose JSDoc names a
+// type from an adjacent .d.ts is checked under Deno in types mode.
+// Oracle: by default (checkJs on) the run stops on the JS type error;
+// with MCPX_SCRIPT_CHECK_JS=false the same script runs; and a TypeScript
+// type error still stops with checkJs off, so TypeScript checking is
+// unchanged.
+func TestScriptCheckJsDecidesWhetherJavaScriptIsChecked(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.WriteFile(filepath.Join(e.dir, "types.d.ts"),
+		[]byte("export interface Config { port: number; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	js := filepath.Join(e.dir, "bad.js")
+	jsSrc := "// @ts-check\n" +
+		"/** @type {import(\"./types.d.ts\").Config} */\n" +
+		"const cfg = { port: \"not a number\" };\n" +
+		"export default function () { return cfg.port; }\n"
+	if err := os.WriteFile(js, []byte(jsSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ts := filepath.Join(e.dir, "bad.ts")
+	if err := os.WriteFile(ts, []byte("const n: number = \"not a number\";\n"+
+		"export default function () { return n; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_SCRIPT_CHECK=types")
+
+	out, err := e.try("run", js)
+	if err == nil || !strings.Contains(out, "does not type check") {
+		t.Fatalf("default (checkJs on) should refuse the JS type error (err=%v):\n%s", err, out)
+	}
+	if !strings.Contains(out, "not assignable to type 'number'") {
+		t.Errorf("the refusal should report the .d.ts-backed type error:\n%s", out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_JS=false")
+	if out := e.run("run", js); !strings.Contains(out, "not a number") {
+		t.Fatalf("checkJs=false should run the JavaScript script:\n%s", out)
+	}
+
+	if out, err := e.try("run", ts); err == nil || !strings.Contains(out, "does not type check") {
+		t.Fatalf("checkJs=false must not change TypeScript checking (err=%v):\n%s", err, out)
 	}
 }
 
@@ -3511,6 +3562,24 @@ func TestDaemonWarmTimeoutBoundsTheStartupWarm(t *testing.T) {
 		e := newEnv(t, oneServer)
 		e.setenv(env...)
 		e.run("ls")
+		// The startup warm runs in the background: stopping the daemon
+		// immediately can win the race and leave no "warm complete"
+		// line in the log. Poll for it before stopping, so the
+		// assertion reads the warm's result instead of its absence.
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
+			for _, line := range strings.Split(string(b), "\n") {
+				if strings.Contains(line, "warm complete") {
+					_, _ = e.try("daemon", "stop")
+					return line
+				}
+			}
+			if !time.Now().Before(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		_, _ = e.try("daemon", "stop")
 		b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
 		for _, line := range strings.Split(string(b), "\n") {

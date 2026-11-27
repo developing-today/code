@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7802 | #2469 | `audit:completed-later` | Adds an isolated DNS vector-retrieval fixture without claiming production ingestion. Later #10832 embeds/promotes the repository config into the production Atlas shard; #2469 comment #6924093882 records retrieval proof and closes the issue. |
-| #7804 | #6055 | `audit:complete` | Prepares the five-question external GitHub-content counsel packet with current terms/policy sources, interim zones and the no-ratification boundary requested. |
-| #7805 | #4716 | `audit:complete` | Splits file-management handlers out of `routes.rs`, removes the grandfather entry, and verifies the resulting files meet the production-line limit with tests passing. |
-| #7806 | #2176 | `audit:partial` | Delivers the failure-classifier scout leg and routing on the main-broken chain. The parent issue remains open for Dependabot triage, Jules/API disposition, repository_dispatch and scheduled-task verdicts; those remain tracked on #2176. |
-| #7809 | #6048 | `audit:complete` | Delivers the Presidio NER design: recognizer set, tier scoping, cost and pilot, batching/checkpointing, review queue, rejected alternatives and invariants. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                          |
+| -------------: | -------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7802 |          #2469 | `audit:completed-later` | Adds an isolated DNS vector-retrieval fixture without claiming production ingestion. Later #10832 embeds/promotes the repository config into the production Atlas shard; #2469 comment #6924093882 records retrieval proof and closes the issue. |
+|          #7804 |          #6055 | `audit:complete`        | Prepares the five-question external GitHub-content counsel packet with current terms/policy sources, interim zones and the no-ratification boundary requested.                                                                                   |
+|          #7805 |          #4716 | `audit:complete`        | Splits file-management handlers out of `routes.rs`, removes the grandfather entry, and verifies the resulting files meet the production-line limit with tests passing.                                                                           |
+|          #7806 |          #2176 | `audit:partial`         | Delivers the failure-classifier scout leg and routing on the main-broken chain. The parent issue remains open for Dependabot triage, Jules/API disposition, repository_dispatch and scheduled-task verdicts; those remain tracked on #2176.      |
+|          #7809 |          #6048 | `audit:complete`        | Delivers the Presidio NER design: recognizer set, tier scoping, cost and pilot, batching/checkpointing, review queue, rejected alternatives and invariants.                                                                                      |
 
 ## Slice state
 

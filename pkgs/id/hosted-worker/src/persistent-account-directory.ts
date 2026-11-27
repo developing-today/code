@@ -53,6 +53,24 @@ const COLUMNS = HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS.join(", ");
 
 const LEGACY_COLUMNS = "subject_key, binding_id, classification";
 
+/** A legacy-inventoried subject cannot sign up beside its legacy entry. */
+function legacySubjectRequiresMigration(): FailClosed {
+  return new FailClosed(
+    409,
+    "legacy_subject_requires_migration",
+    "subject has a legacy account of unknown jurisdiction; signup cannot relabel it — migration is a separately reviewed procedure",
+  );
+}
+
+/** A validated subject cannot also be inventoried as legacy. */
+function legacySubjectAlreadyRegistered(): FailClosed {
+  return new FailClosed(
+    409,
+    "legacy_subject_already_registered",
+    "subject already has a validated account record; it cannot be inventoried as legacy",
+  );
+}
+
 type StoredLegacyAccountRow = Record<string, unknown> & {
   subject_key: string;
   binding_id: string;
@@ -170,13 +188,7 @@ export class PersistentHostedAccountDirectory {
     // store beside its legacy entry: signup fails closed and the
     // separately reviewed migration procedure owns the way out.
     const legacy = await this.legacyInventory(input.subjectKey);
-    if (legacy) {
-      throw new FailClosed(
-        409,
-        "legacy_subject_requires_migration",
-        "subject has a legacy account of unknown jurisdiction; signup cannot relabel it — migration is a separately reviewed procedure",
-      );
-    }
+    if (legacy) throw legacySubjectRequiresMigration();
 
     // Match the directory contract: a duplicate subject reads its authoritative
     // row and never replaces its jurisdiction with a new signup's value.
@@ -186,9 +198,13 @@ export class PersistentHostedAccountDirectory {
     const candidate = createHostedAccountRecord(input);
     let inserted: StoredAccountRow | null;
     try {
+      // The legacy check above is advisory: an inventory can land between
+      // it and this write. The insert re-checks inside the one statement,
+      // so a subject never lands in both tables (#15661).
       inserted = await this.database
         .prepare(
-          `INSERT INTO hosted_accounts (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) ` +
+          `INSERT INTO hosted_accounts (${COLUMNS}) SELECT ?, ?, ?, ?, ?, ?, ? ` +
+            "WHERE NOT EXISTS (SELECT 1 FROM legacy_hosted_accounts WHERE subject_key = ?) " +
             "ON CONFLICT(subject_key) DO NOTHING " +
             `RETURNING ${COLUMNS}`,
         )
@@ -200,6 +216,7 @@ export class PersistentHostedAccountDirectory {
           candidate.migrationId,
           candidate.phase,
           candidate.routingEpoch,
+          candidate.subjectKey,
         )
         .first<StoredAccountRow>();
     } catch (error) {
@@ -222,6 +239,11 @@ export class PersistentHostedAccountDirectory {
     // authoritative subject row; never fall back to the candidate snapshot.
     const winner = await this.get(candidate.subjectKey);
     if (winner) return this.existingSubject(winner, candidate.bindingId);
+
+    // Or a legacy inventory of the same subject landed first.
+    if (await this.legacyInventory(candidate.subjectKey)) {
+      throw legacySubjectRequiresMigration();
+    }
 
     const bindingOwner = await this.getByBindingId(candidate.bindingId);
     if (bindingOwner) {
@@ -374,23 +396,20 @@ export class PersistentHostedAccountDirectory {
    */
   async inventoryLegacy(input: LegacyHostedAccountInput): Promise<LegacyHostedAccount> {
     const entry = inventoryLegacyHostedAccount(input);
-    if (await this.get(entry.subjectKey)) {
-      throw new FailClosed(
-        409,
-        "legacy_subject_already_registered",
-        "subject already has a validated account record; it cannot be inventoried as legacy",
-      );
-    }
+    if (await this.get(entry.subjectKey)) throw legacySubjectAlreadyRegistered();
 
     let inserted: StoredLegacyAccountRow | null;
     try {
+      // As in signup: the validated-row check above is advisory, so the
+      // insert re-checks in the same statement (#15661).
       inserted = await this.database
         .prepare(
-          `INSERT INTO legacy_hosted_accounts (${LEGACY_COLUMNS}) VALUES (?, ?, ?) ` +
+          `INSERT INTO legacy_hosted_accounts (${LEGACY_COLUMNS}) SELECT ?, ?, ? ` +
+            "WHERE NOT EXISTS (SELECT 1 FROM hosted_accounts WHERE subject_key = ?) " +
             "ON CONFLICT(subject_key) DO NOTHING " +
             `RETURNING ${LEGACY_COLUMNS}`,
         )
-        .bind(entry.subjectKey, entry.bindingId, entry.classification)
+        .bind(entry.subjectKey, entry.bindingId, entry.classification, entry.subjectKey)
         .first<StoredLegacyAccountRow>();
     } catch (error) {
       const winner = await this.legacyInventory(entry.subjectKey);
@@ -404,6 +423,9 @@ export class PersistentHostedAccountDirectory {
     // closed against the winner's binding.
     const winner = await this.legacyInventory(entry.subjectKey);
     if (winner) return this.existingLegacy(winner, entry.bindingId);
+
+    // Or a signup of the same subject landed first.
+    if (await this.get(entry.subjectKey)) throw legacySubjectAlreadyRegistered();
 
     throw new FailClosed(
       503,

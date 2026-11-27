@@ -11,10 +11,14 @@
 mod deletion;
 
 // The slice is intentionally not crate-root wired until the 9110-02
-// integration work. This shim supplies the module path used by the source
+// integration work. These shims supply the module paths used by the source
 // when the model includes it directly.
 mod canonical_cbor {
     pub use id_core::canonical_cbor::*;
+}
+
+mod hex {
+    pub use id_core::hex::*;
 }
 
 use p2panda_core::SigningKey;

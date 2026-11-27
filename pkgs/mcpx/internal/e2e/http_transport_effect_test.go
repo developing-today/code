@@ -315,20 +315,20 @@ func TestHTTPShutdownGraceBoundsHowLongAStopWaits(t *testing.T) {
 			done <- result{st: resp.StatusCode, body: string(b)}
 		}()
 		// The script needs a moment to be in flight inside the
-		// daemon; the stop below is what is being measured, and it
-		// must not begin before the call it may or may not wait for.
-		// The stop command itself returns as soon as the daemon has
-		// accepted the shutdown, so what is timed is the call: cut
-		// at the grace, or answered when the script finishes.
+		// daemon. Measure the stop command itself: it returns only
+		// after the daemon's graceful shutdown has drained or cut
+		// active requests, so measuring after it returns would miss
+		// the grace period entirely.
 		time.Sleep(1 * time.Second)
-		e.run("stop")
 		start := time.Now()
+		e.run("stop")
+		stopTook := time.Since(start)
 		select {
 		case r := <-done:
-			return r.err == nil && r.st == http.StatusOK && strings.Contains(r.body, "exec-done"), time.Since(start)
+			return r.err == nil && r.st == http.StatusOK && strings.Contains(r.body, "exec-done"), stopTook
 		case <-time.After(10 * time.Second):
 			t.Fatal("the exec call neither answered nor was cut within 10s of the stop")
-			return false, time.Since(start)
+			return false, stopTook
 		}
 	}
 
@@ -709,6 +709,57 @@ func TestTransportBearerTokenGatesTheDaemon(t *testing.T) {
 	open.run("ls")
 	if code, _ := getWith(t, endpointOf(t, open)+"/v1/health", nil); code != http.StatusOK {
 		t.Fatalf("oracle: with no bearerToken set a raw caller should be served, got %d", code)
+	}
+}
+
+// auth.mode governs per-user daemon keys (#13659). Under required, a
+// raw TCP caller with no credential is refused 401 with a Bearer
+// challenge, and so is one presenting an mcpx key the store does not
+// hold; the owner's unix socket needs no key, so the CLI (which reaches
+// the daemon over the socket) and a raw socket caller keep working.
+// Under the default (off), the same raw TCP caller is served.
+func TestAuthModeRequiredGatesTCPButNotTheSocket(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_AUTH_MODE=required")
+	e.run("ls")
+	ep := endpointOf(t, e)
+	req, err := http.NewRequest(http.MethodGet, ep+"/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("required: an unauthenticated TCP caller should be refused 401, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("required: the 401 should carry a Bearer challenge, got %q", resp.Header.Get("WWW-Authenticate"))
+	}
+	unknown := daemon.KeyPrefix + strings.Repeat("A", 43)
+	if code, body := getWith(t, ep+"/v1/health", map[string]string{"Authorization": "Bearer " + unknown}); code != http.StatusUnauthorized {
+		t.Fatalf("required: an unknown key should be refused 401, got %d: %s", code, body)
+	} else if strings.Contains(body, unknown) {
+		t.Fatalf("the refusal echoes the presented key: %s", body)
+	}
+	sock, err := e.socketClient(t).Get("http://mcpx/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sock.Body.Close()
+	if sock.StatusCode != http.StatusOK {
+		t.Fatalf("required: the owner's socket should need no key, got %d", sock.StatusCode)
+	}
+	if out := e.run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("the CLI should keep working over the socket under auth.mode=required:\n%s", out)
+	}
+
+	open := newEnv(t, oneServer)
+	open.run("ls")
+	if code, _ := getWith(t, endpointOf(t, open)+"/v1/health", nil); code != http.StatusOK {
+		t.Fatalf("oracle: with auth.mode unset a raw TCP caller should be served, got %d", code)
 	}
 }
 

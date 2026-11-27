@@ -95,10 +95,19 @@ describe("#3976 SSE-down fallback policy", () => {
     // The vendored Datastar v1 binds data-on:<event> (colon form);
     // the dash form resolves to an unregistered plugin and never
     // fires, leaving every dashrefresh dispatch inert (Codex review
-    // round 2 on PR #9193; see themeToggle() in render.ts). Oracle:
+    // round 2 on PR #9193; see themeToggle() in render-core.ts). Oracle:
     // every fragment container source carries the colon form and no
     // source carries the dash form.
-    for (const rel of ["render.ts", "server.ts", "freshness-delivery.ts"]) {
+    // render.ts's fragment shells live in render-board.ts,
+    // render-attention.ts and render-today.ts since the #13051 split;
+    // together they are the render-layer entries in this oracle.
+    for (const rel of [
+      "render-board.ts",
+      "render-attention.ts",
+      "render-today.ts",
+      "server.ts",
+      "freshness-delivery.ts",
+    ]) {
       const src = await readFile(join(import.meta.dir, "..", "src", rel), "utf8");
       expect(src).toContain("data-on:dashrefresh__window");
       expect(src).not.toContain("data-on-dashrefresh__window");
@@ -106,7 +115,7 @@ describe("#3976 SSE-down fallback policy", () => {
   });
 
   test("the layout ships the freshness client and the server serves it", async () => {
-    const render = await readFile(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+    const render = await readFile(join(import.meta.dir, "..", "src", "render-core.ts"), "utf8");
     const server = await readFile(join(import.meta.dir, "..", "src", "server.ts"), "utf8");
     expect(render).toContain("/assets/freshness-client.js");
     expect(server).toContain('path === "/assets/freshness-client.js"');

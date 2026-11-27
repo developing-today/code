@@ -3,6 +3,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "allOf": [
     {
+      "if": { "properties": { "kind": { "const": "prompt" } }, "required": ["kind"] },
+      "then": { "required": ["prompt"] }
+    },
+    {
       "if": {
         "required": ["risk"],
         "properties": {
@@ -40,6 +44,10 @@
   },
   "additionalProperties": true,
   "anyOf": [
+    {
+      "properties": { "kind": { "const": "prompt" } },
+      "required": ["kind", "prompt"]
+    },
     { "required": ["issue"] },
     { "properties": { "prs": { "minItems": 1 } }, "required": ["prs"] },
     { "required": ["set"] },
@@ -71,12 +79,23 @@
       "type": "object"
     },
     "kind": {
-      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"],
+      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice", "prompt"],
       "type": "string"
     },
     "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
+    "prompt": {
+      "type": "object",
+      "description": "Prompt task identity is the prompt-store submission ID, not its source issue.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      },
+      "required": ["id"]
+    },
     "prs": {
       "items": {
         "additionalProperties": true,

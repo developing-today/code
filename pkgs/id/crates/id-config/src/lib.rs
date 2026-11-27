@@ -899,6 +899,115 @@ fn check_ceiling_widening(
     Ok(())
 }
 
+/// Validate JSON's object-key structure before typed deserialization. This is
+/// intentionally local: `id-config` remains a leaf crate, independent of
+/// `id-core`'s broader JSON parsing utilities.
+fn reject_duplicate_keys(input: &str) -> Result<(), serde_json::Error> {
+    use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+    use std::collections::HashSet;
+    use std::fmt;
+
+    struct Unique;
+
+    impl<'de> DeserializeSeed<'de> for Unique {
+        type Value = ();
+
+        fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct UniqueVisitor;
+
+            impl<'de> Visitor<'de> for UniqueVisitor {
+                type Value = ();
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a JSON value with unique object keys")
+                }
+
+                fn visit_bool<E>(self, _: bool) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_i64<E>(self, _: i64) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_u64<E>(self, _: u64) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_f64<E>(self, _: f64) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_str<E>(self, _: &str) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_string<E>(self, _: String) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_unit<E>(self) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+                fn visit_none<E>(self) -> Result<(), E>
+                where
+                    E: de::Error,
+                {
+                    Ok(())
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<(), A::Error>
+                where
+                    A: SeqAccess<'de>,
+                {
+                    while seq.next_element_seed(Unique)?.is_some() {}
+                    Ok(())
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+                where
+                    A: MapAccess<'de>,
+                {
+                    let mut seen = HashSet::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if !seen.insert(key.clone()) {
+                            return Err(de::Error::custom(format!(
+                                "duplicate JSON object key {key:?}"
+                            )));
+                        }
+                        map.next_value_seed(Unique)?;
+                    }
+                    Ok(())
+                }
+            }
+
+            deserializer.deserialize_any(UniqueVisitor)
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(input);
+    Unique.deserialize(&mut deserializer)?;
+    deserializer.end()
+}
+
 impl ConfigDocument {
     /// Parse a config document from JSON. Unknown fields, wrong types, and
     /// malformed JSON are rejected here; the hard invariants are checked by
@@ -908,6 +1017,7 @@ impl ConfigDocument {
     /// # Errors
     /// Returns [`ConfigError::Parse`] for any parse failure.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
+        reject_duplicate_keys(input)?;
         Ok(serde_json::from_str(input)?)
     }
 
@@ -1094,6 +1204,48 @@ impl ConfigDocument {
             links: self.links.resolved(),
             namespaces: self.namespaces.resolved(),
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod parse_tests {
+    use super::ConfigDocument;
+
+    const VALID: &str = r#"{
+        "schema_version":1,"config_id":"test","revision":1,
+        "mode":"single-node","protocol_versions":["v1"],
+        "ceilings":{"max_hops":2,"max_bytes":100,"max_time_ms":100,"max_fan_out":2}
+    }"#;
+
+    #[test]
+    fn duplicate_root_key_is_rejected_by_parse_oracle() {
+        let input = VALID.replace("\"revision\":1", "\"revision\":1,\"revision\":2");
+        let error = ConfigDocument::parse(&input).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate JSON object key \"revision\"")
+        );
+    }
+
+    #[test]
+    fn duplicate_nested_key_is_rejected_by_parse_oracle() {
+        let input = VALID.replace("\"max_hops\":2", "\"max_hops\":2,\"max_hops\":3");
+        let error = ConfigDocument::parse(&input).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate JSON object key \"max_hops\"")
+        );
+    }
+
+    #[test]
+    fn valid_json_is_accepted_and_unknown_fields_still_rejected() {
+        assert!(ConfigDocument::parse(VALID).is_ok());
+        let input = VALID.replace("\"revision\":1", "\"revision\":1,\"unknown\":true");
+        let error = ConfigDocument::parse(&input).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 }
 

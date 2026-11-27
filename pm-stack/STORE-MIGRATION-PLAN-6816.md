@@ -74,7 +74,12 @@ promotion; no configuration permits two active writers.**
 
 - **Kaneo:** fence = stop `pm-stack-kaneo-1` (the only writer; Postgres
   itself accepts writes only through Kaneo's role in practice, and the local
-  Postgres is never host-exposed). Promotion = point the Kaneo DSN at
+  Postgres is never host-exposed) **and** stop the managing user service
+  and its retry timer (`systemctl --user stop pm-kaneo.service
+pm-kaneo.timer`) — the manager runs `deploy.sh` (`compose up`) and
+  revives stopped containers on its next run or timer elapse, so
+  `fence-check.sh` (stores `all`, `kaneo`) requires both units inactive
+  before it reports FENCED. Promotion = point the Kaneo DSN at
   cluster PostgreSQL and start Kaneo. The local Postgres stays read-only evidence —
   start it only with Kaneo stopped, or with its port/volume mounted
   read-only for inspection. Two Kaneo instances never run at once: the
@@ -192,17 +197,22 @@ so the Grist/Pad syncs are mechanical instead of advisory:
 - `--mode final` (step 5, the gate): refuses (exit 3, REFUSED receipt,
   copies nothing) unless `pm-stack/scripts/fence-check.sh --store <store>`
   reports **FENCED** — per-store, so pad can go final while grist still
-  runs, matching the Pad → Grist → Kaneo stop order — and, for pad, the
-  source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
+  runs, matching the Pad → Grist → Kaneo stop order — the latest backup
+  record (`--backup-record-file`) describes a complete generation with
+  verified local, R2, and Drive copies finished within 36 hours by default
+  (`--max-backup-age-hours` overrides for a documented window decision;
+  the same consumer gate `kaneo-cutover.sh promote` carries since #14034,
+  and the daily pm-stack generation covers these file sets) — and, for pad,
+  the source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
   copies and requires exact parity, including zero unaccounted target
   files under the synced set (exit 4 otherwise; only the operator removes
   them). The driver never deletes target files: target-only files are
   preserved and counted in the receipt (presync tolerates them, final
   refuses on them), and unrelated files elsewhere in the target (sync-tool
   metadata, `grist-sessions.db`) are out of scope.
-- Receipts record the fence verdict, file counts, pre-copy drift, target
-  extras, and the verdict line; paths are local directory paths, no
-  secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
+- Receipts record the fence verdict, the restore-point check output, file
+  counts, pre-copy drift, target extras, and the verdict line; paths are
+  local directory paths, no secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
   `.github/workflows/pm-stack-tests.yml` alongside the fencing suites.
 
 ## 5. Rollback

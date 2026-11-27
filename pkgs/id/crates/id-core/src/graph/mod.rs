@@ -14,6 +14,8 @@ pub mod comment_projection;
 pub mod cross_signing;
 pub mod cursor;
 pub mod delegation;
+pub mod delete_policy;
+pub mod deletion;
 pub mod feed_cursor;
 pub mod navigation;
 pub mod navigation_wire;

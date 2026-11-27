@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Live object | Spawning issue | Verdict | Finding |
-|---:|---|---:|---|---|
-| #7667 | Closed issue, not a PR | — | `invalid-reference` | PR API returned 404; issue #7667 is a closed issue. There is no PR to compare or label under Lane 4. |
-| #7668 | Closed issue, not a PR | — | `invalid-reference` | PR API returned 404; issue #7668 is a closed issue. There is no PR to compare or label under Lane 4. |
-| #7669 | Merged PR (2026-11-08) | #4620 | `audit:complete` | `state=all` now returns action history, unknown states return 400, and the regression test covers applied/all/new/bogus states. This meets the issue's exact false-zero fix. |
-| #7671 | Merged PR (2026-11-08) | #6009 | `audit:complete` | The design note normalizes public-domain content to CC0-1.0 and code to 0BSD/Unlicense, keeps public domain and CC0 as separate taxonomy entries, and states the UI caveats. The issue's design deliverable is complete. |
-| #7672 | Merged PR (2026-11-08) | #5781 | `audit:complete` | The decision-ready Bevy incorporation design covers journal authority, state mapping, event flow, authority postures, determinism, provider boundaries, open questions and implementation slices. Later issue comments adopt it as the design of record and close the design issue. |
+| Payload number | Live object            | Spawning issue | Verdict             | Finding                                                                                                                                                                                                                                                                             |
+| -------------: | ---------------------- | -------------: | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7667 | Closed issue, not a PR |              — | `invalid-reference` | PR API returned 404; issue #7667 is a closed issue. There is no PR to compare or label under Lane 4.                                                                                                                                                                                |
+|          #7668 | Closed issue, not a PR |              — | `invalid-reference` | PR API returned 404; issue #7668 is a closed issue. There is no PR to compare or label under Lane 4.                                                                                                                                                                                |
+|          #7669 | Merged PR (2026-11-08) |          #4620 | `audit:complete`    | `state=all` now returns action history, unknown states return 400, and the regression test covers applied/all/new/bogus states. This meets the issue's exact false-zero fix.                                                                                                        |
+|          #7671 | Merged PR (2026-11-08) |          #6009 | `audit:complete`    | The design note normalizes public-domain content to CC0-1.0 and code to 0BSD/Unlicense, keeps public domain and CC0 as separate taxonomy entries, and states the UI caveats. The issue's design deliverable is complete.                                                            |
+|          #7672 | Merged PR (2026-11-08) |          #5781 | `audit:complete`    | The decision-ready Bevy incorporation design covers journal authority, state mapping, event flow, authority postures, determinism, provider boundaries, open questions and implementation slices. Later issue comments adopt it as the design of record and close the design issue. |
 
 ## Slice state
 

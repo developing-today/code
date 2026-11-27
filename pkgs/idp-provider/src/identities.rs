@@ -42,6 +42,15 @@
 //! `sub`) reads through the pointer via `resolve_account_id`. The
 //! two-session check that makes merge a two-key act belongs to the
 //! flow that calls this, not to the store.
+//!
+//! Per-attribute repointing (#13975 slice 3, store side): after a
+//! merge, each profile attribute (`PROFILE_ATTRIBUTES`) of a live
+//! account can be sourced, one by one, from the account itself or
+//! from any account merged into it. Values are never copied: every
+//! row keeps its own, and `account_attribute_sources` records which
+//! row each attribute is read from, so every change can be undone.
+//! Each change is an `attribute-repoint` account event (and each
+//! own-value edit an `attribute-set` one).
 
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -58,8 +67,34 @@ pub const ENROLLED_ACCOUNT_ROLES: [&str; 1] = ["read-only"];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountRow {
     pub account_id: String,
+    /// The effective profile attributes (#13975 slice 3): each is
+    /// read from the account the attribute is sourced from, which
+    /// is the account itself unless it was repointed after a merge.
     pub display_name: String,
+    pub picture: Option<String>,
+    pub summary: Option<String>,
     pub roles: Vec<String>,
+}
+
+/// The profile attributes an account carries and per-attribute
+/// repointing covers (#13975 slice 3): the merge-critical display
+/// name from the slice 1 audit, plus the picture and summary the
+/// identity-linking policy names. A new attribute joins this list
+/// and the `accounts` table together.
+pub const PROFILE_ATTRIBUTES: [&str; 3] = ["display_name", "picture", "summary"];
+
+fn normalize_email(email: &str) -> Option<String> {
+    let email = email.trim().to_lowercase();
+    (email.contains('@') && !email.starts_with('@') && !email.ends_with('@')).then_some(email)
+}
+
+/// One profile attribute of a live account as it reads now: the
+/// account it is sourced from and that account's own value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributeSource {
+    pub attribute: String,
+    pub source_account_id: String,
+    pub value: Option<String>,
 }
 
 /// The account id an enrolling identity lands on, derived
@@ -100,7 +135,9 @@ pub struct IdentityEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountEvent {
     pub ts_unix: i64,
-    pub event: String, // merge-absorb | merge-into | role-keep | role-drop
+    /// merge-absorb | merge-into | role-keep | role-drop |
+    /// attribute-repoint | attribute-set
+    pub event: String,
     pub account_id: String,
     pub other_account_id: String,
     pub detail: String,
@@ -201,7 +238,8 @@ impl IdentityStore {
             CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
-                roles TEXT NOT NULL
+                roles TEXT NOT NULL,
+                email TEXT
             );
             CREATE TABLE IF NOT EXISTS account_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +257,13 @@ impl IdentityStore {
             CREATE TRIGGER IF NOT EXISTS account_events_no_delete
             BEFORE DELETE ON account_events BEGIN
                 SELECT RAISE(ABORT, 'account history is append-only');
-            END;",
+            END;
+            CREATE TABLE IF NOT EXISTS account_attribute_sources (
+                account_id TEXT NOT NULL,
+                attribute TEXT NOT NULL,
+                source_account_id TEXT NOT NULL,
+                PRIMARY KEY (account_id, attribute)
+            );",
         )
         .map_err(|e| format!("failed to initialise identity schema: {e}"))?;
         // Existing runtime databases predate pending claims. Keep this
@@ -229,6 +273,10 @@ impl IdentityStore {
             ("identities", "claimed_at", "INTEGER"),
             // #13975: the merged-into pointer; NULL on a live account.
             ("accounts", "merged_into", "TEXT"),
+            ("accounts", "email", "TEXT"),
+            // #13975 slice 3: profile attributes beside display_name.
+            ("accounts", "picture", "TEXT"),
+            ("accounts", "summary", "TEXT"),
         ] {
             let exists: bool = conn
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -329,10 +377,12 @@ impl IdentityStore {
         let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let roles = serde_json::to_string(&account.roles)
             .map_err(|e| format!("account roles encode failed: {e}"))?;
+        let email = account.email.as_deref().and_then(normalize_email);
         conn.execute(
-            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![account.account_id, account.display_name, roles],
+            "INSERT INTO accounts (account_id, display_name, roles, email)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id) DO UPDATE SET email = excluded.email",
+            rusqlite::params![account.account_id, account.display_name, roles, email],
         )
         .map_err(|e| format!("account seed insert failed: {e}"))?;
         drop(conn);
@@ -345,36 +395,263 @@ impl IdentityStore {
 
     /// One account row by id: the config account is NOT read here
     /// (callers resolve it from config first); this serves enrolled
-    /// accounts, which exist only in the store.
+    /// accounts, which exist only in the store. Profile attributes
+    /// are the effective ones: each read from its source account
+    /// (#13975 slice 3).
     pub fn account(&self, account_id: &str) -> Result<Option<AccountRow>, String> {
         let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
-        let mut stmt = conn
-            .prepare("SELECT display_name, roles FROM accounts WHERE account_id = ?1")
+        let roles_json: Option<String> = conn
+            .query_row(
+                "SELECT roles FROM accounts WHERE account_id = ?1",
+                rusqlite::params![account_id],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(|e| format!("account query failed: {e}"))?;
-        let mut rows = stmt
-            .query(rusqlite::params![account_id])
-            .map_err(|e| format!("account query failed: {e}"))?;
-        match rows
-            .next()
-            .map_err(|e| format!("account row read failed: {e}"))?
-        {
-            Some(row) => {
-                let display_name: String = row
-                    .get(0)
-                    .map_err(|e| format!("account row read failed: {e}"))?;
-                let roles_json: String = row
-                    .get(1)
-                    .map_err(|e| format!("account row read failed: {e}"))?;
-                let roles: Vec<String> = serde_json::from_str(&roles_json)
-                    .map_err(|e| format!("account roles decode failed: {e}"))?;
-                Ok(Some(AccountRow {
-                    account_id: account_id.to_string(),
-                    display_name,
-                    roles,
-                }))
-            }
-            None => Ok(None),
+        let Some(roles_json) = roles_json else {
+            return Ok(None);
+        };
+        let roles: Vec<String> = serde_json::from_str(&roles_json)
+            .map_err(|e| format!("account roles decode failed: {e}"))?;
+        let mut values = Vec::with_capacity(PROFILE_ATTRIBUTES.len());
+        for attribute in PROFILE_ATTRIBUTES {
+            values.push(Self::attribute_source_tx(&conn, account_id, attribute)?.value);
         }
+        let mut values = values.into_iter();
+        Ok(Some(AccountRow {
+            account_id: account_id.to_string(),
+            display_name: values.next().flatten().unwrap_or_default(),
+            picture: values.next().flatten(),
+            summary: values.next().flatten(),
+            roles,
+        }))
+    }
+
+    fn check_attribute(attribute: &str) -> Result<&'static str, String> {
+        PROFILE_ATTRIBUTES
+            .iter()
+            .copied()
+            .find(|known| *known == attribute)
+            .ok_or_else(|| {
+                format!(
+                    "unknown profile attribute {attribute} (known: {})",
+                    PROFILE_ATTRIBUTES.join(", ")
+                )
+            })
+    }
+
+    /// One account's own stored value of an attribute (its row, not
+    /// its effective value). `attribute` must come from
+    /// `PROFILE_ATTRIBUTES`: it names a column.
+    fn own_value_tx(
+        conn: &Connection,
+        account_id: &str,
+        attribute: &'static str,
+    ) -> Result<Option<String>, String> {
+        conn.query_row(
+            &format!("SELECT {attribute} FROM accounts WHERE account_id = ?1"),
+            rusqlite::params![account_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("account {attribute} query failed: {e}"))?
+        .ok_or_else(|| format!("unknown account {account_id}"))
+    }
+
+    fn attribute_source_tx(
+        conn: &Connection,
+        account_id: &str,
+        attribute: &'static str,
+    ) -> Result<AttributeSource, String> {
+        let source: String = conn
+            .query_row(
+                "SELECT source_account_id FROM account_attribute_sources
+                 WHERE account_id = ?1 AND attribute = ?2",
+                rusqlite::params![account_id, attribute],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("attribute source query failed: {e}"))?
+            .unwrap_or_else(|| account_id.to_string());
+        let value = Self::own_value_tx(conn, &source, attribute)?;
+        Ok(AttributeSource {
+            attribute: attribute.to_string(),
+            source_account_id: source,
+            value,
+        })
+    }
+
+    /// Where each profile attribute of `account_id` reads from now,
+    /// in `PROFILE_ATTRIBUTES` order (#13975 slice 3): the surface
+    /// the repointing flow shows before a change.
+    pub fn attribute_sources(&self, account_id: &str) -> Result<Vec<AttributeSource>, String> {
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        Self::merged_into_tx(&conn, account_id)?;
+        PROFILE_ATTRIBUTES
+            .iter()
+            .map(|attribute| Self::attribute_source_tx(&conn, account_id, attribute))
+            .collect()
+    }
+
+    /// Accounts an attribute of `account_id` may be sourced from:
+    /// itself, and every account whose `merged_into` chain ends at
+    /// it, in id order.
+    fn attribute_candidates_tx(conn: &Connection, account_id: &str) -> Result<Vec<String>, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT account_id FROM accounts WHERE merged_into IS NOT NULL
+                 ORDER BY account_id",
+            )
+            .map_err(|e| format!("merged account query failed: {e}"))?;
+        let shells = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("merged account query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("merged account read failed: {e}"))?;
+        let mut out = vec![account_id.to_string()];
+        for shell in shells {
+            let mut current = shell.clone();
+            for _ in 0..MAX_MERGE_CHAIN {
+                match Self::pointer_tx(conn, &current)? {
+                    Some(Some(next)) => current = next,
+                    Some(None) | None => break,
+                }
+            }
+            if current == account_id {
+                out.push(shell);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Refuse a profile change on an account it cannot apply to:
+    /// unknown, merged away, or the config account's display name,
+    /// which tokens read from config.
+    fn check_profile_target_tx(
+        &self,
+        conn: &Connection,
+        account_id: &str,
+        attribute: &str,
+    ) -> Result<(), String> {
+        if let Some(into) = Self::merged_into_tx(conn, account_id)? {
+            return Err(format!(
+                "account {account_id} is merged into {into}; change {into}'s profile instead"
+            ));
+        }
+        let config = self
+            .config_account
+            .lock()
+            .map_err(|_| "identity lock poisoned")?
+            .clone();
+        if attribute == "display_name" && config.as_deref() == Some(account_id) {
+            return Err(format!(
+                "account {account_id} is the config account; its display name is set in config"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Source one profile attribute of a live account from
+    /// `source_account_id` (#13975 slice 3): the account itself, or
+    /// any account merged into it. Values are not copied, so a later
+    /// repoint back restores the earlier value exactly. Returns
+    /// whether anything changed; a real change writes one
+    /// `attribute-repoint` event on the account, naming the source.
+    /// The flow that calls this owns the session check (the account
+    /// session from #13972), as with merge.
+    pub fn repoint_attribute(
+        &self,
+        account_id: &str,
+        attribute: &str,
+        source_account_id: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        let attribute = Self::check_attribute(attribute)?;
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("attribute repoint transaction failed: {e}"))?;
+        self.check_profile_target_tx(&tx, account_id, attribute)?;
+        if !Self::attribute_candidates_tx(&tx, account_id)?
+            .iter()
+            .any(|candidate| candidate == source_account_id)
+        {
+            return Err(format!(
+                "account {source_account_id} is neither {account_id} nor merged into it"
+            ));
+        }
+        let before = Self::attribute_source_tx(&tx, account_id, attribute)?;
+        if before.source_account_id == source_account_id {
+            return Ok(false);
+        }
+        if source_account_id == account_id {
+            tx.execute(
+                "DELETE FROM account_attribute_sources WHERE account_id = ?1 AND attribute = ?2",
+                rusqlite::params![account_id, attribute],
+            )
+        } else {
+            tx.execute(
+                "INSERT INTO account_attribute_sources (account_id, attribute, source_account_id)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (account_id, attribute)
+                 DO UPDATE SET source_account_id = excluded.source_account_id",
+                rusqlite::params![account_id, attribute, source_account_id],
+            )
+        }
+        .map_err(|e| format!("attribute source update failed: {e}"))?;
+        let detail = serde_json::json!({
+            "attribute": attribute,
+            "from": before.source_account_id,
+            "to": source_account_id,
+        })
+        .to_string();
+        Self::record_account_event(
+            &tx,
+            "attribute-repoint",
+            account_id,
+            source_account_id,
+            &detail,
+            actor,
+        )?;
+        tx.commit()
+            .map_err(|e| format!("attribute repoint commit failed: {e}"))?;
+        Ok(true)
+    }
+
+    /// Set a live account's own value of one profile attribute
+    /// (`None` clears it). This edits the account's row only: if the
+    /// attribute is repointed elsewhere, the effective value does not
+    /// change until it is repointed back. Returns whether anything
+    /// changed; a real change writes one `attribute-set` event.
+    pub fn set_attribute(
+        &self,
+        account_id: &str,
+        attribute: &str,
+        value: Option<&str>,
+        actor: &str,
+    ) -> Result<bool, String> {
+        let attribute = Self::check_attribute(attribute)?;
+        if attribute == "display_name" && value.is_none() {
+            return Err("display_name cannot be cleared".to_string());
+        }
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("attribute set transaction failed: {e}"))?;
+        self.check_profile_target_tx(&tx, account_id, attribute)?;
+        if Self::own_value_tx(&tx, account_id, attribute)?.as_deref() == value {
+            return Ok(false);
+        }
+        tx.execute(
+            &format!("UPDATE accounts SET {attribute} = ?1 WHERE account_id = ?2"),
+            rusqlite::params![value, account_id],
+        )
+        .map_err(|e| format!("account {attribute} update failed: {e}"))?;
+        let detail = serde_json::json!({ "attribute": attribute }).to_string();
+        Self::record_account_event(&tx, "attribute-set", account_id, account_id, &detail, actor)?;
+        tx.commit()
+            .map_err(|e| format!("attribute set commit failed: {e}"))?;
+        Ok(true)
     }
 
     /// The account an identity row currently points at, whatever
@@ -399,6 +676,28 @@ impl IdentityStore {
         }
     }
 
+    /// Resolve a verified email to exactly one live account. Duplicate
+    /// mappings are ambiguous and deliberately return no match.
+    pub fn account_id_for_email(&self, email: &str) -> Result<Option<String>, String> {
+        let Some(email) = normalize_email(email) else {
+            return Ok(None);
+        };
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT account_id FROM accounts
+                 WHERE email = ?1 COLLATE NOCASE AND merged_into IS NULL
+                 ORDER BY account_id LIMIT 2",
+            )
+            .map_err(|e| format!("account email query failed: {e}"))?;
+        let matches = stmt
+            .query_map([email], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("account email query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("account email read failed: {e}"))?;
+        Ok((matches.len() == 1).then(|| matches[0].clone()))
+    }
+
     /// Enroll a never-seen allowlisted identity (#15249): create
     /// its own account holding only `read-only` (design #9086
     /// §4.4's default — read-only on no tenant) and link the
@@ -415,6 +714,16 @@ impl IdentityStore {
         subject: &str,
         actor: &str,
     ) -> Result<(String, &'static str), String> {
+        self.enroll_with_email(provider, subject, actor, None)
+    }
+
+    pub fn enroll_with_email(
+        &self,
+        provider: &str,
+        subject: &str,
+        actor: &str,
+        email: Option<&str>,
+    ) -> Result<(String, &'static str), String> {
         let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let tx = conn
             .transaction()
@@ -423,9 +732,14 @@ impl IdentityStore {
         let roles = serde_json::to_string(&ENROLLED_ACCOUNT_ROLES)
             .map_err(|e| format!("account roles encode failed: {e}"))?;
         tx.execute(
-            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![account_id, format!("{provider}:{subject}"), roles],
+            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles, email)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                account_id,
+                format!("{provider}:{subject}"),
+                roles,
+                email.and_then(normalize_email)
+            ],
         )
         .map_err(|e| format!("enrolled account insert failed: {e}"))?;
         let now = crate::registry::now_unix();
@@ -881,8 +1195,9 @@ impl IdentityStore {
     ///   repoints to the primary with a `merge` identity event;
     /// - the primary's roles become its own plus the kept ones;
     /// - the secondary's row is kept as a shell with `merged_into`
-    ///   set, its display name untouched (primary wins for display;
-    ///   per-attribute repointing is slice 3);
+    ///   set, its profile attributes untouched (primary wins for
+    ///   display; `repoint_attribute` can then source any attribute
+    ///   from the shell, one by one);
     /// - both accounts' histories record the merge and each role
     ///   decision.
     ///
@@ -1078,6 +1393,54 @@ mod tests {
         roles.iter().map(|r| r.to_string()).collect()
     }
 
+    fn account(account_id: &str, email: Option<&str>) -> crate::registry::Account {
+        crate::registry::Account {
+            account_id: account_id.to_string(),
+            display_name: account_id.to_string(),
+            email: email.map(str::to_string),
+            roles: strings(&["read-only"]),
+            identities: vec![],
+            local_credential_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn verified_email_lookup_is_normalized_unique_and_excludes_merged_accounts() {
+        let store = IdentityStore::open(None).unwrap();
+        store
+            .seed_account(&account("owner", Some("Owner@Example.test")))
+            .unwrap();
+        assert_eq!(
+            store
+                .account_id_for_email(" owner@example.TEST ")
+                .unwrap()
+                .as_deref(),
+            Some("owner")
+        );
+        assert_eq!(store.account_id_for_email("not-an-email").unwrap(), None);
+
+        store
+            .seed_account(&account("duplicate", Some("owner@example.test")))
+            .unwrap();
+        assert_eq!(
+            store.account_id_for_email("owner@example.test").unwrap(),
+            None
+        );
+
+        store
+            .seed_account(&account("owner", Some("owner@example.test")))
+            .unwrap();
+        store.merge("owner", "duplicate", &[], &[], "test").unwrap();
+        // A merged shell is not a second live match.
+        assert_eq!(
+            store
+                .account_id_for_email("owner@example.test")
+                .unwrap()
+                .as_deref(),
+            Some("owner")
+        );
+    }
+
     #[test]
     fn preview_lists_secondary_only_roles_and_every_identity_row() {
         let store = store_with(&[("a", &["read-only"]), ("b", &["read-only", "agent"])]);
@@ -1237,6 +1600,7 @@ mod tests {
             .seed_account(&crate::registry::Account {
                 account_id: "owner".to_string(),
                 display_name: "Owner".to_string(),
+                email: None,
                 roles: strings(&["owner", "read-only"]),
                 identities: vec![],
                 local_credential_hash: String::new(),
@@ -1277,6 +1641,7 @@ mod tests {
             .seed_account(&crate::registry::Account {
                 account_id: "owner".to_string(),
                 display_name: "Owner".to_string(),
+                email: None,
                 roles: strings(&["owner"]),
                 identities: vec![],
                 local_credential_hash: String::new(),
@@ -1301,5 +1666,296 @@ mod tests {
                 .is_err()
         );
         assert!(conn.execute("DELETE FROM account_events", []).is_err());
+    }
+
+    fn events_named(store: &IdentityStore, event: &str) -> Vec<AccountEvent> {
+        store
+            .account_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event == event)
+            .collect()
+    }
+
+    #[test]
+    fn repointing_sources_attributes_one_by_one_and_back() {
+        let store = store_with(&[("a", &["read-only"]), ("b", &["read-only"])]);
+        store
+            .set_attribute("a", "picture", Some("a.png"), "t")
+            .unwrap();
+        store
+            .set_attribute("a", "summary", Some("A's summary"), "t")
+            .unwrap();
+        store
+            .set_attribute("b", "picture", Some("b.png"), "t")
+            .unwrap();
+        store
+            .set_attribute("b", "summary", Some("B's summary"), "t")
+            .unwrap();
+        store.merge("a", "b", &[], &[], "t").unwrap();
+
+        // Primary wins until a repoint.
+        let row = store.account("a").unwrap().unwrap();
+        assert_eq!(row.picture.as_deref(), Some("a.png"));
+        assert_eq!(row.summary.as_deref(), Some("A's summary"));
+
+        // Picture alone from the secondary: the summary is untouched.
+        assert!(
+            store
+                .repoint_attribute("a", "picture", "b", "user")
+                .unwrap()
+        );
+        let row = store.account("a").unwrap().unwrap();
+        assert_eq!(row.picture.as_deref(), Some("b.png"));
+        assert_eq!(row.summary.as_deref(), Some("A's summary"));
+
+        // Then the summary, independently.
+        assert!(
+            store
+                .repoint_attribute("a", "summary", "b", "user")
+                .unwrap()
+        );
+        assert_eq!(
+            store.account("a").unwrap().unwrap().summary.as_deref(),
+            Some("B's summary")
+        );
+
+        // Picture back: the primary's own value returns exactly,
+        // because nothing was copied over it.
+        assert!(
+            store
+                .repoint_attribute("a", "picture", "a", "user")
+                .unwrap()
+        );
+        let row = store.account("a").unwrap().unwrap();
+        assert_eq!(row.picture.as_deref(), Some("a.png"));
+        assert_eq!(row.summary.as_deref(), Some("B's summary"));
+        assert_eq!(row.display_name, "a");
+
+        // The sources read back as set, in attribute order.
+        let sources = store.attribute_sources("a").unwrap();
+        let by_attr: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|s| (s.attribute.as_str(), s.source_account_id.as_str()))
+            .collect();
+        assert_eq!(
+            by_attr,
+            vec![("display_name", "a"), ("picture", "a"), ("summary", "b")]
+        );
+
+        // Each step is one audited event on the account, naming the
+        // source, in order.
+        let repoints = events_named(&store, "attribute-repoint");
+        assert_eq!(repoints.len(), 3);
+        let steps: Vec<serde_json::Value> = repoints
+            .iter()
+            .map(|e| serde_json::from_str(&e.detail).unwrap())
+            .collect();
+        assert_eq!(
+            steps[0],
+            serde_json::json!({"attribute": "picture", "from": "a", "to": "b"})
+        );
+        assert_eq!(
+            steps[1],
+            serde_json::json!({"attribute": "summary", "from": "a", "to": "b"})
+        );
+        assert_eq!(
+            steps[2],
+            serde_json::json!({"attribute": "picture", "from": "b", "to": "a"})
+        );
+        assert!(
+            repoints
+                .iter()
+                .all(|e| e.account_id == "a" && e.actor == "user")
+        );
+        assert_eq!(repoints[0].other_account_id, "b");
+
+        // The shell keeps its own values throughout.
+        let shell = store.account("b").unwrap().unwrap();
+        assert_eq!(shell.picture.as_deref(), Some("b.png"));
+        assert_eq!(shell.summary.as_deref(), Some("B's summary"));
+    }
+
+    #[test]
+    fn a_repoint_to_the_current_source_changes_nothing() {
+        let store = store_with(&[("a", &["read-only"]), ("b", &["read-only"])]);
+        store.merge("a", "b", &[], &[], "t").unwrap();
+        assert!(!store.repoint_attribute("a", "picture", "a", "t").unwrap());
+        assert!(store.repoint_attribute("a", "picture", "b", "t").unwrap());
+        assert!(!store.repoint_attribute("a", "picture", "b", "t").unwrap());
+        assert_eq!(events_named(&store, "attribute-repoint").len(), 1);
+    }
+
+    #[test]
+    fn repointing_refuses_bad_targets_and_sources_and_writes_nothing() {
+        let store = store_with(&[
+            ("a", &["read-only"]),
+            ("b", &["read-only"]),
+            ("c", &["read-only"]),
+        ]);
+        store.merge("a", "b", &[], &[], "t").unwrap();
+        let before = store.account_events().unwrap().len();
+
+        let err = store.repoint_attribute("a", "email", "b", "t").unwrap_err();
+        assert!(err.contains("unknown profile attribute email"), "{err}");
+        let err = store
+            .repoint_attribute("a", "picture", "c", "t")
+            .unwrap_err();
+        assert!(err.contains("neither a nor merged into it"), "{err}");
+        let err = store
+            .repoint_attribute("b", "picture", "a", "t")
+            .unwrap_err();
+        assert!(err.contains("merged into a"), "{err}");
+        let err = store
+            .repoint_attribute("zz", "picture", "a", "t")
+            .unwrap_err();
+        assert!(err.contains("unknown account zz"), "{err}");
+        let err = store
+            .set_attribute("b", "summary", Some("x"), "t")
+            .unwrap_err();
+        assert!(err.contains("merged into a"), "{err}");
+        let err = store
+            .set_attribute("a", "display_name", None, "t")
+            .unwrap_err();
+        assert!(err.contains("cannot be cleared"), "{err}");
+
+        assert_eq!(store.account_events().unwrap().len(), before);
+        let conn = store.conn.lock().unwrap();
+        let sources: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM account_attribute_sources",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sources, 0);
+    }
+
+    #[test]
+    fn an_attribute_can_come_from_anywhere_down_a_merge_chain() {
+        let store = store_with(&[
+            ("a", &["read-only"]),
+            ("b", &["read-only"]),
+            ("c", &["read-only"]),
+        ]);
+        store
+            .set_attribute("c", "display_name", Some("Cee"), "t")
+            .unwrap();
+        store.merge("b", "c", &[], &[], "t").unwrap();
+        store.merge("a", "b", &[], &[], "t").unwrap();
+        assert!(
+            store
+                .repoint_attribute("a", "display_name", "c", "t")
+                .unwrap()
+        );
+        assert_eq!(store.account("a").unwrap().unwrap().display_name, "Cee");
+    }
+
+    #[test]
+    fn an_own_value_edit_waits_behind_a_repoint() {
+        let store = store_with(&[("a", &["read-only"]), ("b", &["read-only"])]);
+        store
+            .set_attribute("b", "summary", Some("from b"), "t")
+            .unwrap();
+        store.merge("a", "b", &[], &[], "t").unwrap();
+        store.repoint_attribute("a", "summary", "b", "t").unwrap();
+        assert!(
+            store
+                .set_attribute("a", "summary", Some("mine"), "t")
+                .unwrap()
+        );
+        assert_eq!(
+            store.account("a").unwrap().unwrap().summary.as_deref(),
+            Some("from b"),
+            "the attribute still reads from b"
+        );
+        store.repoint_attribute("a", "summary", "a", "t").unwrap();
+        assert_eq!(
+            store.account("a").unwrap().unwrap().summary.as_deref(),
+            Some("mine")
+        );
+        assert!(
+            !store
+                .set_attribute("a", "summary", Some("mine"), "t")
+                .unwrap()
+        );
+        assert_eq!(events_named(&store, "attribute-set").len(), 2);
+    }
+
+    #[test]
+    fn the_config_accounts_display_name_stays_in_config() {
+        let store = store_with(&[("x", &["read-only"])]);
+        store
+            .seed_account(&crate::registry::Account {
+                account_id: "owner".to_string(),
+                display_name: "Owner".to_string(),
+                email: None,
+                roles: strings(&["owner"]),
+                identities: vec![],
+                local_credential_hash: String::new(),
+            })
+            .unwrap();
+        store
+            .set_attribute("x", "picture", Some("x.png"), "t")
+            .unwrap();
+        store
+            .merge("owner", "x", &[], &strings(&["read-only"]), "t")
+            .unwrap();
+        let err = store
+            .repoint_attribute("owner", "display_name", "x", "t")
+            .unwrap_err();
+        assert!(err.contains("set in config"), "{err}");
+        let err = store
+            .set_attribute("owner", "display_name", Some("Other"), "t")
+            .unwrap_err();
+        assert!(err.contains("set in config"), "{err}");
+        assert!(
+            store
+                .repoint_attribute("owner", "picture", "x", "t")
+                .unwrap()
+        );
+        assert_eq!(
+            store.account("owner").unwrap().unwrap().picture.as_deref(),
+            Some("x.png")
+        );
+    }
+
+    #[test]
+    fn an_older_store_gains_the_profile_columns_on_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "idp-profile-migrate-{}-{}",
+            std::process::id(),
+            crate::registry::now_unix()
+        ));
+        let path = dir.join("identities.db");
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    account_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    roles TEXT NOT NULL
+                );
+                INSERT INTO accounts VALUES ('old', 'Old', '[\"read-only\"]');",
+            )
+            .unwrap();
+        }
+        let store = IdentityStore::open(Some(&path)).unwrap();
+        let row = store.account("old").unwrap().unwrap();
+        assert_eq!(row.display_name, "Old");
+        assert_eq!(row.picture, None);
+        assert!(
+            store
+                .set_attribute("old", "picture", Some("p.png"), "t")
+                .unwrap()
+        );
+        drop(store);
+        let reopened = IdentityStore::open(Some(&path)).unwrap();
+        assert_eq!(
+            reopened.account("old").unwrap().unwrap().picture.as_deref(),
+            Some("p.png")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -59,6 +59,22 @@ describe("listResource pagination", () => {
 });
 
 describe("reconcileRepos against a fake GitHub", () => {
+  test("backfill mode ignores saved cursors and is identified in the result", async () => {
+    const repo = "developing-today/code";
+    const seen: string[] = [];
+    await setSyncCursor(db, repo, "issues", "2026-10-02T00:00:00Z");
+    const fetchFn = (async (url: string) => {
+      seen.push(url);
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn, "backfill");
+
+    expect(result.mode).toBe("backfill");
+    expect(seen.some((url) => url.includes("/issues?since="))).toBe(false);
+    expect(seen.some((url) => url.includes("/issues?per_page=100&state=all&filter=all"))).toBe(true);
+  });
+
   test("reads issues across pages and both comment collections", async () => {
     const seen: string[] = [];
     const issue = (n: number) => ({

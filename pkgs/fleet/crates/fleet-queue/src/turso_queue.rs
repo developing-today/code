@@ -45,7 +45,9 @@ use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
+mod admin_time;
 mod claim;
+mod claim_filter;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
@@ -64,7 +66,9 @@ mod work_identity;
 
 pub use actions_exec::*;
 pub use admin::*;
+pub use admin_time::*;
 pub use claim::*;
+pub use claim_filter::*;
 pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
@@ -92,6 +96,7 @@ mod tests {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/claim_filter.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/placement_coord.rs"),
@@ -100,6 +105,7 @@ mod tests {
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue/closed_bound.rs"),
+            include_str!("turso_queue/admin_time.rs"),
             include_str!("turso_queue.rs"),
         ]
         .iter()
@@ -154,6 +160,60 @@ mod tests {
         assert_eq!(park_required_budget(Some(30), &ci, &payload), Some(30));
         assert_eq!(park_required_budget(None, &capacity, &json!({})), None);
         assert_eq!(park_required_budget(Some(0), &capacity, &payload), None);
+    }
+
+    #[test]
+    fn park_time_condition_floor_9179() {
+        // #9179 (c)4, oracle: the audited failure shape — a time
+        // condition horizon later than the requested lapse term.
+        // The lapse term must rise to the condition's `until`;
+        // every other shape leaves the park untouched.
+        let cond = json!({"kind": "time", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "absolute"),
+            "a later time-until raises the lapse term to the condition horizon"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2027-01-05T00:00:00Z".to_string(), "absolute"),
+            ("2027-01-05T00:00:00Z".to_string(), "absolute"),
+            "a lapse term already past the condition stands"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-12-27T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "relative"),
+            "an equal horizon is not a raise"
+        );
+        let ci = json!({"kind": "ci", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&ci, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "non-time conditions never raise the lapse term"
+        );
+        let garbage = json!({"kind": "time", "until": "banana"});
+        assert_eq!(
+            apply_time_condition_floor(&garbage, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "an unparseable until leaves the park as requested"
+        );
+        let missing = json!({"kind": "time"});
+        assert_eq!(
+            apply_time_condition_floor(&missing, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "a time condition with no until leaves the park as requested"
+        );
+        // Wiring oracle: verb_park applies the floor to the final
+        // condition before storing the row.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_park(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn verb_release(").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("apply_time_condition_floor(&condition, not_before, park_kind)"),
+            "verb_park must floor the lapse term at the time condition's until"
+        );
     }
 
     #[test]
@@ -371,10 +431,7 @@ mod tests {
             );
         }
         // No route: route_declaration reads None (unrouted, legacy).
-        assert_eq!(
-            crate::validate::route_declaration(&base["payload"]),
-            None
-        );
+        assert_eq!(crate::validate::route_declaration(&base["payload"]), None);
     }
 
     #[test]
@@ -793,6 +850,65 @@ mod tests {
                 "cols": [], "rows": [],
                 "affected_row_count": 1,
                 "last_insert_rowid": id.to_string()}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// One parked task row in TASK_COLS order with a broker-owned
+    /// ready condition, for the #16006 sweeper oracle. Cells are
+    /// keyed by column name so a TASK_COLS addition cannot silently
+    /// shift the row (same pattern as task_row_13091).
+    fn parked_row_16006(id: i64, condition: &Value) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text("{}"));
+        cells.insert(
+            "dedupe_key",
+            text("repo-health:v1:fix:developing-today/code:issue:16006"),
+        );
+        cells.insert("priority", int(30));
+        cells.insert("status", text("parked"));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("park_kind", text("condition"));
+        cells.insert("wait_kind", text("condition"));
+        cells.insert("ready_condition", text(&condition.to_string()));
+        cells.insert("last_checked_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-20T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
+    }
+
+    fn status_reply_16006(status: &str) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "status"}],
+                "rows": [[{"type": "text", "value": status}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    fn count_reply_16006(n: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "n"}],
+                "rows": [[{"type": "integer", "value": n.to_string()}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
             {"type": "ok", "response": {"type": "close"}}
         ]})
         .to_string()
@@ -2879,6 +2995,180 @@ mod tests {
     }
 
     #[test]
+    fn sweep_revalidation_active_by_default_16006() {
+        // #16006 oracle (oracle: the default scheduled /sweep path,
+        // named here): the daily timer's revalidation request
+        // carries no observe_only field, so the default decides —
+        // and the default is now LIVE, so a satisfied
+        // broker-condition park becomes claimable instead of
+        // logging would_release forever (the #13143 exclusion
+        // leaves the sweeper as the only release path for these
+        // parks).
+        assert!(!sweep_observe_only(&json!({"revalidate": true})));
+        // Observe-only is an explicit opt-in; an explicit live
+        // request stays live.
+        assert!(sweep_observe_only(
+            &json!({"revalidate": true, "observe_only": true})
+        ));
+        assert!(!sweep_observe_only(
+            &json!({"revalidate": true, "observe_only": false})
+        ));
+        // The release rule under the default (live) mode: each
+        // satisfied broker condition releases, an unsatisfied one
+        // only confirms (the task stays parked), and a
+        // person_answer park never releases — it still waits for
+        // the person's /wake.
+        assert_eq!(
+            revalidate_outcome(Some("task_terminal"), Some("done"), None, false),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(Some("event_seen"), None, None, true),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(Some("task_terminal"), Some("queued"), None, false),
+            "confirmed"
+        );
+        assert_ne!(
+            revalidate_outcome(Some("person_answer"), None, None, false),
+            "released"
+        );
+        // Wiring oracle: verb_sweep resolves the mode through the
+        // #16006 default and hands it to revalidate_parked, whose
+        // released branch is the mutation that makes the task
+        // claimable again.
+        let src = test_source();
+        let sweep_seg = src
+            .split("fn verb_sweep(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// `/coverage`").next())
+            .unwrap_or("");
+        assert!(
+            sweep_seg.contains("let observe_only = sweep_observe_only(req);"),
+            "verb_sweep must resolve observe_only through the #16006 default"
+        );
+        assert!(
+            sweep_seg.contains("revalidate_parked("),
+            "verb_sweep must run the revalidator"
+        );
+        let reval_seg = src
+            .split("fn revalidate_parked(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// #16006: whether a /sweep request").next())
+            .unwrap_or("");
+        assert!(
+            reval_seg.contains("UPDATE tasks SET status = 'queued'"),
+            "a released park must become queued (claimable)"
+        );
+        assert!(
+            reval_seg.contains("\"park_released\""),
+            "a release must leave the park_released event"
+        );
+        assert!(
+            reval_seg.contains("if observe_only"),
+            "the observe branch must remain for explicit observe cycles"
+        );
+    }
+
+    #[test]
+    fn default_sweep_releases_satisfied_condition_parks_16006() {
+        // #16006 oracle (cherry-picked end-to-end sweep proof offered
+        // on #16022 from branch queue/26155-16006-revalidation-default):
+        // the default scheduled path — /sweep with revalidate and NO
+        // observe_only flag — releases satisfied broker-condition
+        // parks, keeps an unsatisfied one parked, and never releases
+        // a person_answer park (that waits for /wake). The pick
+        // exclusion (#13143) strands these rows without this path.
+        // Reuses the #13091 routed stub (identical wire shape).
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        // Sweeper call routing: target-status reads answer per
+        // task id (100 done, 200 still queued), the wake-event count
+        // is seen, and every write gets a bare ok.
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // No observe_only key: the request exercises the broker
+        // default, which #16006 flips to mutating.
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(out["row"]["observe_only"], false, "{out}");
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        assert_eq!(rev["would_release"], 0, "{out}");
+        // Exactly the two satisfied rows release to queued (401:
+        // terminal task done; 403: wake event seen); the
+        // unsatisfied task_status (402) and the person_answer park
+        // (404) only get their check stamps and stay parked.
+        let bodies = captured.lock().unwrap();
+        let updates: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("UPDATE tasks SET"))
+            .collect();
+        assert_eq!(updates.len(), 4, "{bodies:?}");
+        let releases: Vec<&&String> = updates
+            .iter()
+            .filter(|b| b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(releases.len(), 2, "{bodies:?}");
+        for r in &releases {
+            let v: Value = serde_json::from_str(r).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "401" || id["value"] == "403",
+                "only the satisfied parks release: {r}"
+            );
+        }
+        let stamps: Vec<&&String> = updates
+            .iter()
+            .filter(|b| !b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(stamps.len(), 2, "{bodies:?}");
+        for s in &stamps {
+            let v: Value = serde_json::from_str(s).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "402" || id["value"] == "404",
+                "only the unsatisfied/person parks stamp: {s}"
+            );
+        }
+    }
+
+    #[test]
     fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
         let rows = vec![
             json!({"id": 1, "status": "done"}),
@@ -3262,6 +3552,46 @@ mod tests {
     }
 
     #[test]
+    fn claim_contention_sql_oracle_13602() {
+        // The fixture benchmark isolates the queued branch of the real
+        // default predicate and the id/status/attempts/timer recheck in
+        // claim_update_sql. Keep those seams visible so SQL drift fails
+        // before the Python contention oracle runs.
+        let src = test_source();
+        let pick = seg8217(
+            &src,
+            "pub(crate) fn default_pick_predicate(",
+            "\npub(crate) fn handoff_pick_predicate(",
+        );
+        assert!(pick.contains("status = 'queued' AND attempts < max_attempts"));
+        assert!(pick.contains("not_before IS NULL OR not_before <= ?"));
+        let update = seg8217(
+            &src,
+            "pub(crate) fn claim_update_sql(",
+            "\n/// The default (lane) pick predicate",
+        );
+        assert!(update.contains("WHERE id = ?"));
+        assert!(update.contains("AND ( {pick_predicate} )"));
+        assert!(update.contains("{PLATFORM_LIMIT_PICK_CLAUSE}"));
+
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/claim_contention.py"
+            ))
+            .arg("--verify")
+            .output()
+            .expect("claim contention oracle requires Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "claim contention oracle failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn claim_quarantine_budget_is_separate_from_race_budget_9609() {
         // #9609 oracle: quarantines in the claim pick loop carry
         // their own budget (MAX_CLAIM_QUARANTINES_PER_CALL), sized
@@ -3533,6 +3863,118 @@ mod tests {
         let client_src = client_src.as_str();
         assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
+    }
+
+    #[test]
+    fn time_until_unix_parses_both_stored_shapes_14212() {
+        // Oracle: unix time. 2026-11-03T16:03:00Z is
+        // 1793721780; the fractional +00:00 form names the same
+        // instant and must parse to the same value — text order
+        // is not the oracle, the instant is.
+        assert_eq!(time_until_unix("2026-11-03T16:03:00Z"), Some(1793721780));
+        assert_eq!(
+            time_until_unix("2026-11-03T16:03:00.171848+00:00"),
+            Some(1793721780)
+        );
+        assert_eq!(time_until_unix("2026-11-16T00:14:04Z"), Some(1794788044));
+        // A non-UTC offset names its own instant: 05:30 at
+        // +05:30 is 00:00Z.
+        assert_eq!(
+            time_until_unix("2026-11-16T05:30:00+05:30"),
+            time_until_unix("2026-11-16T00:00:00Z")
+        );
+        // Garbage is never due: no parse, no release.
+        for bad in ["", "banana", "3600", "2026-11-03T16:03:00.171848+00:0"] {
+            assert_eq!(time_until_unix(bad), None, "{bad} must not parse");
+        }
+    }
+
+    #[test]
+    fn time_recheck_verdict_matrix_14212() {
+        // Oracle: the #14212 acceptance shape — a blocked row
+        // whose only wait is a lapsed {"kind": "time"} condition
+        // releases; every other owner of the row outranks the
+        // timer.
+        let now = 1795000000i64; // 2026-11-18, after both stored forms
+        let fossil = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00.171848+00:00"},
+        });
+        assert_eq!(time_recheck_verdict(&fossil, now), TimeRecheck::Release);
+        let fossil_z = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-16T00:14:04Z"},
+        });
+        assert_eq!(time_recheck_verdict(&fossil_z, now), TimeRecheck::Release);
+        // Time not yet come, and an unparseable time: not due.
+        let future = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2027-01-01T00:00:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&future, now), TimeRecheck::NotDue);
+        let garbage = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "banana"},
+        });
+        assert_eq!(time_recheck_verdict(&garbage, now), TimeRecheck::NotDue);
+        // A lane block owns its row even under a stale lapsed
+        // time condition (#10714's rule, applied to this pass).
+        let lane = json!({
+            "status": "blocked",
+            "progress": {"blocker": "waiting on review", "blocked_via": "lane"},
+            "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&lane, now), TimeRecheck::NotApplicable);
+        // A dep record owns its row (#8276's rechecker).
+        let dep = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "blocked_deps": [{"kind": "task", "task_id": 42}],
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(time_recheck_verdict(&dep, now), TimeRecheck::NotApplicable);
+        // Not blocked, or not a time condition: not this pass.
+        let parked = json!({
+            "status": "parked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
+        });
+        assert_eq!(
+            time_recheck_verdict(&parked, now),
+            TimeRecheck::NotApplicable
+        );
+        let other = json!({
+            "status": "blocked", "progress": {}, "result": {},
+            "ready_condition": {"kind": "task_terminal", "task_id": 42},
+        });
+        assert_eq!(
+            time_recheck_verdict(&other, now),
+            TimeRecheck::NotApplicable
+        );
+    }
+
+    #[test]
+    fn time_recheck_wiring_oracles_14212() {
+        // Routes, sweep ride, client surface — the same wiring
+        // shape the quarantine rechecker established in #10648.
+        let src = &test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"/time-recheck\" => verb_time_recheck"));
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(impl_flat.contains("run_time_rechecks( t, req_i64(req, \"time_limit\")"));
+        assert!(impl_src.contains("run_time_rechecks(t, req_i64(req, \"limit\")"));
+        assert!(impl_src.contains("\"via\": \"time_recheck\""));
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
+        assert!(client_src.contains("\"time-recheck\" => cmd_time_recheck"));
+        assert!(client_src.contains("call(\"/time-recheck\""));
     }
 
     #[test]

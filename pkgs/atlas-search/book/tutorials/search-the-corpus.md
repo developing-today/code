@@ -110,7 +110,7 @@ The hosted Worker exposes exactly one MCP tool, `search`, over stateless Streama
 
    Run it again and `cache` flips to `hit`: an MCP search and a REST search for the same normalized query and `k` share one cache entry, because both go through the single `executeSearch` path. On failure the HTTP status stays 200 and the failure is carried by `isError: true` with the error payload as the text content — check `isError`, not the HTTP status.
 
-4. Note what you could not ask for. There is no per-client identity on this endpoint and no argument for a ceiling or a context: every MCP caller shares the one hosted identity, pinned in the Worker to the `hosted-per-user` disclosure context and the `personal` ceiling, and the Worker verifies the service's reported effective ceiling matches before anything is cached. The toy hit above is returned only because it is visible at `personal`; a hit classified above that ceiling would simply not be in the results. Full surface: [The Atlas MCP server](../reference/mcp.md).
+4. Note what you could not ask for. An optional `AGENT_TOKENS` map can authenticate distinct MCP callers for audit, but there is still no argument for a per-agent ceiling, context or corpus scope: the Worker sends the shared `hosted-per-user` context and `personal` ceiling and verifies the service's reported effective ceiling before anything is cached. The toy hit above is returned only because it is visible at `personal`; a hit classified above that ceiling would simply not be in the results. Full surface: [The Atlas MCP server](../reference/mcp.md).
 
 ## How the three relate
 

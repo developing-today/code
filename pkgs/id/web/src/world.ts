@@ -196,6 +196,11 @@ function initWorld(): void {
   // accumulated snapshot belongs to.
   let offlineSnapshot: StoredWorldSnapshot | null = null;
   let offlineWorld: string | null = null;
+  // #10927 slice 2: offline cursors and a cursor carried across a
+  // disconnect have no durable journal identity. While set, the next join
+  // asks for an authoritative snapshot instead of replaying a suffix.
+  let requiresFreshSnapshot = false;
+  let notificationResyncPending = new URLSearchParams(location.search).has("client-notify");
   const persistOfflineSnapshot = () => {
     if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
   };
@@ -217,6 +222,10 @@ function initWorld(): void {
     offlineWorld = world;
     const stored = loadWorldSnapshot(localStorage, window.location.host, world);
     offlineSnapshot = stored;
+    // A world selection or a stored snapshot carries no proof that its
+    // sequence belongs to the host's current journal. The next join must
+    // re-snapshot rather than replay from that cursor (or the prior world).
+    requiresFreshSnapshot = true;
     if (!stored) return;
     cursor = stored.sequence;
     renderParticipants(stored.participants);
@@ -366,6 +375,9 @@ function initWorld(): void {
           return;
         }
         cursor = snapshot.current_sequence;
+        // A live host snapshot proves journal continuity for this page
+        // lifetime: later reconnects may resume from the live cursor.
+        requiresFreshSnapshot = false;
         renderParticipants(snapshot.participants);
         // #10927: a snapshot (re)starts the offline read model for
         // this world. Records are reset — the records fetch below
@@ -885,6 +897,14 @@ function initWorld(): void {
     // snapshot belongs to restores that world's stored snapshot first
     // (which also seeds the resume cursor sent as `after` on open).
     if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
+    if (notificationResyncPending) {
+      notificationResyncPending = false;
+      cursor = 0;
+      dropResumeUnit();
+      const url = new URL(location.href);
+      url.searchParams.delete("client-notify");
+      history.replaceState(null, "", url);
+    }
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
@@ -913,16 +933,20 @@ function initWorld(): void {
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
+      // #10927 slice 2: a restored offline cursor or disconnected socket
+      // carries no proof of journal continuity, so request a fresh host
+      // snapshot. Resume tokens are only offered on a continuous live page.
+      const freshResnapshot = requiresFreshSnapshot;
       ws.send(
         JSON.stringify({
           type: "join",
           capability: token,
-          after: cursor || null,
+          after: freshResnapshot ? null : cursor || null,
           world: selectedWorld(),
           screen_patches: true,
           screen_msgpack: true,
           screen_compress: true,
-          resume_token: hasResumableScreen() ? resumeToken : undefined,
+          resume_token: !freshResnapshot && hasResumableScreen() ? resumeToken : undefined,
           device_input: {
             keys: 128,
             encoder: false,
@@ -933,7 +957,8 @@ function initWorld(): void {
       );
       // A fresh session needs its initial resize. A resumable
       // reconnect keeps the established viewport unless it changed.
-      sendViewport(!hasResumableScreen());
+      // Any request that forces a fresh snapshot resets the view base too.
+      sendViewport(!hasResumableScreen() || requiresFreshSnapshot);
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
@@ -954,6 +979,10 @@ function initWorld(): void {
       documentsPages = 0;
       documentPending = false;
       if (intentionalClose) return;
+      // The server may have restarted or rebuilt its journal while this
+      // socket was down. Without a durable history identity, the next
+      // connection must re-snapshot instead of replaying from this cursor.
+      requiresFreshSnapshot = true;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
       window.setTimeout(() => {
@@ -1240,6 +1269,28 @@ function initWorld(): void {
     }
     intentionalClose = false;
     connect();
+  });
+
+  // #10930: the service worker forwards a notification click as a
+  // hint-only message. Sequence numbers do not prove journal identity:
+  // even a hint at the current head may follow a restore/rewrite. Always
+  // discard the resume base and ask the host for a fresh snapshot; the
+  // normal snapshot + records + view frames rebuild the projection and
+  // rendered view. The notification carries no world data.
+  navigator.serviceWorker?.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const hint = event.data;
+    if (!isRecord(hint) || hint.type !== "client.notify") return;
+    if (
+      hint.head !== undefined &&
+      hint.head !== null &&
+      (!Number.isSafeInteger(hint.head) || (hint.head as number) < 0)
+    ) {
+      return;
+    }
+    cursor = 0;
+    dropResumeUnit();
+    notificationResyncPending = true;
+    joinButton.click();
   });
 
   chatForm.addEventListener("submit", (event) => {

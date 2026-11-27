@@ -126,6 +126,34 @@ describe("queryRegistry", () => {
 });
 
 describe("/sessions render with a view", () => {
+  test("default 100-card view keeps actions available from a session deep link", () => {
+    // Oracle: the registry query's page slice and the rendered action-form count.
+    const liveRecords = Array.from({ length: 120 }, (_, i) =>
+      rec(`ses_live_${i}`, {
+        source: "opencode-laptop",
+        status: "running",
+        lastSeenAt: "2099-01-01T00:00:00.000Z",
+      }),
+    );
+    const identities: never[] = [];
+    const page = queryRegistry(liveRecords, q(""), NOW);
+    const html = renderSessions(page.records, fixtureSource().provenance(), undefined, { identities }, page);
+    expect(html.match(/class="card session-record-line"/g)?.length).toBe(100);
+    expect(html.match(/class="aform"/g)?.length ?? 0).toBe(0);
+    expect(html.match(/class="session-actions-link"/g)?.length).toBe(100);
+    expect(html).toContain('href="/sessions?id=ses_live_0#ses_live_0"');
+
+    const deepLink = queryRegistry(liveRecords, q("id=ses_live_119"), NOW);
+    const deepLinkHtml = renderSessions(
+      deepLink.records,
+      fixtureSource().provenance(),
+      undefined,
+      { identities },
+      deepLink,
+    );
+    expect(deepLinkHtml).toContain('id="ses_live_119"');
+    expect(deepLinkHtml.match(/class="aform"/g)?.length).toBe(3);
+  });
   test("banner shows counts, hidden remainder, toggle, and form", () => {
     const view = queryRegistry(RECORDS, q(""), NOW);
     const html = renderSessions(view.records, fixtureSource().provenance(), undefined, undefined, view);

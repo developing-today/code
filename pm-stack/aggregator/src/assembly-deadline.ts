@@ -21,6 +21,16 @@ const MAX_STALE_AGE_MS = 30 * 60_000;
 // hourly watch — so it gets a longer cap of its own. It is marked stale
 // like any other fallback, with its age in the notice.
 const MAX_DISK_STALE_AGE_MS = 6 * 60 * 60_000;
+// #10383 residual: the disk copy was only read after the full assembly
+// deadline expired, so a cold first request still stalled the whole
+// deadline (10 s) before it could serve last-good — and a client with a
+// shorter timeout still saw a failure. On a cold request the disk copy
+// is now loaded up front and the fresh assembly only gets this short
+// grace to beat it; past the grace the disk copy is served at once
+// while the assembly keeps running in the background and seeds the
+// cache on settle. A fresh assembly that finishes inside the grace
+// still wins, unchanged.
+const COLD_STALE_GRACE_MS = 1_000;
 const MAX_CACHED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 128;
 
@@ -65,6 +75,10 @@ interface DeadlineOptions {
    *  request after a restart. Unset keeps the cache in memory only. */
   persistDir?: string;
   maxDiskStaleAgeMs?: number;
+  /** #10383: how long a cold request (no in-memory last-good, disk
+   *  copy available) waits for the fresh assembly before serving the
+   *  disk copy. Capped by timeoutMs. */
+  coldStaleGraceMs?: number;
 }
 
 /** A filesystem-safe file name for one bounded key. */
@@ -85,6 +99,7 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
   const now = options.now ?? Date.now;
   const persistDir = options.persistDir;
   const maxDiskStaleAgeMs = options.maxDiskStaleAgeMs ?? MAX_DISK_STALE_AGE_MS;
+  const coldStaleGraceMs = options.coldStaleGraceMs ?? COLD_STALE_GRACE_MS;
   const lastGood = new Map<string, CachedResponse>();
   // Keys whose disk copy was already looked for in this process: the
   // disk is read at most once per key, on its first fallback.
@@ -190,9 +205,23 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
       };
       void pending.then(clearInFlight, clearInFlight);
     }
+    // Cold path (#10383): with nothing in memory, load the disk copy
+    // before waiting. The assembly above is already running, so this
+    // read overlaps it. A disk copy inside its cap shortens this
+    // waiter's wait to the cold grace; a missing/expired/corrupt copy
+    // leaves the ordinary deadline behaviour untouched.
+    let coldCached: CachedResponse | undefined;
+    if (!lastGood.has(key)) {
+      const disk = await fromDisk(key);
+      // A run that settled while the disk was read wins over the copy.
+      if (disk && !lastGood.has(key)) lastGood.set(key, disk);
+      const loaded = lastGood.get(key);
+      if (loaded?.fromDisk && now() - loaded.storedAt <= maxDiskStaleAgeMs) coldCached = loaded;
+    }
+    const waitMs = coldCached ? Math.min(coldStaleGraceMs, timeoutMs) : timeoutMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
-      timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      timer = setTimeout(() => resolve({ kind: "timeout" }), waitMs);
     });
 
     let result: { kind: "timeout" } | { kind: "response"; response: Response };
@@ -221,6 +250,11 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
     }
     const cap = cached?.fromDisk ? maxDiskStaleAgeMs : maxStaleAgeMs;
     if (cached && now() - cached.storedAt <= cap) {
+      // Cold early serve: the assembly has not timed out, it is still
+      // running past the cold grace — say so, not "timed out".
+      if (coldCached && cached === coldCached && waitMs < timeoutMs) {
+        return staleResponse(url.pathname, cached, timeoutMs, now(), true);
+      }
       return staleResponse(url.pathname, cached, timeoutMs, now());
     }
     if (cached) lastGood.delete(key);
@@ -253,7 +287,13 @@ function timeoutResponse(path: string, timeoutMs: number): Response {
   );
 }
 
-function staleResponse(path: string, cached: CachedResponse, timeoutMs: number, at: number): Response {
+function staleResponse(
+  path: string,
+  cached: CachedResponse,
+  timeoutMs: number,
+  at: number,
+  stillRunning = false,
+): Response {
   const headers = new Headers(cached.headers);
   headers.set("x-aggregator-stale", "true");
   headers.set("cache-control", "no-store");
@@ -261,7 +301,9 @@ function staleResponse(path: string, cached: CachedResponse, timeoutMs: number, 
   const age = cached.fromDisk
     ? ` It was saved before the dashboard restarted, ${formatAge(at - cached.storedAt)} ago.`
     : "";
-  const notice = `Showing the last successful dashboard response; the latest assembly timed out after ${formatDuration(timeoutMs)}.${age}`;
+  const notice = stillRunning
+    ? `Showing the last successful dashboard response; the latest assembly is still running.${age}`
+    : `Showing the last successful dashboard response; the latest assembly timed out after ${formatDuration(timeoutMs)}.${age}`;
 
   if ((headers.get("content-type") ?? "").includes("application/json")) {
     let body: unknown;

@@ -10,6 +10,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { runCheckRound, type WorkerBinding } from "./worker-checks.ts";
+import { fetchQueueTransport } from "./queue-transport.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -17,6 +19,7 @@ interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   PUBLIC_HOST: string;
   VERSION?: string;
+  DEPLOYED_AT?: string;
   /** What lets the edge do the core itself. The tokens are Worker
    * secrets, put there by scripts/expose.py on a machine that holds the
    * secret store; the flag is the switch, off unless it reads `on`. */
@@ -31,6 +34,42 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
+  /** The platform's other Workers, by service binding, for the
+   * scheduled checks (#15793): the edge asks each for the commit it
+   * was deployed from and keeps the answers in the object. A binding
+   * that is not configured simply leaves that Worker out of the
+   * round; the bindings are declared in wrangler.jsonc. */
+  PM_SERVICE?: { fetch(request: Request): Promise<Response> };
+  DECISION_EVENTS?: { fetch(request: Request): Promise<Response> };
+  /** The rest of the roster (#15793): every other Worker
+   * pm-stack/platform/workers.json says is in service, each by its
+   * own service binding, asked the same question on the same
+   * schedule. The roster itself — which Worker answers to which
+   * binding name — is WORKER_BINDINGS in worker-checks.ts, and the
+   * console tests hold it to workers.json and to wrangler.jsonc. */
+  PM_NOTIFY?: WorkerBinding;
+  MCPX?: WorkerBinding;
+  QUEUE_TRANSPORT_ALERT?: WorkerBinding;
+  GITHUB_CI?: WorkerBinding;
+  VOICE_LINE?: WorkerBinding;
+  MUSE_AGENT_HANDOFF?: WorkerBinding;
+  DESKTOP_COMMANDER?: WorkerBinding;
+  FLEET_HOSTED?: WorkerBinding;
+  ATLAS_SEARCH?: WorkerBinding;
+  D1_GATEWAY?: WorkerBinding;
+  COLD_STORE_REHYDRATOR?: WorkerBinding;
+  DEVELOPING_TODAY_BACKUP?: WorkerBinding;
+  FLEET_GIT_REHOST?: WorkerBinding;
+  PKARR?: WorkerBinding;
+  LAB_OPS_HUB?: WorkerBinding;
+  CF_CONTAINER_HELLO?: WorkerBinding;
+  /** The decision-events Worker (#13491): its address and the shared
+   * secret its reads take, the secret a Worker secret like the two
+   * tokens. With both, the edge reads the Questions discovery section
+   * (the sets the Worker holds, and each set's state) itself, with no
+   * machine; without either, that section stays a machine's. */
+  DECISION_EVENTS_URL?: string;
+  DECISION_EVENTS_SECRET?: string;
   /** The fleet-platform ledger the hosted M4 ledger surfaces read
    * (#14968), and their opt-in flag: off unless it reads `on`, and
    * only after the #14865 gate check recorded on #14968. Which store
@@ -117,6 +156,10 @@ export class PmEdge extends DurableObject<Env> {
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
         bridgeToken: env.BRIDGE_TOKEN,
+        decisionEvents:
+          env.DECISION_EVENTS_URL && env.DECISION_EVENTS_SECRET
+            ? { url: env.DECISION_EVENTS_URL, secret: env.DECISION_EVENTS_SECRET }
+            : undefined,
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
         bridgeFetch: bridge
@@ -255,8 +298,52 @@ export default {
       act: (r, ms) => ask(r, ms, env.HOST_ORIGIN),
       publicHost: env.PUBLIC_HOST,
       version: env.VERSION ?? null,
+      deployedAt: env.DEPLOYED_AT ?? null,
       later: (work) => ctx.waitUntil(work),
       now: Date.now,
     });
+  },
+
+  /** The scheduled Worker checks (#15793, steps 1–2 of #13494): ask
+   * each bound Worker, by its service binding — no public hop, no
+   * setting changed — for the commit it was deployed from, and hand
+   * the set to the object to keep. The cron trigger is declared in
+   * wrangler.jsonc and registered in doc/fleet-schedule-registry.md.
+   * A Worker with no binding configured is left out of the round;
+   * one that does not answer is recorded as not answering. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const askedAt = Date.now();
+    const byBinding = env as unknown as Record<string, WorkerBinding | undefined>;
+    const set = await runCheckRound((binding) => byBinding[binding], "pm-console-edge", env.VERSION, askedAt);
+    const stub = env.PM.get(env.PM.idFromName("pm"));
+    ctx.waitUntil(
+      stub.fetch(
+        new Request("https://pm.internal/internal/worker-checks", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(set),
+        }),
+      ),
+    );
+    // The queue transport's health (#13503 slice 1): read the alert
+    // Worker's /status over the existing binding and hand the verdict
+    // to the object to keep. The Worker stays the probe; a Worker with
+    // no binding configured leaves the transport out of the round, and
+    // an answer that names no verdict keeps nothing.
+    const transportBinding = env.QUEUE_TRANSPORT_ALERT;
+    if (transportBinding !== undefined) {
+      const verdict = await fetchQueueTransport((request: Request) => transportBinding.fetch(request), askedAt);
+      if (verdict !== null) {
+        ctx.waitUntil(
+          stub.fetch(
+            new Request("https://pm.internal/internal/queue-transport", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(verdict),
+            }),
+          ),
+        );
+      }
+    }
   },
 };

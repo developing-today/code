@@ -35,6 +35,10 @@ use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
+use crate::host_snapshots::{
+    SNAPSHOT_DIR_NAME, SnapshotPolicy, SnapshotRun, SnapshotSet, is_due, list_sets, prune_plan,
+    remove_sets, replaces_previous, set_file_name, usage, world_snapshot_dir,
+};
 use crate::world::{Authority, WorldHandle, WorldLimits};
 use crate::world_doctor::{JournalFacts, journal_facts};
 use crate::world_export::{
@@ -154,6 +158,11 @@ pub struct WorldRecord {
     /// opening the data root, after a restart or a crash (#10696).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_recovery: Option<RecoveryRecord>,
+    /// This world's own snapshot cadence and retention (#13739), in place
+    /// of the host-wide default. An off policy here turns scheduled
+    /// snapshots off for this world alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<SnapshotPolicy>,
 }
 
 /// The result of replaying a world the host file recorded live, when a
@@ -218,16 +227,94 @@ pub struct HostFile {
     /// World name (directory name) → record.
     #[serde(default)]
     pub worlds: BTreeMap<String, WorldRecord>,
+    /// Host-wide snapshot cadence and retention for live worlds (#13739).
+    /// Absent means scheduled snapshots are off unless a world sets its
+    /// own policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<SnapshotPolicy>,
+    /// Where snapshot sets live, when not `<data root>/.snapshots`: an
+    /// absolute path, typically another disk or a mounted off-host store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_dir: Option<PathBuf>,
 }
 
 impl HostFile {
-    /// Empty host file for `root`.
+    /// Empty host file for `root`, naming it by its canonical path so a
+    /// reader in any working directory finds the same root. A server
+    /// that opens its data root by a relative path (`id serve` runs in
+    /// its state directory and uses `.id-worlds`) must not record that
+    /// relative path, or the operator CLI, reading the root by its
+    /// absolute path, refuses the file as another root's.
     pub fn empty(root: &Path) -> Self {
         Self {
             version: HOST_FILE_VERSION,
-            data_root: root.to_path_buf(),
+            data_root: canonical_or_plain(root),
             worlds: BTreeMap::new(),
+            snapshots: None,
+            snapshot_dir: None,
         }
+    }
+
+    /// The directory that holds snapshot sets for the data root `root`.
+    #[must_use]
+    pub fn snapshot_root(&self, root: &Path) -> PathBuf {
+        self.snapshot_dir
+            .clone()
+            .unwrap_or_else(|| root.join(SNAPSHOT_DIR_NAME))
+    }
+
+    /// The snapshot policy `name` follows: its own, else the host-wide
+    /// default, else off.
+    #[must_use]
+    pub fn snapshot_policy(&self, name: &str) -> SnapshotPolicy {
+        self.worlds
+            .get(name)
+            .and_then(|record| record.snapshots)
+            .or(self.snapshots)
+            .unwrap_or(SnapshotPolicy::OFF)
+    }
+
+    /// Set the host-wide snapshot policy (`world` is `None`) or one
+    /// world's own; `None` as the policy clears it, so a world follows the
+    /// host default again.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a policy a host cannot follow and a world this file does
+    /// not record.
+    pub fn set_snapshot_policy(
+        &mut self,
+        world: Option<&str>,
+        policy: Option<SnapshotPolicy>,
+    ) -> Result<()> {
+        if let Some(policy) = &policy {
+            policy.validate()?;
+        }
+        match world {
+            Some(name) => self.record_mut(name)?.snapshots = policy,
+            None => self.snapshots = policy,
+        }
+        Ok(())
+    }
+
+    /// Store snapshot sets in `dir` instead of `<data root>/.snapshots`;
+    /// `None` goes back to the default. Sets already taken stay where they
+    /// are.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a relative path.
+    pub fn set_snapshot_dir(&mut self, dir: Option<PathBuf>) -> Result<()> {
+        if let Some(dir) = &dir {
+            if !dir.is_absolute() {
+                bail!(
+                    "the snapshot directory must be an absolute path, not {}",
+                    dir.display()
+                );
+            }
+        }
+        self.snapshot_dir = dir;
+        Ok(())
     }
 
     /// Path of the host file inside `root`.
@@ -368,6 +455,7 @@ impl HostFile {
             .with_context(|| format!("unknown world {name:?}"))?;
         let prior = record.state;
         check_transition(name, prior, to)?;
+        check_automation(name, record, to, actor)?;
         record.state = to;
         record.history.push(StateChange {
             at_secs,
@@ -453,6 +541,9 @@ fn validate_name(name: &str) -> Result<()> {
     if name == HOST_FILE_NAME {
         bail!("world name {name:?} is reserved for the host file");
     }
+    if name == SNAPSHOT_DIR_NAME {
+        bail!("world name {name:?} is reserved for snapshot sets");
+    }
     Ok(())
 }
 
@@ -502,6 +593,10 @@ pub struct WorldCensus {
     pub modules_bytes: u64,
     /// Every other regular file under the world directory.
     pub other_bytes: u64,
+    /// Snapshot sets kept for this world (#13739).
+    pub snapshot_sets: u64,
+    /// Their total size: custody cost on top of the world directory.
+    pub snapshot_bytes: u64,
     /// The world directory was missing when inventoried.
     pub missing: bool,
 }
@@ -517,6 +612,8 @@ pub struct StateCensus {
     pub modules_bytes: u64,
     /// Sum of all other bytes.
     pub other_bytes: u64,
+    /// Sum of snapshot set bytes, counted against this state's capacity.
+    pub snapshot_bytes: u64,
 }
 
 /// Per-state counts + bytes for the operator surface (packet P4 input).
@@ -543,6 +640,7 @@ impl Census {
         slot.journal_bytes = slot.journal_bytes.saturating_add(row.journal_bytes);
         slot.modules_bytes = slot.modules_bytes.saturating_add(row.modules_bytes);
         slot.other_bytes = slot.other_bytes.saturating_add(row.other_bytes);
+        slot.snapshot_bytes = slot.snapshot_bytes.saturating_add(row.snapshot_bytes);
         self.worlds.push(row);
     }
 }
@@ -553,11 +651,15 @@ impl Census {
 #[must_use]
 pub fn census_of(root: &Path, file: &HostFile) -> Census {
     let mut census = Census::default();
+    let snapshot_root = file.snapshot_root(root);
     for (name, record) in &file.worlds {
         let dir = root.join(name);
+        let snapshots = usage(&snapshot_root, name);
         let mut row = WorldCensus {
             name: name.clone(),
             state: record.state,
+            snapshot_sets: snapshots.sets,
+            snapshot_bytes: snapshots.bytes,
             ..WorldCensus::default()
         };
         match inventory(&dir, WalkLimits::default()) {
@@ -586,8 +688,109 @@ pub const IDLE_CLOSE: &str = "idle";
 /// a served data root.
 pub const ADMIN_CREATE: &str = "admin-create";
 
+/// One transition the host makes on its own, with no operator act
+/// (#13748, hosted worlds v2 Q4).
+///
+/// F1 of the v1 design: zero clients never
+/// archives or deletes a world, so automation may only move a world
+/// between asleep and live, and only on these terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomatedTransition {
+    /// The actor the host file records for it.
+    pub actor: &'static str,
+    /// The state it leaves.
+    pub from: LifecycleState,
+    /// The state it enters.
+    pub to: LifecycleState,
+    /// What the world's record must say for it to be allowed.
+    pub condition: &'static str,
+}
+
+/// The automation allow-list (#13748): every transition the host makes
+/// without an operator.
+///
+/// Anything else recorded under one of these actors
+/// is refused, and no operator act may be recorded under them, so a
+/// world's history always tells automation and operators apart. Archive,
+/// restore and delete stay operator acts; [`ADMIN_CREATE`] records a new
+/// world as it is created and is never a transition of a known one.
+pub const AUTOMATED_TRANSITIONS: [AutomatedTransition; 2] = [
+    AutomatedTransition {
+        actor: WAKE_ON_CONNECT,
+        from: LifecycleState::Asleep,
+        to: LifecycleState::Live,
+        condition: "wake mode is connect",
+    },
+    AutomatedTransition {
+        actor: IDLE_CLOSE,
+        from: LifecycleState::Live,
+        to: LifecycleState::Asleep,
+        condition: "the world is not pinned",
+    },
+];
+
+/// Whether `actor` is one the host records for itself rather than for
+/// an operator.
+#[must_use]
+pub fn is_automated_actor(actor: &str) -> bool {
+    actor == ADMIN_CREATE || AUTOMATED_TRANSITIONS.iter().any(|t| t.actor == actor)
+}
+
+/// Refuse an operator act recorded under a name the host keeps for its
+/// own automated transitions (#13748).
+///
+/// # Errors
+///
+/// Fails when `actor` is one of [`AUTOMATED_TRANSITIONS`]' actors or
+/// [`ADMIN_CREATE`].
+pub fn check_operator_actor(actor: &str) -> Result<()> {
+    if is_automated_actor(actor) {
+        bail!("{actor:?} is recorded only by the host itself, not for an operator act");
+    }
+    Ok(())
+}
+
+/// Check one transition against the automation allow-list: an operator
+/// act passes, an automated one must be on [`AUTOMATED_TRANSITIONS`] with
+/// its condition met by `record`.
+fn check_automation(
+    name: &str,
+    record: &WorldRecord,
+    to: LifecycleState,
+    actor: &str,
+) -> Result<()> {
+    if !is_automated_actor(actor) {
+        return Ok(());
+    }
+    let from = record.state;
+    let Some(allowed) = AUTOMATED_TRANSITIONS
+        .iter()
+        .find(|t| t.actor == actor && t.from == from && t.to == to)
+    else {
+        bail!(
+            "automation ({actor}) may not move world {name:?} from {from} to {to}: \
+             an operator must"
+        );
+    };
+    let met = match allowed.actor {
+        WAKE_ON_CONNECT => record.wake == WakeMode::Connect,
+        IDLE_CLOSE => !record.pinned,
+        _ => false,
+    };
+    if !met {
+        bail!(
+            "automation ({actor}) may not move world {name:?} from {from} to {to}: \
+             only when {}",
+            allowed.condition
+        );
+    }
+    Ok(())
+}
+
 /// The host file of a data root, shared by a serving process that opens
-/// worlds on demand (#10693 serve-attach). A client naming an asleep
+/// worlds on demand (#10693 serve-attach).
+///
+/// A client naming an asleep
 /// world wakes it ([`HostLifecycle::admit_wake`]); the hub closing an
 /// idle world records it asleep again ([`HostLifecycle::record_closed`]).
 /// Archived and unknown worlds are refused: waking never restores an
@@ -689,6 +892,26 @@ impl HostLifecycle {
         let mut file = self.lock();
         let mut next = file.clone();
         next.set_wake(name, wake)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(())
+    }
+
+    /// Set the host-wide snapshot policy, or one world's own, and save
+    /// (#13739).
+    ///
+    /// # Errors
+    ///
+    /// As [`HostFile::set_snapshot_policy`], and when the save fails
+    /// (nothing changes then).
+    pub fn set_snapshot_policy(
+        &self,
+        world: Option<&str>,
+        policy: Option<SnapshotPolicy>,
+    ) -> Result<()> {
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.set_snapshot_policy(world, policy)?;
         self.save(&next)?;
         *file = next;
         Ok(())
@@ -803,29 +1026,104 @@ impl HostLifecycle {
             file.worlds.remove(name);
             return self.save(&file);
         }
+        self.undo_live(&mut file, name, WAKE_ON_CONNECT)
+    }
+
+    /// Take back the last change to `name` when it was `actor` bringing it
+    /// from asleep to live, as if it never happened.
+    fn undo_live(&self, file: &mut HostFile, name: &str, actor: &str) -> Result<()> {
         let Some(record) = file.worlds.get_mut(name) else {
             return Ok(());
         };
-        let woke_last = record.history.last().is_some_and(|change| {
-            change.actor == WAKE_ON_CONNECT && change.prior == LifecycleState::Asleep
-        });
+        let woke_last = record
+            .history
+            .last()
+            .is_some_and(|change| change.actor == actor && change.prior == LifecycleState::Asleep);
         if record.state != LifecycleState::Live || !woke_last {
             return Ok(());
         }
         record.state = LifecycleState::Asleep;
         record.history.pop();
-        self.save(&file)
+        self.save(file)
+    }
+
+    /// An operator act on a serving node (#10697): move `name` from `from`
+    /// to `to`, recorded by `actor`, and save.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world the host file does not know, a world not
+    /// recorded in `from`, a transition the lifecycle forbids, and a
+    /// failed save (nothing is recorded then).
+    pub fn operator_transition(
+        &self,
+        name: &str,
+        from: LifecycleState,
+        to: LifecycleState,
+        actor: &str,
+    ) -> Result<()> {
+        check_operator_actor(actor)?;
+        let mut file = self.lock();
+        match file.worlds.get(name).map(|record| record.state) {
+            None => bail!("no world {name:?} in this data root"),
+            Some(state) if state != from => {
+                // The lifecycle's own refusal names the way forward
+                // ("restore to asleep before starting") where it has one.
+                check_transition(name, state, to)?;
+                bail!("world {name:?} is {state}, not {from}")
+            }
+            Some(_) => self.record(&mut file, name, to, actor),
+        }
+    }
+
+    /// Take back an operator start of `name` by `actor` whose open then
+    /// failed: the world is recorded asleep again, as before the start.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the save fails.
+    pub fn undo_start(&self, name: &str, actor: &str) -> Result<()> {
+        let mut file = self.lock();
+        self.undo_live(&mut file, name, actor)
+    }
+
+    /// Restore the export file `path`, signed by `pinned_source`, as a new
+    /// asleep world named by the export, recorded by `actor`.
+    ///
+    /// # Errors
+    ///
+    /// As [`import_into_root`]; nothing is recorded when it fails.
+    pub async fn import(
+        &self,
+        path: &Path,
+        pinned_source: [u8; 32],
+        actor: &str,
+    ) -> Result<ExportManifest> {
+        let seen = self.snapshot();
+        let manifest = restore_export_dir(&self.root, &seen, path, pinned_source).await?;
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.adopt(&self.root, &manifest.world, actor)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(manifest)
     }
 
     /// The hub closed `name` (idle, or to make room): record it asleep by
-    /// [`IDLE_CLOSE`]. A world not recorded live is left as it is.
+    /// [`IDLE_CLOSE`]. A world not recorded live is left as it is, and so
+    /// is a pinned one: a pin keeps a world live across closes and
+    /// restarts, and automation never sleeps it (#13748).
     ///
     /// # Errors
     ///
     /// Fails when the save fails; nothing is recorded then.
     pub fn record_closed(&self, name: &str) -> Result<()> {
         let mut file = self.lock();
-        if file.worlds.get(name).map(|record| record.state) != Some(LifecycleState::Live) {
+        if !file
+            .worlds
+            .get(name)
+            .is_some_and(|record| record.state == LifecycleState::Live && !record.pinned)
+        {
             return Ok(());
         }
         self.record(&mut file, name, LifecycleState::Asleep, IDLE_CLOSE)
@@ -963,6 +1261,29 @@ fn host_limits() -> (WorldLimits, RuntimeLimits) {
     (WorldLimits::default(), RuntimeLimits::default())
 }
 
+/// Replay the world `name` in the data root `root` under the host's
+/// limits, without recording or holding it.
+///
+/// # Errors
+///
+/// Fails for a name that cannot be a world directory, a missing world
+/// directory, and a replay failure.
+pub async fn open_in_root(root: &Path, name: &str) -> Result<(WorldService, OpenReport)> {
+    validate_name(name)?;
+    let dir = root.join(name);
+    anyhow::ensure!(dir.is_dir(), "no world named {name:?} in this data root");
+    let (world_limits, runtime_limits) = host_limits();
+    open_world(
+        &dir,
+        name,
+        world_limits,
+        runtime_limits,
+        |handle: WorldHandle| WorldService::new(handle, None),
+    )
+    .await
+    .with_context(|| format!("replaying world {name:?}"))
+}
+
 /// Inspect `name` in the data root `root` that `file` describes, reading
 /// only the host file record and the world directory: nothing is opened
 /// for serving, replayed or written.
@@ -1023,6 +1344,181 @@ pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> 
         "state": record.state,
         "pinned": record.pinned,
         "wake": record.wake,
+    }))
+}
+
+/// Take a due snapshot set of a live world, then prune its sets (#13739).
+///
+/// A set of `name` is exported from `service` when `policy` says one is
+/// due at `now_secs`. Both `id host run` and a serving node (`id serve
+/// --world-host`) call this from their schedule.
+///
+/// A world whose journal has not grown since its newest set gets the
+/// fresh set in place of that one. A failed export leaves no partial set
+/// behind: it is written under a name that is not a set, then renamed.
+///
+/// # Errors
+///
+/// When the snapshot directory cannot be listed or created, the export
+/// fails, a set cannot be renamed or removed, or the rename cannot be
+/// made durable. What was taken and removed before the failure is
+/// recorded in `run`.
+pub async fn snapshot_live_world(
+    service: &WorldService,
+    key: &SigningKey,
+    name: &str,
+    policy: &SnapshotPolicy,
+    snapshot_root: &Path,
+    now_secs: u64,
+    run: &mut SnapshotRun,
+) -> Result<()> {
+    snapshot_live_world_with_dir_sync(
+        service,
+        key,
+        name,
+        policy,
+        snapshot_root,
+        now_secs,
+        run,
+        &sync_snapshot_parent_dir,
+    )
+    .await
+}
+
+/// Make the rename of a snapshot set file durable by syncing its parent
+/// directory (#16320), mirroring `sync_export_parent_dir` (#16179) and
+/// [`HostFile::save`]: without it, a power loss can lose the renamed set
+/// even though the snapshot pass returned `Ok`. The export's own sync
+/// covers its `partial -> taking` rename, not this `taking -> set` one.
+/// Best-effort no-op off unix, mirroring the `#[cfg(unix)]` shape in
+/// `world_export.rs`.
+///
+/// # Errors
+///
+/// The parent directory cannot be opened, or its sync fails.
+fn sync_snapshot_parent_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync snapshot directory {}", parent.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// [`snapshot_live_world`] with the parent-directory sync step
+/// supplied, split out so tests can fault-inject a sync failure (the
+/// same shape as the #16058/#16131/#16140 durability tests).
+#[allow(clippy::too_many_arguments)]
+async fn snapshot_live_world_with_dir_sync(
+    service: &WorldService,
+    key: &SigningKey,
+    name: &str,
+    policy: &SnapshotPolicy,
+    snapshot_root: &Path,
+    now_secs: u64,
+    run: &mut SnapshotRun,
+    sync_dir: &(dyn Fn(&Path) -> Result<()> + Send + Sync),
+) -> Result<()> {
+    let sets = list_sets(snapshot_root, name)?;
+    let previous = sets.last().cloned();
+    if !is_due(policy, previous.as_ref(), now_secs) {
+        return Ok(());
+    }
+    let dir = world_snapshot_dir(snapshot_root, name);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating snapshot directory {}", dir.display()))?;
+    let taking = dir.join(format!(".{now_secs:020}.taking"));
+    let manifest = export_world_to_file(service, key, &taking).await?;
+    let path = dir.join(set_file_name(now_secs, manifest.entries));
+    std::fs::rename(&taking, &path)
+        .with_context(|| format!("renaming {} to {}", taking.display(), path.display()))?;
+    // Make the rename itself durable before recording the take: the
+    // directory entry is synced after the rename, and a sync failure
+    // is propagated rather than acking a non-durable snapshot (#16320).
+    sync_dir(&path)?;
+    let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+    let taken = SnapshotSet {
+        world: name.to_owned(),
+        path,
+        at_secs: now_secs,
+        entries: manifest.entries,
+        bytes,
+    };
+    run.taken.push(taken.clone());
+    let mut after = sets;
+    // An unchanged journal: the new set replaces the newest one. Entry
+    // count alone does not prove "unchanged" — checkpoint compaction
+    // rewrites the journal, so a different journal can carry the same
+    // count (#16134). Compare the journal digest recorded in each
+    // set's export manifest; a previous set whose manifest cannot be
+    // read is kept, never deleted on a guess.
+    if let Some(previous) = previous.filter(|set| set.entries == manifest.entries) {
+        let previous_digest = read_export_manifest(&previous.path)
+            .await
+            .map(|previous_manifest| Some(previous_manifest.journal_digest))
+            .unwrap_or(None);
+        // `None` here means the manifest could not be read at all (the
+        // helper's legacy fallback is `Some("")` from a manifest with
+        // no digest field): keep the set rather than delete on a guess.
+        if previous_digest.is_some()
+            && replaces_previous(
+                previous.entries,
+                previous_digest.as_deref(),
+                manifest.entries,
+                &manifest.journal_digest,
+            )
+        {
+            remove_sets(std::slice::from_ref(&previous))?;
+            after.pop();
+            run.removed.push(previous);
+        }
+    }
+    after.push(taken);
+    let plan = prune_plan(&after, policy, now_secs);
+    remove_sets(&plan)?;
+    run.removed.extend(plan);
+    Ok(())
+}
+
+/// The answer body for a snapshot-policy change: the policy `world`
+/// follows (or the host-wide default when `world` is `None`), where sets
+/// live, and the world's sets on disk.
+///
+/// # Errors
+///
+/// Fails for a world the file does not record.
+pub fn snapshot_settings_body(
+    root: &Path,
+    file: &HostFile,
+    world: Option<&str>,
+) -> Result<serde_json::Value> {
+    let snapshot_root = file.snapshot_root(root);
+    let Some(name) = world else {
+        return Ok(serde_json::json!({
+            "world": null,
+            "policy": file.snapshots.unwrap_or(SnapshotPolicy::OFF),
+            "dir": snapshot_root,
+        }));
+    };
+    let record = file
+        .worlds
+        .get(name)
+        .with_context(|| format!("no world {name:?} in this data root"))?;
+    let sets = list_sets(&snapshot_root, name)?;
+    Ok(serde_json::json!({
+        "world": name,
+        "state": record.state,
+        "policy": file.snapshot_policy(name),
+        "own_policy": record.snapshots.is_some(),
+        "dir": world_snapshot_dir(&snapshot_root, name),
+        "sets": sets,
     }))
 }
 
@@ -1253,6 +1749,63 @@ impl Supervisor {
         export_world_to_file(&held.service, key, path).await
     }
 
+    /// Set the host-wide snapshot policy, or one world's own, and save
+    /// (#13739). The running host follows it from its next check.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostFile::set_snapshot_policy`], and when the save fails
+    /// (nothing changes then).
+    pub fn set_snapshot_policy(
+        &mut self,
+        world: Option<&str>,
+        policy: Option<SnapshotPolicy>,
+    ) -> Result<()> {
+        let mut next = self.file.clone();
+        next.set_snapshot_policy(world, policy)?;
+        next.save(&self.root)?;
+        self.file = next;
+        Ok(())
+    }
+
+    /// Take a set for every live world whose policy says it is due at
+    /// `now_secs`, then prune each world's sets to its policy (#13739).
+    ///
+    /// A world whose journal has not grown since its newest set gets the
+    /// fresh set in place of that one. A host with no signing key takes
+    /// nothing. One world failing is recorded in the run and never stops
+    /// the others; a failed export leaves no partial set behind.
+    pub async fn run_due_snapshots(&self, now_secs: u64) -> SnapshotRun {
+        let mut run = SnapshotRun::default();
+        let Some(key) = self.signing_key.as_ref() else {
+            return run;
+        };
+        let snapshot_root = self.file.snapshot_root(&self.root);
+        let mut names: Vec<&String> = self.live.keys().collect();
+        names.sort();
+        for name in names {
+            let policy = self.file.snapshot_policy(name);
+            if !policy.is_on() {
+                continue;
+            }
+            let service = &self.live[name].service;
+            if let Err(error) = snapshot_live_world(
+                service,
+                key,
+                name,
+                &policy,
+                &snapshot_root,
+                now_secs,
+                &mut run,
+            )
+            .await
+            {
+                run.failed.push((name.clone(), format!("{error:#}")));
+            }
+        }
+        run
+    }
+
     /// Restore the export file `path`, signed by `pinned_source`, as a new
     /// asleep world named by the export, recorded by `actor`.
     ///
@@ -1277,6 +1830,7 @@ impl Supervisor {
     /// Fails for archived worlds (restore first), live worlds, unknown
     /// names, and replay failures (the world stays asleep).
     pub async fn start(&mut self, name: &str, actor: &str) -> Result<OpenReport> {
+        check_operator_actor(actor)?;
         let at_secs = now_secs();
         self.file
             .transition(name, LifecycleState::Live, actor, at_secs)?;
@@ -1303,6 +1857,7 @@ impl Supervisor {
     ///
     /// Fails for worlds that are not live or not held.
     pub async fn stop(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         let held = self
             .live
             .remove(name)
@@ -1321,6 +1876,7 @@ impl Supervisor {
     /// Archive an asleep world. Live worlds must be stopped first;
     /// archived worlds refuse to start until restored.
     pub fn archive(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         self.file
             .transition(name, LifecycleState::Archived, actor, now_secs())?;
         self.file.save(&self.root)?;
@@ -1329,6 +1885,7 @@ impl Supervisor {
 
     /// Restore an archived world to asleep (operator act, recorded).
     pub fn restore(&mut self, name: &str, actor: &str) -> Result<()> {
+        check_operator_actor(actor)?;
         self.file
             .transition(name, LifecycleState::Asleep, actor, now_secs())?;
         self.file.save(&self.root)?;
@@ -1484,19 +2041,7 @@ impl Supervisor {
     /// already have validated (and, on success, recorded) the transition.
     /// Replay `name` from its journal without recording or holding it.
     async fn open_unrecorded(&self, name: &str) -> Result<(WorldService, OpenReport)> {
-        validate_name(name)?;
-        let dir = self.root.join(name);
-        anyhow::ensure!(dir.is_dir(), "no world named {name:?} in this data root");
-        let (world_limits, runtime_limits) = host_limits();
-        open_world(
-            &dir,
-            name,
-            world_limits,
-            runtime_limits,
-            |handle: WorldHandle| WorldService::new(handle, None),
-        )
-        .await
-        .with_context(|| format!("replaying world {name:?}"))
+        open_in_root(&self.root, name).await
     }
 
     async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
@@ -1589,6 +2134,20 @@ mod tests {
         assert_eq!(loaded.worlds["a"].history.len(), 2);
         assert_eq!(loaded.worlds["a"].history[0].prior, LifecycleState::Asleep);
         assert_eq!(loaded.worlds["b"].state, LifecycleState::Archived);
+    }
+
+    #[test]
+    fn host_file_names_its_root_canonically() {
+        // nixos-world-host found this: the server opened `.id-worlds`
+        // relative to its state directory, recorded that relative
+        // path, and the operator CLI then refused the file when it
+        // loaded the same root by its absolute path.
+        let root = data_root_with(&["a"]);
+        let roundabout = root.path().join("a").join("..");
+        let file = HostFile::rebuild(&roundabout).unwrap();
+        assert_eq!(file.data_root, std::fs::canonicalize(root.path()).unwrap());
+        file.save(&roundabout).unwrap();
+        HostFile::load(root.path()).unwrap();
     }
 
     #[test]
@@ -2062,10 +2621,145 @@ mod tests {
         // writes the last good file back.
         std::fs::write(HostFile::path_for(root.path()), b"not json").unwrap();
         assert!(host.pinned("w"));
-        host.record_closed("w").unwrap();
+        host.set_wake("w", WakeMode::Operator).unwrap();
         let saved = HostFile::load(root.path()).unwrap();
         assert!(saved.worlds["w"].pinned);
-        assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
+        assert_eq!(saved.worlds["w"].wake, WakeMode::Operator);
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Live);
+    }
+
+    #[test]
+    fn automation_moves_worlds_only_as_its_allow_list_says() {
+        // Oracle (#13748, F1): every (actor, from, to, pin, wake mode)
+        // an automated actor could record is refused unless it is on
+        // AUTOMATED_TRANSITIONS with its condition met. Nothing automated
+        // ever archives or restores.
+        let automated = [WAKE_ON_CONNECT, IDLE_CLOSE, ADMIN_CREATE];
+        let mut allowed = Vec::new();
+        for actor in automated {
+            for from in LifecycleState::ALL {
+                for to in LifecycleState::ALL {
+                    for pinned in [false, true] {
+                        for wake in [WakeMode::Connect, WakeMode::Operator] {
+                            let mut file = HostFile::empty(Path::new("/nowhere"));
+                            file.worlds.insert(
+                                "w".to_owned(),
+                                WorldRecord {
+                                    state: from,
+                                    pinned,
+                                    wake,
+                                    ..WorldRecord::default()
+                                },
+                            );
+                            if file.transition("w", to, actor, 1).is_ok() {
+                                allowed.push((actor, from, to, pinned, wake));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            allowed,
+            [
+                (
+                    WAKE_ON_CONNECT,
+                    LifecycleState::Asleep,
+                    LifecycleState::Live,
+                    false,
+                    WakeMode::Connect
+                ),
+                (
+                    WAKE_ON_CONNECT,
+                    LifecycleState::Asleep,
+                    LifecycleState::Live,
+                    true,
+                    WakeMode::Connect
+                ),
+                (
+                    IDLE_CLOSE,
+                    LifecycleState::Live,
+                    LifecycleState::Asleep,
+                    false,
+                    WakeMode::Connect
+                ),
+                (
+                    IDLE_CLOSE,
+                    LifecycleState::Live,
+                    LifecycleState::Asleep,
+                    false,
+                    WakeMode::Operator
+                ),
+            ]
+        );
+        assert!(
+            AUTOMATED_TRANSITIONS
+                .iter()
+                .all(|t| t.to != LifecycleState::Archived && t.from != LifecycleState::Archived)
+        );
+        let refused = {
+            let mut file = HostFile::empty(Path::new("/nowhere"));
+            file.worlds.insert("w".to_owned(), WorldRecord::default());
+            file.transition("w", LifecycleState::Archived, IDLE_CLOSE, 1)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(refused.contains("an operator must"), "{refused}");
+    }
+
+    #[test]
+    fn operator_acts_may_not_borrow_an_automated_actor() {
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        for actor in [WAKE_ON_CONNECT, IDLE_CLOSE, ADMIN_CREATE] {
+            assert!(is_automated_actor(actor));
+            let refused = host
+                .operator_transition("w", LifecycleState::Asleep, LifecycleState::Archived, actor)
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("host itself"), "{refused}");
+        }
+        assert!(!is_automated_actor(actor()));
+        assert_eq!(host.state("w"), Some(LifecycleState::Asleep));
+        assert_eq!(
+            HostFile::load(root.path()).unwrap().worlds["w"].history,
+            Vec::<StateChange>::new()
+        );
+        host.operator_transition(
+            "w",
+            LifecycleState::Asleep,
+            LifecycleState::Archived,
+            actor(),
+        )
+        .unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Archived));
+    }
+
+    #[test]
+    fn idle_close_never_sleeps_a_pinned_world() {
+        // Oracle (#13748): auto-sleep honours operator pins. A pinned
+        // world the hub closes stays recorded live, so a restart reopens
+        // it; unpinned, the same close records it asleep.
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        host.set_pinned("w", true).unwrap();
+        assert_eq!(host.admit_wake("w").unwrap(), Admission::Woken);
+        host.record_closed("w").unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Live));
+        let saved = HostFile::load(root.path()).unwrap();
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Live);
+        assert_eq!(saved.worlds["w"].history.len(), 1);
+
+        host.set_pinned("w", false).unwrap();
+        host.record_closed("w").unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Asleep));
+        let saved = HostFile::load(root.path()).unwrap();
+        let actors: Vec<&str> = saved.worlds["w"]
+            .history
+            .iter()
+            .map(|c| c.actor.as_str())
+            .collect();
+        assert_eq!(actors, [WAKE_ON_CONNECT, IDLE_CLOSE]);
     }
 
     #[test]
@@ -2515,15 +3209,22 @@ mod tests {
                     program_error: None,
                     error: (entries % 2 == 1).then(|| "replay failed".to_owned()),
                 }),
+                snapshots: None,
             });
         let file = (
             proptest::collection::hash_map(name, record, 0..5),
             proptest::collection::vec(0u8..8, 0..4),
         )
-            .prop_map(|(worlds, _)| HostFile {
+            .prop_map(|(worlds, policy)| HostFile {
                 version: HOST_FILE_VERSION,
                 data_root: PathBuf::from("/tmp/host-proptest-root"),
                 worlds: worlds.into_iter().collect(),
+                snapshots: policy.first().map(|keep| SnapshotPolicy {
+                    every_secs: 3_600,
+                    keep: u32::from(*keep) + 1,
+                    max_age_secs: (keep % 2 == 0).then_some(86_400),
+                }),
+                snapshot_dir: None,
             });
 
         proptest::test_runner::TestRunner::default()
@@ -2534,5 +3235,360 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn hourly(keep: u32) -> SnapshotPolicy {
+        SnapshotPolicy {
+            every_secs: 3_600,
+            keep,
+            max_age_secs: None,
+        }
+    }
+
+    async fn snapshot_host(names: &[&str]) -> (TempDir, Supervisor) {
+        let root = data_root_with(names);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.set_signing_key(SigningKey::from_bytes(&[9; 32]));
+        (root, sup)
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshots_follow_cadence_and_retention() {
+        use crate::world::WorldScopes;
+
+        let (root, mut sup) = snapshot_host(&["alpha", "beta"]).await;
+        sup.start("alpha", actor()).await.unwrap();
+        // Off by default: nothing is taken.
+        assert!(sup.run_due_snapshots(1_000).await.is_empty());
+
+        sup.set_snapshot_policy(None, Some(hourly(2))).unwrap();
+        let first = sup.run_due_snapshots(1_000).await;
+        assert!(first.failed.is_empty(), "{:?}", first.failed);
+        // Only live worlds are snapshotted.
+        assert_eq!(first.taken.len(), 1);
+        assert_eq!(first.taken[0].world, "alpha");
+        let snapshot_root = sup.file().snapshot_root(root.path());
+        assert_eq!(snapshot_root, root.path().join(SNAPSHOT_DIR_NAME));
+        assert_eq!(list_sets(&snapshot_root, "alpha").unwrap().len(), 1);
+
+        // Not due again inside the cadence.
+        assert!(sup.run_due_snapshots(1_000 + 3_599).await.is_empty());
+
+        let world = sup.live["alpha"].service.world();
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        for (step, at) in [(1, 5_000), (2, 9_000), (3, 13_000)] {
+            world
+                .chat(ann.clone(), format!("change {step}"))
+                .await
+                .unwrap();
+            let run = sup.run_due_snapshots(at).await;
+            assert!(run.failed.is_empty(), "{:?}", run.failed);
+            assert_eq!(run.taken.len(), 1);
+        }
+        let sets = list_sets(&snapshot_root, "alpha").unwrap();
+        // Retention keeps the newest two whole sets.
+        assert_eq!(
+            sets.iter().map(|set| set.at_secs).collect::<Vec<_>>(),
+            vec![9_000, 13_000]
+        );
+        assert!(sets[0].entries < sets[1].entries);
+
+        // An unchanged journal: the fresh set replaces the newest one.
+        let run = sup.run_due_snapshots(17_000).await;
+        assert_eq!(run.taken.len(), 1);
+        assert_eq!(run.removed.len(), 1);
+        assert_eq!(run.removed[0].at_secs, 13_000);
+        let sets = list_sets(&snapshot_root, "alpha").unwrap();
+        assert_eq!(
+            sets.iter().map(|set| set.at_secs).collect::<Vec<_>>(),
+            vec![9_000, 17_000]
+        );
+
+        // Every set restores: the newest one into a scratch root.
+        let source = *SigningKey::from_bytes(&[9; 32]).verifying_key().as_bytes();
+        let scratch = TempDir::new().unwrap();
+        let manifest = import_world_from_file(&sets[1].path, &scratch.path().join("alpha"), source)
+            .await
+            .unwrap();
+        assert_eq!(manifest.entries, sets[1].entries);
+
+        // The census counts the sets against the live state.
+        let census = sup.census();
+        let alpha = census
+            .worlds
+            .iter()
+            .find(|row| row.name == "alpha")
+            .unwrap();
+        assert_eq!(alpha.snapshot_sets, 2);
+        let bytes: u64 = sets.iter().map(|set| set.bytes).sum();
+        assert_eq!(alpha.snapshot_bytes, bytes);
+        assert_eq!(census.live.snapshot_bytes, bytes);
+        assert_eq!(census.asleep.snapshot_bytes, 0);
+
+        // The journal itself is never touched by pruning.
+        let journal = std::fs::read(root.path().join("alpha").join(JOURNAL_FILE)).unwrap();
+        assert!(!journal.is_empty());
+        sup.stop_all(actor()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshots_keep_distinct_journals_with_equal_entry_counts() {
+        use crate::world::WorldScopes;
+
+        // Oracle (#16134): distinct restorable world states must remain
+        // distinct retained restore points, even when their journals
+        // have the same entry count — the shape checkpoint compaction
+        // produces. Two worlds built from the same script but different
+        // participants have equal entry counts and different journals.
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let mut journals = Vec::new();
+        for (index, participant) in ["ann", "bob"].into_iter().enumerate() {
+            let dir = root.path().join(format!("world-{index}"));
+            let (service, _) = open_world(
+                &dir,
+                "alpha",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                |world| WorldService::new(world, None),
+            )
+            .await
+            .unwrap();
+            let (_, token) = service
+                .world()
+                .issue(participant, WorldScopes::GUEST)
+                .await
+                .unwrap();
+            service.world().chat(token.clone(), "hello").await.unwrap();
+            service.world().chat(token, "again").await.unwrap();
+            let mut run = SnapshotRun::default();
+            snapshot_live_world(
+                &service,
+                &key,
+                "alpha",
+                &policy,
+                &snapshot_root,
+                1_000 + index as u64 * 1_000,
+                &mut run,
+            )
+            .await
+            .unwrap();
+            assert_eq!(run.taken.len(), 1);
+            assert!(run.removed.is_empty(), "{run:?}");
+            service.world().shutdown().await.unwrap();
+            journals.push(std::fs::read(dir.join(JOURNAL_FILE)).unwrap());
+        }
+        assert_ne!(journals[0], journals[1]);
+        let sets = list_sets(&snapshot_root, "alpha").unwrap();
+        assert_eq!(sets.len(), 2, "{sets:?}");
+        assert_eq!(sets[0].entries, sets[1].entries);
+        // Each set restores its own journal, byte for byte.
+        for (set, journal) in sets.iter().zip(&journals) {
+            let scratch = TempDir::new().unwrap();
+            let dest = scratch.path().join("alpha");
+            import_world_from_file(&set.path, &dest, source)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(dest.join(JOURNAL_FILE)).unwrap(), *journal);
+        }
+    }
+
+    // #16320 oracle: the take is recorded only after the snapshot
+    // directory sync runs — the injected sync observes the renamed set
+    // already in place, and is called exactly once with the set path.
+    #[tokio::test]
+    async fn a_snapshot_syncs_the_snapshot_directory_after_the_rename() {
+        use crate::world::WorldScopes;
+
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let dir = root.path().join("world-0");
+        let (service, _) = open_world(
+            &dir,
+            "alpha",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, None),
+        )
+        .await
+        .unwrap();
+        let (_, token) = service
+            .world()
+            .issue("ann", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(token, "hello").await.unwrap();
+        let synced = std::sync::Mutex::new(Vec::new());
+        let recording_sync = |path: &Path| -> Result<()> {
+            assert!(
+                path.exists(),
+                "directory sync ran before the rename landed"
+            );
+            synced.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        };
+        let mut run = SnapshotRun::default();
+        snapshot_live_world_with_dir_sync(
+            &service,
+            &key,
+            "alpha",
+            &policy,
+            &snapshot_root,
+            1_000,
+            &mut run,
+            &recording_sync,
+        )
+        .await
+        .unwrap();
+        service.world().shutdown().await.unwrap();
+        assert_eq!(run.taken.len(), 1);
+        assert_eq!(*synced.lock().unwrap(), vec![run.taken[0].path.clone()]);
+    }
+
+    // #16320 oracle: a snapshot-directory sync failure is propagated,
+    // not an acknowledged take — nothing is recorded in the run.
+    #[tokio::test]
+    async fn a_snapshot_propagates_a_snapshot_directory_sync_failure() {
+        use crate::world::WorldScopes;
+
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let dir = root.path().join("world-0");
+        let (service, _) = open_world(
+            &dir,
+            "alpha",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, None),
+        )
+        .await
+        .unwrap();
+        let (_, token) = service
+            .world()
+            .issue("ann", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(token, "hello").await.unwrap();
+        let failing_sync = |_: &Path| -> Result<()> {
+            bail!("injected directory sync failure")
+        };
+        let mut run = SnapshotRun::default();
+        let error = snapshot_live_world_with_dir_sync(
+            &service,
+            &key,
+            "alpha",
+            &policy,
+            &snapshot_root,
+            1_000,
+            &mut run,
+            &failing_sync,
+        )
+        .await
+        .unwrap_err();
+        service.world().shutdown().await.unwrap();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "{error:#}"
+        );
+        assert!(run.taken.is_empty(), "{run:?}");
+        assert!(run.removed.is_empty(), "{run:?}");
+    }
+
+    #[tokio::test]
+    async fn a_world_policy_overrides_the_host_default() {
+        let (root, mut sup) = snapshot_host(&["alpha", "beta"]).await;
+        sup.start("alpha", actor()).await.unwrap();
+        sup.start("beta", actor()).await.unwrap();
+        sup.set_snapshot_policy(None, Some(hourly(3))).unwrap();
+        sup.set_snapshot_policy(Some("beta"), Some(SnapshotPolicy::OFF))
+            .unwrap();
+        let run = sup.run_due_snapshots(100).await;
+        assert_eq!(
+            run.taken
+                .iter()
+                .map(|set| set.world.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+        // The override survives a reload of the host file.
+        let file = HostFile::load(root.path()).unwrap();
+        assert_eq!(file.snapshot_policy("beta"), SnapshotPolicy::OFF);
+        assert_eq!(file.snapshot_policy("alpha"), hourly(3));
+        // Clearing the override makes beta follow the default again.
+        sup.set_snapshot_policy(Some("beta"), None).unwrap();
+        let run = sup.run_due_snapshots(200).await;
+        assert_eq!(
+            run.taken
+                .iter()
+                .map(|set| set.world.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"]
+        );
+        // Bad policies and unknown worlds are refused and change nothing.
+        assert!(sup.set_snapshot_policy(None, Some(hourly(0))).is_err());
+        assert!(
+            sup.set_snapshot_policy(Some("gamma"), Some(hourly(1)))
+                .is_err()
+        );
+        assert_eq!(
+            HostFile::load(root.path()).unwrap().snapshots,
+            Some(hourly(3))
+        );
+        sup.stop_all(actor()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn snapshots_go_to_the_named_directory_and_need_a_host_key() {
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.set_snapshot_policy(None, Some(hourly(1))).unwrap();
+        // No signing key: nothing is taken, nothing fails.
+        assert!(sup.run_due_snapshots(100).await.is_empty());
+
+        sup.stop_all(actor()).await.unwrap();
+        sup.shutdown().await.unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let mut file = HostFile::load(root.path()).unwrap();
+        assert!(
+            file.set_snapshot_dir(Some(PathBuf::from("relative")))
+                .is_err()
+        );
+        file.set_snapshot_dir(Some(elsewhere.path().to_path_buf()))
+            .unwrap();
+        file.save(root.path()).unwrap();
+
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.set_signing_key(SigningKey::from_bytes(&[9; 32]));
+        sup.start("alpha", actor()).await.unwrap();
+        let run = sup.run_due_snapshots(100).await;
+        assert_eq!(run.taken.len(), 1);
+        assert!(run.taken[0].path.starts_with(elsewhere.path()));
+        assert!(!root.path().join(SNAPSHOT_DIR_NAME).exists());
+        sup.stop_all(actor()).await.unwrap();
+    }
+
+    #[test]
+    fn the_snapshot_directory_name_is_not_a_world_name() {
+        assert!(validate_name(SNAPSHOT_DIR_NAME).is_err());
     }
 }

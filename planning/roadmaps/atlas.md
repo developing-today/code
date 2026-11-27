@@ -17,13 +17,11 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 ## Next
 
-| Title                                      | Status  | Intent                                                                                                                       | Links                          |
-| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| Memory slice 3: the query surface over MCP | planned | Agents query the one index through the mcpx namespace.                                                                       | #8625                          |
-| The projector for id                       | planned | Versions, files and relations, then attestations and ingest runs, its operations, and view presets for publishing the graph. | #11182, #11183, #11184 |
-| Provenance registry                        | planned | Where each chunk occurs, extracts addressed by their content, and vectors resolved across databases.                         | #3125                          |
-| Muse import                                | shipped | What counts as evidence of an import, how it is replayed, and when the old store is retired.                                 | #13607                         |
-| The Atlas book                             | planned | Replay, scope and release protocols written up by workstream, with the module inventory checked as the book is built.        | #13592                         |
+| Title                                      | Status  | Intent                                                                                                                       | Links                  |
+| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| Memory slice 3: the query surface over MCP | planned | Agents query the one index through the mcpx namespace.                                                                       | #8625                  |
+| Provenance registry                        | planned | Where each chunk occurs, extracts addressed by their content, and vectors resolved across databases.                         | #3125                  |
+| The Atlas book                             | planned | Replay, scope and release protocols written up by workstream, with the module inventory checked as the book is built.        | #13592                 |
 
 ## Later
 
@@ -31,5 +29,4 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 | ------------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | The ingestion programme              | shaped  | Updates half-automated: what is ingested, how content is versioned, one model of provenance, deltas only, and feedback from what was retrieved. | #6018 |
 | First-pass ingestion of every corpus | planned | Every code repository and every document that can be found.                                                                                     | #6025 |
-| Cold tier: the restore importer      | planned | What was moved to cold storage can be brought back.                                                                                             | #8228 |
 | Boundary remediation                 | planned | Rows that carry secrets leave the production store.                                                                                             | #8479 |

@@ -128,7 +128,7 @@ jobs:
       - name: Install pinned cf CLI
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: muse-handoff-stage-${{ github.run_id }}
           path: ${{ runner.temp }}/muse-handoff-stage-proof/

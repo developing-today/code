@@ -141,6 +141,64 @@ pub struct GithubActionsAdapter {
     pub(super) force_runner: &'static str,
 }
 
+/// Laptop-tier credential secret names (developing-today/code#15651):
+/// values resolved under these names must never travel as
+/// workflow-dispatch inputs — dispatch inputs are visible in run
+/// metadata and logs, while the runner is provisioned by name
+/// inside the job instead.
+pub(super) const DISPATCH_SECRET_NAMES: &[&str] = &[
+    "desktop-commander.machine-bearer",
+    "fleet.laptop-agent-token",
+];
+
+/// Values shorter than this are never treated as embedded secrets:
+/// short strings (a port, a single word) match innocent commands by
+/// accident, and a real bearer or token is always far longer.
+const MIN_SECRET_VALUE_LEN: usize = 16;
+
+/// The #15651 leak invariant as a pure function: the first secret
+/// NAME whose value occurs in `command`, or None. Callers report
+/// the name only — never the value, never the command carrying it.
+pub(super) fn embedded_secret_name<'a>(
+    command: &str,
+    secrets: &[(&'a str, &str)],
+) -> Option<&'a str> {
+    secrets
+        .iter()
+        .filter(|(_, value)| value.len() >= MIN_SECRET_VALUE_LEN)
+        .find(|(_, value)| command.contains(value))
+        .map(|(name, _)| *name)
+}
+
+/// Refuse a dispatch whose command embeds a locally-resolvable
+/// laptop-tier credential value (developing-today/code#15651).
+/// Resolution failures are skipped, not fatal: when the broker
+/// cannot answer there is nothing to compare against, and failing
+/// open keeps the fleet dispatchable during a secrets-infra
+/// outage; a positive match always fails closed before the POST
+/// leaves the seat.
+pub(super) fn reject_secrets_in_command(
+    command: &str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> R<()> {
+    let resolved: Vec<(&str, String)> = DISPATCH_SECRET_NAMES
+        .iter()
+        .filter_map(|name| resolve(name).map(|value| (*name, value)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = resolved
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    if let Some(name) = embedded_secret_name(command, &borrowed) {
+        return die(format!(
+            "refusing dispatch: --command embeds the value of secret '{name}'; \
+             pass laptop-tier credentials by name inside the job, never as dispatch \
+             arguments (developing-today/code#15651)"
+        ));
+    }
+    Ok(())
+}
+
 impl GithubActionsAdapter {
     /// The fleet-run workflow inputs for a job. Cache options travel
     /// in a `jobs` entry (the workflows that accept bare repo/command
@@ -291,6 +349,15 @@ impl GithubActionsAdapter {
     }
 
     fn dispatch_workflow(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
+        // #15651 leak boundary: the command below becomes GitHub
+        // run metadata the moment it is POSTed, so a command
+        // carrying a locally-resolvable credential value dies here
+        // by secret name, before any network call.
+        let config = fleet_config::Config::load().unwrap_or_default();
+        let resolver = fleet_secrets::Resolver::default_chain(&config);
+        reject_secrets_in_command(&job.command, &|name| {
+            resolver.resolve(name).ok().map(|v| v.expose().to_string())
+        })?;
         let s = &self.surface;
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();

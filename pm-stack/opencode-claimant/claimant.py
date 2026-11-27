@@ -809,6 +809,14 @@ def supervision_step(mode: str) -> List[Dict]:
                     lease_ms = poll.parse_lease_ms(task.get("lease_until"))
                     if lease_ms is None or lease_ms > now_ms:
                         continue
+                    # A stored error outcome is not proof the session
+                    # is terminal (#16066): a resumed session can carry
+                    # an error-valued stored outcome while active. The
+                    # authoritative server active set decides - an
+                    # active session is preserved, and an unreadable
+                    # active set fails closed (the task stays bound).
+                    if active_ids is None or session_id in active_ids:
+                        continue
                     if exhausted:
                         if _delete_session(session_id) and _fail_attempts_exhausted(
                             task, session_id

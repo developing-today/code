@@ -203,6 +203,9 @@ pub struct Account {
     pub account_id: String,
     #[serde(default)]
     pub display_name: String,
+    /// Verified email used only as a proposal signal for pending identity claims.
+    #[serde(default)]
+    pub email: Option<String>,
     /// The account's #1253 role set (owner / orchestrator / agent /
     /// read-only). Roles live on the account, not the door.
     pub roles: Vec<String>,

@@ -72,6 +72,7 @@ fn manifest_from_record(record: &Value) -> LibraryManifest {
             .collect(),
         subtypes: Vec::new(),
         attachments: Vec::new(),
+        migrations: Vec::new(),
         source_url: None,
     }
 }

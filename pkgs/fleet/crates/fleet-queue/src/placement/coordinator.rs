@@ -260,6 +260,78 @@ pub fn coord_overrides(load: &Value) -> String {
         .join(",")
 }
 
+/// One owner's true view as a single operator line for the
+/// `placement-load` front door (#15900): the GitHub counts the
+/// coordinator sweep last read, the active coordinator claims, the
+/// resulting occupancy against the owner's cap, and the read's age
+/// evidence (`load_read_at` / `load_source` — the sweep freshness
+/// fields; a null read time means no sweep has read GitHub yet).
+pub fn format_owner_load(owner: &Value) -> String {
+    let field = |name: &str| -> String {
+        match owner.get(name) {
+            Some(Value::Null) | None => "-".to_string(),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => v.to_string(),
+        }
+    };
+    format!(
+        "owner={} cap={} gh_running={} gh_queued={} claims_active={} occupancy={} load_read_at={} load_source={}",
+        field("owner"),
+        field("cap"),
+        field("gh_running"),
+        field("gh_queued"),
+        field("claims_active"),
+        field("occupancy"),
+        field("load_read_at"),
+        field("load_source"),
+    )
+}
+
+/// The `fleet queue placement-load` report (#15900): the read-only
+/// front door over the coordinator's `/placement-load` view, so an
+/// operator (or a verification pass) can inspect observed GitHub
+/// load, active claims, and sweep freshness without dispatching.
+/// Pure over the coordinator answer so the read path and its
+/// broker-unavailable behavior are testable with a fake remote:
+/// returns (exit code, stdout, stderr). Success prints the owners
+/// (pretty JSON with `as_json`, operator lines otherwise); a
+/// coordinator failure is exit 3 naming the unavailability — never
+/// a fabricated empty load view.
+pub fn placement_load_report(
+    answer: Result<Value, String>,
+    as_json: bool,
+) -> (i32, String, String) {
+    match answer {
+        Err(e) => (
+            3,
+            String::new(),
+            format!("repo-queue placement-load: coordinator unavailable: {e}\n"),
+        ),
+        Ok(load) => {
+            if as_json {
+                let text =
+                    serde_json::to_string_pretty(&load).unwrap_or_else(|_| "null".to_string());
+                return (0, format!("{text}\n"), String::new());
+            }
+            let mut out = String::from("placement load (broker coordinator /placement-load):\n");
+            let owners = load
+                .get("owners")
+                .and_then(|o| o.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if owners.is_empty() {
+                out.push_str("(no owners in the coordinator view)\n");
+            } else {
+                for owner in &owners {
+                    out.push_str(&format_owner_load(owner));
+                    out.push('\n');
+                }
+            }
+            (0, out, String::new())
+        }
+    }
+}
+
 /// The queued-session record: the shape the all-tiers-exhausted path
 /// already writes (full job, surface, reasoning, coverage), plus the
 /// claim id and the coordinator path. Committed without any GitHub
@@ -307,6 +379,7 @@ mod tests {
         claim_answer: RefCell<Result<Value, String>>,
         confirms: RefCell<Vec<(String, Option<i64>)>>,
         releases: RefCell<Vec<(String, Option<f64>)>>,
+        load_answer: RefCell<Result<Value, String>>,
     }
 
     impl FakeCoordinator {
@@ -315,6 +388,7 @@ mod tests {
                 claim_answer: RefCell::new(Ok(json!({"status": "claimed", "handle": "fp_x"}))),
                 confirms: RefCell::new(Vec::new()),
                 releases: RefCell::new(Vec::new()),
+                load_answer: RefCell::new(Err("unused".to_string())),
             }
         }
         fn queued() -> Self {
@@ -324,6 +398,7 @@ mod tests {
                 }))),
                 confirms: RefCell::new(Vec::new()),
                 releases: RefCell::new(Vec::new()),
+                load_answer: RefCell::new(Err("unused".to_string())),
             }
         }
         fn refused() -> Self {
@@ -333,6 +408,7 @@ mod tests {
                 }))),
                 confirms: RefCell::new(Vec::new()),
                 releases: RefCell::new(Vec::new()),
+                load_answer: RefCell::new(Err("unused".to_string())),
             }
         }
         fn down() -> Self {
@@ -340,6 +416,7 @@ mod tests {
                 claim_answer: RefCell::new(Err("connection refused".to_string())),
                 confirms: RefCell::new(Vec::new()),
                 releases: RefCell::new(Vec::new()),
+                load_answer: RefCell::new(Err("unused".to_string())),
             }
         }
     }
@@ -364,7 +441,7 @@ mod tests {
             Err("unused".to_string())
         }
         fn load(&self) -> Result<Value, String> {
-            Err("unused".to_string())
+            self.load_answer.borrow().clone()
         }
     }
 
@@ -468,6 +545,51 @@ mod tests {
             .filter_map(|s| s.get("id").and_then(|i| i.as_str()))
             .collect();
         assert_eq!(ids, vec!["fleet-org"]);
+    }
+
+    /// #15900: the placement-load front door renders the true view
+    /// — GitHub counts, active claims, occupancy, and the sweep
+    /// freshness fields — and its JSON form is the broker's answer
+    /// verbatim. Oracle: the canned `/placement-load` answer.
+    #[test]
+    fn placement_load_report_renders_the_true_view() {
+        let remote = FakeCoordinator::granted();
+        *remote.load_answer.borrow_mut() = Ok(json!({"owners": [
+            {"owner": "dezren39", "cap": 40, "gh_running": 3, "gh_queued": 1,
+             "claims_active": 2, "occupancy": 6,
+             "load_read_at": "2026-11-27T03:40:00Z", "load_source": "BrokerCoordGh"},
+            {"owner": "developing-today", "cap": 20, "gh_running": 0, "gh_queued": 0,
+             "claims_active": 0, "occupancy": 0,
+             "load_read_at": null, "load_source": null},
+        ]}));
+        let (code, out, err) = placement_load_report(remote.load(), false);
+        assert_eq!(code, 0);
+        assert!(err.is_empty());
+        assert!(out.contains(
+            "owner=dezren39 cap=40 gh_running=3 gh_queued=1 claims_active=2 \
+             occupancy=6 load_read_at=2026-11-27T03:40:00Z load_source=BrokerCoordGh"
+        ));
+        // A never-swept owner shows the freshness fields as absent,
+        // not as a fabricated read.
+        assert!(out.contains("owner=developing-today"));
+        assert!(out.contains("load_read_at=- load_source=-"));
+        let (code, out, _) = placement_load_report(remote.load(), true);
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["owners"][0]["occupancy"], 6);
+    }
+
+    /// #15900: a coordinator failure is an unavailable report
+    /// (exit 3, the error named on stderr), never an empty load
+    /// view on stdout. Oracle: the fake remote's transport error.
+    #[test]
+    fn placement_load_report_names_coordinator_unavailable() {
+        let remote = FakeCoordinator::down();
+        *remote.load_answer.borrow_mut() = Err("connection refused".to_string());
+        let (code, out, err) = placement_load_report(remote.load(), false);
+        assert_eq!(code, 3);
+        assert!(out.is_empty(), "no fabricated load view: {out:?}");
+        assert!(err.contains("coordinator unavailable: connection refused"));
     }
 
     #[test]

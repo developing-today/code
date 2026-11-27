@@ -1755,7 +1755,9 @@ test("each list that could not be read is said on the screens that show it, with
 // the rendered page source.
 test("the Now and Needs screens name their own source and cross-link the aggregator (#14063)", () => {
   expect(NOW_COUNTS_SOURCE).toContain("queue-broker");
-  expect(NOW_COUNTS_SOURCE).toContain("Same words as the aggregator's board-derived work-item counts, different source");
+  expect(NOW_COUNTS_SOURCE).toContain(
+    "Same words as the aggregator's board-derived work-item counts, different source",
+  );
   expect(NEEDS_SET_SOURCE).toContain("console's need-you set");
   expect(NEEDS_SET_SOURCE).toContain("Different from the aggregator's NEEDS USER intake queue");
   const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");

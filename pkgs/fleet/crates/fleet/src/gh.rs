@@ -92,7 +92,8 @@
 //! (piped), not streamed, because the failure text is what
 //! classifies a failover.
 //!
-//! Controls (environment):
+//! Controls (environment; each beats the same-named persistent
+//! setting in the fleet config file's `[gh]` table, code#10311):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
 //!   FLEET_GH_SHIM_ACTIVE set to 1 on every child `gh` fleet
 //!                       spawns: the gh-fleet shim's recursion
@@ -101,12 +102,14 @@
 //!                       re-entering a second fleet (#14650)
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
+//!                       (`[gh.owners] app` persists it)
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
-//!                       `personal`, `app:<owner>` (fleet App),
-//!                       `devtoday:<owner>`, `backup:<owner>`, or a
-//!                       configured `<slug>:<owner>` entry
+//!                       `personal`, built-in `app:`, `devtoday:`,
+//!                       `backup:` and configured `<slug>:` entries
+//!                       (`[gh] order` persists it)
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
+//!                       (`[gh.owners] devtoday` / `backup` persist them)
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
 //!   FLEET_GH_RAW=1      raw mode (same as a leading `--raw`):
 //!                       exec the real gh with ambient credentials,
@@ -772,8 +775,9 @@ fn owner_hint(args: &[String]) -> Option<String> {
     None
 }
 
-/// Per-App owner overrides, from the FLEET_GH_*_OWNERS environment
-/// variables; None for an App means its compiled-in defaults.
+/// Per-App owner overrides: env beats the fleet config file
+/// beats the compiled-in defaults. None for an App means its
+/// compiled-in defaults; Some(empty) disables that App's legs.
 #[derive(Default)]
 struct Owners {
     fleet: Option<Vec<String>>,
@@ -782,19 +786,14 @@ struct Owners {
 }
 
 impl Owners {
-    fn from_env() -> Owners {
-        let parse = |name: &str| {
-            std::env::var(name).ok().map(|list| {
-                list.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-        };
+    /// Resolve against the fleet config (code#10311 ask (a)): each
+    /// App's env variable wins when set, else the file's
+    /// `[gh.owners]` entry, else the compiled-in default (None).
+    fn from_config(config: &Config) -> Owners {
         Owners {
-            fleet: parse("FLEET_GH_APP_OWNERS"),
-            devtoday: parse("FLEET_GH_DEVTODAY_OWNERS"),
-            backup: parse("FLEET_GH_BACKUP_OWNERS"),
+            fleet: config.gh_owners_for("app"),
+            devtoday: config.gh_owners_for("devtoday"),
+            backup: config.gh_owners_for("backup"),
         }
     }
 
@@ -821,14 +820,17 @@ impl Owners {
 
 /// The rotation for one invocation: each App's owners with the
 /// hinted owner (if any) leading each App leg, then the personal
-/// token LAST. `FLEET_GH_ORDER` replaces the whole order when set.
+/// token LAST. The persistent `[gh] order` / `[gh.owners]`
+/// settings (code#10311 ask (a)) select the rotation; the
+/// `FLEET_GH_ORDER` / `FLEET_GH_*_OWNERS` env variables stay
+/// per-process overrides and win when set.
 /// Oracle: code#8887's rotation definition as extended by Drew
 /// 2026-11-12 (personal + all three fleet Apps' installations),
 /// hint-first per the installation-scope fact; personal moved last
 /// by Drew 2026-11-23 (code#13310).
 fn rotation(args: &[String], config: &Config) -> Vec<TokenSource> {
-    let order_env = std::env::var("FLEET_GH_ORDER").ok();
-    rotation_with_config(args, order_env.as_deref(), &Owners::from_env(), config)
+    let order = config.gh_rotation_order();
+    rotation_with_config(args, order.as_deref(), &Owners::from_config(config), config)
 }
 
 /// `rotation` with its environment inputs made explicit, so the
@@ -895,6 +897,48 @@ fn rotation_with_config(
     out
 }
 
+/// Add a hinted installation that exists live but is not present in
+/// that App's configured owner set. The configured rotation remains
+/// the fallback if an App's installation list could not be read.
+fn add_dynamic_hint_sources(
+    mut sources: Vec<TokenSource>,
+    args: &[String],
+    installations: &[(GhApp, Vec<String>)],
+) -> Vec<TokenSource> {
+    let Some(hint) = owner_hint(args) else {
+        return sources;
+    };
+    for (app, owners) in installations {
+        if sources.iter().any(|source| {
+            matches!(source, TokenSource::AppInstallation { app: source_app, owner }
+                if source_app == app && owner.eq_ignore_ascii_case(&hint))
+        }) {
+            continue;
+        }
+        let Some(owner) = owners
+            .iter()
+            .find(|owner| owner.eq_ignore_ascii_case(&hint))
+        else {
+            continue;
+        };
+        let source = TokenSource::app(app.clone(), owner);
+        let insert_at = sources
+            .iter()
+            .position(|existing| {
+                matches!(existing, TokenSource::AppInstallation { app: source_app, .. }
+                    if source_app == app)
+            })
+            .or_else(|| {
+                sources
+                    .iter()
+                    .position(|s| matches!(s, TokenSource::Personal))
+            })
+            .unwrap_or(sources.len());
+        sources.insert(insert_at, source);
+    }
+    sources
+}
+
 /// May this failed attempt be repeated under the next token?
 /// The #8887 retry-safety rule: pre-execution refusals (rate limit,
 /// permission) may repeat anything; other failures may repeat only
@@ -921,6 +965,13 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
 /// with fake identities and a fake `gh` (the oracle tests below).
 trait TokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String>;
+
+    /// Owners with a live installation for this App. The runner uses
+    /// this only when an explicit owner hint is absent from the
+    /// configured owner list; failures leave the existing rotation intact.
+    fn installation_owners(&mut self, _app: &GhApp) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// Raw credential operations, with no caching: the
@@ -1176,6 +1227,11 @@ impl FleetTokenProvider {
 }
 
 impl TokenProvider for FleetTokenProvider {
+    fn installation_owners(&mut self, app: &GhApp) -> Result<Vec<String>, String> {
+        FleetTokenProvider::installations(self, app)
+            .map(|pairs| pairs.into_iter().map(|(owner, _)| owner).collect())
+    }
+
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
@@ -2015,9 +2071,35 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&call_args, config);
-    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
+    let mut sources = rotation(&call_args, config);
+    // An explicit rotation is authoritative. Otherwise, when a call
+    // names an owner outside an App's configured set, consult that
+    // App's cached live installations and add its leg if present.
+    if config.gh_rotation_order().is_none() {
+        if let Some(hint) = owner_hint(&call_args) {
+            let owners_env = Owners::from_config(config);
+            let mut discovered = Vec::new();
+            for app in all_apps(config) {
+                if owners_env
+                    .for_app(&app, config)
+                    .iter()
+                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
+                {
+                    continue;
+                }
+                match provider.installation_owners(&app) {
+                    Ok(owners) => discovered.push((app, owners)),
+                    Err(error) => eprintln!(
+                        "fleet gh: could not check {} installations for owner hint: {error}",
+                        app.slug()
+                    ),
+                }
+            }
+            sources = add_dynamic_hint_sources(sources, &call_args, &discovered);
+        }
+    }
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let (code, final_stdout) = run_with_provider_capturing(
         &mut provider,
         &gh_bin,
@@ -2821,6 +2903,98 @@ mod tests {
         );
     }
 
+    // oracle: code#10311 ask (a) — the persistent `[gh] order` /
+    // `[gh.owners]` settings drive the rotation, and the
+    // `FLEET_GH_*` env variables stay per-process overrides.
+    // This is the only gh test that touches those env variables;
+    // no other test in this binary reads them, so the
+    // set/restore here cannot race a concurrent reader.
+    #[test]
+    fn rotation_reads_persistent_config_with_env_override() {
+        // SAFETY: this is the only test in the binary that reads
+        // these variables (all other rotation tests drive
+        // `rotation_with` with explicit inputs), so no concurrent
+        // reader can observe the transient values.
+        unsafe fn scrub(k: &str) {
+            unsafe { std::env::remove_var(k) };
+        }
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
+        let mut config = Config::default();
+        config.gh.order = Some(vec!["app:dezren39".to_string(), "personal".to_string()]);
+        config
+            .gh
+            .owners
+            .insert("backup".to_string(), vec!["layercloud".to_string()]);
+        let order = rotation(&[], &config);
+        assert_eq!(
+            order,
+            vec![
+                TokenSource::app(GhApp::Fleet, "dezren39"),
+                TokenSource::Personal,
+            ]
+        );
+        unsafe { std::env::set_var("FLEET_GH_ORDER", "personal") };
+        assert_eq!(rotation(&[], &config), vec![TokenSource::Personal]);
+        unsafe { std::env::remove_var("FLEET_GH_ORDER") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["layercloud".to_string()]));
+        assert_eq!(owners.fleet, None);
+        unsafe { std::env::set_var("FLEET_GH_BACKUP_OWNERS", "dezren39") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["dezren39".to_string()]));
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
+    }
+
+    #[test]
+    fn dynamic_owner_hint_adds_only_apps_with_a_live_installation() {
+        // Oracle: a hinted owner gets an App leg exactly when the
+        // provider's live-installation list contains that owner; the
+        // personal token remains the final fallback.
+        let args: Vec<String> = ["api", "repos/layercloud/private-repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let base = rotation_with_config(&args, None, &Owners::default(), &Config::default());
+        let with_live = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[
+                (GhApp::Fleet, vec!["LayerCloud".to_string()]),
+                (GhApp::DevToday, vec!["another-org".to_string()]),
+                (GhApp::Backup, vec!["layercloud".to_string()]),
+            ],
+        );
+        assert_eq!(with_live[0], TokenSource::app(GhApp::Fleet, "LayerCloud"));
+        assert!(with_live.contains(&TokenSource::app(GhApp::Backup, "layercloud")));
+        assert!(!with_live.contains(&TokenSource::app(GhApp::DevToday, "layercloud")));
+        assert_eq!(with_live.last(), Some(&TokenSource::Personal));
+
+        let no_match = add_dynamic_hint_sources(
+            base.clone(),
+            &args,
+            &[(GhApp::Fleet, vec!["other-org".to_string()])],
+        );
+        assert_eq!(no_match, base);
+        assert_eq!(
+            add_dynamic_hint_sources(base.clone(), &["api".to_string()], &[]),
+            base
+        );
+    }
+
     fn configured_apps_fixture() -> Config {
         let mut config = Config::default();
         config.gh.apps = vec![
@@ -3117,7 +3291,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "fleet-gh-ledger-e2e-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let ledger = dir.join("ledger.sqlite");
@@ -3127,11 +3304,14 @@ mod tests {
              python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
              touch \"{}\"\n\
              exit 0\n",
-            ledger.display(), probe.display()
+            ledger.display(),
+            probe.display()
         );
         let script_path = place_script(&dir, "ledger-gh", &script);
         let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let pending = gh_content_ledger::start_at(&args, &ledger)
             .expect("reserve succeeds")
             .unwrap();
@@ -3146,7 +3326,10 @@ mod tests {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
-        assert_eq!(outcome, "failed", "empty successful output is not a created item");
+        assert_eq!(
+            outcome, "failed",
+            "empty successful output is not a created item"
+        );
         assert_eq!(detail, "gh exited 0 with empty output");
     }
 
@@ -3558,7 +3741,10 @@ mod tests {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
         let msg = spawn_failure_message("gh", &e);
         assert!(msg.contains("install gh"), "no install remedy: {msg}");
-        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
+        assert!(
+            msg.contains("FLEET_GH_BIN"),
+            "no FLEET_GH_BIN remedy: {msg}"
+        );
         assert!(msg.contains("'gh'"), "binary name lost: {msg}");
     }
 

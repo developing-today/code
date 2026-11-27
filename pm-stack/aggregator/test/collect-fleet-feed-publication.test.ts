@@ -7,6 +7,7 @@ import { FreshnessStore } from "../src/freshness.ts";
 import {
   publishFleetFeed,
   publishFleetFeedWithInvalidation,
+  resolveCheckoutRoot,
   type FleetFeedPublicationFileOps,
 } from "../scripts/collect-fleet-feed.ts";
 
@@ -131,5 +132,18 @@ describe("publishFleetFeed", () => {
 
     expect(await readFile(outputPath, "utf8")).toBe("previous bytes");
     expect(await readdir(directory)).toEqual(["fleet-feed.json"]);
+  });
+});
+
+describe("resolveCheckoutRoot (#15827 slice 1)", () => {
+  test("unset or blank preserves the script-location default", () => {
+    const fallback = resolveCheckoutRoot(undefined);
+    expect(resolveCheckoutRoot("")).toBe(fallback);
+    expect(resolveCheckoutRoot("   ")).toBe(fallback);
+  });
+
+  test("an explicit root is honored verbatim when absolute", () => {
+    expect(resolveCheckoutRoot("/store/checkout-abc")).toBe("/store/checkout-abc");
+    expect(resolveCheckoutRoot("  /store/checkout-abc  ")).toBe("/store/checkout-abc");
   });
 });

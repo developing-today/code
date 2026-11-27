@@ -3,9 +3,17 @@ name: fleet-queue-backup tests
 on:
   push:
     branches: [main]
-    paths: [infra/fleet-queue-backup/**, .github/workflows/fleet-queue-backup-tests.yml]
+    paths:
+      [
+        infra/fleet-queue-backup/**,
+        .github/workflows/fleet-queue-backup-tests.yml,
+      ]
   pull_request:
-    paths: [infra/fleet-queue-backup/**, .github/workflows/fleet-queue-backup-tests.yml]
+    paths:
+      [
+        infra/fleet-queue-backup/**,
+        .github/workflows/fleet-queue-backup-tests.yml,
+      ]
 
 permissions:
   contents: read
@@ -15,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: unit tests

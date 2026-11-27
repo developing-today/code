@@ -18,6 +18,7 @@
 // material.
 
 import type { RpValidationConfig } from "./jwt.ts";
+import { base64UrlToBytes } from "../../../hosted-primitives/src/encoding.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
 import type { D1DatabaseLike } from "./d1-queue-store.ts";
 import type { R2BucketLike } from "./kv-blobs.ts";
@@ -226,6 +227,13 @@ export interface HostedConfig {
    * logged or reported. Independent of auth, like the webhook
    * secret. */
   bridge: { token: string } | null;
+  /** True when the QUEUE_D1 binding is present (#16096, #15456,
+   * #14866): buildDeps then resolves D1MetadataStore (and the D1
+   * queue/session/backfill stores) instead of the module-scope
+   * fixtures. A boolean, never the binding itself — the health
+   * door reports it so the live readback gate can check one
+   * public flag instead of reading code. */
+  d1Bound: boolean;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -236,12 +244,7 @@ export function isValidStampKeyId(value: string): boolean {
 
 function b64urlToBytesOrNull(text: string): Uint8Array | null {
   try {
-    const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const bin = atob(padded);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
+    return base64UrlToBytes(text);
   } catch {
     return null;
   }
@@ -347,6 +350,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     kvLibsqlUrl: parseQueueLibsqlUrl(env.KV_LIBSQL_URL),
     kvLibsqlAuthToken: parseQueueLibsqlUrl(env.KV_LIBSQL_AUTH_TOKEN),
     bridge: parseBridgeConfig(env),
+    d1Bound: env.QUEUE_D1 != null,
   };
 }
 

@@ -511,6 +511,40 @@ impl DeletionStateMachine {
         Ok(TransitionOutcome::Applied)
     }
 
+    /// Record a deletion authorized by the server's clear-marker policy.
+    ///
+    /// This stays crate-private so callers must go through the policy
+    /// evaluator, which checks the configured authority and grace period.
+    pub(crate) fn apply_policy_delete_on_clear(
+        &mut self,
+        actor: &str,
+        policy_id: &str,
+        marker_event_id: &[u8; 32],
+        clear_authority: &str,
+        marker_created_at: u64,
+        key: &SigningKey,
+    ) -> Result<TransitionOutcome, DeletionError> {
+        self.validate_actor(actor)?;
+        checked_label(policy_id)?;
+        if matches!(self.state, DeletionState::TrueDeletedOnThisServer { .. }) {
+            return Ok(TransitionOutcome::Idempotent);
+        }
+        self.state = DeletionState::TrueDeletedOnThisServer {
+            receipt_id: self.next_sequence + 1,
+        };
+        self.append(
+            "policy_deleted_on_clear",
+            actor,
+            0,
+            &format!(
+                "policy={policy_id};clear_marker={};authority={clear_authority};marker_created_at={marker_created_at}",
+                crate::hex::hex_encode(marker_event_id),
+            ),
+            key,
+        )?;
+        Ok(TransitionOutcome::Applied)
+    }
+
     fn validate_actor(&self, actor: &str) -> Result<(), DeletionError> {
         checked_label(actor)
     }

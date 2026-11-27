@@ -27,7 +27,8 @@
 // bucket or no kv primary) → 503, like every missing dependency.
 
 import type { AuthDeps, CallerContext } from "./auth.ts";
-import { Blake3Hasher, hex } from "./blake3.ts";
+import { Blake3Hasher } from "../../../hosted-primitives/src/blake3.ts";
+import { bytesToHex } from "../../../hosted-primitives/src/encoding.ts";
 import { FailClosed } from "./errors.ts";
 import {
   checkKvScopes,
@@ -300,7 +301,7 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
     await bucket.delete(staging);
     throw new FailClosed(422, "blob_length_mismatch", `received ${hasher.length} of ${upload.bytesLen} bytes`);
   }
-  if (hex(hasher.finalize()) !== upload.digest) {
+  if (bytesToHex(hasher.finalize()) !== upload.digest) {
     await bucket.delete(staging);
     throw new FailClosed(422, "blob_digest_mismatch", "the bytes do not hash to the asserted digest");
   }
@@ -510,7 +511,7 @@ async function capabilityKey(secret: string, usage: "sign" | "verify"): Promise<
 export async function signCapability(secret: string, cap: BlobCapability): Promise<string> {
   const key = await capabilityKey(secret, "sign");
   const mac = await crypto.subtle.sign("HMAC", key, capabilityBinding(cap) as BufferSource);
-  return hex(new Uint8Array(mac));
+  return bytesToHex(new Uint8Array(mac));
 }
 
 /** Whether `mac` is this capability's, compared in constant time. */
@@ -692,7 +693,7 @@ export async function handleKvBlobRead(req: Request, deps: AuthDeps, now: () => 
       },
       flush(controller) {
         if (hasher.length !== cap.bytesLen) controller.error(new Error("blob_length_mismatch"));
-        else if (hex(hasher.finalize()) !== cap.digest) controller.error(new Error("blob_digest_mismatch"));
+        else if (bytesToHex(hasher.finalize()) !== cap.digest) controller.error(new Error("blob_digest_mismatch"));
       },
     }),
   );

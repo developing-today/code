@@ -233,7 +233,10 @@ fn live_short_page_with_explicit_incomplete_range_continues_keyset_read() {
     assert_eq!(result.pages, 2);
     assert_eq!(result.next_cursor, None);
     assert_eq!(transport.sent.len(), 2);
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.1)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.1,id.is.null)")
+    );
 }
 
 #[test]
@@ -293,7 +296,10 @@ fn live_follows_the_keyset_cursor_one_request_per_page() {
     // The observation time is the last page's.
     assert_eq!(result.observed_at_ms, 20);
     assert_eq!(param(&transport.sent[0], "or"), None);
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.2,id.is.null)")
+    );
 }
 
 /// The query of #15010: project `title` alone from a collection whose
@@ -353,7 +359,10 @@ fn projection_without_the_unique_key_continues_across_pages() {
     assert_eq!(result.pages, 2);
     // The second page continues after the first page's last key and
     // still fetches the key for its own cursor.
-    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(
+        param(&transport.sent[1], "or"),
+        Some("(id.gt.2,id.is.null)")
+    );
     assert_eq!(param(&transport.sent[1], "select"), Some("title,id"));
 }
 
@@ -433,6 +442,81 @@ fn live_transport_and_body_failures_are_errors() {
         "more rows than the limit"
     );
     assert_eq!(run(page(&[1], Some("bogus"), 1)), ReadError::MalformedPage);
+}
+
+#[test]
+fn live_content_range_must_describe_the_decoded_body() {
+    // Oracle: #15742 — a range that disagrees with the rows in the
+    // body is a broken page. `0-1/2` over one decoded row used to read
+    // as a complete result and silently drop the second row.
+    let run = |rows: &[i64], range: &str| {
+        let mut transport = Scripted::new(vec![page(rows, Some(range), 1)]);
+        live_read(
+            &endpoint(),
+            &modes(ReadMode::Live),
+            &mut transport,
+            &JsonRows,
+            &Query::read("items"),
+            5,
+        )
+    };
+    for (rows, range) in [
+        (&[1][..], "0-1/2"),
+        (&[1][..], "0-1/*"),
+        (&[1, 2][..], "0-0/2"),
+        (&[1, 2][..], "0-2/*"),
+        (&[][..], "0-0/1"),
+        (&[1][..], "*/*"),
+        (&[1][..], "*/1"),
+        (&[1, 2][..], "0-1/1"),
+        (&[1][..], "3-3/3"),
+    ] {
+        assert_eq!(
+            run(rows, range).unwrap_err(),
+            ReadError::MalformedPage,
+            "{} rows under {range}",
+            rows.len()
+        );
+    }
+
+    // Matching ranges still read, complete or not.
+    let complete = run(&[1, 2], "0-1/2").unwrap();
+    assert!(complete.complete);
+    assert_eq!(ids(&complete.rows), vec![1, 2]);
+    let empty = run(&[], "*/0").unwrap();
+    assert!(empty.complete);
+    assert_eq!(ids(&empty.rows), Vec::<i64>::new());
+    let unknown_total = run(&[], "*/*").unwrap();
+    assert!(unknown_total.complete);
+}
+
+#[test]
+fn content_range_describes_only_matching_bodies() {
+    let describes = |range: &str, rows: u64| ContentRange::parse(range).unwrap().describes(rows);
+    assert!(describes("0-1/2", 2));
+    assert!(describes("0-1/*", 2));
+    assert!(describes("0-0/100", 1));
+    assert!(describes("5-9/20", 5));
+    assert!(describes("*/0", 0));
+    assert!(describes("*/7", 0));
+    assert!(!describes("0-1/2", 1));
+    assert!(!describes("0-1/2", 3));
+    assert!(!describes("0-4/3", 5), "a range that ends past its total");
+    assert!(!describes("*/*", 1));
+    let backwards = ContentRange::Rows {
+        first: 4,
+        last: 1,
+        total: None,
+    };
+    assert!(!backwards.describes(0));
+    assert!(
+        !ContentRange::Rows {
+            first: 0,
+            last: u64::MAX,
+            total: None
+        }
+        .describes(u64::MAX)
+    );
 }
 
 #[test]

@@ -21,6 +21,7 @@ reservation was written BEFORE the API call.
 Run: python3 tools/content-ledger/test_content_ledger.py  (exit 0 = pass)
 Venue: anywhere; uses only temp dirs.
 """
+
 import json
 import os
 import sqlite3
@@ -35,7 +36,7 @@ LEDGER_PY = HERE / "content_ledger.py"
 GH_POST = HERE.parent / "gh-post"
 sys.path.insert(0, str(HERE))
 
-STUB_GH = r'''
+STUB_GH = r"""
 import json, os, re, sqlite3, sys
 from pathlib import Path
 
@@ -183,7 +184,7 @@ def main():
     return do_create(argv)
 
 sys.exit(main())
-'''
+"""
 
 
 class Env:
@@ -199,17 +200,19 @@ class Env:
         stub.write_text("#!/usr/bin/env python3\n" + STUB_GH)
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
         self.env = dict(os.environ)
-        self.env.update({
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "GH_STUB_STATE": str(self.state),
-            "GH_STUB_MODE": mode,
-            "CONTENT_LEDGER_PATH": str(self.ledger),
-            # gh-post also passes the content-throttle gate (hatch#13);
-            # keep its state in the temp world too.
-            "CONTENT_THROTTLE_PATH": str(self.dir / "content-throttle.sqlite"),
-            "FLEET_JOB": "test-job",
-            "FLEET_ACTOR": "test-actor",
-        })
+        self.env.update(
+            {
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GH_STUB_STATE": str(self.state),
+                "GH_STUB_MODE": mode,
+                "CONTENT_LEDGER_PATH": str(self.ledger),
+                # gh-post also passes the content-throttle gate (hatch#13);
+                # keep its state in the temp world too.
+                "CONTENT_THROTTLE_PATH": str(self.dir / "content-throttle.sqlite"),
+                "FLEET_JOB": "test-job",
+                "FLEET_ACTOR": "test-actor",
+            }
+        )
 
     def rows(self):
         if not self.ledger.exists():
@@ -217,8 +220,7 @@ class Env:
         db = sqlite3.connect(str(self.ledger))
         db.row_factory = sqlite3.Row
         try:
-            return [dict(r) for r in
-                    db.execute("SELECT * FROM events ORDER BY id")]
+            return [dict(r) for r in db.execute("SELECT * FROM events ORDER BY id")]
         except sqlite3.OperationalError:
             return []
 
@@ -241,27 +243,38 @@ def check(name, cond, extra=""):
 
 
 def run_cli(env, *args):
-    return subprocess.run([sys.executable, str(LEDGER_PY), *args],
-                          capture_output=True, text=True, env=env.env)
+    return subprocess.run(
+        [sys.executable, str(LEDGER_PY), *args],
+        capture_output=True,
+        text=True,
+        env=env.env,
+    )
 
 
 def t_created():
     e = Env("ok")
     body = e.dir / "body.md"
     body.write_text("a real issue body\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     check("created: cli exit 0", r.returncode == 0, r.stderr)
     rows = e.rows()
     check("created: one ledger row", len(rows) == 1, str(rows))
     if rows:
         row = rows[0]
         check("created: outcome", row["outcome"] == "created", str(row))
-        check("created: kind/repo/job/actor",
-              (row["kind"], row["repo"], row["job"], row["actor"])
-              == ("issue", "o/r", "test-job", "test-actor"), str(row))
-        check("created: ref is the issue URL",
-              row["ref"] == "https://github.com/o/r/issues/101", str(row))
+        check(
+            "created: kind/repo/job/actor",
+            (row["kind"], row["repo"], row["job"], row["actor"])
+            == ("issue", "o/r", "test-job", "test-actor"),
+            str(row),
+        )
+        check(
+            "created: ref is the issue URL",
+            row["ref"] == "https://github.com/o/r/issues/101",
+            str(row),
+        )
         check("created: nonce recorded", bool(row["nonce"]), str(row))
 
 
@@ -269,82 +282,123 @@ def t_verified_existing():
     e = Env("silent")
     body = e.dir / "body.md"
     body.write_text("created but gh printed nothing\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     check("verified_existing: cli exit 0", r.returncode == 0, r.stderr)
     rows = e.rows()
-    check("verified_existing: outcome",
-          len(rows) == 1 and rows[0]["outcome"] == "verified_existing",
-          str(rows))
+    check(
+        "verified_existing: outcome",
+        len(rows) == 1 and rows[0]["outcome"] == "verified_existing",
+        str(rows),
+    )
     if rows:
-        check("verified_existing: ref found by nonce search",
-              rows[0]["ref"] == "https://github.com/o/r/issues/101", str(rows[0]))
+        check(
+            "verified_existing: ref found by nonce search",
+            rows[0]["ref"] == "https://github.com/o/r/issues/101",
+            str(rows[0]),
+        )
 
 
 def t_empty_output_is_failure():
     e = Env("empty")
     body = e.dir / "body.md"
     body.write_text("the 2026-10-28 silent failure shape\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
-    check("empty: cli exit 1 (never success)", r.returncode == 1,
-          f"rc={r.returncode} out={r.stdout}")
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
+    check(
+        "empty: cli exit 1 (never success)",
+        r.returncode == 1,
+        f"rc={r.returncode} out={r.stdout}",
+    )
     rows = e.rows()
-    check("empty: outcome failed",
-          len(rows) == 1 and rows[0]["outcome"] == "failed", str(rows))
+    check(
+        "empty: outcome failed",
+        len(rows) == 1 and rows[0]["outcome"] == "failed",
+        str(rows),
+    )
     if rows:
-        check("empty: detail names the empty output",
-              "empty" in (rows[0]["detail"] or ""), str(rows[0]))
+        check(
+            "empty: detail names the empty output",
+            "empty" in (rows[0]["detail"] or ""),
+            str(rows[0]),
+        )
 
 
 def t_api_error_is_failure():
     e = Env("error")
     body = e.dir / "body.md"
     body.write_text("will 403\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     check("error: cli exit 1", r.returncode == 1, f"rc={r.returncode}")
     rows = e.rows()
-    check("error: outcome failed",
-          len(rows) == 1 and rows[0]["outcome"] == "failed", str(rows))
+    check(
+        "error: outcome failed",
+        len(rows) == 1 and rows[0]["outcome"] == "failed",
+        str(rows),
+    )
     if rows:
-        check("error: underlying error preserved in detail",
-              "403" in (rows[0]["detail"] or ""), str(rows[0]))
-    check("error: caller sees the underlying error",
-          "403" in r.stderr, r.stderr)
+        check(
+            "error: underlying error preserved in detail",
+            "403" in (rows[0]["detail"] or ""),
+            str(rows[0]),
+        )
+    check("error: caller sees the underlying error", "403" in r.stderr, r.stderr)
 
 
 def t_badurl_is_failure():
     e = Env("badurl")
     body = e.dir / "body.md"
     body.write_text("url printed but nothing exists\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     check("badurl: cli exit 1", r.returncode == 1, f"rc={r.returncode}")
     rows = e.rows()
-    check("badurl: outcome failed (readback is the oracle)",
-          len(rows) == 1 and rows[0]["outcome"] == "failed", str(rows))
+    check(
+        "badurl: outcome failed (readback is the oracle)",
+        len(rows) == 1 and rows[0]["outcome"] == "failed",
+        str(rows),
+    )
 
 
 def t_comment_and_pr():
     e = Env("ok")
     body = e.dir / "body.md"
     body.write_text("a comment body\n")
-    r = run_cli(e, "create-comment", "--repo", "o/r", "--issue", "42",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-comment", "--repo", "o/r", "--issue", "42", "--body-file", str(body)
+    )
     check("comment: cli exit 0", r.returncode == 0, r.stderr)
-    r = run_cli(e, "create-pr", "--repo", "o/r", "--title", "p",
-                "--body-file", str(body), "--head", "feat/x")
+    r = run_cli(
+        e,
+        "create-pr",
+        "--repo",
+        "o/r",
+        "--title",
+        "p",
+        "--body-file",
+        str(body),
+        "--head",
+        "feat/x",
+    )
     check("pr: cli exit 0", r.returncode == 0, r.stderr)
     rows = e.rows()
     kinds = [(row["kind"], row["outcome"]) for row in rows]
-    check("comment+pr: kinds and outcomes",
-          kinds == [("issue_comment", "created"), ("pr", "created")],
-          str(kinds))
+    check(
+        "comment+pr: kinds and outcomes",
+        kinds == [("issue_comment", "created"), ("pr", "created")],
+        str(kinds),
+    )
     if len(rows) == 2:
-        check("comment: ref is the comment URL",
-              rows[0]["ref"] == "https://github.com/o/r/issues/42#issuecomment-101",
-              str(rows[0]))
+        check(
+            "comment: ref is the comment URL",
+            rows[0]["ref"] == "https://github.com/o/r/issues/42#issuecomment-101",
+            str(rows[0]),
+        )
 
 
 def t_concurrent_reserve():
@@ -358,11 +412,16 @@ def t_concurrent_reserve():
         "       for _ in range(int(sys.argv[2]))];"
         "print(len(set(ids)))"
     )
-    runs = [subprocess.Popen([sys.executable, "-c", code, str(HERE),
-                              str(per_proc)],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, env=e.env)
-            for _ in range(procs)]
+    runs = [
+        subprocess.Popen(
+            [sys.executable, "-c", code, str(HERE), str(per_proc)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=e.env,
+        )
+        for _ in range(procs)
+    ]
     ok = True
     for p in runs:
         out, err = p.communicate()
@@ -371,8 +430,11 @@ def t_concurrent_reserve():
             print(f"concurrency worker failed: rc={p.returncode} {err[:300]}")
     check("concurrency: 8 processes x 25 reserves, no errors, unique ids", ok)
     rows = e.rows()
-    check("concurrency: all 200 reservations landed",
-          len(rows) == procs * per_proc, f"rows={len(rows)}")
+    check(
+        "concurrency: all 200 reservations landed",
+        len(rows) == procs * per_proc,
+        f"rows={len(rows)}",
+    )
 
 
 def t_ledger_failure_is_visible_and_blocks():
@@ -380,23 +442,27 @@ def t_ledger_failure_is_visible_and_blocks():
     e.env["CONTENT_LEDGER_PATH"] = "/proc/no-such-dir/content-ledger.sqlite"
     body = e.dir / "body.md"
     body.write_text("must never be filed unledgered\n")
-    r = run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-                "--body-file", str(body))
+    r = run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     check("ledger-down: cli exit 5", r.returncode == 5, f"rc={r.returncode}")
-    check("ledger-down: gh was never called", e.gh_calls() == [],
-          str(e.gh_calls()))
+    check("ledger-down: gh was never called", e.gh_calls() == [], str(e.gh_calls()))
 
 
 def t_counts_cli():
     e = Env("ok")
     body = e.dir / "body.md"
     body.write_text("counted\n")
-    run_cli(e, "create-issue", "--repo", "o/r", "--title", "t",
-            "--body-file", str(body))
+    run_cli(
+        e, "create-issue", "--repo", "o/r", "--title", "t", "--body-file", str(body)
+    )
     r = run_cli(e, "counts", "--window", "3600")
     check("counts: exit 0", r.returncode == 0, r.stderr)
-    check("counts: created total visible",
-          "created" in r.stdout and "total: 1" in r.stdout, r.stdout)
+    check(
+        "counts: created total visible",
+        "created" in r.stdout and "total: 1" in r.stdout,
+        r.stdout,
+    )
 
 
 def t_gh_post_routing():
@@ -404,34 +470,70 @@ def t_gh_post_routing():
     e = Env("ok")
     home = e.dir / "home"
     (home / "workspace/goals/keep-the-four-repos-healthy/hidden_files").mkdir(
-        parents=True)
-    (home / "workspace/goals/keep-the-four-repos-healthy/hidden_files"
-     / "action-outbox.md").write_text("## Done\n")
+        parents=True
+    )
+    (
+        home
+        / "workspace/goals/keep-the-four-repos-healthy/hidden_files"
+        / "action-outbox.md"
+    ).write_text("## Done\n")
     e.env["HOME"] = str(home)
     body = e.dir / "body.md"
     body.write_text("posted through gh-post\n")
-    r = subprocess.run([sys.executable, str(GH_POST), "comment",
-                        "--repo", "o/r", "--issue", "7",
-                        "--body-file", str(body)],
-                       capture_output=True, text=True, env=e.env)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(GH_POST),
+            "comment",
+            "--repo",
+            "o/r",
+            "--issue",
+            "7",
+            "--body-file",
+            str(body),
+        ],
+        capture_output=True,
+        text=True,
+        env=e.env,
+    )
     check("gh-post: exit 0", r.returncode == 0, r.stderr)
     rows = e.rows()
-    check("gh-post: ledger row created via its readback",
-          len(rows) == 1 and rows[0]["outcome"] == "created"
-          and rows[0]["kind"] == "issue_comment", str(rows))
+    check(
+        "gh-post: ledger row created via its readback",
+        len(rows) == 1
+        and rows[0]["outcome"] == "created"
+        and rows[0]["kind"] == "issue_comment",
+        str(rows),
+    )
 
     # gh-post with a dead ledger: refuses BEFORE any gh call (exit 5).
     e2 = Env("ok")
     e2.env["HOME"] = str(home)
     e2.env["CONTENT_LEDGER_PATH"] = "/proc/no-such-dir/content-ledger.sqlite"
-    r = subprocess.run([sys.executable, str(GH_POST), "comment",
-                        "--repo", "o/r", "--issue", "7",
-                        "--body-file", str(body)],
-                       capture_output=True, text=True, env=e2.env)
-    check("gh-post ledger-down: exit 5", r.returncode == 5,
-          f"rc={r.returncode} {r.stderr[:200]}")
-    check("gh-post ledger-down: gh never called", e2.gh_calls() == [],
-          str(e2.gh_calls()))
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(GH_POST),
+            "comment",
+            "--repo",
+            "o/r",
+            "--issue",
+            "7",
+            "--body-file",
+            str(body),
+        ],
+        capture_output=True,
+        text=True,
+        env=e2.env,
+    )
+    check(
+        "gh-post ledger-down: exit 5",
+        r.returncode == 5,
+        f"rc={r.returncode} {r.stderr[:200]}",
+    )
+    check(
+        "gh-post ledger-down: gh never called", e2.gh_calls() == [], str(e2.gh_calls())
+    )
 
 
 def main():
@@ -450,9 +552,11 @@ def main():
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print("\nPASS: content-ledger created / verified_existing / empty / "
-          "error / badurl outcomes, comment+pr kinds, concurrent reserve, "
-          "ledger-failure visibility, counts, gh-post routing")
+    print(
+        "\nPASS: content-ledger created / verified_existing / empty / "
+        "error / badurl outcomes, comment+pr kinds, concurrent reserve, "
+        "ledger-failure visibility, counts, gh-post routing"
+    )
     return 0
 
 

@@ -89,6 +89,40 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     expect(receipt.projection.column).toBe("Done");
   });
 
+  test("held_work_keeps_its_column_despite_a_verified_receipt_per_mob02_r2_r3", () => {
+    // MOB-02 R1 requires "no present facet contradicting it" before Done;
+    // a parked/blocked queue facet contradicts it, so R2/R3 win over the
+    // receipt (policy: projectLifecycleColumn, R1..R3). The receipt is not
+    // a promoting input that un-parks or un-blocks work.
+    const parkedWithReceipt = projectWorkView({
+      ...base,
+      github_state: { value: "closed", source: "github" },
+      queue: { eligible: true, high_or_above: true, parked: { reason: "waiting on vendor" } },
+      completion: { verified_terminal_receipt: true },
+    });
+    expect(parkedWithReceipt.projection.column).toBe("Parked");
+    expect(parkedWithReceipt.projection.reason_codes).toContain("parked_with_reason");
+    const blockedWithReceipt = projectWorkView({
+      ...base,
+      github_state: { value: "closed", source: "github" },
+      queue: { eligible: true, high_or_above: true, hard_blocker_refs: ["fleet://work/9"] },
+      completion: { verified_terminal_receipt: true },
+    });
+    expect(blockedWithReceipt.projection.column).toBe("Blocked");
+    expect(blockedWithReceipt.projection.reason_codes).toContain("hard_blockers_present");
+  });
+
+  test("unverified_terminal_signal_projects_review_per_mob02_r5", () => {
+    // MOB-02 R5: terminal signal without a verified receipt is Review
+    // with `completion_unverified`, never Done and never Backlog.
+    const closed = projectWorkView({ ...base, github_state: { value: "closed", source: "github" } });
+    expect(closed.projection.column).toBe("Review");
+    expect(closed.projection.reason_codes).toContain("completion_unverified");
+    const merged = projectWorkView({ ...base, github_state: { value: "merged", source: "github" } });
+    expect(merged.projection.column).toBe("Review");
+    expect(merged.projection.conflicts.map((c) => c.code)).toContain("completion_unverified");
+  });
+
   test("parked_and_blocked_are_never_promoted_by_urgency", () => {
     const parked = projectWorkView({
       ...base,
@@ -124,7 +158,22 @@ describe("column projection matrix (oracle: design §3.1)", () => {
       session: { value: { provider: "slack", state: "posted" }, source: "session-adapter" },
     });
     expect(view.facts.session.state).toBe("binding_unknown");
+    expect(view.projection.column).not.toBe("In Progress");
     expect(view.projection.conflicts.map((c) => c.code)).toContain("claimed_binding_unknown");
+  });
+
+  test("in_progress_requires_a_fresh_nonterminal_session_readback", () => {
+    const claim = { state: "claimed", worker: "lane-1", fresh: true, session_binding: "verified" } as const;
+    const cases: WorkProjectionInput[] = [
+      { ...base, claim },
+      {
+        ...base,
+        claim,
+        session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" },
+      },
+      { ...base, claim, session: { value: { provider: "opencode", state: "terminal" }, source: "session-adapter" } },
+    ];
+    for (const input of cases) expect(projectWorkView(input).projection.column).not.toBe("In Progress");
   });
 
   test("ready_requires_eligible_and_high_or_prepared_or_owner_assigned", () => {

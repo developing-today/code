@@ -38,6 +38,8 @@ function startStubServe(script) {
   let statusResponseDelay = 0;
   let onStatusRequest = null;
   let promptAsyncResponseDelay = 0;
+  let hangSessionCreate = false;
+  let hangEventConnect = false;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -55,8 +57,26 @@ function startStubServe(script) {
     setPromptAsyncDelay: (ms) => {
       promptAsyncResponseDelay = ms;
     },
+    hangSessionCreate: () => {
+      hangSessionCreate = true;
+    },
+    hangEventConnect: () => {
+      hangEventConnect = true;
+    },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
+    },
+    // #16226: write raw bytes (no SSE framing, no delimiter) to every
+    // connected event-stream client, in chunks, so the adapter's
+    // framing buffer accumulates an undelimited prefix.
+    floodEventStreamRaw: async (totalBytes, chunkBytes = 8192) => {
+      const chunk = 'x'.repeat(chunkBytes);
+      let sent = 0;
+      while (sent < totalBytes) {
+        for (const res of sseClients) res.write(chunk);
+        sent += chunkBytes;
+        await sleep(10);
+      }
     },
   };
   const server = http.createServer((req, res) => {
@@ -75,6 +95,9 @@ function startStubServe(script) {
         authorization: req.headers.authorization ?? null,
       });
       if (req.method === 'GET' && url.pathname === '/api/event') {
+        // #16009: a stalled serve accepts the connect and never
+        // sends response headers.
+        if (hangEventConnect) return;
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         res.flushHeaders();
         sseClients.add(res);
@@ -102,6 +125,8 @@ function startStubServe(script) {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/session') {
+        // #15982: a hung serve accepts the request and never answers.
+        if (hangSessionCreate) return;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
@@ -271,6 +296,86 @@ test('session/new creates the session on the shared serve with cwd as directory'
   const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
   assert.ok(create, 'stub serve saw POST /api/session');
   assert.deepEqual(create.body, { location: { directory: '/home/user/code' } });
+});
+
+test('a hung serve call times out instead of wedging session/new (#15982)', async (t) => {
+  // Oracle: with the stub serve never answering POST /api/session,
+  // serveJson's AbortSignal.timeout budget (300ms via env) must turn
+  // the hang into a typed error naming the method+pathname, so the
+  // ACP request rejects promptly instead of never settling.
+  const { stub, acp } = await setup(t, textEvents(), { OPENCODE_ACP_SERVE_TIMEOUT_MS: '300' });
+  stub.controls.hangSessionCreate();
+  const started = Date.now();
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> timed out after 300ms/,
+  );
+  assert.ok(Date.now() - started < 5000, 'session/new rejected within the timeout budget, not never');
+});
+
+test('a silent /api/event stream is treated as stalled and reconnects (#16009)', async (t) => {
+  // Oracle: the stub serve accepts /api/event and then stays silent
+  // (it only writes when a script emits). With a 250ms idle budget
+  // the adapter must cancel the reader and reconnect through the
+  // existing path — a second GET /api/event — instead of leaving
+  // reader.read() pending forever; a prompt submitted after the
+  // reconnect still completes via the reconnected stream.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_STREAM_IDLE_TIMEOUT_MS: '250',
+  });
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 2, 'stalled stream to trigger a reconnect');
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+});
+
+test('an /api/event connect that never answers times out and retries (#16009)', async (t) => {
+  // Oracle: with the stub serve never sending response headers for
+  // /api/event, the 300ms connect budget must abort the attempt and
+  // the reconnect loop must try again — a second GET /api/event
+  // attempt — instead of the first fetch pending forever.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_STREAM_TIMEOUT_MS: '300',
+  });
+  stub.controls.hangEventConnect();
+  // Force the already-established stream down so the next connect
+  // attempts hit the hanging path.
+  stub.controls.dropEventStreams();
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 3, 'hung connect to time out and retry');
+});
+
+test('an undelimited /api/event flood past the byte cap drops the buffer and reconnects (#16226)', async (t) => {
+  // Oracle: the stub serve streams delimiter-free bytes well past a
+  // small env-set cap (4096). The idle deadline cannot fire (data
+  // keeps arriving), so only the byte cap can save the stream: the
+  // adapter must drop the buffered prefix and reconnect through the
+  // existing path — a second GET /api/event — instead of retaining
+  // the flood; a prompt submitted after the reconnect still
+  // completes via the reconnected stream.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES: '4096',
+    OPENCODE_ACP_ADAPTER_DEBUG: '1',
+  });
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 1, 'initial event stream connect');
+  await stub.controls.floodEventStreamRaw(64 * 1024);
+  await acp.waitFor(() => eventCalls().length >= 2, 'over-cap flood to drop the buffer and reconnect');
+  await acp.waitFor(
+    () => acp.stderr().includes('undelimited buffer grew past 4096 bytes'),
+    'debug line recording the buffer drop',
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the flood');
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
 });
 
 test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {

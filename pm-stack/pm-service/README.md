@@ -239,17 +239,21 @@ the synchronous path's behaviour:
   async store; `test/read-api-async.test.ts` pins every route's
   status and body byte-identical to the synchronous handler's.
 - `src/worker.ts` + `wrangler.toml` — the Worker entry. `/health`
-  reports `{ ok, service, version }` with the VERSION var the
+  reports `{ ok, service, version, deployedAt, ageSeconds }` with
+  the VERSION and DEPLOYED_AT vars the
   deploy workflow stamps per deploy; until the
-  `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set, the
-  API routes answer a structured 503 (an unconfigured store is an
-  honest state, never invented data).
+  tenant D1 binding is configured (or the transitional
+  `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set), the API
+  routes answer a structured 503 (an unconfigured store is an honest
+  state, never invented data). A bound D1 database is the preferred
+  read source; the legacy Turso adapter remains for the data-copy
+  transition.
 - `.github/workflows/pm-service-deploy.yml` — the design §4
   versions standard: test, `wrangler versions upload` stamped
-  with the full commit SHA, health gate against the version's
-  preview URL (`scripts/check-health.mjs`), `versions deploy`
-  promotion, and rollback by promoting a previous version id
-  (the `rollback_version` dispatch input).
+  with the full commit SHA and timestamp, health gate after
+  promotion (`scripts/check-health.mjs`), and rollback by promoting
+  the prior version if the exact-SHA or age check fails. Cloudflare
+  does not provide Version URLs for Workers with Durable Objects.
 
 ```sh
 cd pm-stack/pm-service && bun test && bun run typecheck
@@ -267,16 +271,23 @@ First wave of the CF-5 programme's M5 surfaces. Per-surface record:
   by project Status, split into `blocked` (held by a still-open
   pool item) and `readyRefs` (no live blocker) — the hosted half of
   the console's Now/queue family.
+- **Program — projection implemented.** `GET /api/program.json` and
+  `GET /program` share `programFromPool`: Epic groups (including all
+  cross-board header/child rows), missing headers, and unassigned items.
+  HTML shows per-board snapshot stamps and absence, distinct from render
+  time. This is the Project-pool view, **not** the laptop's full editorial
+  program or health summaries; those inputs are not in this projection.
 - **Stayed (later waves):** board and roadmap already serve as the
-  §6 routes above; program, quota, events, today, digest, reports,
+  §6 routes above; quota, events, today, digest, reports,
   /aa, and /chat remain on their current stacks. Their data is not
   in the tenant projections yet, so their waves land their
   projection first — nothing here fabricates them.
 
-Both new routes are pure derivations in `src/read-api/waves.ts`
-over the projections the existing routes already read (merged pool
-+ board summaries), served by both handlers (`api.ts` /
-`async-api.ts`); the async parity suite pins them byte-identical.
+The overview, queue and program JSON routes are pure derivations in
+`src/read-api/waves.ts` over the projections the existing routes already
+read (merged pool + board summaries), served by both handlers (`api.ts` /
+`async-api.ts`); the async parity suite pins them byte-identical. The
+program HTML route uses those same loaders and pure derivations.
 
 - **Freshness visible:** every wave response carries `freshness` —
   the per-board latest snapshot stamps and the newest as
@@ -285,10 +296,12 @@ over the projections the existing routes already read (merged pool
   This wave adds no projection, table, or write path; it issues
   only the SELECTs the existing routes already issue, so the
   collector's snapshot landing remains the sole writer.
-- **Live cutover** follows the CF-5c deploy: the routes ship with
-  the Worker on its next versions deploy; until the tenant secrets
-  land (#14969's remaining acceptance) the Worker serves them as
-  the designed honest 503, like the §6 routes.
+- **Live cutover** still depends on #14969's tenant-plane binding and
+  deployment evidence. The #14866 ruling (comment 7189808145) authorizes
+  D1 for board data; it is not an owner-approval gate. This code-only
+  wave does not configure that binding, deploy, or flip any route. Until
+  a tenant store is configured the Worker returns the designed 503.
+
 ## Slice 4 — dashboard surfaces (#12829)
 
 `src/dashboard/dashboard.ts` serves the design §4 V1 parity list as
@@ -302,6 +315,7 @@ dashboard paths first and falls through to the API for the rest.
 | `/board/<id>` | one board's items from its latest snapshot                                          |
 | `/item/<ref>` | item detail: genealogy header (root first), sentence, release, after, fields        |
 | `/roadmap`    | overall priorities (rows grouped by priority) and the per-project roadmap (by area) |
+| `/program`    | Epic groups, missing headers and unassigned pool rows, with snapshot freshness      |
 | `/releases`   | milestone close-out cards with carried-over epics                                   |
 | `/attention`  | open reconcile findings plus the coverage checks over each board's snapshot         |
 | `/quota`      | names quota/usage as not yet in the tenant store                                    |

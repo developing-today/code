@@ -1,6 +1,6 @@
 # fleet queue: lifecycle verbs
 
-The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`, `repair`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
+The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`, `repair`, `resolution-backfill`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
 
 Shared rules, stated in [fleet queue: core verbs](queue-core.md) and not repeated in full here: the global exit-code vocabulary (0 ok, 1 gate/not-found, 2 usage, 3 transport/401, 4 broker store failure, 5 no-claim/no-row, 6 fallback switch); the `--worker` default `repo-worker-code`; the `--lane` resolution (flag → env `REPO_QUEUE_LANE` → null, broker checks worker alone); and `--progress` / `--progress-file` mutual exclusion.
 
@@ -141,6 +141,7 @@ usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [
 - **`--required-budget-minutes`:** for a `capacity` wait the broker defaults it from the packet's `timebox_minutes` when the flag is absent.
 - **Person-wait guard (FDR-0013):** a park whose ready-condition kind is `person_answer`, or whose reason text names the owner as the release, is refused client-side (exit 2, before broker contact) unless it is a valid hands item; a valid hands item is stamped into `progress.hands = {kind, action}`. See the full guard under `block` below.
 - Park stamps `last_checked_at = now`, resets `check_outcome`, and the **park revalidation sweeper** later records `check_outcome` ∈ `confirmed` (condition unmet; park untouched), `released` (condition met → status `queued`, `not_before` null, `park_released` event), or `stale` (cannot verify).
+- **Revalidation mode (#16006):** the scheduled sweep runs LIVE by default — a satisfied broker-condition park (`task_terminal`, `task_status`, `event_seen`) is released to `queued` with a `park_released` event. Pass `observe_only=true` for a non-mutating observe cycle (releases logged as `would_release`). The home-manager sweeper opts out by writing `observe` to `~/.config/queue-broker/revalidator-mode`; an absent file (or `enabled`) keeps the live default. `person_answer` parks never release via the sweeper — they still require the person's `/wake`.
 - Output: row (or `{task, lane_ledger[, follow_on_task_id]}`); a park closes the session binding window on the timeline.
 
 Exit codes: 0 parked · 2 usage / missing `--reason` / both delay flags / bad ready-condition / person-wait refusal · 3 transport · 4 broker store failure · 5 no matching claimed row.
@@ -309,6 +310,18 @@ Exit codes: 0 repaired (or the dry-run report) · 2 usage · 3 transport · 4 br
 $ fleet queue repair 19481 --dry-run
 {"task_id": 19481, "outcome": "dry_run", "defects": ["..."], "repairs": [{"field": "payload.dedupe", "action": "stamped checked_at/basis by re-performing the dedupe check live"}], "dry_run": true, "status": "blocked", "status_after": "queued"}
 ```
+
+## fleet queue resolution-backfill
+
+```text
+usage: repo-queue resolution-backfill
+```
+
+Takes no arguments; any positional or flag is a usage error (exit 2).
+
+**Behaviour.** Runs the terminal-resolution backfill for #14170 Q2 (broker route `/resolution-backfill`) and prints the broker's report as JSON: the terminal census, the rows it proved, and the rows it left unresolved. It writes a verdict only where existing result data, or a unique dedupe twin, evidences it, so a row with no such evidence stays unresolved. The backfill is idempotent: a second run writes nothing new.
+
+Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
 
 ## fleet queue cancel
 

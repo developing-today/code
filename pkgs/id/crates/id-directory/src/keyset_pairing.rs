@@ -29,12 +29,12 @@
 //! 512-character paste budget as [`crate::invites::MAX_PASTE_CHARS`],
 //! so an offer or accept survives any chat box a QR scan feeds.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest, Sha256};
 
 use crate::directory::hex_to_array;
-use crate::keyset::{body_bytes, verify_signature, verifying_key, KeysetEntry, KeysetRecord};
+use crate::keyset::{KeysetEntry, KeysetRecord, body_bytes, verify_signature, verifying_key};
 use id_core::hex::hex_encode;
 
 /// The scheme of an enrolment offer and its accept.
@@ -109,6 +109,12 @@ impl EnrolOffer {
         ensure!(
             payload.chars().count() <= MAX_PASTE_CHARS,
             "the enrolment offer is over the {MAX_PASTE_CHARS}-character budget; use a shorter label"
+        );
+        let accept_chars =
+            payload.chars().count() + "&device=".len() + 64 + "&countersignature=".len() + 128;
+        ensure!(
+            accept_chars <= MAX_PASTE_CHARS,
+            "the enrolment accept would exceed the {MAX_PASTE_CHARS}-character budget; use a shorter label"
         );
         Ok(payload)
     }
@@ -662,7 +668,10 @@ mod tests {
 
     #[test]
     fn revoking_an_unknown_device_is_refused_and_writes_nothing() {
-        let (_dir, mut file) = migrated();
+        let (dir, mut file) = migrated();
+        // Oracle: the append API refuses changes that cannot fold, and
+        // neither the in-memory log nor its persisted bytes may change.
+        let before = std::fs::read(dir.path().join("keyset.jsonl")).unwrap();
         let count = file.records().count();
         let error = file
             .revoke_scanned(
@@ -671,8 +680,14 @@ mod tests {
                 "unknown",
             )
             .unwrap_err();
-        assert!(error.to_string().contains("refused"), "{error}");
+        // The append API deliberately reports a stable refusal rather than
+        // exposing which candidate-fold precondition failed.
+        assert!(error.to_string().contains("refused"), "{error:#}");
         assert_eq!(file.records().count(), count);
+        assert_eq!(
+            std::fs::read(dir.path().join("keyset.jsonl")).unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -684,13 +699,14 @@ mod tests {
         assert!(file.complete_enrol(&key(2), &accept).is_err());
         assert!(file.enrol_offer(&key(2), "rogue").is_err());
         file.complete_enrol(&key(1), &accept).unwrap();
-        assert!(file
-            .revoke_scanned(
+        assert!(
+            file.revoke_scanned(
                 &key(2),
                 &DeviceQr::parse(&DeviceQr::for_key(&key(2)).qr_payload()).unwrap(),
                 "self",
             )
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -709,8 +725,8 @@ mod tests {
         );
         assert!(DeviceQr::parse("id:keyset-device?device=zz").is_err());
         assert!(DeviceQr::parse("id:keyset-device?").is_err());
-        // A 64-character label is legal as a record but blows the paste
-        // budget as a QR payload: the caller shortens it instead.
+        // The offer is withheld when the eventual accept would exceed
+        // the paste budget (device key + countersignature included).
         let long = EnrolOffer::mint(
             &state.identity_id,
             &public(1),
@@ -719,8 +735,35 @@ mod tests {
             &"l".repeat(64),
         )
         .unwrap();
-        assert!(long.qr_payload().is_ok());
+        assert!(long.qr_payload().is_err());
         assert!(long.accept(&key(2)).unwrap().qr_payload().is_err());
+    }
+
+    #[test]
+    fn an_offer_checks_the_accept_budget_before_it_is_shown() {
+        let (_dir, file) = migrated();
+        let state = file.state().unwrap();
+        let fits = EnrolOffer::mint(
+            &state.identity_id,
+            &public(1),
+            &state.head_hash,
+            1,
+            &"l".repeat(46),
+        )
+        .unwrap();
+        let accept = fits.accept(&key(2)).unwrap();
+        assert!(fits.qr_payload().is_ok());
+        assert!(accept.qr_payload().is_ok());
+
+        let too_long = EnrolOffer::mint(
+            &state.identity_id,
+            &public(1),
+            &state.head_hash,
+            1,
+            &"l".repeat(47),
+        )
+        .unwrap();
+        assert!(too_long.qr_payload().is_err());
     }
 
     #[test]

@@ -536,3 +536,89 @@ export function costScoreTail(points, binCount) {
   }
   return smoothScores(line);
 }
+
+// Per-chart point-label modes (#1400 remainder). The three scatter charts
+// (xpl-c1/c2/c3) label a subset of their dots: "key" labels frontier +
+// selected points (the historical behavior, kept as the default), "all"
+// labels every plotted point, and "none" labels nothing. Mode state lives
+// per chart id on the page (S.labelBy); these helpers normalize the raw
+// stored value and decide one point so Bun tests exercise exactly the
+// code the browser runs.
+export function resolveLabelMode(mode) {
+  if (mode === "all" || mode === "none" || mode === "key") return mode;
+  return "key";
+}
+
+export function shouldLabelPoint(mode, onFrontier, isSelected) {
+  var m = resolveLabelMode(mode);
+  if (m === "all") return true;
+  if (m === "none") return false;
+  return !!(onFrontier || isSelected);
+}
+
+// Per-chart third-metric limits + magnification (#1400 remainder). Each of
+// the three scatter charts (xpl-c1/c2/c3) sizes its dots by a third metric
+// (c1: cost, c2: time, c3: score — the chart's sizeMetric). A per-chart
+// limit gates dots on that metric: "unset" keeps everything (the
+// historical behavior, kept as the default), "atmost"/"atleast" keep only
+// dots at or under/over a numeric threshold. The threshold follows the
+// inequality-filter convention: empty or non-numeric means inactive. A dot
+// whose third metric is unmeasured cannot satisfy an active limit, so it
+// is hidden — same rule as applyInequalityFilters. "Per-band limits" cap
+// the plotted dots per score band (at most N kept, in visible order), so a
+// dense band cannot drown the chart. Limit state lives per chart id on the
+// page (S.limitBy[id] = { mode, value, perBand }); magnification state
+// lives alongside it (S.magBy[id] = "fit" | "150" | "200"). These helpers
+// normalize the raw stored values so Bun tests exercise exactly the code
+// the browser runs.
+export function resolveLimitMode(mode) {
+  if (mode === "atmost" || mode === "atleast") return mode;
+  return "unset";
+}
+
+export function limitThreshold(raw) {
+  if (raw === "" || raw == null) return null;
+  var t = Number(raw);
+  return isFinite(t) ? t : null;
+}
+
+export function passesChartLimit(value, mode, threshold) {
+  var m = resolveLimitMode(mode);
+  var t = limitThreshold(threshold);
+  if (m === "unset" || t == null) return true;
+  if (value == null) return false;
+  var v = Number(value);
+  if (!isFinite(v)) return false;
+  return m === "atmost" ? v <= t : v >= t;
+}
+
+export function applyChartLimit(rows, get, spec) {
+  spec = spec || {};
+  var m = resolveLimitMode(spec.mode);
+  var t = limitThreshold(spec.value);
+  if (m === "unset" || t == null) return rows;
+  return rows.filter(function (p) { return passesChartLimit(get(p), m, t); });
+}
+
+export function capPointsPerBand(rows, maxPer, bandOf) {
+  var n = Math.floor(Number(maxPer));
+  if (!(n >= 1)) return rows;
+  var seen = {};
+  return rows.filter(function (p) {
+    var b = "b" + bandOf(p);
+    seen[b] = seen[b] || 0;
+    if (seen[b] >= n) return false;
+    seen[b]++;
+    return true;
+  });
+}
+
+export function resolveMagnify(mag) {
+  if (mag === "150" || mag === "200") return mag;
+  return "fit";
+}
+
+export function magnifyWidth(mag) {
+  var m = resolveMagnify(mag);
+  return m === "fit" ? "" : m + "%";
+}

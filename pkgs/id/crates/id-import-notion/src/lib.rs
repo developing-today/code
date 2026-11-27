@@ -12,12 +12,15 @@
 //! Slice 4 export reader (§2.5: Markdown+CSV archive, match ledger) lives
 //! in [`export`]; export-only degraded mode (§2.5) lives in
 //! [`export_only`].
+//! Slice 5 fidelity report generation (§6.4) lives in [`fidelity`].
 
 pub mod comments;
 pub mod content;
 pub mod databases;
 pub mod export;
 pub mod export_only;
+pub mod fidelity;
+pub mod reimport;
 pub mod rows;
 
 #[cfg(unix)]
@@ -619,6 +622,13 @@ pub struct Manifest {
     /// manifests, so it defaults empty when an older manifest is loaded.
     #[serde(default)]
     pub row_records: BTreeMap<String, crate::rows::RowConversion>,
+    /// Versioned per-data-source schema claims. Superseded claims remain as
+    /// provenance when a source moves or changes schema (§6.1).
+    #[serde(default)]
+    pub schema_claim_history: Vec<crate::databases::SchemaClaimRecord>,
+    /// Data-source parent changes observed during re-import (§6.1).
+    #[serde(default)]
+    pub moved_data_sources: Vec<crate::reimport::MovedDataSource>,
     /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
     /// §2.6), recorded by [`content::convert_page`]. Absent from
     /// pre-slice-4 manifests, so it defaults empty when an older
@@ -645,6 +655,25 @@ pub struct Manifest {
     /// export-only run records `export-path`). Defaults empty.
     #[serde(default)]
     pub comments_uncovered_reasons: BTreeMap<String, String>,
+    /// Page UUID -> links and mentions kept verbatim because their
+    /// target is outside the import set (§3), recorded by
+    /// [`content::convert_page`]. Re-conversion replaces the page's
+    /// entry wholesale, so an unchanged corpus reproduces identical
+    /// artifacts (§8 check 3). Absent from older manifests, so it
+    /// defaults empty.
+    #[serde(default)]
+    pub page_externalised: BTreeMap<String, Vec<crate::content::Externalised>>,
+    /// Page UUID -> files that could not be fetched during the run
+    /// (§4), recorded by [`content::convert_page`]. Re-conversion
+    /// replaces the page's entry wholesale. Absent from older
+    /// manifests, so it defaults empty.
+    #[serde(default)]
+    pub page_missing_files: BTreeMap<String, Vec<crate::content::MissingFile>>,
+    /// The latest generated fidelity report (design §6.4), recorded by
+    /// [`Manifest::record_fidelity_report`]. `None` until the first
+    /// report runs. Absent from older manifests, so it defaults empty.
+    #[serde(default)]
+    pub fidelity_report: Option<crate::fidelity::FidelityReport>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -721,11 +750,16 @@ impl Manifest {
             comment_claims: BTreeMap::new(),
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
+            schema_claim_history: Vec::new(),
+            moved_data_sources: Vec::new(),
             page_losses: BTreeMap::new(),
             export_matches: BTreeMap::new(),
             acquisition,
             degraded_identities: BTreeMap::new(),
             comments_uncovered_reasons: BTreeMap::new(),
+            page_externalised: BTreeMap::new(),
+            page_missing_files: BTreeMap::new(),
+            fidelity_report: None,
         })
     }
 
@@ -876,6 +910,18 @@ impl Manifest {
             bail!("manifest progress does not reconcile to inventory objects");
         }
         Ok(())
+    }
+
+    /// Generate the §6.4 fidelity report from this manifest and persist
+    /// it on the manifest (the next [`Manifest::save_atomic`] writes it
+    /// out with everything else). Re-running replaces the stored
+    /// report, so an unchanged corpus reproduces an identical report
+    /// (§8 check 3). Fails when the manifest does not reconcile — no
+    /// report is stored in that case.
+    pub fn record_fidelity_report(&mut self) -> Result<crate::fidelity::FidelityReport> {
+        let report = crate::fidelity::generate_report(self)?;
+        self.fidelity_report = Some(report.clone());
+        Ok(report)
     }
 
     /// Write by rename so a crash cannot leave a truncated manifest. No token

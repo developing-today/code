@@ -23,6 +23,7 @@
 // reinterpreted.
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
+import { getD1StoreClient } from "./d1-stores.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
 import {
   DEFAULT_DELIVERY,
@@ -50,6 +51,7 @@ import {
   type NotificationSnapshot,
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
+import { postCostAnomalyTick, type CostEvidence } from "./cost-anomaly.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
 import {
@@ -544,12 +546,23 @@ export class AlertsStore {
 
   private stages: ItemStageStore | null = null;
 
-  constructor(private readonly db: SqlClient) {}
+  constructor(
+    private readonly db: SqlClient,
+    private readonly registryDb?: SqlClient,
+  ) {}
+
+  /** The push registry connection (CF-5e #15561): the D1 copy when the
+   * backend switch names it, otherwise the ledger connection. Every
+   * push_* table access goes through here; the alerts_* ledger tables
+   * below keep using `db` directly. */
+  private registry(): SqlClient {
+    return this.registryDb ?? this.db;
+  }
 
   /** The staged pipeline for answerable items (#14084 S1), over the
-   * same store connection. */
+   * registry connection. */
   itemStages(): ItemStageStore {
-    if (!this.stages) this.stages = new ItemStageStore(this.db);
+    if (!this.stages) this.stages = new ItemStageStore(this.registry());
     return this.stages;
   }
 
@@ -604,7 +617,7 @@ export class AlertsStore {
 
   private ensureRegistry(): Promise<void> {
     if (!this.registryReady) {
-      const pending = ensurePushRegistry(this.db);
+      const pending = ensurePushRegistry(this.registry());
       this.registryReady = pending;
       pending.catch(() => {
         if (this.registryReady === pending) this.registryReady = null;
@@ -614,7 +627,7 @@ export class AlertsStore {
   }
 
   private async subscriptionByEndpoint(endpoint: string): Promise<PushSubscriptionRow | null> {
-    const rows = await this.db.query<Record<string, unknown>>(
+    const rows = await this.registry().query<Record<string, unknown>>(
       `${SUBSCRIPTION_SELECT} where e.endpoint = ${sqlStr(endpoint)}`,
     );
     return rows[0] ? readSubscriptionRow(rows[0]) : null;
@@ -623,7 +636,7 @@ export class AlertsStore {
   async upsertSubscription(sub: NewSubscription): Promise<PushSubscriptionRow> {
     await this.ensureRegistry();
     const at = sqlStr(nowIso());
-    const endpointRows = await this.db.query<{ id: string }>(
+    const endpointRows = await this.registry().query<{ id: string }>(
       `insert into push_endpoints (id, transport, client, device_id, endpoint, p256dh, auth, label, user_agent, created_at, last_seen_at, gone_count)
        values (${sqlStr(crypto.randomUUID())}, ${sqlStr("webpush")}, ${sqlStr(sub.client ?? "browser")}, ${
          sub.deviceId ? sqlStr(sub.deviceId) : "null"
@@ -640,7 +653,7 @@ export class AlertsStore {
     );
     const endpointId = endpointRows[0]?.id;
     if (!endpointId) throw new Error("push registry upsert returned no endpoint");
-    await this.db.query(
+    await this.registry().query(
       `insert into push_preferences (endpoint_id, classes, quiet, delivery, updated_at)
        values (${sqlStr(endpointId)}, ${sqlJson(sub.classes)}, ${sqlJson(sub.quiet)}, ${sqlJson(
          sub.delivery ?? DEFAULT_DELIVERY,
@@ -658,10 +671,10 @@ export class AlertsStore {
 
   async deleteSubscription(endpoint: string): Promise<boolean> {
     await this.ensureRegistry();
-    await this.db.query(
+    await this.registry().query(
       `delete from push_preferences where endpoint_id in (select id from push_endpoints where endpoint = ${sqlStr(endpoint)})`,
     );
-    const rows = await this.db.query<{ id: string }>(
+    const rows = await this.registry().query<{ id: string }>(
       `delete from push_endpoints where endpoint = ${sqlStr(endpoint)} returning id`,
     );
     return rows.length > 0;
@@ -669,7 +682,9 @@ export class AlertsStore {
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
     await this.ensureRegistry();
-    const rows = await this.db.query<Record<string, unknown>>(`${SUBSCRIPTION_SELECT} order by e.created_at, e.id`);
+    const rows = await this.registry().query<Record<string, unknown>>(
+      `${SUBSCRIPTION_SELECT} order by e.created_at, e.id`,
+    );
     // #3702 decision 3: old stored prefs are not rewritten, but must not
     // be reinterpreted on read. Apply the same per-field fallbacks used at
     // intake so delivery and the prefs page see safe values.
@@ -681,7 +696,7 @@ export class AlertsStore {
    * upsert path resets it too, on re-subscribe). */
   async noteSubscriptionGone(endpoint: string): Promise<"marked" | "pruned"> {
     await this.ensureRegistry();
-    const rows = await this.db.query<{ gone_count: number }>(
+    const rows = await this.registry().query<{ gone_count: number }>(
       `update push_endpoints set gone_count = gone_count + 1 where endpoint = ${sqlStr(endpoint)} returning gone_count`,
     );
     const count = rows[0]?.gone_count ?? 0;
@@ -694,7 +709,7 @@ export class AlertsStore {
 
   async noteSubscriptionAlive(endpoint: string): Promise<void> {
     await this.ensureRegistry();
-    await this.db.query(
+    await this.registry().query(
       `update push_endpoints set gone_count = 0, last_seen_at = ${sqlStr(nowIso())} where endpoint = ${sqlStr(
         endpoint,
       )} and gone_count <> 0`,
@@ -1037,18 +1052,51 @@ export async function sendTestPush(
 }
 
 /**
+ * Push registry backend switch (CF-5e #15561 slice 1). `d1` routes the
+ * five push_* registry tables and the stage pipeline to the D1
+ * fleet-platform copy through getD1StoreClient; anything else keeps the
+ * Turso registry. The alerts_* ledger tables always stay on getClient.
+ * Rollback is unsetting the variable. The D1 copy, refresh-at-flip and
+ * live verification are later slices — do not set this in production
+ * until they land.
+ */
+export const PUSH_REGISTRY_BACKEND_ENV = "PM_PUSH_REGISTRY_BACKEND";
+
+export type PushRegistryBackend = "turso" | "d1";
+
+export function pushRegistryBackend(env: NodeJS.ProcessEnv = process.env): PushRegistryBackend {
+  return env[PUSH_REGISTRY_BACKEND_ENV]?.trim().toLowerCase() === "d1" ? "d1" : "turso";
+}
+
+/**
  * Create the shared store resolver. Keep the in-flight attempt and successful
  * store cached, but clear null/rejected attempts so a later call can recover.
  * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
+ *
+ * Fail-closed: with the D1 registry backend requested but no D1 client
+ * available, the getter rejects instead of silently serving the registry
+ * from Turso — a split-brain write would diverge the two copies. The
+ * rejection clears like any other, so a later call retries.
  */
 export function createAlertsStoreGetter(
   getClient: () => Promise<SqlClient | null> = getTursoStoreClient,
+  getRegistryClient: () => Promise<SqlClient | null> = getD1StoreClient,
+  env: NodeJS.ProcessEnv = process.env,
 ): () => Promise<AlertsStore | null> {
   let storePromise: Promise<AlertsStore | null> | null = null;
 
   return function getAlertsStore(): Promise<AlertsStore | null> {
     if (!storePromise) {
-      const pending = getClient().then((db) => (db ? new AlertsStore(db) : null));
+      const pending = (async () => {
+        const db = await getClient();
+        if (!db) return null;
+        if (pushRegistryBackend(env) === "d1") {
+          const registry = await getRegistryClient();
+          if (!registry) throw new Error("D1 push registry unavailable");
+          return new AlertsStore(db, registry);
+        }
+        return new AlertsStore(db);
+      })();
       storePromise = pending;
       void pending.then(
         (store) => {
@@ -1133,6 +1181,14 @@ export interface AlertTickOptions {
   dashboardSnapshot?: () => Promise<NotificationSnapshot>;
   notificationHistory?: NotificationHistoryStore;
   now?: number;
+  /** #4825: cost-anomaly evidence loader. When a caller injects one,
+   * the tick runs the detector over the loaded evidence and posts
+   * warning incidents to the same store, so they surface through the
+   * ordinary ledger (Needs-you / brief) with ordinary dedupe. Absent
+   * = the detector stays dormant; no production caller injects one
+   * yet because the certified evidence sources are still unwired
+   * (see COST-ANOMALY.md). */
+  costAnomalyEvidence?: () => Promise<readonly CostEvidence[]>;
 }
 
 async function runDashboardNotificationTick(
@@ -1470,6 +1526,22 @@ export async function runAlertTick(
           `alerts engine: escalation not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
         );
       }
+    }
+  }
+  // #4825: the cost-anomaly step runs only when a caller injected an
+  // evidence loader. Fail-soft like the rest of the tick: a loader or
+  // store failure is logged and suppresses this tick's anomalies; it
+  // never breaks delivery, escalation, or the dashboard tick.
+  if (options.costAnomalyEvidence) {
+    try {
+      await postCostAnomalyTick({
+        enabled: true,
+        now: new Date(options.now ?? Date.now()),
+        loadEvidence: options.costAnomalyEvidence,
+        store,
+      });
+    } catch (err) {
+      console.warn(`alerts engine: cost-anomaly step failed (${err instanceof Error ? err.message : "error"})`);
     }
   }
   await runDashboardNotificationTick(cfg, store, subs, push, options);

@@ -40,7 +40,32 @@ export const PM_METADATA_BLOCK_START = "<!-- pm-metadata:start -->";
 export const PM_METADATA_BLOCK_END = "<!-- pm-metadata:end -->";
 
 const BLOCK_PATTERN = /<!--\s*pm-metadata:start\s*-->([\s\S]*?)<!--\s*pm-metadata:end\s*-->/;
-const JSON_FENCE_PATTERN = /```json\s*([\s\S]*?)```/i;
+const JSON_FENCE_OPEN_PATTERN = /^```json\s*$/i;
+const FENCE_CLOSE_LINE = "```";
+
+/**
+ * Extract the payload between fence delimiter lines. Fences count only
+ * when a delimiter is the whole line: a JSON string value may itself
+ * contain triple backticks (e.g. a title quoting ```json examples), and
+ * a regex over the raw block mistakes those characters for the closing
+ * fence, truncating the payload so the check rejects its own block
+ * (#16013). The closing fence is the LAST bare delimiter line, matching
+ * what renderMetadataBlock emits after the JSON text.
+ */
+function extractFencedJson(block: string): string | undefined {
+  const lines = block.split("\n");
+  const open = lines.findIndex((line) => JSON_FENCE_OPEN_PATTERN.test(line.trim()));
+  if (open === -1) return undefined;
+  let close = -1;
+  for (let i = lines.length - 1; i > open; i -= 1) {
+    if (lines[i].trim() === FENCE_CLOSE_LINE) {
+      close = i;
+      break;
+    }
+  }
+  if (close === -1) return undefined;
+  return lines.slice(open + 1, close).join("\n");
+}
 
 /** Minimal GitHub item snapshot the check needs. Both watchers build this. */
 export interface IngestionItem {
@@ -59,7 +84,85 @@ export interface IngestionItem {
   updatedAt: string;
   closedAt?: string | null;
   /** Sub-issue parent when the caller already resolved it; absent means unknown. */
-  nativeParent?: { repo: string; number: number; kind: string } | null;
+  nativeParent?: NativeParentRef | null;
+}
+
+/**
+ * Sub-issue parent reference naming the authoritative native parent.
+ */
+export interface NativeParentRef {
+  repo: string;
+  number: number;
+  kind: string;
+}
+
+/**
+ * Authoritative native-parent lookup result contract, shared by the
+ * sweeper and the webhook listener (#16011):
+ * - a ref: the item is a sub-issue of that parent (authoritative, wins
+ *   over any label-derived parent);
+ * - null: the parent endpoint answered 404 for an existing item, so the
+ *   item has no native parent and label resolution may proceed;
+ * - undefined: the lookup itself failed (auth, transport, server error,
+ *   unreadable shape) — callers must retry later and must NOT finalize
+ *   a label-derived parent on this evidence.
+ */
+export type NativeParentLookup = NativeParentRef | null | undefined;
+
+/**
+ * Classify a failed `GET /repos/{repo}/issues/{number}/parent` call on
+ * the shared contract (#16011). True only for a confirmed 404 (no
+ * native parent); every other failure — auth, transport, rate limit,
+ * server error — is retryable.
+ */
+export function isConfirmedParentAbsent(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\b404\b/.test(message);
+}
+
+/**
+ * Parse a `gh api .../parent --jq "{number: .number, repo_url: .repository_url}"`
+ * stdout on the shared contract (#16011): a ref when the endpoint names
+ * a parent, null when the shape carries none, undefined when the shape
+ * is unreadable (retry — it proves nothing either way).
+ */
+export function parseNativeParentResponse(stdout: string): NativeParentLookup {
+  let parsed: { number?: unknown; repo_url?: unknown };
+  try {
+    parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") return null;
+  const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
+  if (!match?.[1]) return null;
+  return { repo: match[1], number: parsed.number as number, kind: "sub-issue" };
+}
+
+/**
+ * Build the epic slug catalog from `gh issue list --json number,labels`
+ * rows (#16011). Callers filter server-side with `--label kind/epic`;
+ * the client-side kind check stays as a guard. First row wins per slug.
+ * Shared by the sweeper and the webhook listener so both resolve labels
+ * against the same catalog shape.
+ */
+export function buildEpicSlugMap(
+  rows: readonly { number?: unknown; labels?: readonly (string | { name?: unknown })[] }[],
+  repo: string,
+): EpicSlugMap {
+  const slugs: EpicSlugMap = new Map();
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+    const names = (row.labels ?? [])
+      .map((label) => (typeof label === "string" ? label : String(label.name ?? "")))
+      .filter(Boolean);
+    if (!names.includes("kind/epic")) continue;
+    for (const name of names) {
+      const slug = /^epic\/(.+)$/.exec(name)?.[1]?.trim().toLowerCase();
+      if (slug && !slugs.has(slug)) slugs.set(slug, { repo, number: row.number as number });
+    }
+  }
+  return slugs;
 }
 
 /** Epic slug (from `epic/<slug>` labels) to the epic issue it names. */
@@ -108,7 +211,7 @@ export function sourceUrlFor(item: Pick<IngestionItem, "repo" | "number" | "kind
 
 /** Deterministic artifact identity: one GitHub item, one metadata row. */
 export function artifactIdFor(item: Pick<IngestionItem, "repo" | "number" | "kind">): string {
-  return `github:${item.repo}#${item.kind}/${item.number}`;
+  return `gh:${item.repo}#${item.kind}:${item.number}`;
 }
 
 /** Extract the raw JSON payload of the canonical block, if any. */
@@ -118,7 +221,7 @@ export function extractMetadataPayload(
   if (!body) return { found: false, malformed: false };
   const block = BLOCK_PATTERN.exec(body)?.[1];
   if (block === undefined) return { found: false, malformed: false };
-  const json = JSON_FENCE_PATTERN.exec(block)?.[1];
+  const json = extractFencedJson(block);
   if (json === undefined) return { found: false, malformed: true };
   return { found: true, json: json.trim() };
 }

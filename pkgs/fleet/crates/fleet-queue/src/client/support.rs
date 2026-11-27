@@ -206,6 +206,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
+  time-recheck [--task <id>] [--limit <n>]\n\
   repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
   resolution-backfill\n\
   cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\
@@ -220,6 +221,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
+  placement-load [--worker <id>] [--json]\n\
   signal [--queue <name>] [--reason <text>]\n\
   fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
@@ -288,6 +290,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "quarantine-recheck" => {
             "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
         }
+        "time-recheck" => {
+            "usage: repo-queue time-recheck [--task <id>] [--limit <n>]\n\nRechecks tasks blocked until a time; requeues the ones whose time has passed."
+        }
         "repair" => {
             "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
         }
@@ -349,6 +354,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
         }
         "health" => "usage: repo-queue health [--queue <name>] [--worker <id>]\n\nBroker health.",
+        "placement-load" => {
+            "usage: repo-queue placement-load [--worker <id>] [--json]\n\nThe placement coordinator's true load view (broker /placement-load): per owner, the GitHub running/queued counts the sweep last read, active coordinator claims, occupancy against cap, and the read's time and source. Read-only; a down or disabled coordinator exits 3 naming the unavailability instead of printing an empty view."
+        }
         "signal" => {
             "usage: repo-queue signal [--queue <name>] [--reason <text>]\n\nSends a queue signal."
         }

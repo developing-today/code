@@ -1,11 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, beforeAll, vi } from "vitest";
 import { HotCacheStore } from "../src/hot_cache";
-import {
-  tryServeFromHotCache,
-  type HotCacheReader,
-  type SkipLog,
-} from "../src/read_path";
+import { tryServeFromHotCache, type HotCacheReader, type SkipLog } from "../src/read_path";
 import schemaSql from "../migrations/0001_hot_cache.sql?raw";
 
 const db = (env as unknown as { HOT_CACHE: D1Database }).HOT_CACHE;

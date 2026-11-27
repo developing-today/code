@@ -48,7 +48,7 @@ export type IssueDenyReason =
   | "issuance_failed";
 
 export type IssuedAgentCredential =
-  | { ok: true; credential: AgentCredentialMetadata; /** Shown exactly once; never stored. */ secret: string }
+  | { ok: true; credential: AgentCredentialMetadata /** Shown exactly once; never stored. */; secret: string }
   | { ok: false; reason: IssueDenyReason };
 
 export interface AgentCredentialDeps {
@@ -106,9 +106,12 @@ export async function issueAgentCredential(
     if (!session.roles.some((role) => MINTING_ROLES.has(role))) return { ok: false, reason: "not_minting_role" };
     // Single tenant, the session's own binding, never '*'.
     if (
-      typeof input.tenantId !== "string" || input.tenantId.length === 0 ||
-      input.tenantId === "*" || input.tenantId !== session.bindingId
-    ) return { ok: false, reason: "invalid_tenant" };
+      typeof input.tenantId !== "string" ||
+      input.tenantId.length === 0 ||
+      input.tenantId === "*" ||
+      input.tenantId !== session.bindingId
+    )
+      return { ok: false, reason: "invalid_tenant" };
     if (typeof input.audience !== "string" || input.audience.length === 0)
       return { ok: false, reason: "invalid_audience" };
     const ttlSec = input.ttlSec ?? DEFAULT_TTL_SEC;
@@ -134,9 +137,13 @@ export async function issueAgentCredential(
     await deps.store.put(stored);
     try {
       await deps.auditLifecycle({
-        kind: "issued", jti, accountId: session.accountId,
-        bindingId: session.bindingId, tenantId: input.tenantId,
-        actorTokenId: session.tokenId, at: now,
+        kind: "issued",
+        jti,
+        accountId: session.accountId,
+        bindingId: session.bindingId,
+        tenantId: input.tenantId,
+        actorTokenId: session.tokenId,
+        at: now,
       });
     } catch {
       // Issuance without its audit event must not stand (§4.8).
@@ -164,9 +171,13 @@ export async function revokeAgentCredential(
   const revoked = await deps.store.revoke(jti, now);
   if (revoked) {
     await deps.auditLifecycle({
-      kind: "revoked", jti, accountId: record.accountId,
-      bindingId: record.bindingId, tenantId: record.tenantId,
-      actorTokenId: session.tokenId, at: now,
+      kind: "revoked",
+      jti,
+      accountId: record.accountId,
+      bindingId: record.bindingId,
+      tenantId: record.tenantId,
+      actorTokenId: session.tokenId,
+      at: now,
     });
   }
   return { ok: true };
@@ -208,10 +219,16 @@ export async function exchangeClientCredentials(
     // Live read: a credential revoked since issuance never exchanges.
     const record = await deps.store.getByJti(input.credentialId);
     if (
-      record === null || record.revokedAt !== null || record.expiresAt <= now ||
-      record.issuedAt > now || record.audience !== input.audience || record.role !== "agent" ||
-      record.tenantId !== record.bindingId || record.tenantId === "*"
-    ) return deny;
+      record === null ||
+      record.revokedAt !== null ||
+      record.expiresAt <= now ||
+      record.issuedAt > now ||
+      record.audience !== input.audience ||
+      record.role !== "agent" ||
+      record.tenantId !== record.bindingId ||
+      record.tenantId === "*"
+    )
+      return deny;
     const presented = await digestSecret(input.secret);
     if (!digestsEqual(presented, record.secretDigest)) return deny;
     const claims: AccessTokenClaims = {

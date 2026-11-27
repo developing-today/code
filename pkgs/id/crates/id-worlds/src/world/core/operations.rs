@@ -1584,6 +1584,8 @@ impl WorldCore {
 
     /// Return retained events newer than `after_sequence`, plus the current
     /// cursor. If the cursor fell behind retention, the caller must resnapshot.
+    /// A cursor ahead of the journal can never be continuous (the journal was
+    /// rebuilt or regressed), so it also forces a resnapshot.
     /// The events are the viewer's projection (see [`project_event_for`]), so
     /// their sequences may skip withheld lines: a caller advances to
     /// `current_sequence`, not to the last sequence it was given plus one.
@@ -1592,7 +1594,8 @@ impl WorldCore {
         let participant_id = self.authorize(token, WorldScopes::JOIN)?;
         let scopes = self.viewer_scopes(participant_id);
         let oldest = self.oldest_sequence();
-        let needs_snapshot = after_sequence.saturating_add(1) < oldest;
+        let needs_snapshot =
+            after_sequence.saturating_add(1) < oldest || after_sequence > self.sequence;
         let events = if needs_snapshot {
             Vec::new()
         } else {

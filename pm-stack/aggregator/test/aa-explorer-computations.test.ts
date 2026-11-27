@@ -21,6 +21,14 @@ import {
   costScoreEnvelope,
   costScoreOls,
   costScoreTail,
+  resolveLabelMode,
+  shouldLabelPoint,
+  resolveLimitMode,
+  passesChartLimit,
+  applyChartLimit,
+  capPointsPerBand,
+  resolveMagnify,
+  magnifyWidth,
   sortRows,
   unpricedScoredPoints,
 } from "../src/assets/aa-explorer-computations.js";
@@ -443,5 +451,102 @@ describe("cost x score overlays (#1400 remainder)", () => {
       2,
     );
     expect(tail.length).toBe(1);
+  });
+});
+
+describe("chart point-label modes (#1400 remainder)", () => {
+  test("unknown and missing modes fall back to key, the historical default", () => {
+    expect(resolveLabelMode(undefined)).toBe("key");
+    expect(resolveLabelMode(null)).toBe("key");
+    expect(resolveLabelMode("")).toBe("key");
+    expect(resolveLabelMode("bogus")).toBe("key");
+    expect(resolveLabelMode("key")).toBe("key");
+    expect(resolveLabelMode("all")).toBe("all");
+    expect(resolveLabelMode("none")).toBe("none");
+  });
+
+  test("key labels only frontier and selected points, like the charts always did", () => {
+    expect(shouldLabelPoint("key", true, false)).toBe(true);
+    expect(shouldLabelPoint("key", false, true)).toBe(true);
+    expect(shouldLabelPoint("key", true, true)).toBe(true);
+    expect(shouldLabelPoint("key", false, false)).toBe(false);
+    // garbage mode resolves to key
+    expect(shouldLabelPoint("bogus", false, false)).toBe(false);
+    expect(shouldLabelPoint("bogus", true, false)).toBe(true);
+  });
+
+  test("all labels every point and none labels nothing", () => {
+    expect(shouldLabelPoint("all", false, false)).toBe(true);
+    expect(shouldLabelPoint("all", true, true)).toBe(true);
+    expect(shouldLabelPoint("none", false, false)).toBe(false);
+    expect(shouldLabelPoint("none", true, true)).toBe(false);
+  });
+});
+
+describe("per-chart third-metric limits + magnification (#1400 remainder)", () => {
+  const rows = [
+    { key: "cheap", score: 80, cost: 0.5, time: 130 },
+    { key: "leader", score: 95, cost: 1, time: 100 },
+    { key: "luna", score: 90, cost: 1.25, time: 150 },
+    { key: "unknown", score: 70, cost: null, time: null },
+  ];
+
+  test("resolveLimitMode keeps the three modes, defaults to unset", () => {
+    expect(resolveLimitMode("atmost")).toBe("atmost");
+    expect(resolveLimitMode("atleast")).toBe("atleast");
+    expect(resolveLimitMode("unset")).toBe("unset");
+    expect(resolveLimitMode("bogus")).toBe("unset");
+    expect(resolveLimitMode(undefined)).toBe("unset");
+  });
+
+  test("passesChartLimit gates one value against a numeric threshold", () => {
+    expect(passesChartLimit(0.5, "atmost", "1")).toBe(true);
+    expect(passesChartLimit(1.25, "atmost", "1")).toBe(false);
+    expect(passesChartLimit(1, "atmost", "1")).toBe(true);
+    expect(passesChartLimit(150, "atleast", "100")).toBe(true);
+    expect(passesChartLimit(90, "atleast", "100")).toBe(false);
+    expect(passesChartLimit(999, "unset", "1")).toBe(true);
+    expect(passesChartLimit(999, "atmost", "")).toBe(true);
+    expect(passesChartLimit(999, "atmost", "abc")).toBe(true);
+    expect(passesChartLimit(null, "atmost", "1")).toBe(false);
+  });
+
+  test("applyChartLimit filters rows on the chart's third metric", () => {
+    const byCost = (p) => p.cost;
+    expect(applyChartLimit(rows, byCost, { mode: "atmost", value: "1" }).map((p) => p.key)).toEqual([
+      "cheap",
+      "leader",
+    ]);
+    expect(applyChartLimit(rows, byCost, { mode: "atleast", value: "1" }).map((p) => p.key)).toEqual([
+      "leader",
+      "luna",
+    ]);
+    expect(applyChartLimit(rows, byCost, { mode: "unset", value: "1" }).map((p) => p.key)).toEqual([
+      "cheap",
+      "leader",
+      "luna",
+      "unknown",
+    ]);
+    expect(applyChartLimit(rows, byCost, {}).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);
+  });
+
+  test("capPointsPerBand keeps input order with at most N per band", () => {
+    const bandOf = (p) => (p.score >= 90 ? 1 : 0);
+    expect(capPointsPerBand(rows, 1, bandOf).map((p) => p.key)).toEqual(["cheap", "leader"]);
+    expect(capPointsPerBand(rows, 2, bandOf).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);
+    expect(capPointsPerBand(rows, "", bandOf).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);
+    expect(capPointsPerBand(rows, 0, bandOf).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);
+  });
+
+  test("resolveMagnify + magnifyWidth: fit is the default, steps are 150/200", () => {
+    expect(resolveMagnify("150")).toBe("150");
+    expect(resolveMagnify("200")).toBe("200");
+    expect(resolveMagnify("fit")).toBe("fit");
+    expect(resolveMagnify("250")).toBe("fit");
+    expect(resolveMagnify(undefined)).toBe("fit");
+    expect(magnifyWidth("fit")).toBe("");
+    expect(magnifyWidth("150")).toBe("150%");
+    expect(magnifyWidth("200")).toBe("200%");
+    expect(magnifyWidth("bogus")).toBe("");
   });
 });

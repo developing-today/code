@@ -124,11 +124,23 @@ describe("the edge queue door", () => {
   test("native filing-recheck threshold leaves hour-old stamps to a machine", async () => {
     const { db, direct, calls } = harness();
     try {
-      const old = promptPacket(edge.repo, edge.queue, 456, "Please do the work", new Date(now - 3600_001).toISOString());
+      const old = promptPacket(
+        edge.repo,
+        edge.queue,
+        456,
+        "Please do the work",
+        new Date(now - 3600_001).toISOString(),
+      );
       expect((await direct.queueEnqueue(old)).code).not.toBe(0);
       expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 0 });
       expect(calls).toHaveLength(0);
-      const boundary = promptPacket(edge.repo, edge.queue, 456, "Please do the work", new Date(now - 3600_000).toISOString());
+      const boundary = promptPacket(
+        edge.repo,
+        edge.queue,
+        456,
+        "Please do the work",
+        new Date(now - 3600_000).toISOString(),
+      );
       expect((await direct.queueEnqueue(boundary)).code).toBe(0);
       expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
     } finally {
@@ -151,13 +163,17 @@ describe("the edge queue door", () => {
         nativeQueueEnv(() => now / 1000),
       );
       const expected = (await oracle.allTasks())[0];
+      const expectedRow: Record<string, unknown> = { ...expected };
       const row = db.query("SELECT * FROM tasks").get() as Record<string, unknown>;
       for (const key of ["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]) {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
       }
       if (typeof row.manual_only === "number") row.manual_only = row.manual_only === 1;
+      // A fresh enqueue has no native session to resume; the hosted TaskRow does not model this column.
+      expect(row.resume_session_id).toBeNull();
       // The native schema carries lifecycle columns the hosted TaskRow does not model.
       for (const key of [
+        "resume_session_id",
         "labels",
         "labels_synced_at",
         "resolution",
@@ -170,7 +186,7 @@ describe("the edge queue door", () => {
       ]) {
         delete row[key];
       }
-      expect(row).toEqual(expected);
+      expect(row).toEqual(expectedRow);
       expect(db.query("SELECT blocked_deps, ready_condition FROM tasks").get()).toEqual({
         blocked_deps: null,
         ready_condition: null,

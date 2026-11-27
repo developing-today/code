@@ -9,7 +9,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { configFromEnv } from "../src/config.ts";
+import { D1MetadataStore } from "../src/d1-metadata-stores.ts";
 import { dispatch } from "../src/router.ts";
+import { FixtureMetadataStore } from "../src/stamping.ts";
+import { buildDeps } from "../src/worker.ts";
+import { withDb } from "./d1-double.ts";
 import { makeHarness } from "./helpers.ts";
 
 const h = await makeHarness();
@@ -21,12 +26,12 @@ test("health answers publicly with the hosted door's identity", async () => {
     status: string;
     service: string;
     doors: string[];
-    auth: { rp_configured: boolean; tenancy_configured: boolean };
+    auth: { rp_configured: boolean; tenancy_configured: boolean; service_auth_configured: boolean };
   };
   assert.equal(body.status, "ok");
   assert.equal(body.service, "fleet-hosted");
   assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge", "kv", "kv-upload"]);
-  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true });
+  assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true, service_auth_configured: true });
 });
 
 test("capabilities mirrors the native shape with hosted values", async () => {
@@ -122,3 +127,38 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   // #13318 added the kv blob upload door.
   assert.equal(doorById.get("kv-upload")?.state, "live");
 });
+
+// Health reports metadata durability (#16096). Oracle: buildDeps in
+// src/worker.ts resolves D1MetadataStore iff QUEUE_D1 is bound
+// (#15456); the health signal must agree with that wiring, so the
+// live readback gate can check one public boolean instead of reading
+// code. The default harness has no binding: fixture, not durable.
+test(
+  "health reports whether the metadata store is durable",
+  withDb(async (d1) => {
+    const unset = await dispatch(new Request("https://fleet-hosted.test/health"), h.deps);
+    assert.deepEqual(((await unset.json()) as { storage: unknown }).storage, {
+      d1_bound: false,
+      metadata_durable: false,
+    });
+
+    const boundConfig = configFromEnv({ QUEUE_D1: d1 });
+    assert.equal(boundConfig.d1Bound, true);
+    assert.equal(configFromEnv({}).d1Bound, false);
+    const set = await dispatch(new Request("https://fleet-hosted.test/health"), {
+      ...h.deps,
+      config: boundConfig,
+    });
+    const setText = await set.text();
+    assert.deepEqual((JSON.parse(setText) as { storage: unknown }).storage, {
+      d1_bound: true,
+      metadata_durable: true,
+    });
+    // A boolean, never binding details.
+    assert.doesNotMatch(setText, /fleet-queue|c17186b0/);
+
+    // The signal agrees with the wiring it claims to report.
+    assert.ok(buildDeps({ QUEUE_D1: d1 }).metadataStore instanceof D1MetadataStore);
+    assert.ok(buildDeps({}).metadataStore instanceof FixtureMetadataStore);
+  }),
+);

@@ -7,12 +7,13 @@
 
 use super::*;
 
-pub const DEFAULT_TURSO_URL: &str = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
+pub const DEFAULT_TURSO_URL: &str =
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-    claim_provider, claim_model, claim_variant, claim_session_id, \
+    claim_provider, claim_model, claim_variant, claim_session_id, resume_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
@@ -957,6 +958,10 @@ impl TursoBackend {
             "claim_model",
             "claim_variant",
             "claim_session_id",
+            // #9178 §1 (FDR-0001): the durable resume hint — which
+            // OpenCode session a claim should continue. NULL means
+            // no hint: the existing claim path is unchanged.
+            "resume_session_id",
         ] {
             let has = cols
                 .iter()
@@ -1124,6 +1129,7 @@ pub(crate) const SCHEMA: [&str; 45] = [
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
         max_attempts INTEGER NOT NULL DEFAULT 1000, \
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
+        resume_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         required_budget_minutes INTEGER, \
@@ -2035,8 +2041,10 @@ pub(crate) fn revalidate_outcome(
 ///
 /// observe_only (the C3 landing mode, agent-events-turso.md):
 /// outcomes are computed and logged (releases as would_release)
-/// but no task row is mutated, so the first enabled run re-checks
-/// the same population.
+/// but no task row is mutated, so an enabled run re-checks the
+/// same population. Since the #16006 activation the scheduled
+/// sweep runs live by default (see sweep_observe_only);
+/// observe_only is now an explicit opt-in for a dry cycle.
 pub(crate) fn revalidate_parked(
     t: &TursoBackend,
     min_age_seconds: i64,
@@ -2198,21 +2206,36 @@ pub(crate) fn revalidate_parked(
     }))
 }
 
+/// #16006: whether a /sweep request runs its park revalidation
+/// in observe-only mode. Absent the field, the sweep is LIVE:
+/// the C3 observe-only landing (#6803, agent-events-turso.md)
+/// was the gated rollout, and the default scheduled path now
+/// releases satisfied broker-condition parks (task_terminal,
+/// task_status, event_seen) to queued. Observe-only must be
+/// asked for explicitly (observe_only=true). person_answer
+/// parks are unaffected either way: revalidate_outcome never
+/// releases them, so they still wait for the person's /wake.
+pub(crate) fn sweep_observe_only(req: &Value) -> bool {
+    req_bool(req, "observe_only").unwrap_or(false)
+}
+
 /// One sweeper cycle (#6803): the Turso replacement for the retired
 /// pg_cron trio — expire_leases (was every minute), prune_events
 /// (daily 04:17) and revalidate_parked_tasks (daily 05:17) — driven
 /// by systemd timers POSTing here. Parts are opt-in per call except
 /// expire, which defaults on: the minutely timer sends
 /// {"expire": true} alone, the daily timer adds prune + revalidate.
-/// observe_only defaults true (C3): releases must be opted into by
-/// passing observe_only=false. A summary event is appended only
+/// observe_only defaults false since the #16006 activation (see
+/// sweep_observe_only): the default cycle releases satisfied
+/// broker-condition parks; passing observe_only=true still runs a
+/// non-mutating observe cycle. A summary event is appended only
 /// when the cycle changed something or ran the daily parts, so the
 /// minutely expire stays silent while it has nothing to expire.
 pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
     let do_expire = req_bool(req, "expire").unwrap_or(true);
     let do_revalidate = req_bool(req, "revalidate").unwrap_or(false);
     let do_prune = req_bool(req, "prune").unwrap_or(false);
-    let observe_only = req_bool(req, "observe_only").unwrap_or(true);
+    let observe_only = sweep_observe_only(req);
     let work = (|| -> Result<Value, TErr> {
         let mut out = json!({"observe_only": observe_only});
         let mut expired = 0i64;
@@ -2275,6 +2298,28 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = quarantine_summary {
             out["quarantine_recheck"] = s;
         }
+        // #14212: the time rechecker rides the sweep beside the
+        // dep and quarantine recheckers, on the same expire
+        // timer — a blocked row whose time ready_condition has
+        // lapsed is requeued within one sweep minute, so a
+        // wait-until-time block can never fossilize in blocked
+        // again. Opt out per call: time_recheck=false.
+        let time_summary = if req_bool(req, "time_recheck").unwrap_or(true) {
+            Some(run_time_rechecks(
+                t,
+                req_i64(req, "time_limit").unwrap_or(200),
+            )?)
+        } else {
+            None
+        };
+        let time_checked = time_summary
+            .as_ref()
+            .and_then(|s| s.get("checked"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = time_summary {
+            out["time_recheck"] = s;
+        }
         // #9177: the closed-bound detective rides the sweep too —
         // the same minutely timer already POSTs /sweep, so every
         // bound (session-stamped claimed|parked) task gets its
@@ -2317,6 +2362,7 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
             || do_prune
             || dep_checked > 0
             || quarantine_checked > 0
+            || time_checked > 0
             || closed_bound_missing > 0
         {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;

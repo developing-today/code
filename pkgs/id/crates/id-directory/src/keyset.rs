@@ -87,7 +87,12 @@ struct SignedBody<'a> {
     entry: &'a KeysetEntry,
 }
 
-pub(crate) fn body_bytes(author: &str, lamport: u64, prev_hash: &str, entry: &KeysetEntry) -> Result<Vec<u8>> {
+pub(crate) fn body_bytes(
+    author: &str,
+    lamport: u64,
+    prev_hash: &str,
+    entry: &KeysetEntry,
+) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&SignedBody {
         author,
         lamport,
@@ -320,12 +325,27 @@ impl Log {
     /// Insert a verified record; invalid records leave the log unchanged.
     pub fn insert(&mut self, record: KeysetRecord) -> Result<bool> {
         record.verify()?;
+        Ok(self.insert_preverified_inner(record))
+    }
+
+    /// Insert a record whose signature was already verified, skipping the
+    /// redundant re-verification (#15142). The fold-order property test
+    /// inserts byte-identical records into four logs; verifying once (the
+    /// forward log, via [`Log::insert`]) covers validity, and the
+    /// dedicated `verify` tests cover rejection. The ordering oracle —
+    /// fold equivalence across insertion orders — is untouched.
+    #[cfg(test)]
+    pub(crate) fn insert_preverified(&mut self, record: KeysetRecord) -> Result<bool> {
+        Ok(self.insert_preverified_inner(record))
+    }
+
+    fn insert_preverified_inner(&mut self, record: KeysetRecord) -> bool {
         let key = record.key();
         if self.records.contains_key(&key) {
-            return Ok(false);
+            return false;
         }
         self.records.insert(key, record);
-        Ok(true)
+        true
     }
 
     /// Records in deterministic merge-key order.
@@ -916,6 +936,13 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
                 authorized_admin,
                 "device enrollment requires an active admin"
             );
+            ensure!(
+                !state
+                    .devices
+                    .get(device_key)
+                    .is_some_and(|device| device.revoked),
+                "a revoked device key cannot be enrolled again"
+            );
             state.devices.insert(
                 device_key.clone(),
                 DeviceState {
@@ -1228,6 +1255,51 @@ mod tests {
         assert!(state.is_admin(&public(1)));
         assert!(!state.is_device(&public(2)));
         assert_eq!(state.devices[&public(2)].enrolled_at, 2);
+    }
+
+    #[test]
+    fn a_revoked_device_key_cannot_be_enrolled_again() {
+        let first = genesis();
+        let admin = key(1);
+        let device = key(2);
+        let enrolled = append(
+            &first,
+            &admin,
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "tablet".to_owned(),
+            },
+            Some(&device),
+        );
+        let revoked = append(
+            &enrolled,
+            &admin,
+            3,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(2),
+                reason: "lost".to_owned(),
+            },
+            None,
+        );
+        let replay = KeysetRecord::sign(
+            &admin,
+            4,
+            revoked.hash.clone(),
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "recovered".to_owned(),
+            },
+            Some(&device),
+        )
+        .unwrap();
+        let mut log = Log::default();
+        for record in [&first, &enrolled, &revoked, &replay] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert_eq!(state.head_hash, revoked.hash);
+        assert!(!state.is_device(&public(2)));
     }
 
     /// Lamport 2 at the genesis head, with the rotation's merge key
@@ -1850,15 +1922,22 @@ mod tests {
                         Some(&key(*seed)),
                     )
                     .unwrap();
-                    self.state.devices.insert(
-                        public(*seed),
-                        DeviceState {
-                            label: format!("device-{seed}"),
-                            enrolled_at: lamport,
-                            revoked: false,
-                        },
-                    );
-                    self.emit(record, true);
+                    let valid = !self
+                        .state
+                        .devices
+                        .get(&public(*seed))
+                        .is_some_and(|device| device.revoked);
+                    if valid {
+                        self.state.devices.insert(
+                            public(*seed),
+                            DeviceState {
+                                label: format!("device-{seed}"),
+                                enrolled_at: lamport,
+                                revoked: false,
+                            },
+                        );
+                    }
+                    self.emit(record, valid);
                 }
                 HistoryOp::Revoke(seed) => {
                     let lamport = self.next_lamport();
@@ -2064,16 +2143,16 @@ mod tests {
             }
             let mut reverse = Log::default();
             for record in model.records.iter().rev() {
-                prop_assert!(reverse.insert(record.clone()).is_ok());
+                prop_assert!(reverse.insert_preverified(record.clone()).is_ok());
             }
             let split = model.records.len() / 2;
             let mut left = Log::default();
             let mut right = Log::default();
             for record in &model.records[..split] {
-                left.insert(record.clone()).unwrap();
+                left.insert_preverified(record.clone()).unwrap();
             }
             for record in &model.records[split..] {
-                right.insert(record.clone()).unwrap();
+                right.insert_preverified(record.clone()).unwrap();
             }
             let merged = merge(&left, &right);
 

@@ -455,6 +455,12 @@ pub struct ServeOptions {
     pub world_max_open: usize,
     /// Most world sessions at once, across all worlds.
     pub world_max_sessions: usize,
+    /// Most worlds one account may hold at once (#1067, F12.10
+    /// per-account quotas). `0` = no per-account bound.
+    pub world_max_per_account: u32,
+    /// Most storage bytes one account may be charged at once (#1067,
+    /// F12.10 per-account quotas). `0` = no per-account bound.
+    pub world_storage_max_per_account: u64,
     /// Close durable worlds idle for this many seconds (`0` never); when
     /// absent, as [`resolve_world_idle_secs`] decides.
     pub world_idle_secs: Option<u64>,
@@ -993,8 +999,6 @@ struct ServeWorlds {
     trusted_module_keys: Vec<[u8; 32]>,
     runtime: id_caps::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn id_directory::directory_mail::MailSink>>,
-    /// Host-mode lifecycle over [`WORLDS_DIR`] (`--world-host`, #10693).
-    host: Option<Arc<id_worlds::host::HostLifecycle>>,
     /// The jurisdiction partition this server's worlds live in
     /// (`--world-partition`, #3898); `None` serves unassigned local worlds.
     partition: Option<String>,
@@ -1015,39 +1019,8 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
             {
                 return Ok(None);
             }
-            let Some(host) = &self.host else {
-                return self.open_world(name).await.map(Some);
-            };
-            // Host mode (#10693): record the wake (or the admin-authorised
-            // create) before opening, and take it back if the open fails,
-            // so the host file never shows a world live that is not.
-            let admission = if create {
-                host.admit_create(name)?
-            } else {
-                host.admit_wake(name)?
-            };
-            match self.open_world(name).await {
-                Ok(service) => Ok(Some(service)),
-                Err(error) => {
-                    if let Err(undo) = host.undo_wake(name, admission) {
-                        warn!(world = name, "host: could not undo wake: {undo:#}");
-                    }
-                    Err(error)
-                }
-            }
+            self.open_world(name).await.map(Some)
         })
-    }
-
-    fn closed(&self, name: &str) {
-        if let Some(host) = &self.host
-            && let Err(error) = host.record_closed(name)
-        {
-            warn!(world = name, "host: could not record idle close: {error:#}");
-        }
-    }
-
-    fn pinned(&self, name: &str) -> bool {
-        self.host.as_ref().is_some_and(|host| host.pinned(name))
     }
 
     fn exists(&self, name: &str) -> bool {
@@ -1063,6 +1036,24 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
 
     fn durable(&self) -> bool {
         !self.ephemeral
+    }
+
+    fn stored_bytes(&self, name: &str) -> Option<u64> {
+        // The journal is the world's durable bytes (#1067, F12.10):
+        // a stat, never an open, so it stays cheap under the hub's
+        // slot-map lock. Ephemeral servers keep nothing, and a missing
+        // journal (a world about to be created) measures zero via the
+        // hub's `unwrap_or(0)`.
+        if self.ephemeral {
+            return None;
+        }
+        std::fs::metadata(
+            Path::new(WORLDS_DIR)
+                .join(name)
+                .join(id_worlds::world_store::JOURNAL_FILE),
+        )
+        .ok()
+        .map(|meta| meta.len())
     }
 }
 
@@ -1418,6 +1409,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_checkpoint_every,
         world_max_open,
         world_max_sessions,
+        world_max_per_account,
+        world_storage_max_per_account,
         world_idle_secs,
         world_host,
         world_partition,
@@ -1796,6 +1789,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Every world lives in one hub, shared by the Iroh protocol and the web
     // bridge. The default world opens now so a bad journal fails startup.
+    // The serving node's answer on `host.sock` (#10697), stopped at exit.
+    #[cfg(all(feature = "world", unix))]
+    let mut host_control: Option<tokio::task::JoinHandle<()>> = None;
     #[cfg(feature = "world")]
     let world_hub = if world {
         use id_worlds::world_hub::{HubLimits, WorldHub};
@@ -1823,7 +1819,26 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
         );
-        let opener = Arc::new(ServeWorlds {
+        // Bind first, as `id host run` does: a second host on the same
+        // data root is refused before this node opens any world (#10697).
+        #[cfg(unix)]
+        let control_listener = if world_host {
+            fs::create_dir_all(WORLDS_DIR)?;
+            Some(id_worlds::host_control::bind(Path::new(WORLDS_DIR))?)
+        } else {
+            None
+        };
+        // Host-mode lifecycle over the worlds directory (`--world-host`,
+        // #10693): every client open goes through its admission rule.
+        let host = world_host
+            .then(|| -> Result<_> {
+                fs::create_dir_all(WORLDS_DIR)?;
+                Ok(Arc::new(id_worlds::host::HostLifecycle::open(Path::new(
+                    WORLDS_DIR,
+                ))?))
+            })
+            .transpose()?;
+        let storage = ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
             boundary_config: started_server_config
@@ -1848,17 +1863,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_mail_smtp,
                 world_mail_from,
             )?,
-            host: world_host
-                .then(|| -> Result<_> {
-                    std::fs::create_dir_all(WORLDS_DIR)?;
-                    Ok(Arc::new(id_worlds::host::HostLifecycle::open(
-                        std::path::Path::new(WORLDS_DIR),
-                    )?))
-                })
-                .transpose()?,
             partition: world_partition,
-        });
-        let host = opener.host.clone();
+        };
+        let opener: Arc<dyn id_worlds::world_hub::WorldOpener> = match &host {
+            Some(host) => Arc::new(id_worlds::host_opener::HostedOpener::new(
+                storage,
+                Arc::clone(host),
+            )),
+            None => Arc::new(storage),
+        };
         let hub = WorldHub::new(
             opener,
             world_admin_token.clone(),
@@ -1867,10 +1880,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 max_open_worlds: world_max_open,
                 max_sessions: world_max_sessions,
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
+                // #1067 F12.10: opt-in per-account world quota, `0` keeps
+                // the unconfigured hub's behaviour (no per-account bound).
+                max_worlds_per_account: world_max_per_account,
+                // #1067 F12.10: opt-in per-account storage quota, `0`
+                // keeps the unconfigured hub's behaviour. The hub owns
+                // the ledger; the write-path measurement slice lands
+                // the charges.
+                max_storage_bytes_per_account: world_storage_max_per_account,
             },
         );
         info!("serve startup: opening default world via hub (#190 breadcrumb)");
-        let default_service = hub.open_default().await?;
+        // Host mode keeps a restart from changing a world's state: a
+        // default world the host file records asleep or archived stays
+        // that way (an operator stopped it, or it wakes only on their
+        // start), and is not opened as a client would open it (#10697).
+        let default_at_rest = host.as_ref().is_some_and(|host| {
+            host.state(&world_name)
+                .is_some_and(|state| state != id_worlds::host::LifecycleState::Live)
+        });
+        let default_service = if default_at_rest {
+            info!(
+                world = %world_name,
+                "host mode: the default world is at rest and stays closed"
+            );
+            None
+        } else {
+            Some(hub.open_default().await?)
+        };
         info!("serve startup: default world open, building router (#190 breadcrumb)");
         if let Some(host) = &host {
             // Worlds recorded live stay live across a restart (#10693):
@@ -1891,6 +1928,31 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 root = WORLDS_DIR,
                 "host mode: serving the worlds directory as a data root"
             );
+            // `id host start`, `stop`, `archive`, `restore`, `list`,
+            // `inspect`, `pin`, `wake`, `export` and `import` reach this
+            // node over its control socket (#10697).
+            #[cfg(unix)]
+            if let Some(listener) = control_listener {
+                let key = match crate::commands::host::host_key(Path::new(WORLDS_DIR)).await {
+                    Ok(key) => Some(key),
+                    Err(error) => {
+                        warn!("host mode: exports are off: no host key ({error:#})");
+                        None
+                    }
+                };
+                let control =
+                    id_worlds::node_control::NodeControl::new(hub.clone(), Arc::clone(host), key);
+                host_control = Some(tokio::spawn(async move {
+                    if let Err(error) = control.serve(&listener, std::future::pending()).await {
+                        warn!("host control: {error:#}");
+                    }
+                }));
+                let socket = id_worlds::host_control::socket_path(Path::new(WORLDS_DIR));
+                info!(
+                    socket = %socket.display(),
+                    "host mode: answering the operator CLI"
+                );
+            }
         }
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
@@ -1900,10 +1962,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     );
                 }
             }
-            default_service
-                .world()
-                .update_caps(world_caps.clone(), Vec::new())
-                .await?;
+            if let Some(default_service) = &default_service {
+                default_service
+                    .world()
+                    .update_caps(world_caps.clone(), Vec::new())
+                    .await?;
+            } else {
+                warn!(
+                    "world: --world-cap is not applied: the default world is at rest; \
+                     start it and restart to apply"
+                );
+            }
         }
         if world_idle_secs > 0 && !ephemeral {
             let idle = std::time::Duration::from_secs(world_idle_secs);
@@ -2071,8 +2140,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         None => router_builder,
     };
     // Relay authorization uses the same signed-graph store as LocalEvents.
-    // Serve has no neighbour-discovery view at this layer yet, so this slice
-    // serves the gated ALPN with an empty fan-out set.
+    // Fan-out targets are the live peer-discovery view; RelayGate still
+    // decides what is accepted before anything reaches the sink, and the
+    // sink filters the discovered targets against the same frontier so
+    // group payloads fan out only to the envelope group's members
+    // (#15912).
     #[cfg(feature = "web")]
     let router_builder = match &event_events {
         Some(events) => {
@@ -2089,8 +2161,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     ),
                 ) as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>
             });
-            let sink =
-                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let sink = ForwardingSink::fanning_out(
+                node_id.to_string(),
+                endpoint.clone(),
+                DiscoveredRelayPeers(peer_discovery.clone()),
+            )
+            .with_group_frontier(
+                Arc::new(frontier.clone()) as Arc<dyn id_sync::relay_gate::MembershipFrontier>
+            );
             let sink = match boundary_gate.as_ref() {
                 Some(gate) => sink.with_boundary_gate(Arc::clone(gate)),
                 None => sink,
@@ -2715,6 +2793,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         flush.abort();
         let _ = flush.await;
     }
+    #[cfg(all(feature = "world", unix))]
+    if let Some(control) = host_control {
+        control.abort();
+        let _ = control.await;
+        let _ = fs::remove_file(id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)));
+    }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {
         hub.shutdown_all().await;
@@ -2728,6 +2812,25 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let _ = group_warning_handle.await;
     store.shutdown().await?;
     Ok(())
+}
+
+/// Relay fan-out targets read from serve's live peer-discovery table.
+#[cfg(feature = "web")]
+#[derive(Clone)]
+struct DiscoveredRelayPeers(PeerDiscovery);
+
+#[cfg(feature = "web")]
+impl id_sync::forwarding_sink::NextPeers for DiscoveredRelayPeers {
+    fn next_peers(&self) -> Vec<(String, iroh::EndpointAddr)> {
+        self.0
+            .peers()
+            .into_iter()
+            .map(|peer| {
+                let node_id = peer.announcement.node_id;
+                (node_id.to_string(), iroh::EndpointAddr::from(node_id))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -2951,6 +3054,33 @@ mod tests {
         publish_serve_lock_reclaiming_stale_locked(&path, current).unwrap();
 
         assert_eq!(fs::read_to_string(path).unwrap(), current);
+    }
+
+    // The discovery view itself is unfiltered: it reports every
+    // discovered peer. Group authorization is applied later, by the
+    // sink's group frontier (#15912) — this test pins the provider
+    // half only.
+    #[cfg(feature = "web")]
+    #[test]
+    fn relay_peer_discovery_reads_every_discovered_peer() {
+        use id_sync::forwarding_sink::NextPeers;
+        let peers = PeerDiscovery::new();
+        assert!(DiscoveredRelayPeers(peers.clone()).next_peers().is_empty());
+
+        let first = stale_test_peer(1).announcement;
+        let second = stale_test_peer(2).announcement;
+        peers.update(first.clone());
+        peers.update(second.clone());
+
+        let mut targets: Vec<String> = DiscoveredRelayPeers(peers)
+            .next_peers()
+            .into_iter()
+            .map(|(relay, _)| relay)
+            .collect();
+        targets.sort();
+        let mut expected = vec![first.node_id.to_string(), second.node_id.to_string()];
+        expected.sort();
+        assert_eq!(targets, expected);
     }
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {

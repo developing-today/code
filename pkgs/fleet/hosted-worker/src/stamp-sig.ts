@@ -85,22 +85,12 @@ const SIG_ALGORITHM = "ed25519";
 const ED25519_SIGNATURE_BYTES = 64;
 const MAX_DEPTH = 32;
 
-// --- base64url (unpadded), the jwt.ts idiom kept local to this module.
+import { base64UrlToBytes, bytesToBase64Url } from "../../../hosted-primitives/src/encoding.ts";
 
-export function bytesToB64url(bytes: Uint8Array): string {
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-export function b64urlToBytes(text: string): Uint8Array {
-  const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
+// Single-implementation re-exports (G2 of #9085): the canonical
+// base64url helpers live in hosted-primitives; existing import sites
+// (direct-read.ts) keep working.
+export { base64UrlToBytes as b64urlToBytes, bytesToBase64Url as bytesToB64url };
 
 // --- Canonical form.
 
@@ -215,7 +205,7 @@ export async function signStamp(provenance: Provenance, signer: StampSigner): Pr
     signer.privateKey,
     canonicalProvenanceBytes(provenance) as BufferSource,
   );
-  const stampSig = [SIG_VERSION, SIG_ALGORITHM, signer.keyId, bytesToB64url(new Uint8Array(signature))].join(".");
+  const stampSig = [SIG_VERSION, SIG_ALGORITHM, signer.keyId, bytesToBase64Url(new Uint8Array(signature))].join(".");
   return { ...provenance, stamp_sig: stampSig };
 }
 
@@ -243,7 +233,7 @@ function parseStampSig(value: unknown): ParsedStampSig | StampVerification {
   }
   let signature: Uint8Array;
   try {
-    signature = b64urlToBytes(sigText);
+    signature = base64UrlToBytes(sigText);
   } catch {
     return { status: "diverged", reason: "malformed_stamp_sig" };
   }

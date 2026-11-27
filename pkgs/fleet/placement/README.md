@@ -77,9 +77,24 @@ line the weekly audit already counts (`[source: hard-stop]`); a pool
 with no entry — or an explicit `stopped: false` — seats unaffected,
 and the file never clears a `pool_hard_stop` recorded in the answers.
 A missing or malformed registry fails the dispatch loudly instead of
-seating unguarded. Follow-up (not this slice): the steward writer that
-maintains `hard-stops.json` beside `quota-current.json`, and the
-trailing-pace input, which still has no live producer.
+seating unguarded. The `placement-hard-stop` command maintains this
+registry atomically; both setting and clearing require a reason, and a
+clear is recorded as `stopped:false` rather than deleting the pool entry:
+
+```sh
+placement-hard-stop --action set --file hard-stops.json --pool chatgpt-plan \
+  --note "monthly usage near the wall"
+placement-hard-stop --action clear --file hard-stops.json --pool chatgpt-plan \
+  --note "provider quota recovered"
+```
+
+`--issued-at <RFC3339>` can supply a fixed timestamp for a steward action;
+otherwise the command records the current UTC time. Each pool retains its
+latest action, reason, and timestamp (not an append-only history). A persistent
+`hard-stops.json.lock` sidecar serializes cooperating writers across the
+read-modify-rename transaction; do not delete it while writers may run. Invalid
+or unknown registry data is rejected without replacing it. This supplies the
+steward writer; the production trailing-pace input still has no live producer.
 
 ## Tests
 
@@ -93,7 +108,8 @@ proceed), the hard-stop registry (stopped/absent/explicit-false reads,
 sticky stop, fail-closed I/O, pool identity required), and the weekly
 audit sample (emitted records re-checked against
 the table, tampered records named by finding kind, deterministic
-sampling, refusal counting).
+sampling, refusal counting), and hard-stop writer create/update/clear plus
+strict command-argument validation.
 
 ## Monthly pace guard (issue #2732, slice 1)
 
@@ -136,14 +152,9 @@ record lands on `Muse` with the option's own supervision text. The emitted
 record for a live handoff of exactly that shape is posted on #4986 with the
 PR that carries this PoC.
 
-One seam the PoC review should settle: implementation handoffs. The table's
-default rule (R4) places implementation work on a dispatched OpenCode
-session, while the newer direct-assignment doctrine (#8187, which the #2024
-review says wins where the two differ) makes the claim itself the placement
-for queue work. This PoC evaluates the table as written; how a claimed
-implementation task's record should be emitted — R4 as evaluated, or the
-claiming lane's option under a recorded E1 exception citing #8187 — is a
-review decision, not something the PoC pre-judges.
+For a claimed queue-work implementation task, record the claiming lane's
+option under `rule: "exception"` with an `exception_id` citing #8187; the
+claim itself is the placement.
 
 ## Not in this PoC (the rollout this PoC is reviewed for)
 

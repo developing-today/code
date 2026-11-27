@@ -30,7 +30,12 @@ queue-broker = [
   "dep:rustls",
   "dep:rustls-pki-types",
 ]
-secrets-broker = ["dep:chunked_transfer", "dep:fleet-config", "dep:libc"]
+secrets-broker = [
+  "dep:chunked_transfer",
+  "dep:fleet-config",
+  "dep:libc",
+  "dep:ureq",
+]
 
 [dependencies]
 fleet-secrets = { workspace = true }

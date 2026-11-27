@@ -31,7 +31,7 @@ import {
   foldClaim,
   parseMarker,
 } from "../src/queue-fallback.ts";
-import { iso, type JsonObject } from "../src/queue-validate.ts";
+import { iso, type JsonObject, validatePacket } from "../src/queue-validate.ts";
 import { bearerReq, makeHarness, BINDING_A, BINDING_B, SERVICE_TOKEN } from "./helpers.ts";
 
 const T0 = 1767225600; // 2026-01-01T00:00:00Z
@@ -124,7 +124,7 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   const kindErrors = (await verb(store, nativeEnv(), "validate", { packet: badKind }))["errors"] as string[];
   assert.ok(
     kindErrors.includes(
-      'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "second_pass", "small_fix", "triage"]',
+      'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "prompt", "second_pass", "small_fix", "triage"]',
     ),
   );
 
@@ -139,6 +139,37 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   const badDate = fixPacket(4242, {}, { not_before: "2026-02-30T00:00:00Z" });
   const dateErrors = (await verb(store, nativeEnv(), "validate", { packet: badDate }))["errors"] as string[];
   assert.ok(dateErrors.some((e) => e.includes("is not a valid RFC 3339 timestamp")));
+});
+
+test("prompt validator accepts canonical IDs and rejects missing, malformed, or mismatched identities", () => {
+  const id = "prompt:00000000-0000-4000-8000-000000000001";
+  const packet = fixPacket(10032, {
+    kind: "prompt",
+    prompt: { id, text: "Summarize the current queue health.", target: "pool:auto", mode: "async" },
+  });
+  packet["dedupe_key"] = "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001";
+  assert.deepEqual(validatePacket(packet, T0)[0], []);
+
+  const mismatch = structuredClone(packet);
+  mismatch["dedupe_key"] =
+    "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002";
+  assert.ok(validatePacket(mismatch, T0)[0].some((error) => error.includes("prompt.id")));
+
+  for (const badId of [undefined, "prompt:not-a-uuid"]) {
+    const invalid = structuredClone(packet);
+    if (badId === undefined) delete ((invalid["payload"] as JsonObject)["prompt"] as JsonObject)["id"];
+    else ((invalid["payload"] as JsonObject)["prompt"] as JsonObject)["id"] = badId;
+    assert.ok(validatePacket(invalid, T0)[0].some((error) => error.includes("prompt.id")));
+  }
+
+  // #16005 review parity: prompt-only identity is valid only for kind: prompt.
+  const nonPrompt = structuredClone(packet);
+  (nonPrompt["payload"] as JsonObject)["kind"] = "triage";
+  delete (nonPrompt["payload"] as JsonObject)["issue"];
+  assert.ok(
+    validatePacket(nonPrompt, T0)[0].some((error) => error.includes("payload identity")),
+    "triage with prompt-only identity must fail identity",
+  );
 });
 
 test("validator enforces dedupe-key family, repo and identity agreement", async () => {
@@ -272,6 +303,27 @@ test("enqueue reports a work-identity collision and honours dedupe_override", as
   const events = (await store.allEvents()).filter((e) => e.kind === "dedupe_override");
   assert.equal(events.length, 1);
   assert.equal((events[0].detail as JsonObject)["reason"], "parallel verification lane");
+});
+
+test("prompt work identity dedupes one submission but keeps sibling submissions distinct", async () => {
+  const { store } = setup();
+  const makePrompt = (uuid: string): JsonObject => {
+    const id = `prompt:${uuid}`;
+    const packet = fixPacket(10032, {
+      kind: "prompt",
+      prompt: { id, text: "Summarize the current queue health.", target: "pool:auto", mode: "async" },
+    });
+    packet["dedupe_key"] = `repo-health:v1:prompt:developing-today/code:submission:${uuid}`;
+    return packet;
+  };
+  const first = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000001"));
+  assert.equal(first["ok"], true);
+  const same = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000001"));
+  assert.equal(same["ok"], true);
+  assert.equal((same["row"] as JsonObject)["id"], (first["row"] as JsonObject)["id"]);
+  const sibling = await enqueue(store, hostedEnv(), makePrompt("00000000-0000-4000-8000-000000000002"));
+  assert.equal(sibling["ok"], true);
+  assert.notEqual((sibling["row"] as JsonObject)["id"], (first["row"] as JsonObject)["id"]);
 });
 
 test("enqueue into a shadow queue requires deliberate intent", async () => {
@@ -722,6 +774,68 @@ test("lane assignment, platform limits, and session binding follow the native ru
   assert.ok(String(rebind["error"]).includes("already bound to session ses_bound1"));
   const badSession = await verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "nope" });
   assert.equal(badSession["exit"], 2);
+});
+
+test("bind recovery mode compare-clears an error-stopped binding after lease expiry (#16066)", async () => {
+  const { store } = setup();
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { worker: "worker-a" });
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  await verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a" });
+  // Seed the bound opencode state the claimant recovers from: the
+  // prior session id in BOTH stores, lease already expired.
+  await store.updateLedger(id, { assigned_lane: "opencode", session_id: "ses_failed1" });
+  await store.updateTask(id, {
+    progress: { lane: "opencode", session_id: "ses_failed1", launched_by: "opencode-claimant" },
+    lease_until: iso(T0 - 60),
+  });
+  const before = await store.getTask(id);
+
+  // A mismatched prior session id is refused and clears nothing.
+  const mismatch = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_other1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(mismatch["exit"], 4);
+  assert.ok(String(mismatch["error"]).includes("recovery binding mismatch"));
+  assert.equal((await store.getLedger(id))?.session_id, "ses_failed1");
+
+  // The matching compare-and-clear succeeds atomically.
+  const recovered = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_failed1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(recovered["ok"], true);
+  assert.equal((recovered["row"] as JsonObject)["session_id"], null);
+  const after = await store.getTask(id);
+  assert.equal(after?.attempts, (before?.attempts ?? 0) + 1);
+  const progress = after?.progress as JsonObject;
+  assert.equal(progress["session_id"], null);
+  assert.equal(progress["stage"], "launch_failed");
+  assert.equal(progress["launch_failed_session_id"], "ses_failed1");
+  assert.equal(progress["launch_failed_reason"], "verified error-stopped session deleted before recovery");
+  assert.equal((await store.allEvents()).filter((e) => e.kind === "lane_session_recovered").length, 1);
+
+  // A live lease refuses recovery: a stale claimant can never
+  // clear a binding whose replacement may still legitimately launch.
+  await store.updateLedger(id, { session_id: "ses_failed1" });
+  await store.updateTask(id, {
+    progress: { lane: "opencode", session_id: "ses_failed1" },
+    lease_until: iso(T0 + 3600),
+  });
+  const liveLease = await verb(store, nativeEnv(), "bind", {
+    task_id: id,
+    worker: "opencode-claimant",
+    session_id: "ses_failed1",
+    launched_by: "opencode-claimant-recovery:error-stopped",
+  });
+  assert.equal(liveLease["exit"], 4);
+  assert.ok(String(liveLease["error"]).includes("requires an expired lease"));
+  assert.equal((await store.getLedger(id))?.session_id, "ses_failed1");
 });
 
 test("a claim transfer moves the claim to the holder's named successor session only", async () => {

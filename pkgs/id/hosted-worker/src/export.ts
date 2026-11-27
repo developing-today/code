@@ -37,8 +37,8 @@
 //   is never silently incomplete. Blobs no applied object cites
 //   are not exported (§6.1 item 2, §6.2's unreferenced-blob rule).
 
-import { decodeCanonical, type CborValue } from "./canonical-cbor.ts";
-import { blake3 } from "./blake3.ts";
+import { decodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex } from "./ed25519.ts";
 import { parseEvent } from "./event.ts";
 import type { HeldEvent } from "./bridge-store.ts";

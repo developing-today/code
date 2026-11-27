@@ -328,6 +328,8 @@ async fn main() -> Result<()> {
                 world_checkpoint_every,
                 world_max_open,
                 world_max_sessions,
+                world_max_per_account,
+                world_storage_max_per_account,
                 world_idle_secs,
                 world_host,
                 world_partition,
@@ -382,6 +384,8 @@ async fn main() -> Result<()> {
                 world_checkpoint_every,
                 world_max_open,
                 world_max_sessions,
+                world_max_per_account,
+                world_storage_max_per_account,
                 world_idle_secs,
                 world_host,
                 world_partition,
@@ -459,6 +463,10 @@ async fn main() -> Result<()> {
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }
+        Some(Command::Compact {
+            json,
+            retain_recent,
+        }) => id::commands::cmd_compact(cli.event_store, json, retain_recent).await,
         Some(Command::Publish {
             world,
             listen,

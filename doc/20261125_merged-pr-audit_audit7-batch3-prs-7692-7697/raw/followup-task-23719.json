@@ -58,9 +58,7 @@
       ],
       "risk": {
         "level": "medium",
-        "flags": [
-          "service-deployment"
-        ]
+        "flags": ["service-deployment"]
       },
       "priority_reason": "The sole reconciliation path has not been installed or demonstrated; without the first run, open issues may still lack live queue coverage.",
       "timebox_minutes": 60,
@@ -75,13 +73,7 @@
         "checked_at": "2026-11-25T08:05:00Z",
         "basis": "No live issue or task for the queue coverage timer installation and first run was found; #7016 remains the completed design/code tracker but its acceptance was not verified in the live environment."
       },
-      "labels": [
-        "app/fleet",
-        "effort/m",
-        "priority/normal",
-        "queue/queued",
-        "task/fix"
-      ]
+      "labels": ["app/fleet", "effort/m", "priority/normal", "queue/queued", "task/fix"]
     },
     "blocked_deps": null,
     "dep_next_recheck_at": null,
