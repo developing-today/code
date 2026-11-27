@@ -67,9 +67,7 @@ export function createProductionEnablement(plan: unknown, modes: readonly string
       "production enablement requires the provisioning gate's validated plan, not a re-spelled configuration",
     );
   }
-  const unknown = modes.filter(
-    (m): m is string => !(HOSTED_PRODUCTION_MODES as readonly string[]).includes(m),
-  );
+  const unknown = modes.filter((m): m is string => !(HOSTED_PRODUCTION_MODES as readonly string[]).includes(m));
   if (unknown.length > 0) {
     throw new FailClosed(
       503,

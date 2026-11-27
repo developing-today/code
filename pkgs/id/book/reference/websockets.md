@@ -117,53 +117,53 @@ Rules that apply to every frame:
 
 ### Client frames: 43 kinds
 
-| Kind                      | Notes                                                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `join`                    | Fields: `capability`, optional `after`, `screen_patches`, `screen_msgpack`, `resume_token`, `agent_profile`, `device_input`. |
-| `info`                    | Session information request.                                                                                                 |
-| `metrics`                 | Metrics request.                                                                                                             |
-| `records`                 | Records request.                                                                                                             |
-| `records_ticket`          | Records ticket request.                                                                                                      |
-| `documents`               | Document list request.                                                                                                       |
-| `document`                | Single document request.                                                                                                     |
-| `download_module`         | Module download.                                                                                                             |
-| `download_module_admin`   | Module download, admin form.                                                                                                 |
-| `event_history_admin`     | Event history, admin form.                                                                                                   |
-| `invite`                  | Carries an `admin_token`.                                                                                                    |
-| `directory`               | Public directory request; no token.                                                                                          |
-| `list_worlds`             | List worlds on the host.                                                                                                     |
-| `create_world`            | Create a world.                                                                                                              |
-| `set_isolation`           | Set a world's isolation state.                                                                                               |
-| `set_cross_world_write`   | Set cross-world write.                                                                                                       |
-| `force_cross_world_write` | Force cross-world write on.                                                                                                  |
-| `set_file_scope`          | Set file scope.                                                                                                              |
-| `compile`                 | Compile a module.                                                                                                            |
-| `update_caps`             | Update capabilities.                                                                                                         |
-| `set_caps_ceiling`        | Set the capability ceiling.                                                                                                  |
-| `set_schedule`            | Set a schedule.                                                                                                              |
-| `cancel_schedule`         | Cancel a schedule.                                                                                                           |
-| `world_state`             | World state request.                                                                                                         |
-| `set_execution_profile`   | Set the execution profile.                                                                                                   |
-| `execution_profile_info`  | Execution profile information request.                                                                                       |
-| `set_presentation_policy` | Set the presentation policy.                                                                                                 |
-| `presentation_policy_info`| Presentation policy request. Needs no token.                                                                                 |
-| `caps`                    | Capability query.                                                                                                            |
-| `chat`                    | Chat post. May carry `screen_revision`, the stale-decision token checked by the policy layer in [The MCP bridge](mcp.md).    |
-| `form_result`             | A submitted form result.                                                                                                     |
-| `attenuate`               | Attenuate a capability.                                                                                                      |
-| `delegate_to_friend`      | Delegate to a friend.                                                                                                        |
-| `input`                   | Program input; the payload travels as `data_hex`.                                                                            |
-| `resize`                  | Terminal/surface resize.                                                                                                     |
-| `paste`                   | Paste input.                                                                                                                 |
-| `screen_subscribe`        | Subscribe to a screen region and/or to event classes.                                                                        |
-| `pointer`                 | Pointer input.                                                                                                               |
-| `hover`                   | Hover input.                                                                                                                 |
-| `install_begin`           | Begin a module install upload.                                                                                               |
-| `install_chunk`           | One install chunk.                                                                                                           |
-| `install_end`             | Finish a module install upload.                                                                                              |
-| `revoke`                  | Revoke a capability.                                                                                                         |
-| `provider_offer`          | Provider offer.                                                                                                              |
-| `provider_reply`          | Provider reply.                                                                                                              |
+| Kind                       | Notes                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `join`                     | Fields: `capability`, optional `after`, `screen_patches`, `screen_msgpack`, `resume_token`, `agent_profile`, `device_input`. |
+| `info`                     | Session information request.                                                                                                 |
+| `metrics`                  | Metrics request.                                                                                                             |
+| `records`                  | Records request.                                                                                                             |
+| `records_ticket`           | Records ticket request.                                                                                                      |
+| `documents`                | Document list request.                                                                                                       |
+| `document`                 | Single document request.                                                                                                     |
+| `download_module`          | Module download.                                                                                                             |
+| `download_module_admin`    | Module download, admin form.                                                                                                 |
+| `event_history_admin`      | Event history, admin form.                                                                                                   |
+| `invite`                   | Carries an `admin_token`.                                                                                                    |
+| `directory`                | Public directory request; no token.                                                                                          |
+| `list_worlds`              | List worlds on the host.                                                                                                     |
+| `create_world`             | Create a world.                                                                                                              |
+| `set_isolation`            | Set a world's isolation state.                                                                                               |
+| `set_cross_world_write`    | Set cross-world write.                                                                                                       |
+| `force_cross_world_write`  | Force cross-world write on.                                                                                                  |
+| `set_file_scope`           | Set file scope.                                                                                                              |
+| `compile`                  | Compile a module.                                                                                                            |
+| `update_caps`              | Update capabilities.                                                                                                         |
+| `set_caps_ceiling`         | Set the capability ceiling.                                                                                                  |
+| `set_schedule`             | Set a schedule.                                                                                                              |
+| `cancel_schedule`          | Cancel a schedule.                                                                                                           |
+| `world_state`              | World state request.                                                                                                         |
+| `set_execution_profile`    | Set the execution profile.                                                                                                   |
+| `execution_profile_info`   | Execution profile information request.                                                                                       |
+| `set_presentation_policy`  | Set the presentation policy.                                                                                                 |
+| `presentation_policy_info` | Presentation policy request. Needs no token.                                                                                 |
+| `caps`                     | Capability query.                                                                                                            |
+| `chat`                     | Chat post. May carry `screen_revision`, the stale-decision token checked by the policy layer in [The MCP bridge](mcp.md).    |
+| `form_result`              | A submitted form result.                                                                                                     |
+| `attenuate`                | Attenuate a capability.                                                                                                      |
+| `delegate_to_friend`       | Delegate to a friend.                                                                                                        |
+| `input`                    | Program input; the payload travels as `data_hex`.                                                                            |
+| `resize`                   | Terminal/surface resize.                                                                                                     |
+| `paste`                    | Paste input.                                                                                                                 |
+| `screen_subscribe`         | Subscribe to a screen region and/or to event classes.                                                                        |
+| `pointer`                  | Pointer input.                                                                                                               |
+| `hover`                    | Hover input.                                                                                                                 |
+| `install_begin`            | Begin a module install upload.                                                                                               |
+| `install_chunk`            | One install chunk.                                                                                                           |
+| `install_end`              | Finish a module install upload.                                                                                              |
+| `revoke`                   | Revoke a capability.                                                                                                         |
+| `provider_offer`           | Provider offer.                                                                                                              |
+| `provider_reply`           | Provider reply.                                                                                                              |
 
 ### Server frames: 35 kinds
 

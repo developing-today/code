@@ -66,14 +66,24 @@ test("operator route refuses when disabled and does not inspect client binding h
         "x-hosted-migration-principal": "1",
       },
     }),
-    { USERS: { idFromName: () => { throw new Error("must not route to a user object"); } } } as never,
+    {
+      USERS: {
+        idFromName: () => {
+          throw new Error("must not route to a user object");
+        },
+      },
+    } as never,
   );
   assert.equal(response.status, 503);
-  assert.equal((await response.json() as { error: string }).error, "migration_operator_disabled");
+  assert.equal(((await response.json()) as { error: string }).error, "migration_operator_disabled");
   const whitespaceSecret = await worker.fetch(
     new Request("https://hosted.internal/v1/internal/migrations/start", { method: "POST" }),
     {
-      USERS: { idFromName: () => { throw new Error("must not route to a user object"); } },
+      USERS: {
+        idFromName: () => {
+          throw new Error("must not route to a user object");
+        },
+      },
       MIGRATION_OPERATOR_TOKEN: "   ",
     } as never,
   );
@@ -82,9 +92,13 @@ test("operator route refuses when disabled and does not inspect client binding h
 
 test("operator route requires the dedicated bearer credential", async () => {
   const { ports, calls } = fixture();
-  const response = await handleMigrationOperatorRequest(request("start", {}, "wrong"), { MIGRATION_OPERATOR_TOKEN: TOKEN }, ports);
+  const response = await handleMigrationOperatorRequest(
+    request("start", {}, "wrong"),
+    { MIGRATION_OPERATOR_TOKEN: TOKEN },
+    ports,
+  );
   assert.equal(response.status, 401);
-  assert.equal((await response.json() as { error: string }).error, "operator_auth_required");
+  assert.equal(((await response.json()) as { error: string }).error, "operator_auth_required");
   assert.equal(calls.length, 0);
 });
 
@@ -96,7 +110,7 @@ test("operator route rejects unknown or missing command fields", async () => {
     ports,
   );
   assert.equal(response.status, 400);
-  assert.equal((await response.json() as { error: string }).error, "invalid_body");
+  assert.equal(((await response.json()) as { error: string }).error, "invalid_body");
   assert.equal(calls.length, 0);
 });
 
@@ -108,7 +122,7 @@ test("operator command reports malformed binding ids as request errors", async (
     ports,
   );
   assert.equal(response.status, 400);
-  assert.equal((await response.json() as { error: string }).error, "invalid_binding_id");
+  assert.equal(((await response.json()) as { error: string }).error, "invalid_binding_id");
   assert.equal(calls.length, 0);
 });
 
@@ -120,7 +134,7 @@ test("start dispatches through the coordinator and returns no subject key", asyn
     ports,
   );
   assert.equal(response.status, 200);
-  const body = await response.json() as { result: string; account: Record<string, unknown> };
+  const body = (await response.json()) as { result: string; account: Record<string, unknown> };
   assert.equal(body.result, "complete");
   assert.equal(body.account.jurisdiction, "eu");
   assert.equal("subjectKey" in body.account, false);
@@ -137,7 +151,7 @@ test("resume refuses a stable account at a different target", async () => {
     ports,
   );
   assert.equal(response.status, 409);
-  assert.equal((await response.json() as { error: string }).error, "migration_not_in_progress");
+  assert.equal(((await response.json()) as { error: string }).error, "migration_not_in_progress");
   assert.equal(calls.length, 0);
 });
 
@@ -149,5 +163,5 @@ test("abort after switch preserves forward-only recovery", async () => {
     ports,
   );
   assert.equal(response.status, 409);
-  assert.equal((await response.json() as { error: string }).error, "directory_transition_refused");
+  assert.equal(((await response.json()) as { error: string }).error, "directory_transition_refused");
 });

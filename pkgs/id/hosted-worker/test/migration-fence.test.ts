@@ -147,28 +147,68 @@ test("planFreeze: fresh, retried, held, sealed and stale", () => {
     }
     return "ok";
   };
-  assert.equal(code(() => planFreeze(fence, 5, { migrationId: "m-2", routingEpoch: 6 }, 0, 0)), "fence_held");
-  assert.equal(code(() => planFreeze(fence, 5, { migrationId: "m-1", routingEpoch: 6 }, 0, 0)), "stale_epoch");
-  assert.equal(code(() => planFreeze({ ...fence, state: "sealed" }, 5, req, 0, 0)), "fence_sealed");
-  assert.equal(code(() => planFreeze(null, 5, req, 0, 0)), "stale_epoch");
+  assert.equal(
+    code(() => planFreeze(fence, 5, { migrationId: "m-2", routingEpoch: 6 }, 0, 0)),
+    "fence_held",
+  );
+  assert.equal(
+    code(() => planFreeze(fence, 5, { migrationId: "m-1", routingEpoch: 6 }, 0, 0)),
+    "stale_epoch",
+  );
+  assert.equal(
+    code(() => planFreeze({ ...fence, state: "sealed" }, 5, req, 0, 0)),
+    "fence_sealed",
+  );
+  assert.equal(
+    code(() => planFreeze(null, 5, req, 0, 0)),
+    "stale_epoch",
+  );
   assert.equal(planUnfreeze(null, req), 5, "an unfenced store still raises its epoch floor");
-  assert.equal(code(() => planUnfreeze(fence, req)), "stale_epoch");
+  assert.equal(
+    code(() => planUnfreeze(fence, req)),
+    "stale_epoch",
+  );
   assert.equal(planUnfreeze(fence, { migrationId: "m-1", routingEpoch: 6 }), 6);
-  assert.equal(code(() => planUnfreeze({ ...fence, state: "sealed" }, { migrationId: "m-1", routingEpoch: 9 })), "fence_sealed");
-  assert.equal(code(() => planSeal(fence, { migrationId: "m-1", routingEpoch: 4 })), "stale_epoch");
+  assert.equal(
+    code(() => planUnfreeze({ ...fence, state: "sealed" }, { migrationId: "m-1", routingEpoch: 9 })),
+    "fence_sealed",
+  );
+  assert.equal(
+    code(() => planSeal(fence, { migrationId: "m-1", routingEpoch: 4 })),
+    "stale_epoch",
+  );
   const sealed = planSeal(fence, { migrationId: "m-1", routingEpoch: 6 });
   assert.deepEqual(sealed, { fence: { ...fence, state: "sealed", routing_epoch: 6 }, changed: true });
-  assert.deepEqual(planSeal(sealed.fence, { migrationId: "m-1", routingEpoch: 6 }), { fence: sealed.fence, changed: false });
+  assert.deepEqual(planSeal(sealed.fence, { migrationId: "m-1", routingEpoch: 6 }), {
+    fence: sealed.fence,
+    changed: false,
+  });
 });
 
 test("control bodies and stored fences are validated strictly", () => {
-  assert.deepEqual(parseFenceRequest({ migration_id: "m:1", routing_epoch: 2 }), { migrationId: "m:1", routingEpoch: 2 });
-  for (const bad of [{}, { migration_id: "", routing_epoch: 1 }, { migration_id: "a b", routing_epoch: 1 }, { migration_id: "m", routing_epoch: 0 }, { migration_id: "m", routing_epoch: 1.5 }, { migration_id: "m", routing_epoch: "1" }]) {
+  assert.deepEqual(parseFenceRequest({ migration_id: "m:1", routing_epoch: 2 }), {
+    migrationId: "m:1",
+    routingEpoch: 2,
+  });
+  for (const bad of [
+    {},
+    { migration_id: "", routing_epoch: 1 },
+    { migration_id: "a b", routing_epoch: 1 },
+    { migration_id: "m", routing_epoch: 0 },
+    { migration_id: "m", routing_epoch: 1.5 },
+    { migration_id: "m", routing_epoch: "1" },
+  ]) {
     assert.throws(() => parseFenceRequest(bad), FailClosed);
   }
   assert.equal(readFence(null), null);
   assert.throws(() => readFence("{"), /unreadable/);
-  assert.throws(() => readFence(JSON.stringify({ v: 1, migration_id: "m", routing_epoch: 1, state: "open", frozen_at_ms: 0, watermark: 0 })), /unreadable/);
+  assert.throws(
+    () =>
+      readFence(
+        JSON.stringify({ v: 1, migration_id: "m", routing_epoch: 1, state: "open", frozen_at_ms: 0, watermark: 0 }),
+      ),
+    /unreadable/,
+  );
 });
 
 // ----- the fence on the object -----
@@ -269,7 +309,10 @@ test("an abort unfreezes at a newer epoch, and a replayed freeze cannot re-freez
 
 test("after the switch the source is sealed for good", async () => {
   const { d } = makeDO();
-  assert.equal((await call(d, control("/v1/migration/seal", { migration_id: "m-1", routing_epoch: 2 }))).body.error, "not_fenced");
+  assert.equal(
+    (await call(d, control("/v1/migration/seal", { migration_id: "m-1", routing_epoch: 2 }))).body.error,
+    "not_fenced",
+  );
   await freeze(d, "m-1", 1);
   const sealed = await call(d, control("/v1/migration/seal", { migration_id: "m-1", routing_epoch: 2 }));
   assert.equal(sealed.status, 200);
@@ -290,12 +333,21 @@ test("control routes ignore the request cap and reject bad bodies", async () => 
     storage: { sql: fakeSql() },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  const d = new UserDO(state as never, { BLOBS_US: bucket, USER_REQUEST_CEILING: "1", USER_REQUEST_WINDOW_SECONDS: "60" } as never);
+  const d = new UserDO(
+    state as never,
+    { BLOBS_US: bucket, USER_REQUEST_CEILING: "1", USER_REQUEST_WINDOW_SECONDS: "60" } as never,
+  );
   assert.equal((await d.fetch(put("k", "v"))).status, 200);
   assert.equal((await d.fetch(put("k", "w"))).status, 429);
   assert.equal((await freeze(d)).status, 200, "a capped tenant can still be frozen");
-  assert.equal((await call(d, control("/v1/migration/freeze", { migration_id: "", routing_epoch: 1 }))).body.error, "invalid_migration_id");
-  const notJson = await call(d, routed("/v1/migration/freeze", { method: "POST", headers: { [HDR_MIGRATION]: "1" }, body: "{" }));
+  assert.equal(
+    (await call(d, control("/v1/migration/freeze", { migration_id: "", routing_epoch: 1 }))).body.error,
+    "invalid_migration_id",
+  );
+  const notJson = await call(
+    d,
+    routed("/v1/migration/freeze", { method: "POST", headers: { [HDR_MIGRATION]: "1" }, body: "{" }),
+  );
   assert.equal(notJson.body.error, "invalid_body");
   assert.equal((await call(d, control("/v1/migration/nope", { migration_id: "m", routing_epoch: 1 }))).status, 404);
 });

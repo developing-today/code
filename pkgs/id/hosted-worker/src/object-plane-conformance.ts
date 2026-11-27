@@ -254,7 +254,11 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         check(head.servedFromReplica === 0, "fresh publish is served from the primary");
         const seen = await adapter.head(receipt.contentId);
         check(seen !== null && seen.sizeBytes === PAYLOAD.length, "head finds the published object");
-        const cap = await mintReadCapability(freshKey(1), { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(freshKey(1), {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         const read = await adapter.read(receipt.contentId, cap, { now: NOW });
         check(sameBytes(read.bytes, PAYLOAD), "read serves the exact staged bytes");
       },
@@ -331,11 +335,18 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const receipt = await adapter.putStaged(PAYLOAD, { now: NOW });
         await adapter.publish(receipt.stagingId, receipt.contentId);
         const early = await adapter.head(receipt.contentId);
-        check(early === null || early.sizeBytes === PAYLOAD.length, "pre-settle head is absent or correct, never wrong");
+        check(
+          early === null || early.sizeBytes === PAYLOAD.length,
+          "pre-settle head is absent or correct, never wrong",
+        );
         backend.settleAll();
         const seen = await adapter.head(receipt.contentId);
         check(seen !== null && seen.sizeBytes === PAYLOAD.length, "post-settle head finds the object");
-        const cap = await mintReadCapability(freshKey(6), { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(freshKey(6), {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         const read = await adapter.read(receipt.contentId, cap, { now: NOW });
         check(sameBytes(read.bytes, PAYLOAD), "post-settle read serves verified bytes");
       },
@@ -350,7 +361,11 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const corrupting = new CorruptingBackend(full);
         corrupting.corrupt(receipt.contentId);
         const adapter = factory(freshKey(7), corrupting, [full]);
-        const cap = await mintReadCapability(freshKey(7), { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(freshKey(7), {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         const read = await adapter.read(receipt.contentId, cap, { now: NOW });
         check(sameBytes(read.bytes, PAYLOAD), "fallback serves the verified replica bytes");
         check(read.head.servedFromReplica === 1, "corrupt primary is skipped for the replica");
@@ -366,7 +381,11 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const adapter = factory(freshKey(8), new MemoryTestBackend(), [full]);
         const seen = await adapter.head(receipt.contentId);
         check(seen !== null && seen.servedFromReplica === 1, "head finds the replica copy");
-        const cap = await mintReadCapability(freshKey(8), { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(freshKey(8), {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         const read = await adapter.read(receipt.contentId, cap, { now: NOW });
         check(sameBytes(read.bytes, OTHER_PAYLOAD), "read serves the replica bytes");
       },
@@ -378,21 +397,40 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const adapter = factory(key, new MemoryTestBackend());
         const receipt = await adapter.putStaged(PAYLOAD, { now: NOW });
         await adapter.publish(receipt.stagingId, receipt.contentId);
-        const good = await mintReadCapability(key, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const good = await mintReadCapability(key, {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         // Control: the valid capability works.
-        check((await adapter.read(receipt.contentId, good, { now: NOW })).bytes.length === PAYLOAD.length, "control read works");
+        check(
+          (await adapter.read(receipt.contentId, good, { now: NOW })).bytes.length === PAYLOAD.length,
+          "control read works",
+        );
         // Wrong object.
-        const other = await mintReadCapability(key, { contentId: "ff".repeat(32), partition: US_PRIVATE, expiresAt: FUTURE });
+        const other = await mintReadCapability(key, {
+          contentId: "ff".repeat(32),
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         await expectFailClosed(adapter.read(receipt.contentId, other, { now: NOW }), "capability_wrong_object");
         // Expired.
-        const expired = await mintReadCapability(key, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: PAST });
+        const expired = await mintReadCapability(key, {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: PAST,
+        });
         await expectFailClosed(adapter.read(receipt.contentId, expired, { now: NOW }), "capability_expired");
         // Invalid caller time must fail closed for both expired and
         // otherwise-valid capabilities; NaN must never bypass expiry.
         await expectFailClosed(adapter.read(receipt.contentId, expired, { now: "garbage" }), "capability_bad_now");
         await expectFailClosed(adapter.read(receipt.contentId, good, { now: "garbage" }), "capability_bad_now");
         // Foreign partition.
-        const foreign = await mintReadCapability(key, { contentId: receipt.contentId, partition: EU_PRIVATE, expiresAt: FUTURE });
+        const foreign = await mintReadCapability(key, {
+          contentId: receipt.contentId,
+          partition: EU_PRIVATE,
+          expiresAt: FUTURE,
+        });
         await expectFailClosed(adapter.read(receipt.contentId, foreign, { now: NOW }), "capability_wrong_partition");
         // Tampered MAC.
         await expectFailClosed(
@@ -434,7 +472,11 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const adapter = factory(key, new MemoryTestBackend());
         const receipt = await adapter.putStaged(PAYLOAD, { now: NOW });
         check((await adapter.head(receipt.contentId)) === null, "staged content has no head");
-        const cap = await mintReadCapability(key, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(key, {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         await expectFailClosed(adapter.read(receipt.contentId, cap, { now: NOW }), "object_not_found");
       },
     },
@@ -448,7 +490,10 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const adapter = factory(key, backend);
         const receipt = await adapter.putStaged(PAYLOAD, { now: NOW });
         await adapter.publish(receipt.stagingId, receipt.contentId);
-        await expectFailClosed(adapter.deleteReplica(receipt.contentId, { epoch: "", reverifiedAt: NOW }), "delete_fence_invalid");
+        await expectFailClosed(
+          adapter.deleteReplica(receipt.contentId, { epoch: "", reverifiedAt: NOW }),
+          "delete_fence_invalid",
+        );
         await expectFailClosed(
           adapter.deleteReplica(receipt.contentId, { epoch: "epoch-7", reverifiedAt: "not-a-time" }),
           "delete_fence_invalid",
@@ -461,12 +506,19 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
           adapter.deleteReplica(receipt.contentId, { epoch: "epoch-7", reverifiedAt: FUTURE }, { now: "garbage" }),
           "delete_fence_invalid",
         );
-        await expectFailClosed(adapter.deleteReplica(receipt.contentId, FENCE, { now: "garbage" }), "delete_fence_invalid");
+        await expectFailClosed(
+          adapter.deleteReplica(receipt.contentId, FENCE, { now: "garbage" }),
+          "delete_fence_invalid",
+        );
         check((await adapter.head(receipt.contentId)) !== null, "refused deletes remove nothing");
         const first = await adapter.deleteReplica(receipt.contentId, FENCE, { now: NOW });
         check(first.deleted === true, "fenced delete removes the replica");
         check((await adapter.head(receipt.contentId)) === null, "deleted content has no head");
-        const cap = await mintReadCapability(key, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+        const cap = await mintReadCapability(key, {
+          contentId: receipt.contentId,
+          partition: US_PRIVATE,
+          expiresAt: FUTURE,
+        });
         await expectFailClosed(adapter.read(receipt.contentId, cap, { now: NOW }), "object_not_found");
         const second = await adapter.deleteReplica(receipt.contentId, FENCE, { now: NOW });
         check(second.deleted === false, "deleting an absent replica succeeds idempotently");
@@ -483,7 +535,10 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         check((await adapter.reapStaging(PAST)).reaped === 0, "fresh staging survives a past cutoff");
         // Everything staged is older than the future: staged goes, published stays.
         check((await adapter.reapStaging(FUTURE)).reaped === 1, "expired staging is reaped");
-        check((await adapter.head(published.contentId))?.sizeBytes === PAYLOAD.length, "published content survives reaping");
+        check(
+          (await adapter.head(published.contentId))?.sizeBytes === PAYLOAD.length,
+          "published content survives reaping",
+        );
         await expectFailClosed(
           adapter.verify(staged.stagingId, { sizeBytes: OTHER_PAYLOAD.length, sha256: staged.sha256 }),
           "staged_not_found",
@@ -497,10 +552,15 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         const matrix = adapter.capabilities();
         check(matrix.provider.length > 0, "matrix names its provider");
         check(
-          matrix.conditionalWrite === "none" || matrix.conditionalWrite === "if-none-match" || matrix.conditionalWrite === "if-match-etag",
+          matrix.conditionalWrite === "none" ||
+            matrix.conditionalWrite === "if-none-match" ||
+            matrix.conditionalWrite === "if-match-etag",
           "matrix states a known conditional-write strength",
         );
-        check(matrix.rangeReads === "none" || matrix.rangeReads === "server" || matrix.rangeReads === "client-slice", "matrix states range support");
+        check(
+          matrix.rangeReads === "none" || matrix.rangeReads === "server" || matrix.rangeReads === "client-slice",
+          "matrix states range support",
+        );
         check(matrix.stagingTtlSeconds > 0, "matrix states a positive staging TTL");
         check(typeof matrix.readAfterWrite === "boolean", "matrix states its read-after-write behavior");
       },

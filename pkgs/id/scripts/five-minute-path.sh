@@ -98,8 +98,8 @@ fail_usage() {
 
 is_positive_int() {
   case "$1" in
-    '' | *[!0-9]*) return 1 ;;
-    *) [ "$1" -gt 0 ] ;;
+  '' | *[!0-9]*) return 1 ;;
+  *) [ "$1" -gt 0 ] ;;
   esac
 }
 
@@ -107,49 +107,58 @@ is_positive_int() {
 # are identical; a missing value is a usage error.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir | --repo | --ref | --world | --budget | --iroh-port | --step-timeout | --join-timeout | --id-bin)
-      opt="$1"
-      if [ $# -lt 2 ] || [ -z "$2" ]; then
-        fail_usage "$opt requires a non-empty value"
-      fi
-      val="$2"
-      shift 2
-      case "$opt" in
-        --dir) run_dir="$val" ;;
-        --repo) repo="$val" ;;
-        --ref) ref="$val" ;;
-        --world) world="$val" ;;
-        --budget) budget="$val" ;;
-        --iroh-port) iroh_port="$val" ;;
-        --step-timeout) step_timeout="$val" ;;
-        --join-timeout) join_timeout="$val" ;;
-        --id-bin) id_bin="$val" ;;
-      esac
-      ;;
-    --dir=* | --repo=* | --ref=* | --world=* | --budget=* | --iroh-port=* | --step-timeout=* | --join-timeout=* | --id-bin=*)
-      opt="${1%%=*}"
-      val="${1#*=}"
-      if [ -z "$val" ]; then
-        fail_usage "$opt requires a non-empty value"
-      fi
-      shift
-      case "$opt" in
-        --dir) run_dir="$val" ;;
-        --repo) repo="$val" ;;
-        --ref) ref="$val" ;;
-        --world) world="$val" ;;
-        --budget) budget="$val" ;;
-        --iroh-port) iroh_port="$val" ;;
-        --step-timeout) step_timeout="$val" ;;
-        --join-timeout) join_timeout="$val" ;;
-        --id-bin) id_bin="$val" ;;
-      esac
-      ;;
-    --clean) clean=1; shift ;;
-    --dry-run) dry_run=1; shift ;;
-    --help) usage; exit 0 ;;
-    --*) fail_usage "unaccounted argument: $1" ;;
-    *) fail_usage "unaccounted argument: $1" ;;
+  --dir | --repo | --ref | --world | --budget | --iroh-port | --step-timeout | --join-timeout | --id-bin)
+    opt="$1"
+    if [ $# -lt 2 ] || [ -z "$2" ]; then
+      fail_usage "$opt requires a non-empty value"
+    fi
+    val="$2"
+    shift 2
+    case "$opt" in
+    --dir) run_dir="$val" ;;
+    --repo) repo="$val" ;;
+    --ref) ref="$val" ;;
+    --world) world="$val" ;;
+    --budget) budget="$val" ;;
+    --iroh-port) iroh_port="$val" ;;
+    --step-timeout) step_timeout="$val" ;;
+    --join-timeout) join_timeout="$val" ;;
+    --id-bin) id_bin="$val" ;;
+    esac
+    ;;
+  --dir=* | --repo=* | --ref=* | --world=* | --budget=* | --iroh-port=* | --step-timeout=* | --join-timeout=* | --id-bin=*)
+    opt="${1%%=*}"
+    val="${1#*=}"
+    if [ -z "$val" ]; then
+      fail_usage "$opt requires a non-empty value"
+    fi
+    shift
+    case "$opt" in
+    --dir) run_dir="$val" ;;
+    --repo) repo="$val" ;;
+    --ref) ref="$val" ;;
+    --world) world="$val" ;;
+    --budget) budget="$val" ;;
+    --iroh-port) iroh_port="$val" ;;
+    --step-timeout) step_timeout="$val" ;;
+    --join-timeout) join_timeout="$val" ;;
+    --id-bin) id_bin="$val" ;;
+    esac
+    ;;
+  --clean)
+    clean=1
+    shift
+    ;;
+  --dry-run)
+    dry_run=1
+    shift
+    ;;
+  --help)
+    usage
+    exit 0
+    ;;
+  --*) fail_usage "unaccounted argument: $1" ;;
+  *) fail_usage "unaccounted argument: $1" ;;
   esac
 done
 
@@ -159,7 +168,7 @@ is_positive_int "$iroh_port" || fail_usage "--iroh-port must be a positive integ
 is_positive_int "$step_timeout" || fail_usage "--step-timeout must be a positive integer, got: $step_timeout"
 is_positive_int "$join_timeout" || fail_usage "--join-timeout must be a positive integer, got: $join_timeout"
 case "$world" in
-  '' | *[!a-z0-9_-]*) fail_usage "--world must match [a-z0-9_-]+, got: $world" ;;
+'' | *[!a-z0-9_-]*) fail_usage "--world must match [a-z0-9_-]+, got: $world" ;;
 esac
 if [ -n "$id_bin" ] && [ ! -x "$id_bin" ]; then
   fail_usage "--id-bin is not executable: $id_bin"
@@ -282,8 +291,8 @@ else
   step_begin
   printf 'step 2/6: build id (release, library-only)\n'
   cargo build --release --no-default-features -p id \
-    --manifest-path "$repo_dir/pkgs/id/Cargo.toml" \
-    || die "cargo build failed"
+    --manifest-path "$repo_dir/pkgs/id/Cargo.toml" ||
+    die "cargo build failed"
   [ -x "$id_path" ] || die "build finished but no binary at $id_path"
   step_end build
 fi
@@ -298,13 +307,13 @@ serve_pid=$!
 # The host's node id: the same key file serve uses, so this also
 # proves the host's data directory is up.
 node=""
-deadline=$(( $(date +%s) + step_timeout ))
+deadline=$(($(date +%s) + step_timeout))
 while [ -z "$node" ]; do
   if ! kill -0 "$serve_pid" 2>/dev/null; then
     die "serve exited during startup; see $serve_log"
   fi
   node="$("$id_path" --data-dir "$host_dir" id 2>/dev/null || true)"
-  if [[ "$node" =~ ^[0-9a-f]{64}$ ]]; then
+  if [[ $node =~ ^[0-9a-f]{64}$ ]]; then
     break
   fi
   node=""
@@ -316,10 +325,10 @@ done
 
 # Readiness: the public world list must answer over the same direct
 # loopback path the invite, join, and records steps will use.
-deadline=$(( $(date +%s) + step_timeout ))
+deadline=$(($(date +%s) + step_timeout))
 while true; do
   if "$id_path" world list "$node" --addr "127.0.0.1:$iroh_port" --no-relay \
-      >/dev/null 2>&1; then
+    >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$serve_pid" 2>/dev/null; then
@@ -375,7 +384,7 @@ printf '/quit\n' >&"$join_in_fd" || true
 # The write end stays open until the script exits; the pump ends on
 # /quit, so no explicit close is needed.
 # The pump ends on /quit; give it a bounded wait, then fail loudly.
-wait_deadline=$(( $(date +%s) + 30 ))
+wait_deadline=$(($(date +%s) + 30))
 while kill -0 "$join_pid" 2>/dev/null; do
   if [ "$(date +%s)" -ge "$wait_deadline" ]; then
     kill "$join_pid" 2>/dev/null || true
@@ -395,8 +404,8 @@ step_begin
 printf 'step 6/6: read the world records with the guest capability\n'
 "$id_path" world records "$node" --world "$world" \
   --addr "127.0.0.1:$iroh_port" --no-relay \
-  >"$records_out" 2>"$run_dir/records.err" \
-  || die "world records failed; see $run_dir/records.err"
+  >"$records_out" 2>"$run_dir/records.err" ||
+  die "world records failed; see $run_dir/records.err"
 [ -s "$records_out" ] || die "world records printed nothing"
 step_end records
 

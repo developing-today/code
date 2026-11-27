@@ -34,7 +34,7 @@ committed.
   `removeMark`) too, but they are explicitly **not yet in this Rust contract**:
   Rust must reject them until their exact fields, semantics, and fixtures are
   added. Every accepted step must deserialize via `Step.fromJSON(schema,
-  value)` and apply successfully to the current document. Do not implement
+value)` and apply successfully to the current document. Do not implement
   shape-only acceptance.
 - The base document must deserialize with the mode's schema. Apply each batch
   sequentially to the result of the preceding step. Any parse error, schema

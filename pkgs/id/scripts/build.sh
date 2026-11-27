@@ -163,8 +163,8 @@ if [[ $needs_backend == "true" ]]; then
 
   # Pull the feature set from the one checked-in source; subtract root
   # defaults because cargo build keeps them enabled in these invocations.
-  feature_flags="$(./scripts/variant-features.sh "$VARIANT" --minus-defaults)"
-  if [[ -n "$feature_flags" ]]; then
+  feature_flags="$(bash ./scripts/variant-features.sh "$VARIANT" --minus-defaults)"
+  if [[ -n $feature_flags ]]; then
     cargo build $CARGO_FLAGS --features "$feature_flags"
   else
     cargo build $CARGO_FLAGS

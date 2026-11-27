@@ -34,9 +34,7 @@ test("SyncCoord owns a tenant/peer session and durably advances its watermark", 
   assert.throws(() => first.own("peer-a", "session-2", []), SyncCoordConflict);
 
   now += 10;
-  const advanced = first.advance("peer-a", "session-1", [
-    { author: "author-a", next_seq: 4, head: "event-3" },
-  ]);
+  const advanced = first.advance("peer-a", "session-1", [{ author: "author-a", next_seq: 4, head: "event-3" }]);
   assert.deepEqual(advanced.watermark, [{ author: "author-a", next_seq: 4, head: "event-3" }]);
   first.end("peer-a", "session-1");
 

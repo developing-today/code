@@ -1,12 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  FailClosed,
-  blobsBindingFor,
-  parseBindingId,
-  parseJurisdiction,
-  userStub,
-} from "../src/routing.ts";
+import { FailClosed, blobsBindingFor, parseBindingId, parseJurisdiction, userStub } from "../src/routing.ts";
 import {
   createHostedAccountRecord,
   HostedAccountDirectory,

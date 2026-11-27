@@ -130,11 +130,7 @@ function fromRow(row: StoredAccountRow): HostedAccountRecord {
     }
     return record;
   } catch {
-    throw new FailClosed(
-      503,
-      "invalid_directory_record",
-      "stored hosted account record is invalid; failing closed",
-    );
+    throw new FailClosed(503, "invalid_directory_record", "stored hosted account record is invalid; failing closed");
   }
 }
 
@@ -225,11 +221,7 @@ export class PersistentHostedAccountDirectory {
 
       const bindingOwner = await this.getByBindingId(candidate.bindingId);
       if (bindingOwner) {
-        throw new FailClosed(
-          409,
-          "binding_conflict",
-          "binding id is already assigned to another subject",
-        );
+        throw new FailClosed(409, "binding_conflict", "binding id is already assigned to another subject");
       }
       throw error;
     }
@@ -247,11 +239,7 @@ export class PersistentHostedAccountDirectory {
 
     const bindingOwner = await this.getByBindingId(candidate.bindingId);
     if (bindingOwner) {
-      throw new FailClosed(
-        409,
-        "binding_conflict",
-        "binding id is already assigned to another subject",
-      );
+      throw new FailClosed(409, "binding_conflict", "binding id is already assigned to another subject");
     }
 
     throw new FailClosed(
@@ -281,9 +269,7 @@ export class PersistentHostedAccountDirectory {
     const leaseClause = lease
       ? " AND EXISTS (SELECT 1 FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?)"
       : "";
-    const leaseValues = lease
-      ? [expected.subjectKey, lease.lease.owner, lease.lease.token, lease.nowMs]
-      : [];
+    const leaseValues = lease ? [expected.subjectKey, lease.lease.owner, lease.lease.token, lease.nowMs] : [];
     const updated = await this.database
       .prepare(
         "UPDATE hosted_accounts SET jurisdiction = ?, jurisdiction_pending = ?, migration_id = ?, phase = ?, routing_epoch = ? " +
@@ -368,16 +354,15 @@ export class PersistentHostedAccountDirectory {
   /** Whether `lease` is still the account's live lease at `nowMs`. */
   async leaseHeld(subjectKey: string, lease: MigrationLease, nowMs: number): Promise<boolean> {
     const row = await this.database
-      .prepare("SELECT token FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?")
+      .prepare(
+        "SELECT token FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?",
+      )
       .bind(subjectKey, lease.owner, lease.token, nowMs)
       .first();
     return row !== null;
   }
 
-  private existingSubject(
-    row: HostedAccountRecord,
-    bindingId: string,
-  ): HostedAccountRecord {
+  private existingSubject(row: HostedAccountRecord, bindingId: string): HostedAccountRecord {
     if (row.bindingId !== bindingId) {
       throw new FailClosed(
         409,
@@ -479,10 +464,7 @@ export class PersistentHostedAccountDirectory {
     return rows.map(fromLegacyRow);
   }
 
-  private existingLegacy(
-    row: LegacyHostedAccount,
-    bindingId: string,
-  ): LegacyHostedAccount {
+  private existingLegacy(row: LegacyHostedAccount, bindingId: string): LegacyHostedAccount {
     if (row.bindingId !== bindingId) {
       throw new FailClosed(
         409,

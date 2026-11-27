@@ -1100,7 +1100,7 @@ fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
@@ -1519,11 +1519,12 @@ mod tests {
             }
         }
         let mut tenant_txn = TenantWrite::begin(&mut store).unwrap();
+        let mut tenant_reader = &mut tenant_txn;
         let mut tenant_rows = Vec::new();
         let mut after_key: Option<Vec<u8>> = None;
         loop {
-            let page = RowRead::scan_page(&mut &mut tenant_txn, "events", after_key.as_deref(), 2)
-                .unwrap();
+            let page =
+                RowRead::scan_page(&mut tenant_reader, "events", after_key.as_deref(), 2).unwrap();
             let page_len = page.len();
             if let Some((key, _)) = page.last() {
                 after_key = Some(key.clone());

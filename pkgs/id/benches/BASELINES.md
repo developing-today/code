@@ -714,7 +714,7 @@ Error: server has too many worlds open; try again shortly
 The bench creates the 10,000 idle worlds (create, drop the lease), then
 holds the active worlds' leases concurrently. The hub it builds uses
 `HubLimits::default()`, whose `max_open_worlds` is 256
-(`crates/id-worlds/src/world_hub.rs`); eviction only frees *unleased*
+(`crates/id-worlds/src/world_hub.rs`); eviction only frees _unleased_
 durable worlds, so the 257th concurrent lease is refused with
 `ResolveError::TooManyWorlds`. A confirmation run at 257 active worlds
 failed the same way. The wall is a codified code/config limit, not a
@@ -783,6 +783,7 @@ itself. A follow-up must match the per-world fuel workload and measure
 the scheduler's fairness policy before drawing a target verdict. No
 existing `baseline.txt` measurement is replaced by these diagnostic
 profiles.
+
 ## Journal ack modes, one full F11.8 run per mode (2026-11-24, slice #557)
 
 Command per mode (from `pkgs/id/`, via `~/tools/fleet-build-lock`):
@@ -833,7 +834,6 @@ per-64 sync tail, in async mode (3.178 ms) scheduling/wake.
 `baseline.txt` is untouched — the deciding comparison stays the
 unloaded-laptop re-run.
 
-
 ## Post-#15577 fair-scheduler reference run (2026-11-27, loaded host)
 
 The bounded guest scheduler from [PR #15797](https://github.com/developing-today/code/pull/15797) is present at target commit `7acad057ea5909c223fbe5c32d78165bdde1078b`. Fleet built the release bench with `cargo +1.99.1 bench --manifest-path pkgs/id/Cargo.toml --bench world_bench --no-run` in [run 45935701606](https://github.com/dezren39/fleet/actions/runs/45935701606). The downloaded executable SHA-256 is `10179dd8f4106e56e010991838f53a2fb3b04b179aa9b7a4b41c648255b5d377`.
@@ -851,10 +851,10 @@ Exact invocations, five alternating repetitions each:
 
 Each process emitted one bench line and one profile line. Spinner throughput below is calculated as `spins / spinning_elapsed_secs` for the isolation workload and `persistent_updates / spinning_elapsed_secs` for the persistent workload. The host was under shared Fleet load throughout: one-, five- and fifteen-minute load averages rose from `11.86 / 10.17 / 11.32` at the first run to `23.22 / 13.73 / 12.47` at the last.
 
-| Workload | Repetitions | Calm victim p99 (median, range) | Spinning victim p99 (median, range) | Ratio (median, range) | Spinner throughput (median, range) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `fuel_spin_isolation` | 5 | 7.386 ms (5.083–15.074) | 90.183 ms (48.042–204.215) | 9.556× (5.983–29.957) | 152.4 spins/s (100.5–168.2) |
-| `fuel_spin_persistent` | 5 | 8.392 ms (4.759–10.697) | 41.067 ms (35.331–323.569) | 8.212× (4.007–38.556) | 3,994 updates/s (2,610–5,778) |
+| Workload               | Repetitions | Calm victim p99 (median, range) | Spinning victim p99 (median, range) | Ratio (median, range) | Spinner throughput (median, range) |
+| ---------------------- | ----------: | ------------------------------: | ----------------------------------: | --------------------: | ---------------------------------: |
+| `fuel_spin_isolation`  |           5 |         7.386 ms (5.083–15.074) |          90.183 ms (48.042–204.215) | 9.556× (5.983–29.957) |        152.4 spins/s (100.5–168.2) |
+| `fuel_spin_persistent` |           5 |         8.392 ms (4.759–10.697) |          41.067 ms (35.331–323.569) | 8.212× (4.007–38.556) |      3,994 updates/s (2,610–5,778) |
 
 The result is a repeatable miss in this loaded venue: all ten repetitions reported `target_met=false` against 1.10×. Profiles attribute most of the added tail to runtime wake lateness: isolation spinning wake-p99 median was 80.224 ms versus 4.744 ms calm; persistent spinning wake-p99 median was 31.102 ms versus 4.148 ms calm. The victim queue stayed at depth zero and the victim recorded no journal appends. CPU load increased during the set, so these numbers do not decide the quiet-reference target.
 

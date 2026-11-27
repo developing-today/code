@@ -1,10 +1,17 @@
 # Composition hash spec — canonical CBOR + BLAKE3 identity for ID builds
+
 #
+
 # S1 of developing-today/code#14056. Implements plan §5.2 (the composer's
+
 # §3.2, applied to ourselves) as amended: composition-time parameters are
+
 # hash inputs (plan §1.2.2 rule), aliases never change a hash
+
 # (amendment 2), and the canonical form precedes every other composer
+
 # byte (plan §1.2.1 fix). Two honest implementations hashing the same
+
 # composition differently is a test failure, not a discovery.
 
 ## Algorithm
@@ -32,15 +39,15 @@ identity = BLAKE3-256(canonical_cbor(canonical_manifest))
 Exactly these fields — all of them (plan §1.2.2: composition-time
 parameters are inside the hash, stated as a rule):
 
-| CBOR key (sorted order) | Type | Source |
-|---|---|---|
-| `catalogue` | text | Catalogue version (`catalogue_version` in catalogue.toml). A catalogue change honestly re-identifies every composition. |
-| `features` | array of maps | The **sorted resolved** feature list. Each entry: `{"crates": [sorted "crate@version"...], "name": "feature"}`. Map keys sort `crates` < `name`. Feature versions are the owning seam crates' versions from the workspace at build time. Core capabilities are implicit (present in every profile) and NOT listed — core is versioned via `lockfile` + `catalogue` instead. |
-| `lockfile` | text (64 hex) | `BLAKE3-256` of the workspace `Cargo.lock` file bytes at build time. Pins every dependency version. |
-| `profile` | text or null | Canonical profile name after alias resolution (`basement` is recorded as `headless`), or null for profile-less explicit compositions. The name is provenance, not identity — the resolved `features` are. |
-| `schema` | uint | Manifest schema version (`1` today). A schema bump re-identifies everything, deliberately. |
-| `target` | text | Rust target triple. Cross-target builds never collide. |
-| `toolchain` | text | Pinned Rust toolchain (`channel` in pkgs/id/rust-toolchain.toml; `1.99.1` today). A toolchain bump honestly re-identifies (composer §3.8.3, applied to ourselves). |
+| CBOR key (sorted order) | Type          | Source                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalogue`             | text          | Catalogue version (`catalogue_version` in catalogue.toml). A catalogue change honestly re-identifies every composition.                                                                                                                                                                                                                                                     |
+| `features`              | array of maps | The **sorted resolved** feature list. Each entry: `{"crates": [sorted "crate@version"...], "name": "feature"}`. Map keys sort `crates` < `name`. Feature versions are the owning seam crates' versions from the workspace at build time. Core capabilities are implicit (present in every profile) and NOT listed — core is versioned via `lockfile` + `catalogue` instead. |
+| `lockfile`              | text (64 hex) | `BLAKE3-256` of the workspace `Cargo.lock` file bytes at build time. Pins every dependency version.                                                                                                                                                                                                                                                                         |
+| `profile`               | text or null  | Canonical profile name after alias resolution (`basement` is recorded as `headless`), or null for profile-less explicit compositions. The name is provenance, not identity — the resolved `features` are.                                                                                                                                                                   |
+| `schema`                | uint          | Manifest schema version (`1` today). A schema bump re-identifies everything, deliberately.                                                                                                                                                                                                                                                                                  |
+| `target`                | text          | Rust target triple. Cross-target builds never collide.                                                                                                                                                                                                                                                                                                                      |
+| `toolchain`             | text          | Pinned Rust toolchain (`channel` in pkgs/id/rust-toolchain.toml; `1.99.1` today). A toolchain bump honestly re-identifies (composer §3.8.3, applied to ourselves).                                                                                                                                                                                                          |
 
 Map key order by encoded bytes (all short text, so lexicographic):
 `catalogue` < `features` < `lockfile` < `profile` < `schema` <
@@ -50,7 +57,7 @@ arrays sort byte-wise.
 ## Version stamp and registry
 
 - The built artefact's long `--version` gains `composition
-  <profile-or-custom>:<hash-prefix>` — profile name plus the first 16
+<profile-or-custom>:<hash-prefix>` — profile name plus the first 16
   hex chars of the identity (128 bits, collision-irrelevant for a
   display string). Full 64-hex identity lives in the registry record.
 - Registry record per composition (plan §5.4, starting as versioned
@@ -65,16 +72,17 @@ arrays sort byte-wise.
 ## Worked example (golden vector)
 
 Resolves `examples/basement-store-node.toml` (`profile = "basement"`
-+ `store-turso` + `dht` on `x86_64-unknown-linux-musl`):
 
-- Alias `basement` → canonical `headless`; resolved feature closure:
+- `store-turso` + `dht` on `x86_64-unknown-linux-musl`):
+
+* Alias `basement` → canonical `headless`; resolved feature closure:
   `dht, directory, sandbox-exec, serve, store-turso, world-state`
   (closure adds `serve` via `directory`, `world-state` via
   `sandbox-exec`; core stays implicit).
-- Owning-crate versions are today's workspace values (`0.1.0`
+* Owning-crate versions are today's workspace values (`0.1.0`
   throughout) and therefore illustrative — the spec pins the
-  *procedure*, and this vector pins one full pass through it.
-- `lockfile` is the fixed illustrative input
+  _procedure_, and this vector pins one full pass through it.
+* `lockfile` is the fixed illustrative input
   `0000…0000` (64 zeros): real manifests carry
   `BLAKE3(Cargo.lock bytes)`. The vector tests encoding + hashing,
   not today's lockfile.

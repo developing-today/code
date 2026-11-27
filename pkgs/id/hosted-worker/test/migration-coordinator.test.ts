@@ -8,11 +8,13 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { UserDO, HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED, blobObjectKey } from "../src/user-do.ts";
 import { HDR_MIGRATION } from "../src/migration-fence.ts";
+import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "../src/persistent-account-directory.ts";
 import {
-  PersistentHostedAccountDirectory,
-  type HostedDirectoryDatabase,
-} from "../src/persistent-account-directory.ts";
-import { abortMigration, driveMigration, workerMigrationPorts, type MigrationPorts } from "../src/migration-coordinator.ts";
+  abortMigration,
+  driveMigration,
+  workerMigrationPorts,
+  type MigrationPorts,
+} from "../src/migration-coordinator.ts";
 import { FailClosed } from "../src/routing.ts";
 
 const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -164,7 +166,13 @@ async function seed(w: World) {
   );
 }
 
-const RUN = { subjectKey: "subject", migrationId: "m-1", targetJurisdiction: "eu", owner: "coord-a", leaseTtlMs: 60_000 };
+const RUN = {
+  subjectKey: "subject",
+  migrationId: "m-1",
+  targetJurisdiction: "eu",
+  owner: "coord-a",
+  leaseTtlMs: 60_000,
+};
 
 async function assertMoved(w: World) {
   const record = await w.directory.get("subject");
@@ -187,7 +195,11 @@ test("a migration runs end to end and releases its lease", async () => {
   const other = await w.directory.acquireLease("subject", "coord-b", w.ports.now(), 1000);
   assert.equal(other.token, 2, "the released lease passes to the next coordinator");
   w.advance(2000);
-  assert.equal((await driveMigration(w.ports, { ...RUN, owner: "coord-c" })).jurisdiction, "eu", "rerunning a finished migration is a no-op");
+  assert.equal(
+    (await driveMigration(w.ports, { ...RUN, owner: "coord-c" })).jurisdiction,
+    "eu",
+    "rerunning a finished migration is a no-op",
+  );
 });
 
 for (let failAt = 1; failAt <= 6; failAt++) {
@@ -252,7 +264,11 @@ test("a directory step under an expired lease is refused even with a current rec
   w.advance(5000);
   const stable = (await w.directory.get("subject"))!;
   await assert.rejects(
-    w.directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" }, { lease, nowMs: w.ports.now() }),
+    w.directory.transition(
+      stable,
+      { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" },
+      { lease, nowMs: w.ports.now() },
+    ),
     (e: unknown) => e instanceof FailClosed && e.code === "lease_lost",
   );
   assert.equal((await w.directory.get("subject"))?.phase, "stable");

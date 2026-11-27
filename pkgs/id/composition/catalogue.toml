@@ -46,7 +46,15 @@ unrepresentable = ["currency-poc-tb"]
 
 [core]
 description = "Local identity and keysets; event log (redb); blob store (iroh-blobs FsStore/MemStore); graph index; sync base (iroh + gossip + mDNS + relay); client command set; REPL."
-ports = ["record-store", "blob-store", "event-log", "world-store", "object-bucket", "message-stream", "transport"]
+ports = [
+  "record-store",
+  "blob-store",
+  "event-log",
+  "world-store",
+  "object-bucket",
+  "message-stream",
+  "transport",
+]
 
 # ------------------------------------------------------------- features ---
 
@@ -67,7 +75,12 @@ tree = "sandbox"
 adds = "wasmtime program execution: running world programs locally."
 requires = ["world-state"]
 roles = ["host", "consume"]
-forwards = ["id-core/sandbox", "id-caps/sandbox", "id-worlds/sandbox", "id-cli/sandbox"]
+forwards = [
+  "id-core/sandbox",
+  "id-caps/sandbox",
+  "id-worlds/sandbox",
+  "id-cli/sandbox",
+]
 note = "Renamed in effect from today's `sandbox` (plan §4.2); the rename lands with the S3 split. Defining omission of the plain profile."
 
 [[feature]]
@@ -359,7 +372,31 @@ status = "active"
 [[profile]]
 name = "full"
 description = "Curated all-on backend/server build — a profile, never --all-features (§0.3, §6). Slower boot accepted, measured per §9."
-features = ["world-state", "sandbox-exec", "serve", "web", "ssh-serve", "dht", "directory", "currency", "rust", "roc-composer", "mcp-server", "import-notion", "import-obsidian", "import-evernote", "import-logseq", "import-joplin", "import-onenote", "transport-mcp", "transport-email", "transport-mqtt", "transport-irc", "transport-overlay", "transport-sneakernet"]
+features = [
+  "world-state",
+  "sandbox-exec",
+  "serve",
+  "web",
+  "ssh-serve",
+  "dht",
+  "directory",
+  "currency",
+  "rust",
+  "roc-composer",
+  "mcp-server",
+  "import-notion",
+  "import-obsidian",
+  "import-evernote",
+  "import-logseq",
+  "import-joplin",
+  "import-onenote",
+  "transport-mcp",
+  "transport-email",
+  "transport-mqtt",
+  "transport-irc",
+  "transport-overlay",
+  "transport-sneakernet",
+]
 aliases = []
 status = "active"
 note = "If a future feature is not in `full`, that is a catalogue decision recorded in the registry — never an accident of a flag list. `rust` is listed directly (compile capability of the server build) as well as arriving via `roc-composer`."

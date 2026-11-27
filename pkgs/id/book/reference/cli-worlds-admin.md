@@ -79,11 +79,11 @@ Shows or replaces a world's presentation policy: whether user-uploaded art rende
 id world presentation <NODE> [--set <FILE> --admin-token <TOKEN>]
 ```
 
-| Flag            | Argument          | Default                        | Meaning                                                                                 |
-| --------------- | ----------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
-| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                     |
+| Flag            | Argument          | Default                        | Meaning                                                                                     |
+| --------------- | ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                         |
 | `--set`         | file path (JSON)  | — (none)                       | Replace the policy with the one in this file. A duplicated key or unknown field is refused. |
-| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                         |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                             |
 
 Behaviour: without `--set` it prints the current policy, and needs no token, because the policy is public before anyone joins. With `--set` the host checks the policy, journals it and applies it at once. An empty file object `{}` is the default policy, which denies user shaders and disguise filters.
 

@@ -37,7 +37,7 @@ chmod +x "$tmp/work/scripts/variant-features.sh"
 
 # Stub cargo: record every invocation, produce nothing. build.sh
 # touches the binary itself after a successful cargo run.
-printf '#!/bin/sh\necho "cargo $@" >>"%s/cargo.log"\n' "$tmp" >"$tmp/bin/cargo"
+printf '#!%s\necho "cargo $@" >>"%s/cargo.log"\n' "${ID_TEST_FAKE_SH:-/bin/sh}" "$tmp" >"$tmp/bin/cargo"
 chmod +x "$tmp/bin/cargo"
 export PATH="$tmp/bin:$PATH"
 

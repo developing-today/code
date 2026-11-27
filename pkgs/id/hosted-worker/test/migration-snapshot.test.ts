@@ -81,9 +81,16 @@ function control(o: Obj, path: string, body?: unknown): Request {
   return routed(o, path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
 }
 
-async function call(o: Obj, req: Request): Promise<{ status: number; body: Record<string, unknown>; retryAfter: string | null }> {
+async function call(
+  o: Obj,
+  req: Request,
+): Promise<{ status: number; body: Record<string, unknown>; retryAfter: string | null }> {
   const r = await o.d.fetch(req);
-  return { status: r.status, body: (await r.json()) as Record<string, unknown>, retryAfter: r.headers.get("retry-after") };
+  return {
+    status: r.status,
+    body: (await r.json()) as Record<string, unknown>,
+    retryAfter: r.headers.get("retry-after"),
+  };
 }
 
 const step = (o: Obj, path: string, id = "m-1", epoch = 1) =>
@@ -93,7 +100,10 @@ async function seedSource(): Promise<Obj> {
   const src = makeDO("us");
   assert.equal((await call(src, routed(src, "/v1/kv/note", { method: "PUT", body: "hello" }))).status, 200);
   assert.equal((await call(src, routed(src, "/v1/kv/other", { method: "PUT", body: "world" }))).status, 200);
-  const blob = await call(src, routed(src, "/v1/blobs", { method: "PUT", body: new TextEncoder().encode("blob bytes") }));
+  const blob = await call(
+    src,
+    routed(src, "/v1/blobs", { method: "PUT", body: new TextEncoder().encode("blob bytes") }),
+  );
   assert.equal(blob.status, 200);
   return src;
 }
@@ -113,7 +123,10 @@ test("the source refuses a snapshot until the freeze is acknowledged for that mi
   assert.equal((await step(src, "snapshot", "m-1", 2)).body.error, "freeze_not_acknowledged");
   const snap = (await step(src, "snapshot")).body as unknown as MigrationSnapshot;
   assert.equal(snap.watermark, 3, "the watermark is the source's mutation count at the freeze");
-  assert.deepEqual(snap.tables.kv.map((r) => r.key), ["note", "other"]);
+  assert.deepEqual(
+    snap.tables.kv.map((r) => r.key),
+    ["note", "other"],
+  );
   assert.equal(snap.tables.blobs.length, 1);
   assert.match(snap.digest, /^[0-9a-f]{64}$/);
   const again = (await step(src, "snapshot")).body as unknown as MigrationSnapshot;
@@ -125,7 +138,10 @@ test("a client cannot ask for a snapshot without the migration principal", async
   await step(src, "freeze");
   const r = await call(
     src,
-    routed(src, "/v1/migration/snapshot", { method: "POST", body: JSON.stringify({ migration_id: "m-1", routing_epoch: 1 }) }),
+    routed(src, "/v1/migration/snapshot", {
+      method: "POST",
+      body: JSON.stringify({ migration_id: "m-1", routing_epoch: 1 }),
+    }),
   );
   assert.equal(r.status, 403);
 });
@@ -143,7 +159,10 @@ test("import, stage, then activate after the switch: the target serves the sourc
   assert.equal(blocked.status, 503);
   assert.equal(blocked.body.error, "target_not_serving");
   assert.equal(blocked.retryAfter, "30");
-  assert.equal((await call(dst, routed(dst, "/v1/kv/new", { method: "PUT", body: "x" }))).body.error, "target_not_serving");
+  assert.equal(
+    (await call(dst, routed(dst, "/v1/kv/new", { method: "PUT", body: "x" }))).body.error,
+    "target_not_serving",
+  );
 
   const replay = await call(dst, control(dst, "/v1/migration/import", snap));
   assert.equal(replay.body.idempotent, true, "a retried import is idempotent");
@@ -174,7 +193,10 @@ test("the target refuses a tampered, foreign or non-fresh import and leaves itse
   const tampered = makeDO("eu");
   const bad = structuredClone(snap);
   bad.tables.kv[0].value = "changed";
-  assert.equal((await call(tampered, control(tampered, "/v1/migration/import", bad))).body.error, "snapshot_digest_mismatch");
+  assert.equal(
+    (await call(tampered, control(tampered, "/v1/migration/import", bad))).body.error,
+    "snapshot_digest_mismatch",
+  );
   assert.equal((await call(tampered, routed(tampered, "/v1/kv/note"))).status, 404, "nothing was written");
 
   const used = makeDO("eu");

@@ -76,7 +76,7 @@ where
                 Err(Err::Error(_)) => {
                     match f.parse(i.clone()) {
                         Err(Err::Error(err)) => {
-                            return Err(Err::Error(E::append(i, ErrorKind::ManyTill, err)))
+                            return Err(Err::Error(E::append(i, ErrorKind::ManyTill, err)));
                         }
                         Err(e) => return Err(e),
                         Ok((i1, o)) => {

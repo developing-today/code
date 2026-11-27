@@ -415,10 +415,7 @@ fn base_node(input: &mut Input<'_>) -> PResult<KdlNode> {
         match annotated {
             Some((before_children, children)) => {
                 children_annotations = anns;
-                Some((
-                    format!("{space}{before_children}"),
-                    children,
-                ))
+                Some((format!("{space}{before_children}"), children))
             }
             None => {
                 input.reset(&checkpoint);
@@ -953,9 +950,7 @@ fn ty<'s>(input: &mut Input<'s>) -> PResult<(&'s str, Option<KdlIdentifier>, &'s
 /// not parse as an identifier ends the run and is treated as no
 /// annotation, matching upstream's handling of a single such slot;
 /// its inner whitespace is still reported for formatting.
-fn tys<'s>(
-    input: &mut Input<'s>,
-) -> PResult<(Vec<KdlIdentifier>, &'s str, &'s str, &'s str)> {
+fn tys<'s>(input: &mut Input<'s>) -> PResult<(Vec<KdlIdentifier>, &'s str, &'s str, &'s str)> {
     let mut annotations = Vec::new();
     let mut before_first = "";
     let mut after_first = "";

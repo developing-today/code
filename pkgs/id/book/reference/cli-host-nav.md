@@ -129,26 +129,26 @@ id nav <OP> <TARGET> --graph <FILE> [--edge <KIND>]... [--direction <DIR>]
 
 The five operations:
 
-| Op          | Meaning                                             |
-| ----------- | --------------------------------------------------- |
-| `neighbors` | The edges at a node and the node at each far end.   |
-| `backlinks` | The content that points at a node.                  |
-| `threads`   | The discussion threads a node takes part in.        |
-| `history`   | A node's edit states and forks.                     |
-| `path`      | The shortest path to `--to`, within a depth bound.  |
+| Op          | Meaning                                            |
+| ----------- | -------------------------------------------------- |
+| `neighbors` | The edges at a node and the node at each far end.  |
+| `backlinks` | The content that points at a node.                 |
+| `threads`   | The discussion threads a node takes part in.       |
+| `history`   | A node's edit states and forks.                    |
+| `path`      | The shortest path to `--to`, within a depth bound. |
 
 Flags:
 
-| Flag            | Argument | Default | Meaning                                                                                          |
-| --------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--graph`       | `FILE`   | — (required) | The graph snapshot JSON file.                                                               |
-| `--edge`        | `KIND`   | all kinds | Follow only this edge kind, by record name such as `references` or `shared-as`. Repeatable.     |
-| `--direction`   | `DIR`    | `both`  | `out`, `in`, or `both`.                                                                          |
-| `--cursor`      | `CURSOR` | none    | Resume after this cursor, from the `next:` line of an earlier page.                              |
-| `--page-size`   | `N`      | executor default | Items per page.                                                                           |
-| `--to`          | `NODE`   | none    | For `path`: the node the path should reach.                                                      |
-| `--max-depth`   | `N`      | none    | For `path`: the deepest walk to try.                                                             |
-| `--json`        | none     | off     | Print the answer as JSON, exactly as the API returns it.                                         |
+| Flag          | Argument | Default          | Meaning                                                                                     |
+| ------------- | -------- | ---------------- | ------------------------------------------------------------------------------------------- |
+| `--graph`     | `FILE`   | — (required)     | The graph snapshot JSON file.                                                               |
+| `--edge`      | `KIND`   | all kinds        | Follow only this edge kind, by record name such as `references` or `shared-as`. Repeatable. |
+| `--direction` | `DIR`    | `both`           | `out`, `in`, or `both`.                                                                     |
+| `--cursor`    | `CURSOR` | none             | Resume after this cursor, from the `next:` line of an earlier page.                         |
+| `--page-size` | `N`      | executor default | Items per page.                                                                             |
+| `--to`        | `NODE`   | none             | For `path`: the node the path should reach.                                                 |
+| `--max-depth` | `N`      | none             | For `path`: the deepest walk to try.                                                        |
+| `--json`      | none     | off              | Print the answer as JSON, exactly as the API returns it.                                    |
 
 Paging is explicit: a page ends with a `next:` cursor line to pass back with `--cursor`, and a bound that cut a result is named in the output, never silent.
 

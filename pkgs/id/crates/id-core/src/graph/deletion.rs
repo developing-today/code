@@ -17,7 +17,7 @@ use std::fmt;
 
 use p2panda_core::{Signature, SigningKey, VerifyingKey};
 
-use crate::canonical_cbor::{encode_canonical, Value};
+use crate::canonical_cbor::{Value, encode_canonical};
 
 /// Signing domain for deletion evidence.
 pub const DELETION_DOMAIN: &str = "id.graph-deletion/v1";

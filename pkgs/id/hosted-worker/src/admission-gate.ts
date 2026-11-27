@@ -24,7 +24,12 @@
 // node whose dispatch excludes the profile refuses it; the Rust
 // core remains the authority for blake3 admissions.
 
-import { CborError, decodeCanonical, encodeCanonical, type CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
+import {
+  CborError,
+  decodeCanonical,
+  encodeCanonical,
+  type CborValue,
+} from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 /** The stable failure class of a rejection (mirrors the Rust `class()`). */
 export type AdmissionRejectionClass =

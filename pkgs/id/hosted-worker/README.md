@@ -33,8 +33,8 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   bucket — except client-encrypted blobs (§7 of the #2258 spec), whose
   R2 keys are scoped to the owning binding and dedupe only per user.
   DELETE drops only this user's reference); and the signed-object bridge routes (`GET
-  /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
-  /v1/bridge/pull`, `GET /v1/bridge/export`, `GET /v1/bridge/ws`),
+/v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
+/v1/bridge/pull`, `GET /v1/bridge/export`, `GET /v1/bridge/ws`),
   covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps. So is the per-binding request cap
