@@ -194,7 +194,9 @@ def record(history, export, at):
         counts_map = session.get("tokens")
         value = counts_map.get("input") if isinstance(counts_map, dict) else None
         if value is not None and (type(value) is not int or value < 0):
-            raise ValueError(f"session {sid}: input must be a nonnegative integer or null")
+            raise ValueError(
+                f"session {sid}: input must be a nonnegative integer or null"
+            )
         known = history["sessions"].get(sid)
         if known is None:
             history["sessions"][sid] = {"input": value, "last_seen": at}
@@ -243,7 +245,11 @@ def snapshot(history, start, end):
                 stored = history["sessions"].get(sid, {"input": None})
                 sessions.append({"id": sid, "tokens": {"input": stored["input"]}})
         events.append(
-            {"task_id": task_id, "kind": "completed", "created_at": task["completed_at"]}
+            {
+                "task_id": task_id,
+                "kind": "completed",
+                "created_at": task["completed_at"],
+            }
         )
     tasks = [
         {"id": int(key), "queue": task["queue"], "status": task["status"]}

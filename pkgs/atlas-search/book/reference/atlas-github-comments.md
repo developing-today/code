@@ -68,8 +68,8 @@ Running the identical command again appends nothing for that repository unless n
 
 ## Exit codes
 
-| Code | Meaning                                                                                                     |
-| ---- | ----------------------------------------------------------------------------------------------------------- |
-| 0    | Success — including runs in which HTTP 451 repositories were skipped.                                       |
-| 1    | Execution failure: `gh` failures and file errors. |
+| Code | Meaning                                                                                                  |
+| ---- | -------------------------------------------------------------------------------------------------------- |
+| 0    | Success — including runs in which HTTP 451 repositories were skipped.                                    |
+| 1    | Execution failure: `gh` failures and file errors.                                                        |
 | 2    | Usage / invalid invocation: missing `--state`/`--out`, an unknown argument, or a flag missing its value. |

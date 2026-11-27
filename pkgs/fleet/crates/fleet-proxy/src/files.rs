@@ -1860,11 +1860,14 @@ mod tests {
             assert_eq!(d.files.get(&temp).map(Vec::len), Some(200_000));
         }
         daemon.lock().unwrap().fail_copy_after = None;
-        let report = copy_file_direct(&mut t, "/srv/src.bin", "/srv/dst.bin", None, &mut |_| {})
-            .unwrap();
+        let report =
+            copy_file_direct(&mut t, "/srv/src.bin", "/srv/dst.bin", None, &mut |_| {}).unwrap();
         assert_eq!(report.resumed_from, 200_000);
         assert_eq!(report.sha256, sha256_hex(&data));
-        assert_eq!(daemon.lock().unwrap().files.get("/srv/dst.bin"), Some(&data));
+        assert_eq!(
+            daemon.lock().unwrap().files.get("/srv/dst.bin"),
+            Some(&data)
+        );
     }
 
     #[test]
@@ -1873,8 +1876,8 @@ mod tests {
         let mut t = FakeTransport {
             daemon: daemon.clone(),
         };
-        let missing = copy_file_direct(&mut t, "/srv/nope", "/srv/dst.bin", None, &mut |_| {})
-            .unwrap_err();
+        let missing =
+            copy_file_direct(&mut t, "/srv/nope", "/srv/dst.bin", None, &mut |_| {}).unwrap_err();
         assert!(matches!(missing, ClientError::Transport(_)));
         assert!(!is_unsupported_direct_copy(&missing));
 

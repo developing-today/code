@@ -100,21 +100,21 @@ fn main() -> ExitCode {
         "pause-class" | "resume-class" => class_and_host(action_args)
             .map_err(|e| format!("usage: {e}"))
             .and_then(|(class, host)| {
-            let f = if action == "pause-class" {
-                pause_class
-            } else {
-                resume_class
-            };
-            f(&state_dir, class, &host)
-                .map(|()| {
-                    format!(
-                        "{} {}",
-                        action,
-                        atlas_core::sweep::class_host_key(class, &host)
-                    )
-                })
-                .map_err(|e| e.to_string())
-        }),
+                let f = if action == "pause-class" {
+                    pause_class
+                } else {
+                    resume_class
+                };
+                f(&state_dir, class, &host)
+                    .map(|()| {
+                        format!(
+                            "{} {}",
+                            action,
+                            atlas_core::sweep::class_host_key(class, &host)
+                        )
+                    })
+                    .map_err(|e| e.to_string())
+            }),
         "run-once" => {
             let Some(path) = action_args.first() else {
                 return usage_fail("run-once needs a REQUEST.json path");

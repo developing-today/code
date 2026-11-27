@@ -424,7 +424,12 @@ export function createStoreProjectorReader(store: ProjectorStoreReaderDeps): Pro
           const rows = await Promise.all(
             refs.slice(i, i + concurrency).map((ref) => store.getComments([ref], { limit: 1 })),
           );
-          out.push(...rows.flat().map(mapProjectorComment).filter((comment) => !comment.deleted));
+          out.push(
+            ...rows
+              .flat()
+              .map(mapProjectorComment)
+              .filter((comment) => !comment.deleted),
+          );
         }
         return out;
       } catch {

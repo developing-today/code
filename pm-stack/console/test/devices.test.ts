@@ -318,6 +318,7 @@ describe("over HTTP, without the sign-in", () => {
           "asks",
           "questionCount",
           "questions",
+          "questionSets",
           "prs",
           "priorities",
           "done",

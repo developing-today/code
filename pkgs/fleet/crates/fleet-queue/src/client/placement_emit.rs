@@ -88,14 +88,8 @@ pub fn placement_answers(
     today: &str,
 ) -> Value {
     let id = task.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-    let kind = task
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .unwrap_or("task");
-    let title = task
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let kind = task.get("kind").and_then(|v| v.as_str()).unwrap_or("task");
+    let title = task.get("title").and_then(|v| v.as_str()).unwrap_or("");
     json!({
         "task": format!("claimed {kind} task {id} ({title}) by {worker}/{lane}"),
         "exception_id": format!("E1-{today}-8187"),
@@ -125,10 +119,7 @@ pub fn emit_placement_record(row: &Value, worker: &str, lane: &str) {
         return;
     }
     let mut cmd = std::process::Command::new(record_bin());
-    cmd.arg("--policy")
-        .arg(&policy)
-        .arg("--answers")
-        .arg(&path);
+    cmd.arg("--policy").arg(&policy).arg("--answers").arg(&path);
     // Optional quota wiring: the dispatcher log path passes the live
     // quota-current read through so pool-drawn options evaluate
     // against the B5 measurement gate instead of erroring.

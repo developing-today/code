@@ -139,7 +139,10 @@ describe("browser sessions (H3)", () => {
 
     expect((await authenticateBrowserSession(request(cookie), options)).ok).toBe(true);
     revoked = true;
-    expect(await authenticateBrowserSession(request(cookie), options)).toEqual({ ok: false, reason: "revoked_session" });
+    expect(await authenticateBrowserSession(request(cookie), options)).toEqual({
+      ok: false,
+      reason: "revoked_session",
+    });
     expect(store.sessions.size).toBe(0);
     expect(events.map(({ event }) => event)).toEqual(["login", "revoked"]);
     expect(events[1]).toMatchObject({ accountId: "acct-1", bindingId: "bind-1" });

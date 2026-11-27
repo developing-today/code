@@ -851,7 +851,10 @@ in
     Unit = {
       Description = "OpenCode route proxy (socket-activated)";
       Wants = [ "network-online.target" ];
-      After = [ "network-online.target" "opencode-route-proxy.socket" ];
+      After = [
+        "network-online.target"
+        "opencode-route-proxy.socket"
+      ];
       Requires = [ "opencode-route-proxy.socket" ];
     };
     Service = {
@@ -1286,7 +1289,10 @@ in
   # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
-      After = [ "network-online.target" "mcpx.socket" ];
+      After = [
+        "network-online.target"
+        "mcpx.socket"
+      ];
       Wants = [ "network-online.target" ];
       Requires = [ "mcpx.socket" ];
       # A switch must not restart the daemon: that would end every

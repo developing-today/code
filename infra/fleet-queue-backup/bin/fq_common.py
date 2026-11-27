@@ -737,19 +737,41 @@ class D1Client:
         transport failure re-runs init + upload (the dump is already
         built; an upload retry never re-reads the source). API-level
         errors are not retried: they do not heal.
+
+        Idempotent recovery (#16070) follows Wrangler's d1/execute.ts:
+        init without upload_url means the server validated the stored
+        file using our MD5 etag and already started ingestion. Treat it
+        as the first import response, not a request to ingest again.
+        D1 does not return object length/hash metadata for this path;
+        validation belongs to the server, not a client HEAD request.
         """
         digest = hashlib.md5(sql_text.encode()).hexdigest()
+        data = sql_text.encode()
         filename = None
+        first_response = None
         for attempt in range(3):
             init = self._call(
                 "POST",
                 f"/accounts/{self.account}/d1/database/{db_id}/import",
                 {"action": "init", "etag": digest},
             )
-            upload_url, filename = init["upload_url"], init["filename"]
-            req = urllib.request.Request(
-                upload_url, data=sql_text.encode(), method="PUT"
-            )
+            if not isinstance(init, dict):
+                raise RuntimeError(
+                    f"D1 import init returned an invalid response: {init!r}; "
+                    "retryable: re-run the import"
+                )
+            if "upload_url" not in init:
+                first_response = init
+                break
+            upload_url = init["upload_url"]
+            filename = init.get("filename")
+            if not isinstance(upload_url, str) or not upload_url or not filename:
+                raise RuntimeError(
+                    "D1 import init returned an invalid upload_url or missing "
+                    f"filename (init result: {str(init)[:300]}); "
+                    "retryable: re-run the import"
+                )
+            req = urllib.request.Request(upload_url, data=data, method="PUT")
             try:
                 with urllib.request.urlopen(
                     req, timeout=UPLOAD_TIMEOUT_SECONDS
@@ -769,14 +791,35 @@ class D1Client:
                     f"D1 import upload etag mismatch: sent {digest}, got {etag}"
                 )
             time.sleep(5)
-        ingest = self._call(
-            "POST",
-            f"/accounts/{self.account}/d1/database/{db_id}/import",
-            {"action": "ingest", "etag": digest, "filename": filename},
-        )
-        bookmark = ingest.get("at_bookmark")
-        if not bookmark:
-            raise RuntimeError(f"D1 import ingest returned no at_bookmark: {ingest}")
+        resumed = first_response is not None
+        if not resumed:
+            first_response = self._call(
+                "POST",
+                f"/accounts/{self.account}/d1/database/{db_id}/import",
+                {"action": "ingest", "etag": digest, "filename": filename},
+            )
+        if not isinstance(first_response, dict):
+            raise RuntimeError(
+                f"D1 import returned an invalid response: {first_response!r}; "
+                "retryable: re-run the import"
+            )
+        if (
+            first_response.get("error")
+            or first_response.get("errors")
+            or first_response.get("success") is False
+            or first_response.get("status") == "error"
+        ):
+            raise RuntimeError(
+                f"D1 import failed: {first_response}; retryable: re-run the import"
+            )
+        if first_response.get("status") == "complete":
+            return first_response
+        bookmark = first_response.get("at_bookmark")
+        if not bookmark or (resumed and first_response.get("status") != "active"):
+            raise RuntimeError(
+                "D1 import returned an unrecognized response or no at_bookmark: "
+                f"{first_response}; retryable: re-run the import"
+            )
         # A full-store import executes ~600k statements server-side;
         # the poll bound (360 x 5s = 30 min) is sized to that, not to
         # the hermetic fixtures.
@@ -786,10 +829,27 @@ class D1Client:
                 f"/accounts/{self.account}/d1/database/{db_id}/import",
                 {"action": "poll", "current_bookmark": bookmark},
             )
-            if poll.get("error"):
-                raise RuntimeError(f"D1 import failed: {poll['error']}")
+            if not isinstance(poll, dict):
+                raise RuntimeError(
+                    f"D1 import poll returned an invalid response: {poll!r}; "
+                    "retryable: re-run the import"
+                )
+            if (
+                poll.get("error")
+                or poll.get("errors")
+                or poll.get("success") is False
+                or poll.get("status") == "error"
+            ):
+                raise RuntimeError(
+                    f"D1 import failed: {poll}; retryable: re-run the import"
+                )
             if poll.get("status") == "complete":
                 return poll
+            if poll.get("status") not in ("active", "running"):
+                raise RuntimeError(
+                    f"D1 import poll returned an unrecognized response: {poll}; "
+                    "retryable: re-run the import"
+                )
             time.sleep(5)
         raise RuntimeError("D1 import did not complete within the poll bound")
 

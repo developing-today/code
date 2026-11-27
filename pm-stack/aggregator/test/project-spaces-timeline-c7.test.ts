@@ -65,9 +65,9 @@ describe("project spaces", () => {
   });
 
   test("related spaces link only the four stable keys", () => {
-    expect(() =>
-      buildProjectSpace({ key: "Atlas", title: "Atlas", related: ["ID", "Nope" as never] }),
-    ).toThrow(/unknown related space/);
+    expect(() => buildProjectSpace({ key: "Atlas", title: "Atlas", related: ["ID", "Nope" as never] })).toThrow(
+      /unknown related space/,
+    );
   });
 });
 
@@ -109,7 +109,10 @@ describe("timeline index", () => {
   });
 
   test("C6/C8 stay external: only reference entries are exported, no search is implemented", () => {
-    const timeline = buildTimelineIndex({ records: [record("daily", "2026-11-24", "d9")], asOf: "2026-11-24T18:00:00.000Z" });
+    const timeline = buildTimelineIndex({
+      records: [record("daily", "2026-11-24", "d9")],
+      asOf: "2026-11-24T18:00:00.000Z",
+    });
     const entries = timelineIndexEntries(timeline);
     expect(entries.length).toBeGreaterThan(0);
     for (const e of entries) expect(typeof e.text).toBe("string");

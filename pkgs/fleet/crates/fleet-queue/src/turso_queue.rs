@@ -2958,12 +2958,7 @@ mod tests {
             "released"
         );
         assert_eq!(
-            revalidate_outcome(
-                Some("task_status"),
-                Some("blocked"),
-                Some("blocked"),
-                false
-            ),
+            revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false),
             "released"
         );
         assert_eq!(
@@ -3405,17 +3400,28 @@ mod tests {
         // claim_update_sql. Keep those seams visible so SQL drift fails
         // before the Python contention oracle runs.
         let src = test_source();
-        let pick = seg8217(&src, "pub(crate) fn default_pick_predicate(", "\npub(crate) fn handoff_pick_predicate(");
+        let pick = seg8217(
+            &src,
+            "pub(crate) fn default_pick_predicate(",
+            "\npub(crate) fn handoff_pick_predicate(",
+        );
         assert!(pick.contains("status = 'queued' AND attempts < max_attempts"));
         assert!(pick.contains("not_before IS NULL OR not_before <= ?"));
-        let update = seg8217(&src, "pub(crate) fn claim_update_sql(", "\n/// The default (lane) pick predicate");
+        let update = seg8217(
+            &src,
+            "pub(crate) fn claim_update_sql(",
+            "\n/// The default (lane) pick predicate",
+        );
         assert!(update.contains("WHERE id = ?"));
         assert!(update.contains("AND ( {pick_predicate} )"));
         assert!(update.contains("{PLATFORM_LIMIT_PICK_CLAUSE}"));
 
         let output = std::process::Command::new("python3")
             .arg("-I")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claim_contention.py"))
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/claim_contention.py"
+            ))
             .arg("--verify")
             .output()
             .expect("claim contention oracle requires Python 3 with stdlib sqlite3");

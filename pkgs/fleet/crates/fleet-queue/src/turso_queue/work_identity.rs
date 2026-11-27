@@ -477,7 +477,9 @@ mod tests {
         let src = include_str!("claim.rs");
         let start = src.find("fn verb_enqueue(").unwrap();
         let body = &src[start..];
-        let key_branch = body.find("dedupe_match_detail(row, true)").unwrap_or(usize::MAX);
+        let key_branch = body
+            .find("dedupe_match_detail(row, true)")
+            .unwrap_or(usize::MAX);
         assert_eq!(
             body.matches("triage_recovery_filing(").count(),
             2,

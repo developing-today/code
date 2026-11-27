@@ -342,7 +342,15 @@ pub fn execute(
             to_remote,
             to_path,
         } => execute_relay(
-            from_remote, from_path, to_remote, to_path, mode, resume, spool_dir, connect, log,
+            from_remote,
+            from_path,
+            to_remote,
+            to_path,
+            mode,
+            resume,
+            spool_dir,
+            connect,
+            log,
         ),
     }
 }

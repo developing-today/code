@@ -405,6 +405,7 @@ pub fn decide(ctx: &CandidateContext) -> Decision {
 
     // 2. A present-but-unreadable safety value (chunk or label)
     //    is contradictory evidence: fail closed, unresolved.
+    //    Published labels dual-read canonical spellings (#13506 stage 2).
     let chunk_legacy = ctx
         .chunk_legacy_sensitivity
         .as_deref()
@@ -413,8 +414,8 @@ pub fn decide(ctx: &CandidateContext) -> Decision {
         .label_sensitivity
         .as_deref()
         .filter(|s| !s.trim().is_empty());
-    if chunk_legacy.is_some_and(|s| Sensitivity::from_name(s).is_none())
-        || label_sens.is_some_and(|s| Sensitivity::from_name(s).is_none())
+    if chunk_legacy.is_some_and(|s| Sensitivity::from_published_name(s).is_none())
+        || label_sens.is_some_and(|s| Sensitivity::from_published_name(s).is_none())
     {
         return finish(
             Sensitivity::SecretBearing,
@@ -425,8 +426,8 @@ pub fn decide(ctx: &CandidateContext) -> Decision {
             Vec::new(),
         );
     }
-    let chunk_legacy = chunk_legacy.and_then(Sensitivity::from_name);
-    let label_sens = label_sens.and_then(Sensitivity::from_name);
+    let chunk_legacy = chunk_legacy.and_then(Sensitivity::from_published_name);
+    let label_sens = label_sens.and_then(Sensitivity::from_published_name);
 
     // 3. Positive personal-life evidence excludes the embed.
     //    Sensitivity stays at the locked default; the exclusion
@@ -1532,7 +1533,7 @@ pub fn review_schema_change(
                         if new_values.contains(&cur_sens) {
                             proposals.push(base);
                         } else if let Some(target) = renames.get(&cur_sens) {
-                            match Sensitivity::from_name(target) {
+                            match Sensitivity::from_published_name(target) {
                                 Some(t) => proposals.push(RecordProposal {
                                     action: "change".to_string(),
                                     proposed_sensitivity: target.clone(),
@@ -1849,7 +1850,7 @@ pub fn apply_schema_review(
             let record = ClassificationRecord {
                 schema_version: review.new_version,
                 embed_id: proposal.embed_id.clone(),
-                sensitivity: Sensitivity::from_name(&proposal.proposed_sensitivity)
+                sensitivity: Sensitivity::from_published_name(&proposal.proposed_sensitivity)
                     .unwrap_or(current.sensitivity),
                 disposition: proposed_disposition,
                 provenance: crate::classification::ClassificationProvenance {
