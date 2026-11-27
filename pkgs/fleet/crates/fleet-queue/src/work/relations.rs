@@ -1909,6 +1909,40 @@ mod tests {
     }
 
     #[test]
+    fn pmo_dep_wire_rejects_noncanonical_pair_order() {
+        // Oracle: DEP-02 D1 pair order; numeric WorkRef ordering, not text ordering.
+        // Both JSON ingestion and direct validation must enforce the same invariant.
+        for relation in [Relation::RelatedTo, Relation::Duplicates] {
+            let reversed = edge(relation, work("10"), work("2"));
+            assert_eq!(reversed.validate().unwrap_err().code(), "invalid_schema");
+            assert_eq!(Edge::from_json(&reversed.to_json()).unwrap_err().code(), "invalid_schema");
+            let canonical = edge(relation, work("2"), work("10"));
+            assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+        }
+        // Directed relations must retain their meaning, not adopt pair ordering.
+        for relation in [Relation::Blocks, Relation::Hierarchy, Relation::Supersedes] {
+            assert!(edge(relation, work("10"), work("2")).validate().is_ok());
+        }
+    }
+
+    proptest! {
+        // Oracle: every distinct pair has exactly one valid orientation under
+        // WorkRef::Ord; reversing it must fail without silently swapping roles.
+        #[test]
+        fn pmo_dep_wire_pair_order_is_canonical(a in 1u64..u64::MAX, b in 1u64..u64::MAX) {
+            prop_assume!(a != b);
+            let (low, high) = (a.min(b).to_string(), a.max(b).to_string());
+            for relation in [Relation::RelatedTo, Relation::Duplicates] {
+                let canonical = edge(relation, work(&low), work(&high));
+                prop_assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+                let mut reversed = edge(relation, work(&high), work(&low));
+                reversed.role = (relation == Relation::Duplicates).then_some(DuplicateRole::SourceIsDuplicate);
+                prop_assert_eq!(Edge::from_json(&reversed.to_json()).unwrap_err().code(), "invalid_schema");
+            }
+        }
+    }
+
+    #[test]
     fn pmo_dep_aliases_normalize_to_one_canonical_edge() {
         let a = work("761");
         let b = work("842");
