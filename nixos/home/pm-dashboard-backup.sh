@@ -362,6 +362,7 @@ required file aggregator/decision-events.jsonl
 optional file aggregator/decision-events-outbox.jsonl.sync-state.json
 optional file aggregator/decision-events-outbox.jsonl
 optional file aggregator/needs-drew.json
+optional file aggregator/needs-user.json
 optional file aggregator/notifications.jsonl
 optional file aggregator/issue_pr_links.json
 optional file aggregator/prefix-program.json
@@ -447,15 +448,16 @@ done
 # REQUIRED (a missing one fails the run at verify). The outbox's sync
 # cursor is copied BEFORE the outbox, so a restored cursor can lag the
 # restored outbox (records re-sent, which the sync dedupes by event id)
-# but never run ahead of it (records skipped). needs-drew.json holds
-# Drew's answers, notifications.jsonl the notification history (its
+# but never run ahead of it (records skipped). needs-drew.json and
+# needs-user.json hold the question answers during the state-path
+# compatibility window, notifications.jsonl the notification history (its
 # dedupe memory), issue_pr_links.json and prefix-program.json hand-kept
 # state, digests/ the daily digest archive: none can be rebuilt from
 # GitHub or the projector, so all ride the archive. They are optional:
 # each appears only once its feature has written to it.
 for f in decisions.json decision-events.jsonl \
   decision-events-outbox.jsonl.sync-state.json decision-events-outbox.jsonl \
-  needs-drew.json notifications.jsonl issue_pr_links.json prefix-program.json; do
+  needs-drew.json needs-user.json notifications.jsonl issue_pr_links.json prefix-program.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"

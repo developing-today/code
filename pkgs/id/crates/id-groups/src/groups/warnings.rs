@@ -271,7 +271,10 @@ mod tests {
 
         // Every re-add has aged out of the window, so churn re-arms.
         let later = CHURN_WINDOW_SECS + 4;
-        assert_eq!(observe(&mut evaluator, 10, &readds, later), [] as [Warning; 0]);
+        assert_eq!(
+            observe(&mut evaluator, 10, &readds, later),
+            [] as [Warning; 0]
+        );
 
         let burst = later + 10;
         readds.extend([burst, burst + 1, burst + 2, burst + 3]);

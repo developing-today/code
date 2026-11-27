@@ -265,11 +265,12 @@
       "id": "id.nixos.vm",
       "paths": [
         "pkgs/id/nix/tests/serve-test.nix",
+        "pkgs/id/nix/tests/world-host-test.nix",
         "pkgs/id/nix/tests/e2e-test.nix",
         "pkgs/id/nix/tests/integration-test.nix",
         "pkgs/id/nix/tests/playwright-e2e-test.nix"
       ],
-      "invocation": "nix flake check for nixos-serve, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
+      "invocation": "nix flake check for nixos-serve, nixos-world-host, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
       "venue": {
         "workflow": ".github/workflows/id-e2e-nightly.yml",
         "job_step": "check / Run full nix flake check",
@@ -297,6 +298,7 @@
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
         "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
+        "pkgs/id/hosted-worker/test/hosted-directory-allowlist.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
@@ -305,6 +307,7 @@
         "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/request-cap.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
         "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
@@ -321,11 +324,12 @@
         "pkgs/id/hosted-worker/test/export.test.ts",
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
         "pkgs/id/hosted-worker/test/migration-control.test.ts",
+        "pkgs/id/hosted-worker/test/migration-operator.test.ts",
         "pkgs/id/hosted-worker/test/object-plane-r2.test.ts",
         "pkgs/id/hosted-worker/test/references.test.ts",
         "pkgs/id/hosted-worker/test/reference-index.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/hosted-directory-allowlist.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/cse-blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/tenant-ops.test.ts test/identity-link.test.ts test/credentials.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts test/migration-operator.test.ts test/object-plane-r2.test.ts test/references.test.ts test/reference-index.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -845,6 +849,19 @@
       },
       "status": "mapped",
       "related_issues": [12828]
+    },
+    {
+      "id": "pm-service.oauth-pkce",
+      "paths": ["pm-stack/pm-service/test/worker-auth.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test test/worker-auth.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14261]
     },
     {
       "id": "opencode-claimant.install",
@@ -1457,6 +1474,23 @@
       "related_issues": [8941]
     },
     {
+      "id": "pmo.contract-conformance",
+      "paths": [
+        "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+      ],
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "venue": {
+        "workflow": ".github/workflows/pmo-contract-conformance.yml",
+        "job_step": "pmo-contract-conformance / Run the conformance target",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9437],
+      "notes": "CEN-07 golden fixtures through the real adapters, one result per contract family; gated families (receipt, cursor, field ownership) are listed in the fixture manifest and never counted as passing. The same test file also runs inside fleet.rust's workspace run."
+    },
+    {
       "id": "fleet.smoke",
       "paths": ["pkgs/fleet/smoke.sh"],
       "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
@@ -1693,6 +1727,22 @@
       "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237); deletion_state_machine is the model oracle for A-GRAPH-9130-01 (requests, moderation, projection hide and server-local true deletion stay distinct; batches idempotent; retained evidence verifiable)."
     },
     {
+      "id": "id.rust.e6-persistence.unit",
+      "paths": [
+        "pkgs/id/crates/id-events/src/event_store/persistence_tests.rs",
+        "pkgs/id/crates/id-store/src/turso.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (test-sandbox runs cargo nextest --all-features for default workspace members); targeted: cargo test -p id-events --lib event_store::persistence_tests; cargo test -p id-store --lib turso::tests",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Native-redb row oracle for E6 shared event/body/chain/fork persistence, generated keys/bodies and aborted partial writes; tenant protocol and row-layer tests. This is not EventStoreBackend conformance."
+    },
+    {
       "id": "id.rust.id-currency-registry.integration",
       "paths": [
         "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
@@ -1713,10 +1763,13 @@
       "paths": [
         "pkgs/id/crates/id-render/tests/assertions.rs",
         "pkgs/id/crates/id-render/tests/compose.rs",
+        "pkgs/id/crates/id-render/tests/coverage_corpus.rs",
         "pkgs/id/crates/id-render/tests/lower.rs",
         "pkgs/id/crates/id-render/tests/lower_gui.rs",
         "pkgs/id/crates/id-render/tests/lower_native.rs",
+        "pkgs/id/crates/id-render/tests/parser_corpus.rs",
         "pkgs/id/crates/id-render/tests/pipeline.rs",
+        "pkgs/id/crates/id-render/tests/target_corpus.rs",
         "pkgs/id/crates/id-render/tests/tooling.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",

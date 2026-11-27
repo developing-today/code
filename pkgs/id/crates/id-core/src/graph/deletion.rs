@@ -117,16 +117,10 @@ pub enum DeletionAction {
     },
     /// An authority holder grants the request: a true delete under the
     /// server's policy path, distinct from an admin delete (#14232).
-    Grant {
-        request_id: u64,
-        policy_id: String,
-    },
+    Grant { request_id: u64, policy_id: String },
     /// An authority holder declines the request: recorded, no delete
     /// (#14232).
-    Decline {
-        request_id: u64,
-        reason: String,
-    },
+    Decline { request_id: u64, reason: String },
     /// Put a request into the moderation queue.
     Queue { request_id: u64, ticket_id: u64 },
     /// Hide serving in a local projection.
@@ -280,8 +274,7 @@ impl DeletionStateMachine {
                     checked_label(holder)?;
                 }
                 match self.state {
-                    DeletionState::Available
-                    | DeletionState::DeleteDeclined { .. } => {
+                    DeletionState::Available | DeletionState::DeleteDeclined { .. } => {
                         self.state = DeletionState::DeleteRequested { request_id };
                         self.deliveries.push(DeleteRequestEnvelope {
                             request_id,
@@ -335,10 +328,7 @@ impl DeletionStateMachine {
                     )),
                 }
             }
-            DeletionAction::Decline {
-                request_id,
-                reason,
-            } => {
+            DeletionAction::Decline { request_id, reason } => {
                 checked_label(&reason)?;
                 match self.state {
                     DeletionState::DeleteRequested {

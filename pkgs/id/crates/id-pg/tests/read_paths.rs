@@ -210,6 +210,33 @@ fn live_short_page_is_complete_and_states_per_request_consistency() {
 }
 
 #[test]
+fn live_short_page_with_explicit_incomplete_range_continues_keyset_read() {
+    // Oracle: #15704 — a short body must not override an explicit
+    // Content-Range total that says more rows remain.
+    let mut transport = Scripted::new(vec![
+        page(&[1], Some("0-0/100"), 1_000),
+        page(&[2], Some("1-1/2"), 2_000),
+    ]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &Query::read("items"),
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(ids(&result.rows), vec![1, 2]);
+    assert!(result.complete);
+    assert!(!result.truncated);
+    assert_eq!(result.pages, 2);
+    assert_eq!(result.next_cursor, None);
+    assert_eq!(transport.sent.len(), 2);
+    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.1)"));
+}
+
+#[test]
 fn live_full_page_without_a_total_is_truncated_with_a_cursor() {
     let mut transport = Scripted::new(vec![page(&[1, 2], Some("0-1/*"), 5)]);
     let result = live_read(
@@ -406,6 +433,81 @@ fn live_transport_and_body_failures_are_errors() {
         "more rows than the limit"
     );
     assert_eq!(run(page(&[1], Some("bogus"), 1)), ReadError::MalformedPage);
+}
+
+#[test]
+fn live_content_range_must_describe_the_decoded_body() {
+    // Oracle: #15742 — a range that disagrees with the rows in the
+    // body is a broken page. `0-1/2` over one decoded row used to read
+    // as a complete result and silently drop the second row.
+    let run = |rows: &[i64], range: &str| {
+        let mut transport = Scripted::new(vec![page(rows, Some(range), 1)]);
+        live_read(
+            &endpoint(),
+            &modes(ReadMode::Live),
+            &mut transport,
+            &JsonRows,
+            &Query::read("items"),
+            5,
+        )
+    };
+    for (rows, range) in [
+        (&[1][..], "0-1/2"),
+        (&[1][..], "0-1/*"),
+        (&[1, 2][..], "0-0/2"),
+        (&[1, 2][..], "0-2/*"),
+        (&[][..], "0-0/1"),
+        (&[1][..], "*/*"),
+        (&[1][..], "*/1"),
+        (&[1, 2][..], "0-1/1"),
+        (&[1][..], "3-3/3"),
+    ] {
+        assert_eq!(
+            run(rows, range).unwrap_err(),
+            ReadError::MalformedPage,
+            "{} rows under {range}",
+            rows.len()
+        );
+    }
+
+    // Matching ranges still read, complete or not.
+    let complete = run(&[1, 2], "0-1/2").unwrap();
+    assert!(complete.complete);
+    assert_eq!(ids(&complete.rows), vec![1, 2]);
+    let empty = run(&[], "*/0").unwrap();
+    assert!(empty.complete);
+    assert_eq!(ids(&empty.rows), Vec::<i64>::new());
+    let unknown_total = run(&[], "*/*").unwrap();
+    assert!(unknown_total.complete);
+}
+
+#[test]
+fn content_range_describes_only_matching_bodies() {
+    let describes = |range: &str, rows: u64| ContentRange::parse(range).unwrap().describes(rows);
+    assert!(describes("0-1/2", 2));
+    assert!(describes("0-1/*", 2));
+    assert!(describes("0-0/100", 1));
+    assert!(describes("5-9/20", 5));
+    assert!(describes("*/0", 0));
+    assert!(describes("*/7", 0));
+    assert!(!describes("0-1/2", 1));
+    assert!(!describes("0-1/2", 3));
+    assert!(!describes("0-4/3", 5), "a range that ends past its total");
+    assert!(!describes("*/*", 1));
+    let backwards = ContentRange::Rows {
+        first: 4,
+        last: 1,
+        total: None,
+    };
+    assert!(!backwards.describes(0));
+    assert!(
+        !ContentRange::Rows {
+            first: 0,
+            last: u64::MAX,
+            total: None
+        }
+        .describes(u64::MAX)
+    );
 }
 
 #[test]

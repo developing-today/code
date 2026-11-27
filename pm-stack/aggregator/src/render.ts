@@ -645,6 +645,9 @@ export function renderSearch(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  // #14060 slice 2: when the caller renders one bounded page, the true
+  // match count rides here so the heading never understates it.
+  totalResults?: number,
 ): string {
   const cards = results
     .map((result) => {
@@ -664,7 +667,7 @@ export function renderSearch(
       return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${totalResults ?? results.length} result${(totalResults ?? results.length) === 1 ? "" : "s"} for “${esc(query)}”</h2>${totalResults !== undefined && totalResults > results.length ? `<p class="muted">Showing the first ${results.length} — refine the query to narrow the rest.</p>` : ""}${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
   // #1212 slice 2: the search page carries the same freshness facets
   // as the home page of each result kind present (board/roadmap/items
   // for work, registry for sessions, dns for the register, quota and
@@ -3488,7 +3491,7 @@ ${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
 export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
   if (census === undefined) return "";
   if (census === null) {
-    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+    return `<h2 id="needs-user-census">Needs User — GitHub label census</h2><a id="needs-drew-census"></a><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
   }
   const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
   const failureNote = failed.length
@@ -3538,7 +3541,7 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
         .join("")}</ul>`
     : `<p class="muted">Nothing is parked on the owner by an agent${answered}.</p>`;
   const rows = `<h3 id="needs-drew-hands">Needs a person's hands (${hands.length})</h3>${handsRows}<h3 id="needs-drew-review">Review requested (${review.length})</h3>${reviewRows}<h3 id="needs-drew-parked">Parked on the owner by an agent — fleet work (${parked.length})</h3>${parkedRows}`;
-  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${hands.length + review.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
+  return `<h2 id="needs-user-census">Needs User — GitHub label census (${hands.length + review.length})</h2><a id="needs-drew-census"></a><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-user.json">/api/needs-user.json</a> (legacy: <a href="/api/needs-drew.json">/api/needs-drew.json</a>).</p>${failureNote}${rows}`;
 }
 
 /**
@@ -5302,6 +5305,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
       (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
       "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
       (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
+      (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable</span> · AA ' + (e.estimated ? 'estimated' : 'measured') + (e.effort ? ' · ' + esc(e.effort) : '') : "") +
       (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : "") +
       (function () {
         var proj = project(e);
@@ -5739,7 +5743,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     tb.innerHTML = rows.map(function (e) {
       var ec = effCost(e);
       var proj = project(e);
-      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
+      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span>" + (e.configured === false ? '<br><span class="badge stale">Unconfigured · non-routable · AA ' + (e.estimated ? 'estimated' : 'measured') + '</span>' : '') + '</td>' +
         "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
         '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
         "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
@@ -6284,9 +6288,9 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
     : "";
   const modelCards = catalog
     ? `<div class="board">
-<div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
-<div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false).length} configured models</strong> · ${catalog.filter((e) => e.configured === false).length} AA-only rows<br><span class="muted">Configured models come from <code>.opencode/opencode.jsonc</code>; AA-only rows have no provider definition</span></div>
+<div class="card"><strong>${new Set(catalog.filter((e) => e.configured !== false).map((e) => e.provider)).size} configured providers</strong> · ${catalog.filter((e) => e.configured !== false && e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.configured !== false && e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured/estimated<br><span class="muted">Pooled = at least one route sends it work; ranking-only rows are explicitly non-routable</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
@@ -6421,7 +6425,7 @@ ${s.cai ? aaCaiTable(s.cai) : ""}
 <section id="xtab-models" hidden>
 ${catalogTabAge}
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
+<p class="muted">Configured models from the fleet provider catalogs plus AA-ranked families without a provider definition. Ranking-only rows are data-only, explicitly unconfigured/non-routable, and preserve measured versus estimated status. Click a row for details.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>

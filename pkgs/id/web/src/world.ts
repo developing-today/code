@@ -13,11 +13,7 @@ import {
   parseDocumentRead,
   parseDocumentsPage,
 } from "./documents";
-import {
-  loadWorldSnapshot,
-  saveWorldSnapshot,
-  type StoredWorldSnapshot,
-} from "./world-snapshot-store";
+import { loadWorldSnapshot, saveWorldSnapshot, type StoredWorldSnapshot } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 import { viewportCellsForPane } from "./world-viewport";
 
@@ -200,6 +196,7 @@ function initWorld(): void {
   // accumulated snapshot belongs to.
   let offlineSnapshot: StoredWorldSnapshot | null = null;
   let offlineWorld: string | null = null;
+  let notificationResyncPending = new URLSearchParams(location.search).has("client-notify");
   const persistOfflineSnapshot = () => {
     if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
   };
@@ -233,7 +230,10 @@ function initWorld(): void {
     }
     records = { ...stored.records };
     recordsView.textContent = JSON.stringify(records, null, 2);
-    appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
+    appendLine(
+      log,
+      `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`,
+    );
     setStatus("Offline — saved snapshot");
   };
 
@@ -573,7 +573,14 @@ function initWorld(): void {
           documentsPages = 0;
           renderDocumentsList();
         } else {
-          socket?.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null, after: documentsAfter })));
+          socket?.send(
+            JSON.stringify(
+              documentsFrame(capability.value.trim(), {
+                prefix: documentsPrefix?.value.trim() || null,
+                after: documentsAfter,
+              }),
+            ),
+          );
         }
         break;
       }
@@ -581,8 +588,12 @@ function initWorld(): void {
         if (!documentPending) return;
         documentPending = false;
         const read = parseDocumentRead(frame);
-        if (!read) { rejectFrame(); return; }
-        if (documentsView) documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
+        if (!read) {
+          rejectFrame();
+          return;
+        }
+        if (documentsView)
+          documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
         break;
       }
       case "invite": {
@@ -635,19 +646,27 @@ function initWorld(): void {
   };
 
   const requestDocument = (docName: string) => {
-    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
     documentPending = true;
     socket.send(JSON.stringify(documentFrame(capability.value.trim(), docName)));
   };
 
   const requestDocuments = () => {
-    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
     if (documentsPending) return;
     documentsNames = [];
     documentsAfter = null;
     documentsPages = 0;
     documentsPending = true;
-    socket.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })));
+    socket.send(
+      JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })),
+    );
   };
 
   const requestRecords = () => {
@@ -867,6 +886,14 @@ function initWorld(): void {
     // snapshot belongs to restores that world's stored snapshot first
     // (which also seeds the resume cursor sent as `after` on open).
     if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
+    if (notificationResyncPending) {
+      notificationResyncPending = false;
+      cursor = 0;
+      dropResumeUnit();
+      const url = new URL(location.href);
+      url.searchParams.delete("client-notify");
+      history.replaceState(null, "", url);
+    }
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
@@ -1222,6 +1249,28 @@ function initWorld(): void {
     }
     intentionalClose = false;
     connect();
+  });
+
+  // #10930: the service worker forwards a notification click as a
+  // hint-only message. Sequence numbers do not prove journal identity:
+  // even a hint at the current head may follow a restore/rewrite. Always
+  // discard the resume base and ask the host for a fresh snapshot; the
+  // normal snapshot + records + view frames rebuild the projection and
+  // rendered view. The notification carries no world data.
+  navigator.serviceWorker?.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const hint = event.data;
+    if (!isRecord(hint) || hint.type !== "client.notify") return;
+    if (
+      hint.head !== undefined &&
+      hint.head !== null &&
+      (!Number.isSafeInteger(hint.head) || (hint.head as number) < 0)
+    ) {
+      return;
+    }
+    cursor = 0;
+    dropResumeUnit();
+    notificationResyncPending = true;
+    joinButton.click();
   });
 
   chatForm.addEventListener("submit", (event) => {

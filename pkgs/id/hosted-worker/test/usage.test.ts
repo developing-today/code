@@ -191,12 +191,16 @@ test("kv usage and the ceiling count UTF-8 bytes, not characters (#11349)", asyn
   // Overwriting a 20-byte value with 2 ASCII bytes frees 18 bytes of headroom.
   assert.equal((await doA.fetch(routed("/v1/kv/k0", { method: "PUT", body: "ab" }))).status, 200);
   assert.equal((await getUsage(doA)).kv_bytes, 82);
+  // #15483: at 82 % the #5868 ladder still holds `refused` (it clears
+  // only 10 points below its 90 % entry), so free 18 more bytes first.
+  assert.equal((await doA.fetch(routed("/v1/kv/k2", { method: "PUT", body: "ab" }))).status, 200);
+  assert.equal((await getUsage(doA)).kv_bytes, 64);
   assert.equal(
     (await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "\u00e9".repeat(19) }))).status,
     200,
     "38 bytes fits 18 freed + 20 prior",
   );
-  assert.equal((await getUsage(doA)).kv_bytes, 100);
+  assert.equal((await getUsage(doA)).kv_bytes, 82);
 });
 
 test("a deduped re-PUT of the same blob does not double-charge", async () => {

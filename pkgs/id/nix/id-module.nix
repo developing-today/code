@@ -72,6 +72,44 @@ let
           description = "Disable mDNS local peer discovery.";
         };
 
+        world = {
+          enable = lib.mkEnableOption "hosting multiplayer worlds (`id serve --world`)";
+
+          host = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Serve the worlds directory as a host-mode data root
+              (`id serve --world-host`). The node then answers `id host`
+              on `.id-worlds/host.sock` under its state directory, so root
+              on the machine runs, for example,
+              `id host list /var/lib/id-<name>/.id-worlds`.
+              Needs `world.enable` and a persistent (non-ephemeral) instance.
+            '';
+          };
+
+          idleSecs = lib.mkOption {
+            type = lib.types.nullOr lib.types.ints.unsigned;
+            default = null;
+            description = ''
+              Close worlds no session used for this many seconds
+              (`--world-idle-secs`). `null` keeps the server's default:
+              600, or 900 under `world.host`. `0` keeps worlds open and is
+              refused under `world.host`.
+            '';
+          };
+        };
+
+        environmentFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          description = ''
+            A systemd `EnvironmentFile` read when the service starts, kept
+            out of the Nix store. With `world.enable` it must set
+            `ID_WORLD_ADMIN_TOKEN`.
+          '';
+        };
+
         extraArgs = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
@@ -115,10 +153,17 @@ let
         ++ lib.optional icfg.noRelay "--no-relay"
         ++ lib.optional icfg.noGossip "--no-gossip"
         ++ lib.optional icfg.noMdns "--no-mdns"
+        ++ lib.optional icfg.world.enable "--world"
+        ++ lib.optional icfg.world.host "--world-host"
+        ++ lib.optionals (icfg.world.idleSecs != null) [
+          "--world-idle-secs"
+          (builtins.toString icfg.world.idleSecs)
+        ]
         ++ icfg.extraArgs
       );
       Restart = "on-failure";
       RestartSec = 5;
+      EnvironmentFile = lib.mkIf (icfg.environmentFile != null) icfg.environmentFile;
 
       # Hardening
       DynamicUser = true;
@@ -153,6 +198,23 @@ in
   };
 
   config = lib.mkIf (enabledInstances != { }) {
+    assertions = lib.concatLists (
+      lib.mapAttrsToList (name: icfg: [
+        {
+          assertion = icfg.world.host -> icfg.world.enable;
+          message = "services.id.instances.${name}.world.host needs world.enable.";
+        }
+        {
+          assertion = icfg.world.host -> !icfg.ephemeral;
+          message = "services.id.instances.${name}.world.host needs a persistent instance (ephemeral = false).";
+        }
+        {
+          assertion = icfg.world.enable -> icfg.environmentFile != null;
+          message = "services.id.instances.${name}.world.enable needs environmentFile setting ID_WORLD_ADMIN_TOKEN.";
+        }
+      ]) enabledInstances
+    );
+
     systemd.services = lib.mapAttrs' (
       name: icfg: lib.nameValuePair "id-${name}" (mkService name icfg)
     ) enabledInstances;

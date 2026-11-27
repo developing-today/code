@@ -619,6 +619,20 @@ afterAll(() => {
 });
 
 describe("health page + extended /api/health (fixtures boot)", () => {
+  test("needs-user census route works and keeps the legacy route available", async () => {
+    const current = await fetch(`http://127.0.0.1:${port}/api/needs-user.json`);
+    const legacy = await fetch(`http://127.0.0.1:${port}/api/needs-drew.json`);
+    expect(current.status).toBe(legacy.status);
+    expect([200, 503]).toContain(current.status);
+    const body = (await current.json()) as { fetchedAt?: string; items?: unknown[]; error?: string };
+    if (current.status === 200) {
+      expect(typeof body.fetchedAt).toBe("string");
+      expect(Array.isArray(body.items)).toBe(true);
+    } else {
+      expect(body.error).toContain("needs-user census unavailable");
+    }
+  });
+
   test("/health renders the topology table with honest fixture states", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     expect(res.status).toBe(200);

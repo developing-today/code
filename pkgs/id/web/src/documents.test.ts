@@ -108,9 +108,9 @@ describe("collectDocuments pagination", () => {
     await expect(collectDocuments(async () => ({ type: "documents", names: [1] }))).rejects.toThrow(
       "malformed documents frame",
     );
-    await expect(
-      collectDocuments(async () => ({ type: "documents", names: [], next_after: "x" })),
-    ).rejects.toThrow("cursor did not advance");
+    await expect(collectDocuments(async () => ({ type: "documents", names: [], next_after: "x" }))).rejects.toThrow(
+      "cursor did not advance",
+    );
   });
 
   it("does not request beyond the maximum number of pages", async () => {
@@ -127,10 +127,7 @@ describe("collectDocuments pagination", () => {
 
 describe("document reads and refusals", () => {
   it("reads a document's name, size and read-only text", async () => {
-    const read = await readDocument(
-      async (name) => ({ type: "document", name, size: 5, text: "hello" }),
-      "a.md",
-    );
+    const read = await readDocument(async (name) => ({ type: "document", name, size: 5, text: "hello" }), "a.md");
     expect(read).toEqual({ name: "a.md", size: 5, text: "hello" });
     expect(parseDocumentRead({ type: "document", name: "a.md", size: 5, text: "hello" })).toEqual(read);
   });
