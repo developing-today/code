@@ -2613,6 +2613,44 @@ mod tests {
     }
 
     #[test]
+    fn prompt_packet_requires_a_canonical_submission_id_that_matches_its_dedupe_key() {
+        let id = "prompt:00000000-0000-4000-8000-000000000001";
+        let mut packet = valid_packet();
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001"
+        );
+        packet["payload"]["kind"] = json!("prompt");
+        packet["payload"]["prompt"] = json!({
+            "id": id,
+            "text": "Summarize the current queue health.",
+            "target": "pool:auto",
+            "mode": "async"
+        });
+
+        let (errors, _) = validate_packet(&packet);
+        assert!(errors.is_empty(), "valid prompt packet errors: {errors:?}");
+
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000002"
+        );
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "identity mismatch must name prompt.id: {errors:?}"
+        );
+
+        packet["dedupe_key"] = json!(
+            "repo-health:v1:prompt:developing-today/code:submission:00000000-0000-4000-8000-000000000001"
+        );
+        packet["payload"]["prompt"]["id"] = json!("prompt:not-a-uuid");
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "malformed ID must name prompt.id: {errors:?}"
+        );
+    }
+
+    #[test]
     fn packet_string_fields_and_list_elements_are_type_checked() {
         // Valid control: the well-typed packet still validates clean (#6430).
         let (errors, _) = validate_packet(&valid_packet());
