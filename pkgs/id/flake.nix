@@ -1044,7 +1044,9 @@
                   src = ./.;
                   nativeBuildInputs = [ rustToolchain ];
                   buildPhase = ''
-                    find . -name '*.rs' -not -path '*/target/*' \
+                    # Vendored upstream crates: do not reformat code we do not
+                    # own (#702), matching the vendor/** exclude in treefmt.toml.
+                    find . -name '*.rs' -not -path '*/target/*' -not -path './vendor/*' \
                       -exec rustfmt --check --edition 2024 {} +
                   '';
                   installPhase = ''

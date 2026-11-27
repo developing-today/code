@@ -1,8 +1,8 @@
 //! A manually stepped Conway world. The host supplies every input.
 
+use plaza_sdk::World;
 use plaza_sdk::grid::Grid;
 use plaza_sdk::screen::{Screen, Style};
-use plaza_sdk::World;
 
 const SIZE: usize = 5;
 
