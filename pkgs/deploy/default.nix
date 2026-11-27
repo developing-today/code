@@ -22,12 +22,7 @@
 }:
 let
   fleetPkgs = callPackage ../fleet { inherit sourceRev; };
-  # Its embedded ELF is x86_64-linux only. Filter the service before
-  # registry JSON and drv paths are derived, so unsupported systems never
-  # evaluate or expose the package.
-  definitions = lib.filterAttrs (
-    name: _: name != "ready-for-agent" || stdenv.hostPlatform.system == "x86_64-linux"
-  ) (import ./services.nix {
+  serviceDefinitions = import ./services.nix {
     inherit (fleetPkgs) fleet;
     laptopAgent = callPackage ../laptop-agent/package.nix { };
     mcpx = callPackage ../mcpx/package.nix { };
@@ -82,7 +77,12 @@ let
     agentInboxDeploy = callPackage ../external-workers/agent-inbox-deploy.nix { };
     webhookGatewayDeploy = callPackage ../external-workers/webhook-gateway-deploy.nix { };
     webhookGatewaySinkDeploy = callPackage ../external-workers/webhook-gateway-sink-deploy.nix { };
-  });
+  };
+  # Filter before registry JSON and drv paths are derived, so unsupported
+  # systems never evaluate or expose the x86-only ready-for-agent package.
+  definitions = lib.filterAttrs (
+    name: _: name != "ready-for-agent" || stdenv.hostPlatform.system == "x86_64-linux"
+  ) serviceDefinitions;
   # The registry names each target's store path without depending on it
   # (code#12738): string context would make building the CLI realize every
   # target package, check phases included, before `deploy` itself exists.
