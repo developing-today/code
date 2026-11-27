@@ -3169,6 +3169,130 @@ mod tests {
     }
 
     #[test]
+    fn revalidation_rate_bound_16006() {
+        // #16006 appended criterion: revalidation is rate-bounded —
+        // no wake storm when many conditions flip at once, with the
+        // cadence/backoff observable in task history.
+        //
+        // Oracle (oracle: the per-cycle bound): the default scheduled
+        // /sweep path asks the store for at most `limit` oldest-due
+        // parked rows (default 500) whose last check is older than
+        // `min_age_seconds` (default 24h), and every examined row
+        // leaves a history-visible event (park_released on release,
+        // park_revalidated otherwise) plus a fresh last_checked_at —
+        // so a mass condition flip drains at most one bounded batch
+        // per sweep and never re-wakes inside the backoff window.
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // A tight explicit bound: at most 2 rows per cycle with a
+        // 1h backoff — the request must carry both to the store.
+        // (The stub has no SQL engine and answers canned rows
+        // regardless of LIMIT; the oracle asserts the bound is
+        // requested on the wire, which is what a real store
+        // enforces. Outcome counts below prove all four canned rows
+        // were examined exactly once this cycle.)
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+                "limit": 2,
+                "min_age_seconds": 3600,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        let bodies = captured.lock().unwrap();
+        // 1. The parked read is bounded and oldest-due-first: one
+        // SELECT carrying LIMIT 2 and a ~1h-ago cutoff arg.
+        let selects: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("FROM tasks WHERE status = 'parked'"))
+            .collect();
+        assert_eq!(selects.len(), 1, "{bodies:?}");
+        let sel: Value = serde_json::from_str(selects[0]).unwrap();
+        let stmt = sel["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| {
+                r["stmt"]["sql"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("FROM tasks WHERE status = 'parked'")
+            })
+            .expect("parked SELECT stmt")["stmt"]
+            .clone();
+        let sql = stmt["sql"].as_str().unwrap_or("");
+        assert!(
+            sql.contains("ORDER BY COALESCE(last_checked_at, updated_at) ASC"),
+            "{sql}"
+        );
+        assert!(sql.contains("LIMIT ?"), "{sql}");
+        let args = stmt["args"].as_array().cloned().unwrap_or_default();
+        assert_eq!(args.len(), 2, "{stmt}");
+        assert_eq!(args[1]["value"], "2", "{stmt}");
+        let cutoff = args[0]["value"].as_str().unwrap_or("").to_string();
+        assert!(cutoff.len() >= 20 && cutoff.ends_with('Z'), "{stmt}");
+        assert!(cutoff < now_iso(), "{stmt}");
+        // 2. Every examined row leaves history: 2 releases + 2
+        // check-stamps as events, so the cadence is observable in
+        // the event/task-history read surfaces.
+        let released_bodies = bodies
+            .iter()
+            .filter(|b| b.contains("\"park_released\""))
+            .count();
+        let revalidated_bodies = bodies
+            .iter()
+            .filter(|b| b.contains("\"park_revalidated\""))
+            .count();
+        assert_eq!(released_bodies, 2, "{bodies:?}");
+        assert_eq!(revalidated_bodies, 2, "{bodies:?}");
+        // 3. The broker defaults bound the unattended path: with no
+        // limit/min_age keys the cycle still caps at 500 rows with
+        // a 24h backoff — asserted at the source of the default.
+        let src = test_source();
+        let sweep_seg = src
+            .split("fn verb_sweep(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// `/coverage`").next())
+            .unwrap_or("");
+        assert!(
+            sweep_seg.contains("req_i64(req, \"limit\").unwrap_or(500)"),
+            "the default sweep cycle must stay capped"
+        );
+        assert!(
+            sweep_seg.contains("req_i64(req, \"min_age_seconds\").unwrap_or(86_400)"),
+            "the default sweep cycle must keep its backoff"
+        );
+    }
+
+    #[test]
     fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
         let rows = vec![
             json!({"id": 1, "status": "done"}),
