@@ -834,6 +834,17 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain("/api/aa.json");
   });
 
+  test("scatter charts expose per-chart label modes, key by default (#1400)", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    for (const id of ["xpl-c1", "xpl-c2", "xpl-c3"]) {
+      expect(html).toContain(`data-labels="${id}"`);
+    }
+    // key-only is the default: today's frontier/selected labels preserved
+    expect(html).toContain('<option value="key" selected>');
+    expect(html).toContain('<option value="all">');
+    expect(html).toContain('<option value="none">');
+  });
+
   test("null and absent sections render honest banners, no tables", () => {
     const missing = renderAa(null, PROV);
     expect(missing).toContain("has not reached the dashboard yet");
