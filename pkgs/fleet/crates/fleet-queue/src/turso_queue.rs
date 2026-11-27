@@ -47,6 +47,7 @@ mod actions_exec;
 mod admin;
 mod admin_time;
 mod claim;
+mod claim_filter;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
@@ -67,6 +68,7 @@ pub use actions_exec::*;
 pub use admin::*;
 pub use admin_time::*;
 pub use claim::*;
+pub use claim_filter::*;
 pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
@@ -94,6 +96,7 @@ mod tests {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/claim_filter.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/placement_coord.rs"),
