@@ -3084,6 +3084,16 @@ mod key_ceremony_tests {
                 crate::bundle::pem_encode("RSA PRIVATE KEY", &der).into_bytes(),
                 "ed25519",
             ),
+            (
+                "encrypted-label.pem",
+                crate::bundle::pem_encode("ENCRYPTED PRIVATE KEY", &der).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "leading-text.pem",
+                format!("prefix{}", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
         ];
         for (name, bytes, algorithm) in cases {
             let input = dir.join(name);
@@ -3158,6 +3168,57 @@ mod key_ceremony_tests {
             .is_err(),
             "private key conversion must require an explicit output path"
         );
+
+        let existing = dir.join("existing.pem");
+        let sentinel = b"do not replace this file";
+        std::fs::write(&existing, sentinel).expect("write existing destination");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                    "--out",
+                    &existing.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must not replace an existing file"
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), sentinel);
+
+        let cert_key = engine::generate_key(AlgorithmId::P256).expect("generate certificate key");
+        let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("certificate params")
+            .self_signed(&cert_key)
+            .expect("self-signed certificate");
+        let cert_input = dir.join("not-a-private-key.der");
+        let cert_output = dir.join("not-a-private-key.pem");
+        std::fs::write(&cert_input, cert.der()).expect("write certificate");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &cert_input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "p256",
+                    "--out",
+                    &cert_output.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "a certificate must not be accepted as private-key input"
+        );
+        assert!(!cert_output.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
