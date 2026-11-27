@@ -34,6 +34,16 @@ pub struct SchemaClaim {
     pub definition: Value,
 }
 
+/// A versioned schema claim on a database note. Superseded records remain in
+/// the manifest as provenance when a source moves or its schema changes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SchemaClaimRecord {
+    pub database_id: String,
+    pub database_note_id: String,
+    pub claim: SchemaClaim,
+    pub superseded: bool,
+}
+
 /// The result of converting one inventoried database (§2.2): its note
 /// identity plus one schema claim per property of each of its data
 /// sources, in source-id then property-name order.
