@@ -200,27 +200,17 @@ are a separate, enumerated candidate set and remain gated as noted below.
   issues, pull requests, commits, repository files, and their activity.
   Enumerate all repositories owned by `developing-today`,
   `developing-today-forks`, `Clustered-Computing`, and personal account
-  `dezren39`. On an all-visibility scope the first three organizations
-  currently expose 47, 38, and 3 repositories respectively:
-  `developing-today` is 31 public + 16 private = 47 total (`gh api
-  orgs/developing-today` reports `public_repos` 31 and
-  `total_private_repos` 16, and a paginated `orgs/developing-today/repos`
-  recount also returns 47; the earlier version of this section counted
-  that org public-only as 31, which understated the estate - #15867).
-  The authenticated, paginated
+  `dezren39`. The first three organizations currently expose 31, 38, and 3
+  repositories respectively; the authenticated, paginated
   `/user/repos?visibility=all&affiliation=owner` endpoint returned 546 repos
   whose owner is `dezren39` (536 are also visible from
-  `users/dezren39/repos?type=owner`). The current live census is therefore
-  634 repos across these four owners, not a current item/file count.
-  `#6023`'s first estate run recorded 615 repos from its original three
-  owners (the two developing-today orgs and `dezren39`) on 2026-11-16.
-  That 615 is not directly comparable to an all-visibility recount: it
-  equals today's count for those same three owners only when
-  `developing-today` is counted public-only (31 + 38 + 546 = 615), while
-  the all-visibility count for the same three owners is 631
-  (47 + 38 + 546); the 3 Clustered-Computing repos then bring the
-  four-owner total to 634. Recount with paginated `gh api` calls to
-  `orgs/<org>/repos?type=all&per_page=100` and the authenticated
+  `users/dezren39/repos?type=owner`). The current live census is 618 repos
+  across these four owners, not a current item/file count. `#6023`'s first
+  estate run recorded 615 repos from its original three owners (the two
+  developing-today orgs and `dezren39`) on 2026-11-16; this is consistent with
+  today's count for those same three owners, with the 3 Clustered-Computing
+  repos added for this broader scope. Recount with paginated `gh api` calls to
+  `orgs/<org>/repos?per_page=100` and the authenticated
   `/user/repos?visibility=all&affiliation=owner&per_page=100` endpoint,
   filtering the latter to `owner.login == dezren39`; deduplicate by
   `owner/repo`. Record the endpoint, permissions, measured date, and returned

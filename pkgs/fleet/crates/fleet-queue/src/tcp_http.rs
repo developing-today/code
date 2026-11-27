@@ -7,34 +7,11 @@
 //! detached rejection worker, or retained Request. Each admitted connection
 //! serves one request with Connection: close and bounded I/O timeouts.
 
-use crate::uds_http::{
-    self, HttpRequest, InFlightSlot, MAX_BODY_BYTES, READ_TIMEOUT, RequestTransport,
-    RequestTransportKind,
-};
+use crate::uds_http::{self, HttpRequest, InFlightSlot, MAX_BODY_BYTES, READ_TIMEOUT};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-
-trait RequestTransportStream: Read + Write {
-    fn request_transport(&self) -> RequestTransport;
-}
-
-impl RequestTransportStream for TcpStream {
-    fn request_transport(&self) -> RequestTransport {
-        RequestTransport {
-            kind: RequestTransportKind::TcpPlain,
-            peer_ip: self.peer_addr().ok().map(|address| address.ip()),
-        }
-    }
-}
-
-#[cfg(feature = "queue-broker")]
-impl RequestTransportStream for crate::broker_tls::BrokerStream {
-    fn request_transport(&self) -> RequestTransport {
-        crate::broker_tls::BrokerStream::request_transport(self)
-    }
-}
 
 pub(crate) fn serve<F, G>(listener: TcpListener, precheck: G, handler: F)
 where
@@ -93,7 +70,7 @@ fn serve_connections<S, W, F, G>(
     precheck: G,
     handler: F,
 ) where
-    S: RequestTransportStream + Send + 'static,
+    S: Read + Write + Send + 'static,
     W: Fn(TcpStream) -> Option<S> + Send + Sync + 'static,
     F: Fn(&HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
     G: Fn(&HttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync + 'static,
@@ -127,13 +104,12 @@ fn serve_connections<S, W, F, G>(
     }
 }
 
-fn respond<S: RequestTransportStream>(
+fn respond<S: Read + Write>(
     stream: &mut S,
     precheck: &impl Fn(&HttpRequest) -> Option<(u16, Vec<u8>)>,
     handler: &impl Fn(&HttpRequest) -> (u16, Vec<u8>),
 ) -> Option<(u16, Vec<u8>)> {
     let (mut head, length) = uds_http::read_tcp_head(stream)?;
-    head.transport = stream.request_transport();
     // Reject ambiguous or unsupported framing, including duplicate TE.
     let encodings: Vec<_> = head
         .headers

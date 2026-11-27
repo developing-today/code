@@ -28,17 +28,17 @@ describe("needs-drew answer-to-handle mapping (#14043 S2)", () => {
     // Oracle: the raise must persist source/key/handle, and the answer resolver
     // returns that handle only after first-answer-wins records an answer.
     const file = await storeFile();
-    const ledgerId = "actions-exec-ext:fx-abc:42";
+    const ledgerId = "actions-exec-ext:session:42";
     const raised = await raiseNeedsDrew(file, question(ledgerId), "fleet-actions-exec", ledgerId);
     expect(raised.brokerMapping).toEqual({
       source: "fleet-actions-exec",
       key: ledgerId,
-      handle: "fx-abc",
+      handle: "session:42",
     });
 
     const answered = await recordAnswer(file, ledgerId, { optionId: "approve", via: "test" });
     expect(answered).not.toBeNull();
-    expect(needsDrewAnswerHandle(answered!)).toBe("fx-abc");
+    expect(needsDrewAnswerHandle(answered!)).toBe("session:42");
 
     const stored = JSON.parse(await readFile(file, "utf8"));
     expect(stored.items[0].brokerMapping).toEqual(raised.brokerMapping);

@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 49 public modules, grouped by job
+## The 48 public modules, grouped by job
 
-`lib.rs` declares 49 public modules. Grouped by the job they do:
+`lib.rs` declares 48 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -77,11 +77,10 @@ fixtures recorded from the production Python module.
 | `attestation`        | One in-toto-shaped attestation statement per ingest batch (#6045): the statement bytes are embedded verbatim as the claim body, with the statement hash as the claim's subject — no transcoding                                                                                        |
 | `id_projection`      | The Atlas-to-ID attestation projector (#11183): one `attestation.claim` per batch digest, projecting ingest attestations and batch runs to ID                                                                                                                                          |
 | `version_projection` | Deterministically projects immutable Atlas version rows into ID document and version/batch claim descriptors; publication remains a later slice                                                                                                                                        |
-| `consumer_preset`    | The consumer view presets (#13766, #15227): three consumer-side selections over one pinned publication — `attested_only`, exactly the versions whose batch has a published `attestation.claim`, joined on `batch_id`; `heads_only`, each file's current head, the tip of its note chain, leaving out superseded heads and non-head backfills (a file with only backfills has no head); and `full_history`, every published version, heads, superseded heads and backfills alike. The three nest inside `full_history`. Any inconsistency refuses the whole selection rather than returning a partial one |
+| `consumer_preset`    | The attested-only consumer view preset (#13766): a consumer-side selection over one pinned publication — exactly the versions whose batch has a published `attestation.claim`, joined on `batch_id`. Any inconsistency refuses the whole selection rather than returning a partial one |
 | `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                                                                           |
 | `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                                                                                 |
 | `session_stage`     | Shared staging core for conversation-export adapters: retains user-facing messages, chunks text at paragraph boundaries, and stages each message with stable IDs and source metadata                                                                                                                                 |
-| `muse`               | Muse JSONL conversation-export adapter: reads sorted session exports, accepts flat and text-part messages, and stages them through the shared conversation core                                                                                                                                                 |
 | `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                                                                        |
 
 ### Classification
