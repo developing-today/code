@@ -338,3 +338,32 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
     return [{ ref: row.ref, relation: asRelation(row.relation) }];
   });
 }
+
+/**
+ * Projector read seam (#8570 Phase 3: the projector becomes a module of
+ * pm-core, and the board reads projections in-process instead of over
+ * PM_PROJECTOR_URL HTTP).
+ *
+ * The four reads above are HTTP today; this interface names exactly the
+ * contract the live source depends on — same fail-soft shape (null = the
+ * read failed, never a partial result), same row mapping — so an
+ * in-process reader backed by the projector's store can plug in later
+ * without touching a call site. `createHttpProjectorReader` is the
+ * current behaviour, unchanged; liveSource resolves it as the default
+ * and accepts an injected reader for tests and the future module.
+ */
+export interface ProjectorReader {
+  items(refs: RefKey[]): Promise<Map<RefKey, GhItem> | null>;
+  comments(refs: RefKey[]): Promise<Comment[] | null>;
+  latestComments(refs: RefKey[]): Promise<Comment[] | null>;
+  links(subject: string): Promise<Link[] | null>;
+}
+
+export function createHttpProjectorReader(baseUrl: string): ProjectorReader {
+  return {
+    items: (refs) => projectorItems(baseUrl, refs),
+    comments: (refs) => projectorComments(baseUrl, refs),
+    latestComments: (refs) => projectorLatestComments(baseUrl, refs),
+    links: (subject) => projectorLinks(baseUrl, subject),
+  };
+}
