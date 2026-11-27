@@ -1260,8 +1260,9 @@ in
   # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
-      After = [ "network-online.target" ];
+      After = [ "network-online.target" "mcpx.socket" ];
       Wants = [ "network-online.target" ];
+      Requires = [ "mcpx.socket" ];
       # A switch must not restart the daemon: that would end every
       # pooled MCP child. mcpxDeploy below hands a changed daemon
       # over instead.
@@ -1273,6 +1274,18 @@ in
       ExecReload = "${mcpx}/bin/mcpx reload";
       RestartSec = 3;
     };
+  };
+
+  # Keep mcpx's loopback TCP listener in systemd across service restarts.
+  # The Unix socket remains daemon-owned; LISTEN_FDS supplies only the
+  # configured TCP endpoint (127.0.0.1:34005) to the Go listener.
+  systemd.user.sockets.mcpx = {
+    Unit.Description = "mcpx daemon TCP listener (socket-activated)";
+    Socket = {
+      ListenStream = "127.0.0.1:34005";
+      Service = "mcpx.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
   };
 
   # A switch that changes mcpx, its start command or its environment hands the
