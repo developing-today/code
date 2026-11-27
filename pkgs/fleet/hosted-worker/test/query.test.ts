@@ -516,12 +516,38 @@ test("malformed filters refuse with 400 invalid_query, never a silent match-all"
 });
 
 test("string item references accept the safe integer boundary and reject larger values", async () => {
-  const atBoundary = await getQuery(tokenA, `direct_parent=${encodeURIComponent(`${REPO}#9007199254740991`)}`);
-  assert.equal(atBoundary.status, 200);
+  let githubReads = 0;
+  const watchedDeps: AuthDeps = {
+    ...deps,
+    githubItems: {
+      async getItem(repo, kind, number) {
+        githubReads += 1;
+        return writer.getItem(repo, kind, number);
+      },
+      async listItems(repo) {
+        githubReads += 1;
+        return writer.listItems(repo);
+      },
+    },
+  };
 
-  const beyondBoundary = await getQuery(tokenA, `direct_parent=${encodeURIComponent(`${REPO}#9007199254740993`)}`);
+  const atBoundary = await getQuery(
+    tokenA,
+    `repo=${REPO}&direct_parent=${encodeURIComponent(`${REPO}#9007199254740991`)}`,
+    watchedDeps,
+  );
+  assert.equal(atBoundary.status, 200);
+  assert.ok(githubReads > 0, "a valid safe integer reference reaches the normal GitHub-backed query path");
+
+  const readsBeforeUnsafe = githubReads;
+  const beyondBoundary = await getQuery(
+    tokenA,
+    `repo=${REPO}&direct_parent=${encodeURIComponent(`${REPO}#9007199254740993`)}`,
+    watchedDeps,
+  );
   assert.equal(beyondBoundary.status, 400);
   assert.equal(beyondBoundary.doc.error, "invalid_query");
+  assert.equal(githubReads, readsBeforeUnsafe, "an unsafe reference is rejected before a GitHub lookup");
 });
 
 test("the seeded sample's bodies parse back (fixture sanity)", async () => {
