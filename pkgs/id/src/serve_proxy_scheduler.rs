@@ -91,12 +91,11 @@ impl Scheduler {
     /// types enter the FIFO control queue. Errors are protocol ERROR frames.
     pub fn enqueue(&mut self, frame: Frame) -> Result<(), Frame> {
         if frame.ty != FrameType::Data {
-            if frame.ty.scheduling_class() != SchedulingClass::Control {
-                return Err(Frame::error(
-                    ErrorReason::ProtocolViolation,
-                    "non-DATA frame has no serve-proxy scheduling class",
-                ));
-            }
+            debug_assert_eq!(
+                frame.ty.scheduling_class(),
+                SchedulingClass::Control,
+                "every non-DATA frame is a control frame"
+            );
             self.control.push_back(frame);
             return Ok(());
         }
@@ -117,7 +116,10 @@ impl Scheduler {
     /// Take the next frame: FIFO control first, then interactive DATA, then
     /// bulk DATA. Each DATA stream gets at most one frame per turn.
     pub fn pop_next(&mut self) -> Option<Frame> {
-        None
+        self.control
+            .pop_front()
+            .or_else(|| self.interactive.pop())
+            .or_else(|| self.bulk.pop())
     }
 
     /// Number of frames currently waiting across all classes.
