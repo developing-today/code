@@ -47,14 +47,14 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^\s*(pull_request|pull_request_target):")
         self.assertRegex(
             registry,
-            r"(?m)^\| `github-backup-hosted-publisher` \(`\.github/workflows/github-backup-hosted-publisher\.yml`\) \| developing-today/code \| `17 4 \* \* \*` \(daily 04:17 UTC\) \+ `workflow_dispatch` \|",
+            r"(?m)^\| `github-backup-hosted-publisher` \(`\.github/workflows/github-backup-hosted-publisher\.yml`\) \| developing-today/code \| `17 4 \* \* \*` \(daily 04:17 UTC\) \+ `workflow_dispatch` +\|",
         )
 
     def test_publisher_uses_scoped_immutable_token_and_verified_drivers(self):
         workflow = WORKFLOW.read_text()
 
         self.assertIn(
-            "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+            "actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc",
             workflow,
         )
         self.assertIn(
