@@ -35,8 +35,8 @@
 // file never clears a hand-supplied pool_hard_stop — a stop is sticky.
 // A missing or malformed file fails the dispatch loudly (exit non-zero),
 // never seats unguarded; a present-but-empty --hard-stops value is a
-// usage error. The steward writer that maintains the file is follow-up;
-// this slice defines the contract the seating path checks.
+// usage error. The placement-hard-stop command maintains the registry; this
+// command consumes its versioned contract.
 //
 // Exit status is non-zero when no valid record can be emitted (for
 // example a pool-drawn placement without a fresh-enough quota read, per
