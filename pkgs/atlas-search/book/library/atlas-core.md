@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 47 public modules, grouped by job
+## The 48 public modules, grouped by job
 
-`lib.rs` declares 47 public modules. Grouped by the job they do:
+`lib.rs` declares 48 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -92,6 +92,7 @@ fixtures recorded from the production Python module.
 | `detect`         | Source detection: passes over plain trees, git trees and row stores, producing a versioned ledger of per-path and per-table verdicts                                                                                                                                                                  |
 | `c8_fingerprint` | The C8 error-investigation fingerprint core: error-string normalisation, fingerprints, occurrence grouping and evidence bundles. Pure types and derivations; no telemetry search                                                                                                                      |
 | `c8_profile`     | The C8 report and page metadata profile: source and page records, typed links and URL sanitising. Likewise seam-independent                                                                                                                                                                           |
+| `remediation`    | The secret-bearing remediation inventory and destination verifier (#8479, #12406): the read-only, no-write half of the classification-model remediation order — inventories reported chunks, maps source to destination with checksums, and verifies the secret-tier destination's content and vectors before any visibility switch; anything unverified is reported explicitly, never treated as safe to purge |
 
 ### Quality
 
@@ -111,6 +112,7 @@ fixtures recorded from the production Python module.
 | `error`           | The error type and the crate's `Result` alias; see the error vocabulary below                                                                                                                                                                                                                        |
 | `aggregate`       | The staging aggregator: embed-at-promotion. It reads one staging unit, embeds every chunk document-side, writes one new core scan shard, stamps provenance and promotes the unit through the registry                                                                                                |
 | `owner_inventory` | The owner inventory matcher (`atlas-owner-inventory/v1`): a narrow, fail-closed component whose findings carry a class and an opaque record id, never a matched value                                                                                                                                |
+| `remediation`     | The secret-bearing remediation verifier: inventories reported chunks and verifies destination content and vectors without writing to shards or exposing corpus text                                                                                                                             |
 | `shingles`        | Token shingles and the Jaccard rescore signal: a third signal applied only at rescore time over the fused candidate union, never a retrieval scorer. Off by default in the shipped parameters                                                                                                        |
 | `version`         | The version strings for the Atlas CLI family (#13279 part 2): every Atlas binary reports `<package version>+g<source revision>` from `--version`, with the revision baked by atlas-core's build script (`ATLAS_SOURCE_REV`); a build with no git history reports `unknown` rather than inventing one |
 
