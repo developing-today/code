@@ -72,13 +72,16 @@ query, result, meta}`.
   otherwise the same `GATE_TOKEN`; a stateless MCP (Model Context
   Protocol) Streamable HTTP endpoint (#8625)
   exposing one tool, `search`, over the exact same execution
-  path as `POST /v1/search` (same pinned context and ceiling,
-  same Durable Object cache — an MCP search and a REST search
-  for the same query share one cache entry). Cache purge and
+  path as `POST /v1/search` (pinned `hosted-per-user` context,
+  per-agent ceiling from `AGENT_POLICY` defaulting to the surface
+  pin `personal`, same Durable Object cache namespaced per query
+  and ceiling — an MCP search and a REST search for the same query
+  share one cache entry only when the ceilings match). Cache purge and
   inspect are deliberately not MCP tools: purge is a write and
-  inspect is an operator/audit surface. Callers share the one
-  hosted identity (`hosted-per-user`); per-agent identity and
-  scoping are #8625's later slices. The laptop's mcpx connects
+  inspect is an operator/audit surface. Callers authenticate by
+  `AGENT_TOKENS` identities (each search runs under that agent's
+  policy ceiling and is audit-logged with it); corpus scoping is
+  #8625's follow-on slice. The laptop's mcpx connects
   to this endpoint as its `atlas` server (remote transport,
   bearer auth expanded from the daemon's environment).
 

@@ -4,15 +4,15 @@
  * server, for mcpx and any other MCP client.
  *
  * One tool — `search` — over the exact same execution path as
- * POST /v1/search (src/search.ts): the gate is checked in
- * index.ts before dispatch, and the search itself carries the
- * same pinned `hosted-per-user` disclosure context and
- * `personal` ceiling and the same per-query Durable Object
- * cache. If AGENT_TOKENS is configured, caller identity is
- * resolved from its bearer credential and recorded in a
- * query audit event; the shared hosted identity remains the
- * compatibility fallback. Per-agent ceilings and corpus
- * scoping are separate #8625 slices.
+ * POST /v1/search (src/search.ts): the gate and the agent's
+ * policy ceiling resolve in index.ts before dispatch, and the
+ * search itself carries that ceiling and the pinned
+ * `hosted-per-user` disclosure context with the same per-query
+ * Durable Object cache. Callers authenticated by AGENT_TOKENS
+ * each search under their own ceiling; callers on the shared
+ * gate token search under the surface pin. Corpus scoping is the
+ * named follow-on slice (no corpus dimension exists in the
+ * branch queries yet) and is deliberately not improvised here.
  *
  * Nothing else is exposed: cache purge is a write and cache
  * inspect is an operator/audit surface, so neither becomes a
@@ -26,6 +26,7 @@
 import { readTextUpTo } from "./body";
 import { normalizeQuery } from "./key";
 import { clampK, executeSearch, type SearchEnv } from "./search";
+import type { Ceiling } from "./space";
 
 const SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const FALLBACK_VERSION = "2025-03-26";
@@ -35,8 +36,8 @@ const SEARCH_TOOL = {
   name: "search",
   description:
     "Search the unified Atlas index — all of Drew's Atlas databases — for a natural-language query. " +
-    "Runs under the hosted surface's pinned disclosure context (hosted-per-user) and sensitivity ceiling " +
-    "(personal). Returns the search envelope: cache status, the result list with per-hit provenance, " +
+    "Runs under your agent ceiling (at most personal) in the hosted-per-user disclosure context. " +
+    "Returns the search envelope: cache status, the result list with per-hit provenance, " +
     "and the effective ceiling the service enforced.",
   inputSchema: {
     type: "object",
@@ -95,6 +96,7 @@ function paramsObject(msg: JsonRpcMessage): Record<string, unknown> {
 
 async function recordQueryAudit(
   agentId: string,
+  ceiling: Ceiling,
   query: string,
   k: number,
   status: number,
@@ -108,6 +110,7 @@ async function recordQueryAudit(
     JSON.stringify({
       event: "atlas_mcp_query",
       agent_id: agentId,
+      ceiling,
       query_sha256: queryHash,
       k,
       status,
@@ -128,6 +131,7 @@ async function handleMessage(
   env: SearchEnv,
   protocolVersion: string | null,
   agentId: string,
+  ceiling: Ceiling,
 ): Promise<Record<string, unknown> | null> {
   if (!("id" in msg)) return null;
   const id: JsonRpcId = msg.id ?? null;
@@ -144,7 +148,7 @@ async function handleMessage(
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
         instructions:
-          "Atlas search: one tool, `search`, over Drew's unified Atlas index at the personal ceiling. Results are cached per query; a repeat query is served from cache.",
+          "Atlas search: one tool, `search`, over Drew's unified Atlas index under your agent ceiling (at most personal). Results are cached per query and ceiling; a repeat query is served from cache.",
       });
     }
     case "ping":
@@ -168,13 +172,20 @@ async function handleMessage(
       const k = clampK(args.k);
       let outcome: Awaited<ReturnType<typeof executeSearch>>;
       try {
-        outcome = await executeSearch(env, query, k);
+        outcome = await executeSearch(env, query, k, { ceiling });
       } catch (error) {
-        await recordQueryAudit(agentId, query, k, 500);
+        await recordQueryAudit(agentId, ceiling, query, k, 500);
         throw error;
       }
       const { status, payload } = outcome;
-      await recordQueryAudit(agentId, query, k, status, typeof payload.cache === "string" ? payload.cache : undefined);
+      await recordQueryAudit(
+        agentId,
+        ceiling,
+        query,
+        k,
+        status,
+        typeof payload.cache === "string" ? payload.cache : undefined,
+      );
       const text = JSON.stringify(payload);
       if (status !== 200) {
         return rpcResult(id, { content: [{ type: "text", text }], isError: true });
@@ -192,9 +203,15 @@ function jsonResponse(status: number, body: unknown): Response {
 
 /**
  * The POST /mcp handler. The caller (index.ts) has already
- * applied the gate; this owns the JSON-RPC layer only.
+ * applied the gate and resolved the caller's policy ceiling;
+ * this owns the JSON-RPC layer only.
  */
-export async function handleMcp(req: Request, env: SearchEnv, agentId: string): Promise<Response> {
+export async function handleMcp(
+  req: Request,
+  env: SearchEnv,
+  agentId: string,
+  ceiling: Ceiling,
+): Promise<Response> {
   const raw = await readTextUpTo(req);
   if (raw === null) {
     return jsonResponse(413, rpcError(null, -32600, "body is larger than the 64 KiB limit"));
@@ -216,7 +233,7 @@ export async function handleMcp(req: Request, env: SearchEnv, agentId: string): 
         responses.push(rpcError(null, -32600, "invalid request: batch items must be objects"));
         continue;
       }
-      const resp = await handleMessage(item as JsonRpcMessage, env, protocolVersion, agentId);
+      const resp = await handleMessage(item as JsonRpcMessage, env, protocolVersion, agentId, ceiling);
       if (resp !== null) responses.push(resp);
     }
     if (responses.length === 0) return new Response(null, { status: 202 });
@@ -225,7 +242,7 @@ export async function handleMcp(req: Request, env: SearchEnv, agentId: string): 
   if (typeof parsed !== "object" || parsed === null) {
     return jsonResponse(400, rpcError(null, -32600, "invalid request: body must be a JSON object or batch"));
   }
-  const resp = await handleMessage(parsed as JsonRpcMessage, env, protocolVersion, agentId);
+  const resp = await handleMessage(parsed as JsonRpcMessage, env, protocolVersion, agentId, ceiling);
   if (resp === null) return new Response(null, { status: 202 });
   return jsonResponse(200, resp);
 }

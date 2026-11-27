@@ -11,7 +11,7 @@
  * service token (the two `CF-Access-*` headers); the service's own
  * client bearer token rides `Authorization`.
  */
-import { CEILING, CONTEXT, validateEmbed, type EmbedResponse } from "./space";
+import { CEILING, CONTEXT, validateEmbed, type Ceiling, type DisclosureContext, type EmbedResponse } from "./space";
 
 export interface ServiceEnv {
   SERVICE_BASE: string;
@@ -71,24 +71,27 @@ export async function embedQuery(env: ServiceEnv, query: string): Promise<{ embe
 }
 
 /**
- * Run one fan-out search under the personal ceiling, stating
- * this surface's disclosure context (#12622) so the service
- * never resolves its own default for the request. The service
- * clamps the requested ceiling to this client's cap; we still
- * verify the reported effective ceiling before the result may be
- * cached — a result computed above `personal` must never enter a
- * Durable Object.
+ * Run one fan-out search under the caller's ceiling, stating its
+ * disclosure context (#12622) so the service never resolves its
+ * own default for the request. The service clamps the requested
+ * ceiling to this client's cap; we still verify the reported
+ * effective ceiling equals what was requested before the result
+ * may be cached — a result computed above the caller's ceiling
+ * must never enter a Durable Object, and a result computed below
+ * it must never be served as if it satisfied a higher grant.
  */
 export async function searchService(
   env: ServiceEnv,
   query: string,
   k: number,
+  ceiling: Ceiling = CEILING,
+  context: DisclosureContext = CONTEXT,
 ): Promise<{ result: Record<string, unknown>; ms: number }> {
   const t0 = Date.now();
   const raw: unknown = await postJson(env, "/v1/search", {
     query,
-    ceiling: CEILING,
-    context: CONTEXT,
+    ceiling,
+    context,
     k,
   });
   // The response is untrusted until validated, exactly like the embed
@@ -101,10 +104,10 @@ export async function searchService(
     throw new ServiceError(502, `search service returned a non-object response (${shape})`);
   }
   const result = raw as Record<string, unknown>;
-  if (result.effective_ceiling !== CEILING) {
+  if (result.effective_ceiling !== ceiling) {
     throw new ServiceError(
       502,
-      `search service reported effective_ceiling ${JSON.stringify(result.effective_ceiling)}, expected ${CEILING}`,
+      `search service reported effective_ceiling ${JSON.stringify(result.effective_ceiling)}, expected ${ceiling}`,
     );
   }
   return { result, ms: Date.now() - t0 };

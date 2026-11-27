@@ -24,6 +24,21 @@ export const VEC_TABLE = "vec_snowflake_m_v2_768_f32";
 /** The one ceiling this surface may ever search under. */
 export const CEILING = "personal";
 
+/**
+ * The sensitivity vocabulary (#8625 slice: ceilings), least to most
+ * sensitive. The service clamps every request to the calling
+ * client's cap and reports the enforced value as
+ * `effective_ceiling`; the worker verifies the reported value
+ * before a result may enter a Durable Object.
+ */
+export const CEILINGS = ["shareable", "personal", "local-only", "secret-bearing"] as const;
+export type Ceiling = (typeof CEILINGS)[number];
+
+/** True for exactly the four canonical ceiling names. */
+export function isCeiling(value: unknown): value is Ceiling {
+  return typeof value === "string" && (CEILINGS as readonly string[]).includes(value);
+}
+
 /** The disclosure contexts a cached answer may be bound for (PR #12627 type layer). */
 export type DisclosureContext = "fleet-internal" | "hosted-per-user" | "public-surface" | "local-owner";
 /**
