@@ -197,6 +197,9 @@ mod tests {
             "data_hex": "31",
         }))
         .await;
+        // Oracle synchronization: a view can already have charged this
+        // account. Wait for the input's committed event, not any admission.
+        assert_eq!(next_reply(&mut peer).await["type"], "event");
 
         tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
             while budget
@@ -244,6 +247,7 @@ mod tests {
             "data_hex": "32",
         }))
         .await;
+        assert_eq!(next_reply(&mut peer).await["type"], "event");
         tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
             while budget
                 .snapshot()
