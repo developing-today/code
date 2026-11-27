@@ -35,7 +35,7 @@ Teach label readers to accept canonical names only in explicitly rung-typed publ
 
 ## Stage 3: migrate stored labels
 
-An explicit, reversible migration rewrites published labels from legacy to canonical spellings, verified against a copy of a staging and a publish database before it touches production. Dual-read from stage 2 stays on throughout, so readers never see a half-migrated database fail.
+An explicit, reversible migration rewrites published labels from legacy to canonical spellings, verified against a copy of a staging and a publish database before it touches production. Dual-read from stage 2 stays on throughout, so readers never see a half-migrated database fail. The migration is `tools/migrate_sensitivity_labels.py`: dry-run by default with deterministic JSON, `--apply` requires a fresh `--backup` copy, `--reverse` restores legacy spellings, and v1 staging-tier stores are reported and left untouched.
 
 ## Stage 4: output cutover
 
