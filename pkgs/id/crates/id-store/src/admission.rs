@@ -1404,6 +1404,67 @@ mod tests {
     }
 
     #[test]
+    fn follow_up_survives_repeated_commit_failures_until_parent_commits() {
+        let mut rig = rig();
+        let prepare_runs = Arc::new(Mutex::new(0_u32));
+        let runs_in_hook = prepare_runs.clone();
+        let child = envelope(vec![42; 8]);
+        let child_in_hook = child.clone();
+        rig.pipeline
+            .register_prepare(prepare_hook("spawner", 0, move |input| {
+                *runs_in_hook.lock().unwrap() += 1;
+                input
+                    .follow_ups
+                    .request(op("op-child-resumable"), child_in_hook.clone());
+                PrepareDecision::Proceed
+            }));
+
+        let parent = envelope(vec![13; 8]);
+        let attempts = Arc::new(Mutex::new(0_u32));
+        for _ in 0..2 {
+            let attempts_in_commit = attempts.clone();
+            let err = rig
+                .pipeline
+                .run(
+                    op("op-parent-resumable"),
+                    &parent,
+                    &context(),
+                    move |_| {
+                        *attempts_in_commit.lock().unwrap() += 1;
+                        Err("store unavailable".to_string())
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(err.class(), "commit_failed");
+        }
+
+        let outcome = rig
+            .pipeline
+            .run(
+                op("op-parent-resumable"),
+                &parent,
+                &context(),
+                |_: &CommitInput<'_>| {
+                    *attempts.lock().unwrap() += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let PipelineOutcome::Committed { follow_ups, .. } = outcome else {
+            panic!("the successful retry commits the parent");
+        };
+
+        assert_eq!(*prepare_runs.lock().unwrap(), 1, "retry skips completed hooks");
+        assert_eq!(follow_ups.len(), 1, "the request is returned exactly once");
+        assert_eq!(follow_ups[0].operation_id, op("op-child-resumable"));
+        assert_eq!(follow_ups[0].envelope, child, "return the original child envelope");
+        assert!(
+            rig.ledger.entry(&op("op-child-resumable")).is_none(),
+            "a follow-up is returned to the caller and never executed inline"
+        );
+    }
+
+    #[test]
     fn outbox_failure_is_pending_and_retries_by_stable_event_id() {
         let mut rig = rig();
         let attempts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
