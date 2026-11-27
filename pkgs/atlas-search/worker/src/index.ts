@@ -28,6 +28,7 @@ import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 import { handleMcp } from "./mcp";
+import { authenticateMcpAgent } from "./mcp_auth";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
 import { AuditError, compareAudited, pinForAudit } from "./audit_report";
 import { RetainedObjectError } from "./retained_object";
@@ -50,6 +51,8 @@ export interface Env {
    * audit set the comparison report reads. */
   RETAINED?: D1Database;
   GATE_TOKEN: string;
+  /** Optional secret JSON object mapping stable agent ids to MCP bearer tokens. */
+  AGENT_TOKENS?: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;
   ACCESS_CLIENT_ID: string;
@@ -289,10 +292,15 @@ export default {
         resp.headers.set("Allow", "POST");
         return resp;
       }
-      if (!(await gateOk(env, req))) {
-        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      const agentId = await authenticateMcpAgent(
+        req.headers.get("Authorization"),
+        env.GATE_TOKEN,
+        env.AGENT_TOKENS,
+      );
+      if (!agentId) {
+        return errorJson(401, "unauthorized", "missing or invalid MCP agent token");
       }
-      return handleMcp(req, env);
+      return handleMcp(req, env, agentId);
     }
 
     return errorJson(404, "not_found", "no route");

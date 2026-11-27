@@ -68,8 +68,9 @@ query, result, meta}`.
   entry. The query key is a SHA-256 digest, so per-prefix purge
   cannot enumerate matching entries without a separate index and is
   intentionally not provided.
-- `POST /mcp` — gated with the same `GATE_TOKEN`; a stateless
-  MCP (Model Context Protocol) Streamable HTTP endpoint (#8625)
+- `POST /mcp` — gated by `AGENT_TOKENS` identities when configured,
+  otherwise the same `GATE_TOKEN`; a stateless MCP (Model Context
+  Protocol) Streamable HTTP endpoint (#8625)
   exposing one tool, `search`, over the exact same execution
   path as `POST /v1/search` (same pinned context and ceiling,
   same Durable Object cache — an MCP search and a REST search

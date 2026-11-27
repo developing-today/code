@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { fetchMock } from "./fetch-mock";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
 // The MCP endpoint (#8625) rides the same gated search path as
@@ -187,16 +187,17 @@ describe("atlas-search MCP endpoint", () => {
     expect(failed.result).not.toHaveProperty("structuredContent");
   });
 
-  it("tools/call search runs the shared path: context stated, cache shared with REST", async () => {
+  it("tools/call search runs the shared path and audits the authenticated caller without raw query text", async () => {
     const e0 = counts.embed;
     const s0 = counts.search;
+    const audit = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const call = await rpc({
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
       params: { name: "search", arguments: { query: "mcp context probe" } },
-    });
+    }, { ...GATE, "X-Atlas-Agent-Id": "forged-agent" });
     expect(call.status).toBe(200);
     const body = (await call.json()) as RpcResponse;
     expect(body.result?.isError).toBe(false);
@@ -209,6 +210,13 @@ describe("atlas-search MCP endpoint", () => {
     expect(mcpSearchBody).toContain('"hosted-per-user"');
     expect(counts.embed).toBe(e0 + 1);
     expect(counts.search).toBe(s0 + 1);
+    const auditEvent = audit.mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find((entry) => entry.event === "atlas_mcp_query");
+    expect(auditEvent).toMatchObject({ event: "atlas_mcp_query", agent_id: "hosted-per-user", status: 200 });
+    expect(auditEvent?.query_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(auditEvent).not.toHaveProperty("query");
+    audit.mockRestore();
 
     // The same query over REST is a hit on the very same cache
     // entry — the surfaces share one execution path.
