@@ -223,7 +223,9 @@ function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): 
         return entry;
       },
       boardDoFor: (boardId) => ({
-        snapshotLanded: async (snapshotId) => { notifications.push({ boardId, snapshotId }); },
+        snapshotLanded: async (snapshotId) => {
+          notifications.push({ boardId, snapshotId });
+        },
       }),
       now: () => nowValue,
     },

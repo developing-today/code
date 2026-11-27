@@ -371,10 +371,7 @@ mod tests {
             );
         }
         // No route: route_declaration reads None (unrouted, legacy).
-        assert_eq!(
-            crate::validate::route_declaration(&base["payload"]),
-            None
-        );
+        assert_eq!(crate::validate::route_declaration(&base["payload"]), None);
     }
 
     #[test]
@@ -3608,12 +3605,18 @@ mod tests {
             "status": "parked", "progress": {}, "result": {},
             "ready_condition": {"kind": "time", "until": "2026-11-03T16:03:00Z"},
         });
-        assert_eq!(time_recheck_verdict(&parked, now), TimeRecheck::NotApplicable);
+        assert_eq!(
+            time_recheck_verdict(&parked, now),
+            TimeRecheck::NotApplicable
+        );
         let other = json!({
             "status": "blocked", "progress": {}, "result": {},
             "ready_condition": {"kind": "task_terminal", "task_id": 42},
         });
-        assert_eq!(time_recheck_verdict(&other, now), TimeRecheck::NotApplicable);
+        assert_eq!(
+            time_recheck_verdict(&other, now),
+            TimeRecheck::NotApplicable
+        );
     }
 
     #[test]

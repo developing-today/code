@@ -27,10 +27,10 @@ Governing decisions consumed, not re-opened:
   attribution): generations are immutable once published, cursors
   advance only after durable processing, and partial/truncated state
   is never presented as complete. HYD-01 owns the manifest that
-  *states* completeness; HYD-03
+  _states_ completeness; HYD-03
   ([#9460](https://github.com/developing-today/code/issues/9460))
   owns the immutable-generation/atomic-publication mechanics that
-  *produce* it, and HYD-05
+  _produce_ it, and HYD-05
   ([#9507](https://github.com/developing-today/code/issues/9507),
   design record merged 2026-11-23) owns the page/cursor commits the
   per-source entries summarize. Neither slice re-decides the other.
@@ -65,7 +65,7 @@ blockers named in the slice text have materially changed since the
 identity/result-envelope slice (CLI-02, #9438) is CLOSED with its
 record merged, and the #9198 pinned ownership/storage convention
 (CEN-04, #9434) has its record merged. What still gates
-*implementation* is recorded in §8; nothing there gates this design
+_implementation_ is recorded in §8; nothing there gates this design
 freeze.
 
 ## 1. Intent
@@ -73,7 +73,7 @@ freeze.
 Every other HYD slice writes into, or reads from, the bundle at
 `.fleet/work/<id>/context/`. Without a frozen manifest, each slice
 invents its own answer to the only question the bundle exists to
-answer honestly: *what do we actually have, and what is missing?*
+answer honestly: _what do we actually have, and what is missing?_
 The failure modes are symmetric:
 
 - **Overclaim.** A fetch fails, a page is truncated at an API cap, a
@@ -151,7 +151,7 @@ Freeze rules:
   no JSON numbers for values that can exceed 2^53 or that act as
   identities.
 - `integrity.manifest_digest` covers the manifest's canonical bytes
-  *excluding* the digest field itself; hashing a manifest including
+  _excluding_ the digest field itself; hashing a manifest including
   its own digest is not the contract. Artifact hashes cover exact
   artifact bytes. Independent framing and changed-field fixtures
   accompany the implementation (per the component design's digest
@@ -227,7 +227,7 @@ the new generation outside the pointer). The manifest records
 `previous_generation` so the chain is auditable. HYD-03 (#9460)
 owns the atomic-publication mechanics (manifest written last,
 pointer swap or CAS equivalent); this freeze owns only what the
-manifest *states* about the lifecycle: generation_id, created_at,
+manifest _states_ about the lifecycle: generation_id, created_at,
 previous_generation, and the derived status of §4.
 
 ## 7. First failing oracle (implementation entry condition)
@@ -264,14 +264,14 @@ Gate state revalidated 2026-11-25:
   issue must cite the matrix rows for every §3 field it writes.
 - CEN-07 #9437 (real-adapter conformance and CI adoption, under
   #9198) — OPEN, blocked on the #9200/#9207/#9208/#9209 adapter
-  seams. This is the remaining #9198 gate for *implementation*
+  seams. This is the remaining #9198 gate for _implementation_
   (a manifest serializer with no conformance-tested adapter would
   freeze bytes nothing else reads), not for this design freeze.
 - Downstream consumers of this freeze, in dependency order:
   HYD-02 #9459 (source keys/paths the manifest references),
   HYD-03 #9460 (generation mechanics), HYD-04 #9461 (full adapter
-  + summary), HYD-05 #9507 / HYD-06 #9508 (page commits and
-  activity revisions the per-source entries summarize).
+  - summary), HYD-05 #9507 / HYD-06 #9508 (page commits and
+    activity revisions the per-source entries summarize).
 
 Migration/rollback for the future implementation, per the slice
 text: contract version additive; old artifacts read-only; disable

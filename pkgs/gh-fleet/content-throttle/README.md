@@ -21,7 +21,7 @@ record code#2227; this repo's issue: dezren39/hatch#13.
 
 ## Rollout state (read this before flipping anything)
 
-- **Throttle mode: `warn`** — the wrapper computes what it *would*
+- **Throttle mode: `warn`** — the wrapper computes what it _would_
   delay and appends it to `~/.local/state/fleet/content-throttle-warn.jsonl`,
   but delays nothing. The warn week started when the state DB was
   first initialised; `content_throttle.py mode` prints the mode and
@@ -31,7 +31,7 @@ record code#2227; this repo's issue: dezren39/hatch#13.
   should not have waited), then flip:
   `python3 tools/content-throttle/content_throttle.py mode enforce`.
   In enforce mode a caller whose wait exceeds the max wait (default
-  30 min) is *visibly refused* (exit 6) — never silently dropped.
+  30 min) is _visibly refused_ (exit 6) — never silently dropped.
 - **The circuit breaker is live in both modes.** It reacts to GitHub's
   own 403/429 refusals: honour `retry-after` (one retry), else 60 s
   then exponential ×2 over 5 attempts; 5 consecutive failures open the
@@ -61,7 +61,7 @@ cycle and alert on exit 2.
 
 ## Failure behaviour
 
-A throttle or ledger failure refuses the post *before* any API call
+A throttle or ledger failure refuses the post _before_ any API call
 (exit 5) — never a silent fall-back to unthrottled filing. That is the
 phase-1 rule applied to pacing, and it is a deliberate availability
 coupling: if the ledger is down, fleet filing stops, loudly.

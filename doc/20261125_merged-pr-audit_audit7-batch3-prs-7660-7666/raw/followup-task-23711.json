@@ -35,11 +35,7 @@
         "number": 1,
         "criterion": "A TLS 1.3/HTTP CONNECT leg and the optional WebSocket binary-message adapter both establish a transport that carries the same typed serve-proxy frames.",
         "done_check": "cargo test -p id --lib serve_proxy_leg",
-        "owned_paths": [
-          "pkgs/id/src/serve_proxy.rs",
-          "pkgs/id/src/serve_proxy_leg.rs",
-          "pkgs/id/src/lib.rs"
-        ]
+        "owned_paths": ["pkgs/id/src/serve_proxy.rs", "pkgs/id/src/serve_proxy_leg.rs", "pkgs/id/src/lib.rs"]
       },
       "problem": "Issue #7569 closed after codec slice PR #7666 while explicitly listing the remaining serve-proxy protocol work. PR #13859 adds mux credit accounting but says no live leg is wired. The first prerequisite is the TLS/CONNECT + WebSocket leg that carries the existing typed frames.",
       "evidence": [
@@ -88,13 +84,7 @@
         "checked_at": "2026-11-25T07:10:00Z",
         "basis": "No live queued task for issue #7569/serve-proxy remaining slices was found. The open issue search contains no leg-establishment follow-up; #13859 covers only mux credit accounting."
       },
-      "labels": [
-        "app/id",
-        "effort/l",
-        "priority/normal",
-        "queue/queued",
-        "task/fix"
-      ]
+      "labels": ["app/id", "effort/l", "priority/normal", "queue/queued", "task/fix"]
     },
     "blocked_deps": null,
     "dep_next_recheck_at": null,

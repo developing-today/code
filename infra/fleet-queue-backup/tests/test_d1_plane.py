@@ -107,9 +107,7 @@ class D1PlaneTests(unittest.TestCase):
         )
         self.assertEqual(result["counts"], {"tasks": 3, "task_events": 2})
         backup = self.fake.find_database(fq_common.DEFAULT_D1_NAME)
-        rows = self.fake.query(
-            backup["uuid"], "SELECT payload FROM tasks WHERE id = 1"
-        )
+        rows = self.fake.query(backup["uuid"], "SELECT payload FROM tasks WHERE id = 1")
         self.assertEqual(rows[0]["payload"], "it's a payload")
 
     def test_export_refuses_live_plane_as_its_own_target(self):

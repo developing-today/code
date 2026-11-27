@@ -63,7 +63,9 @@ SUBSCRIPTION_STATUS = "/opt/hatch/bin/subscription-status"
 # stage or roll back the move to D1.
 TURSO_URL = (
     os.environ.get("FLEET_PLATFORM_URL", "").strip()
-    if re.fullmatch(r"https://[^/@\s]+(/[^@\s]*)?", os.environ.get("FLEET_PLATFORM_URL", "").strip())
+    if re.fullmatch(
+        r"https://[^/@\s]+(/[^@\s]*)?", os.environ.get("FLEET_PLATFORM_URL", "").strip()
+    )
     else "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
 )
 TURSO_TOKEN_SECRET = "turso.fleet-platform-rw-token"

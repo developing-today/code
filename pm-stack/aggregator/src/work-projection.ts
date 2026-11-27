@@ -235,8 +235,7 @@ export function projectWorkView(
   const parked = input.queue?.parked ?? null;
   const blocked = input.queue?.blocked === true || hardBlockers.length > 0;
   const verifiedDone = input.completion?.verified_terminal_receipt === true;
-  const terminalSignal =
-    ("value" in github && (github.value === "closed" || github.value === "merged")) || false;
+  const terminalSignal = ("value" in github && (github.value === "closed" || github.value === "merged")) || false;
 
   let column: BoardColumn;
   if (verifiedDone) {
@@ -269,7 +268,11 @@ export function projectWorkView(
   ) {
     column = "Ready";
     reasons.add(
-      input.queue?.high_or_above ? "eligible_high_or_above" : input.queue?.explicitly_prepared ? "explicitly_prepared" : "owner_assigned",
+      input.queue?.high_or_above
+        ? "eligible_high_or_above"
+        : input.queue?.explicitly_prepared
+          ? "explicitly_prepared"
+          : "owner_assigned",
     );
   } else if (input.triage_required === true) {
     column = "Inbox/Triage";

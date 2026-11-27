@@ -8,15 +8,15 @@ Recommendations, search history and hot-data snapshots are stored in the Worker 
 
 One version of one retained object carries exactly these fields:
 
-| Field       | Meaning                                                                 |
-| ----------- | ----------------------------------------------------------------------- |
-| `objectId`  | The logical object the versions belong to; non-empty.                   |
-| `family`    | One of `recommendation`, `search_history`, `hot_snapshot`.              |
-| `class`     | The retention class holding it (below).                                 |
-| `capturedAt` | RFC 3339 time the snapshot was taken.                                  |
-| `version`   | Monotonic per `objectId`, from 1. Appends may name an expected current version; a mismatch is refused as `version_conflict`, so two writers cannot both land the same version. |
-| `inputsRef` | What produced it: query ids, a parent snapshot id, a retrieval-stats version id. Non-empty. |
-| `payload`   | The family payload, stored as JSON.                                     |
+| Field        | Meaning                                                                                                                                                                        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `objectId`   | The logical object the versions belong to; non-empty.                                                                                                                          |
+| `family`     | One of `recommendation`, `search_history`, `hot_snapshot`.                                                                                                                     |
+| `class`      | The retention class holding it (below).                                                                                                                                        |
+| `capturedAt` | RFC 3339 time the snapshot was taken.                                                                                                                                          |
+| `version`    | Monotonic per `objectId`, from 1. Appends may name an expected current version; a mismatch is refused as `version_conflict`, so two writers cannot both land the same version. |
+| `inputsRef`  | What produced it: query ids, a parent snapshot id, a retrieval-stats version id. Non-empty.                                                                                    |
+| `payload`    | The family payload, stored as JSON.                                                                                                                                            |
 
 A draft whose family its class does not hold is refused as `family_class_mismatch`; a malformed draft as `malformed_envelope`. One payload rule is applied at write time: a `search_history` payload loses its `query` text unless its class allows query text — by default no class does.
 
@@ -24,12 +24,12 @@ A draft whose family its class does not hold is refused as `family_class_mismatc
 
 The design defaults are a floor, not a starting suggestion: a class rule may lengthen the window or raise the keep-newest count, never go below the default (`retention_below_default`). Every class starts disabled, and a store append refuses while its class is disabled (`retention_class_disabled`), so each family's writer lands behind its class's `enabled` flag.
 
-| Class            | Holds           | Window | Keep newest | Notes |
-| ---------------- | --------------- | ------ | ----------- | ----- |
-| `hot-short`      | `hot_snapshot`  | 24 h   | 2           | The short class for hot snapshots (slice 4). |
-| `recommendation` | `recommendation` | 30 days | 10          | One version per recommendation recompute (slice 2); the envelope's `inputsRef` names the parent snapshot, and the payload is the ordered item refs with scores and the producing rule id. |
-| `search-history` | `search_history` | 90 days | 20          | One version per answered search in a named session (slice 3); keeping history never changes or fails the search itself. |
-| `snapshot-audit` | any family      | 365 days | 50         | The audit set (slice 5, below). |
+| Class            | Holds            | Window   | Keep newest | Notes                                                                                                                                                                                     |
+| ---------------- | ---------------- | -------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hot-short`      | `hot_snapshot`   | 24 h     | 2           | The short class for hot snapshots (slice 4).                                                                                                                                              |
+| `recommendation` | `recommendation` | 30 days  | 10          | One version per recommendation recompute (slice 2); the envelope's `inputsRef` names the parent snapshot, and the payload is the ordered item refs with scores and the producing rule id. |
+| `search-history` | `search_history` | 90 days  | 20          | One version per answered search in a named session (slice 3); keeping history never changes or fails the search itself.                                                                   |
+| `snapshot-audit` | any family       | 365 days | 50          | The audit set (slice 5, below).                                                                                                                                                           |
 
 Hot snapshots (slice 4) hold at most the top 10 items of the recommendation order (`HOT_WINDOW`), captured each time the recommendation accumulator pins a new snapshot for a tenant and subject.
 

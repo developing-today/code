@@ -16,17 +16,17 @@ format; they do not replace it.
 One row per register member. All fields are read from the live issue and the
 committed tree; nothing here authorizes a write.
 
-| Field | Meaning |
-|---|---|
-| `tracking_issue` | Member issue number (link). The durable tracking home. |
-| `state` | OPEN / CLOSED at ledger time. |
-| `canonical_doc` | Committed `doc/` or `pm-stack/` design record linked from the issue body and verified present on `origin/main`. |
-| `doc_gap` | `true` when no member-specific canonical doc was found in the body (register-entry reference only). The monitor must treat these as doc-findings, not as clean. |
-| `labels` | `design` + `epic/design-register` + area epic(s) as observed. |
-| `native_parent` | `#8986`, or the cross-epic parent for an exception row. |
-| `exception` | Empty for ordinary members; `cross-epic` + reason for #8833. |
+| Field            | Meaning                                                                                                                                                                                                           |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tracking_issue` | Member issue number (link). The durable tracking home.                                                                                                                                                            |
+| `state`          | OPEN / CLOSED at ledger time.                                                                                                                                                                                     |
+| `canonical_doc`  | Committed `doc/` or `pm-stack/` design record linked from the issue body and verified present on `origin/main`.                                                                                                   |
+| `doc_gap`        | `true` when no member-specific canonical doc was found in the body (register-entry reference only). The monitor must treat these as doc-findings, not as clean.                                                   |
+| `labels`         | `design` + `epic/design-register` + area epic(s) as observed.                                                                                                                                                     |
+| `native_parent`  | `#8986`, or the cross-epic parent for an exception row.                                                                                                                                                           |
+| `exception`      | Empty for ordinary members; `cross-epic` + reason for #8833.                                                                                                                                                      |
 | `board_eligible` | `true` when the issue lives in a repository that can be placed on Project #4. All current members are in `developing-today/code` (org repo), so all are eligible; no personal-repository exemption applies today. |
-| `board_expected` | `true` when the issue carries the `design` label, which is the selector for Project #4's `Design Register` view. Members without it are mirror gaps to verify, not exemptions. |
+| `board_expected` | `true` when the issue carries the `design` label, which is the selector for Project #4's `Design Register` view. Members without it are mirror gaps to verify, not exemptions.                                    |
 
 ### Exception format (one-parent rule)
 
@@ -40,31 +40,31 @@ known exception: natively parented under #8988 (`epic/storage`), listed on
 
 ### 2.1 Ordinary members natively parented under #8986 (23)
 
-| Issue | State | Canonical doc (verified on origin/main) | Labels (design / register / area) | Board |
-|---|---|---|---|---|
-| #1817 | OPEN | doc-gap — no doc link in body | design · epic/design-register · epic/lab-cluster | eligible, expected |
-| #5983 | CLOSED | doc-gap — no doc link in body | design · epic/design-register · design/docs-migration · epic/pm-stack | eligible, expected |
-| #8806 | CLOSED | doc-gap — register entry only | design · epic/design-register · epic/fleet-orchestration | eligible, expected |
-| #8807 | OPEN | doc-gap — register entry only | design · epic/design-register · epic/turso-cloudflare | eligible, expected |
-| #8808 | OPEN | doc-gap — register entry only | design · epic/design-register · epic/turso-cloudflare | eligible, expected |
-| #8809 | OPEN | doc-gap — register entry only | design · epic/design-register · epic/mcpx · epic/mcpx-platform | eligible, expected |
-| #8810 | OPEN | doc-gap — no doc link in body | design · epic/design-register · epic/mcpx-platform | eligible, expected |
-| #8811 | CLOSED | doc-gap — register entry only | design · epic/design-register · epic/storage | eligible, expected |
-| #8820 | OPEN | doc/living/cloudflare-credential-architecture.md | design · epic/design-register · epic/turso-cloudflare | eligible, expected |
-| #8821 | OPEN | doc/living/ai-gateway-opencode-gateway.md | design · epic/design-register · epic/turso-cloudflare | eligible, expected |
-| #8829 | OPEN | pm-stack/project-tracking-evaluation-2026-10-23.md | design · epic/design-register · epic/pm-stack | eligible, expected |
-| #8830 | OPEN | pm-stack/needs-user-actions-design-2026-10-26.md | design · epic/design-register · epic/pm-stack | eligible, expected |
-| #8832 | OPEN | doc/living/turso-cloudflare-idea-engine.md | design · epic/design-register · epic/turso-cloudflare | eligible, expected |
-| #8835 | OPEN | doc/living/globalping-outside-in-watch.md | design · epic/design-register · epic/fleet-orchestration | eligible, expected |
-| #8836 | OPEN | doc/living/account-connection-campaign.md | design · epic/design-register · epic/fleet-orchestration | eligible, expected |
-| #8837 | OPEN | doc/living/late-night-shift-silence-rule.md | design · epic/design-register · epic/fleet-orchestration | eligible, expected |
-| #8864 | CLOSED | doc-gap — no doc link in body | design · epic/design-register · epic/pm-stack | eligible, expected |
-| #10389 | OPEN | doc-gap — no doc link in body | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
-| #10390 | OPEN | doc-gap — no doc link in body | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
-| #10392 | OPEN | doc-gap — no doc link in body | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
-| #10393 | OPEN | doc-gap — no doc link in body | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
-| #12950 | OPEN | doc-gap — register entry only | epic · epic/design-register · epic/fleet-orchestration (no `design`) | eligible, **mirror gap** |
-| #12951 | OPEN | doc-gap — register entry only | epic · epic/design-register · epic/pm-stack (no `design`) | eligible, **mirror gap** |
+| Issue  | State  | Canonical doc (verified on origin/main)            | Labels (design / register / area)                                                | Board                    |
+| ------ | ------ | -------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ |
+| #1817  | OPEN   | doc-gap — no doc link in body                      | design · epic/design-register · epic/lab-cluster                                 | eligible, expected       |
+| #5983  | CLOSED | doc-gap — no doc link in body                      | design · epic/design-register · design/docs-migration · epic/pm-stack            | eligible, expected       |
+| #8806  | CLOSED | doc-gap — register entry only                      | design · epic/design-register · epic/fleet-orchestration                         | eligible, expected       |
+| #8807  | OPEN   | doc-gap — register entry only                      | design · epic/design-register · epic/turso-cloudflare                            | eligible, expected       |
+| #8808  | OPEN   | doc-gap — register entry only                      | design · epic/design-register · epic/turso-cloudflare                            | eligible, expected       |
+| #8809  | OPEN   | doc-gap — register entry only                      | design · epic/design-register · epic/mcpx · epic/mcpx-platform                   | eligible, expected       |
+| #8810  | OPEN   | doc-gap — no doc link in body                      | design · epic/design-register · epic/mcpx-platform                               | eligible, expected       |
+| #8811  | CLOSED | doc-gap — register entry only                      | design · epic/design-register · epic/storage                                     | eligible, expected       |
+| #8820  | OPEN   | doc/living/cloudflare-credential-architecture.md   | design · epic/design-register · epic/turso-cloudflare                            | eligible, expected       |
+| #8821  | OPEN   | doc/living/ai-gateway-opencode-gateway.md          | design · epic/design-register · epic/turso-cloudflare                            | eligible, expected       |
+| #8829  | OPEN   | pm-stack/project-tracking-evaluation-2026-10-23.md | design · epic/design-register · epic/pm-stack                                    | eligible, expected       |
+| #8830  | OPEN   | pm-stack/needs-user-actions-design-2026-10-26.md   | design · epic/design-register · epic/pm-stack                                    | eligible, expected       |
+| #8832  | OPEN   | doc/living/turso-cloudflare-idea-engine.md         | design · epic/design-register · epic/turso-cloudflare                            | eligible, expected       |
+| #8835  | OPEN   | doc/living/globalping-outside-in-watch.md          | design · epic/design-register · epic/fleet-orchestration                         | eligible, expected       |
+| #8836  | OPEN   | doc/living/account-connection-campaign.md          | design · epic/design-register · epic/fleet-orchestration                         | eligible, expected       |
+| #8837  | OPEN   | doc/living/late-night-shift-silence-rule.md        | design · epic/design-register · epic/fleet-orchestration                         | eligible, expected       |
+| #8864  | CLOSED | doc-gap — no doc link in body                      | design · epic/design-register · epic/pm-stack                                    | eligible, expected       |
+| #10389 | OPEN   | doc-gap — no doc link in body                      | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
+| #10390 | OPEN   | doc-gap — no doc link in body                      | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
+| #10392 | OPEN   | doc-gap — no doc link in body                      | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
+| #10393 | OPEN   | doc-gap — no doc link in body                      | epic/design-register · primary-parent/design-register · stray-work (no `design`) | eligible, **mirror gap** |
+| #12950 | OPEN   | doc-gap — register entry only                      | epic · epic/design-register · epic/fleet-orchestration (no `design`)             | eligible, **mirror gap** |
+| #12951 | OPEN   | doc-gap — register entry only                      | epic · epic/design-register · epic/pm-stack (no `design`)                        | eligible, **mirror gap** |
 
 ### 2.2 Body-listed members not natively linked (9)
 
@@ -72,23 +72,23 @@ Listed on the #8986 body checklist but not native sub-issues at ledger time.
 No reparenting is performed in this slice; the monitor (Slice 4) reports them
 as parent-link findings through the repair protocol (Slice 2).
 
-| Issue | State | Canonical doc (verified on origin/main) | Labels |
-|---|---|---|---|
-| #8822 | OPEN | doc/living/mcpx-dedup-canonical-source.md | kind/design · design · epic/design-register · epic/mcpx · epic/mcpx-platform |
-| #8823 | OPEN | doc/living/fleet-sweep-review-job-family.md | kind/design · design · epic/design-register · epic/fleet-orchestration |
-| #8824 | OPEN | doc/living/routine-task-architecture.md | kind/design · design · epic/design-register · epic/fleet-orchestration |
-| #8825 | OPEN | doc/living/quota-full-utilization-burn-plan.md | kind/design · design · epic/design-register · design/quota-plane · epic/fleet-orchestration |
-| #8826 | OPEN | doc/living/fleet-roles-minder-catcher-advocate.md | kind/design · design · epic/design-register · epic/fleet-orchestration |
-| #8827 | OPEN | doc/living/one-queue-model.md | kind/design · design · epic/design-register · epic/fleet-orchestration |
-| #8828 | CLOSED | doc/living/lane-naming-law.md | kind/design · design · epic/design-register · epic/fleet-orchestration |
-| #8831 | OPEN | pm-stack/decisions-ledger-system.md | app/pm-stack · kind/design · design · epic/design-register · epic/pm-stack |
-| #8838 | CLOSED | doc-gap — register entry only | kind/feature · design · epic/design-register · epic/fleet-orchestration |
+| Issue | State  | Canonical doc (verified on origin/main)           | Labels                                                                                      |
+| ----- | ------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| #8822 | OPEN   | doc/living/mcpx-dedup-canonical-source.md         | kind/design · design · epic/design-register · epic/mcpx · epic/mcpx-platform                |
+| #8823 | OPEN   | doc/living/fleet-sweep-review-job-family.md       | kind/design · design · epic/design-register · epic/fleet-orchestration                      |
+| #8824 | OPEN   | doc/living/routine-task-architecture.md           | kind/design · design · epic/design-register · epic/fleet-orchestration                      |
+| #8825 | OPEN   | doc/living/quota-full-utilization-burn-plan.md    | kind/design · design · epic/design-register · design/quota-plane · epic/fleet-orchestration |
+| #8826 | OPEN   | doc/living/fleet-roles-minder-catcher-advocate.md | kind/design · design · epic/design-register · epic/fleet-orchestration                      |
+| #8827 | OPEN   | doc/living/one-queue-model.md                     | kind/design · design · epic/design-register · epic/fleet-orchestration                      |
+| #8828 | CLOSED | doc/living/lane-naming-law.md                     | kind/design · design · epic/design-register · epic/fleet-orchestration                      |
+| #8831 | OPEN   | pm-stack/decisions-ledger-system.md               | app/pm-stack · kind/design · design · epic/design-register · epic/pm-stack                  |
+| #8838 | CLOSED | doc-gap — register entry only                     | kind/feature · design · epic/design-register · epic/fleet-orchestration                     |
 
 ### 2.3 Cross-epic exception (1)
 
-| Issue | State | Canonical doc | Native parent | Exception |
-|---|---|---|---|---|
-| #8833 | OPEN | doc/living/cold-store-backup.md (+ doc/living/cold-store-r2-layout-design-2026-10-25.md) | #8988 (`epic/storage`) | cross-epic: also carries `epic/design-register`; listed on #8986 for register completeness per the body note. Recorded here and on #8986; neither parent overwritten. |
+| Issue | State | Canonical doc                                                                            | Native parent          | Exception                                                                                                                                                             |
+| ----- | ----- | ---------------------------------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #8833 | OPEN  | doc/living/cold-store-backup.md (+ doc/living/cold-store-r2-layout-design-2026-10-25.md) | #8988 (`epic/storage`) | cross-epic: also carries `epic/design-register`; listed on #8986 for register completeness per the body note. Recorded here and on #8986; neither parent overwritten. |
 
 ## 3. Count reconciliation
 

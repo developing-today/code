@@ -76,7 +76,9 @@ class VerifyRehostClonesTests(unittest.TestCase):
                     side_effect=collect,
                 ),
                 patch.object(
-                    verify_rehost_clones, "_run_git", side_effect=lambda args: clones.append(args)
+                    verify_rehost_clones,
+                    "_run_git",
+                    side_effect=lambda args: clones.append(args),
                 ),
             ):
                 self.assertEqual(verify_rehost_clones.run_all(root), 1)

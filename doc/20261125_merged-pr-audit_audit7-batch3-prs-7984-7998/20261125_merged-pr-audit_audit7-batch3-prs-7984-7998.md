@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7984 | #3069 | `audit:complete` | Completes the required parse-boundary inventory and contract statement, with uncovered follow-ups filed as #7983; #3069 and design #3068 close on the audit evidence. |
-| #7985 | #7353 | `audit:complete` | Wraps long unbroken session-record badges within the mobile viewport; the issue closes with the fix and its regression test. |
-| #7986 | #5989 | `audit:complete` | Surveys object-capability systems, Goblins/OCapN, CRDT shared worlds, virtual-world predecessors and WASI with explicit adopt/adapt/reject conclusions; the research issue closes with the record. |
-| #7993 | #1790 | `audit:completed-later` | Delivers the pure tooltip mode/pin/minimize state machine (slice 1). Later PR #8013 wires the UI and lifecycle logging for slices 2–3 and completes the issue. PR note: #7161171953. |
-| #7998 | #6062 | `audit:complete` | Defines Atlas-canonical objects, ID graph projections, PROV-lite relation mapping, replay/correction/retention rules and follow-on implementation slices. The design deliverable is complete; the issue remains open as the implementation parent. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                            |
+| -------------: | -------------: | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7984 |          #3069 | `audit:complete`        | Completes the required parse-boundary inventory and contract statement, with uncovered follow-ups filed as #7983; #3069 and design #3068 close on the audit evidence.                                                                              |
+|          #7985 |          #7353 | `audit:complete`        | Wraps long unbroken session-record badges within the mobile viewport; the issue closes with the fix and its regression test.                                                                                                                       |
+|          #7986 |          #5989 | `audit:complete`        | Surveys object-capability systems, Goblins/OCapN, CRDT shared worlds, virtual-world predecessors and WASI with explicit adopt/adapt/reject conclusions; the research issue closes with the record.                                                 |
+|          #7993 |          #1790 | `audit:completed-later` | Delivers the pure tooltip mode/pin/minimize state machine (slice 1). Later PR #8013 wires the UI and lifecycle logging for slices 2–3 and completes the issue. PR note: #7161171953.                                                               |
+|          #7998 |          #6062 | `audit:complete`        | Defines Atlas-canonical objects, ID graph projections, PROV-lite relation mapping, replay/correction/retention rules and follow-on implementation slices. The design deliverable is complete; the issue remains open as the implementation parent. |
 
 ## Slice state
 

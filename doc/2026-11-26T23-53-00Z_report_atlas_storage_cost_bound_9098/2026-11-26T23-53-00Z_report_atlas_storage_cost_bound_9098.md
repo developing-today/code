@@ -6,12 +6,12 @@ This is slice 2 of [#9098](https://github.com/developing-today/code/issues/9098)
 
 The measured raw-text columns contain **1,277,693,028 bytes** across the Turso stores in the census. Moving every measured copy out of Turso would free at most **1.278 decimal GB**. A content-addressed R2 object set would hold no more than that amount because equal payloads can share one object; the census did not retain hashes, so the unique object bytes are not known yet.
 
-| Measured raw-text source | Bytes |
-| --- | ---: |
-| Atlas monolith, chunks and messages | 639,187,867 |
-| 29 topic stores, chunk text | 173,545,247 |
-| 2 content stores, message text | 464,959,914 |
-| **All measured copies** | **1,277,693,028** |
+| Measured raw-text source            |             Bytes |
+| ----------------------------------- | ----------------: |
+| Atlas monolith, chunks and messages |       639,187,867 |
+| 29 topic stores, chunk text         |       173,545,247 |
+| 2 content stores, message text      |       464,959,914 |
+| **All measured copies**             | **1,277,693,028** |
 
 Cloudflare R2 Standard storage is **$0.015 per GB-month**. Usage rounds to whole billable GB-months. This upper bound is therefore **2 GB-months**, or **$0.03 per month** if the account has used its included storage allowance. If the full 10 GB-month Standard allowance remains, these bytes fit within it and the incremental storage charge is **$0**. Egress is free. R2 request charges are separate, and this slice has no request-count measurement, so it does not estimate them. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
 

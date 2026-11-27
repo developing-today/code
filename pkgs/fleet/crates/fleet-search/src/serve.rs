@@ -525,8 +525,8 @@ mod parity_regression_tests {
             "orphan.json",
             &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
         );
-        let err = server::load_service_settings(&orphan, server::ServeOverrides::default())
-            .unwrap_err();
+        let err =
+            server::load_service_settings(&orphan, server::ServeOverrides::default()).unwrap_err();
         assert!(
             err.contains("source_registry requires shards"),
             "got: {err}"
@@ -538,8 +538,8 @@ mod parity_regression_tests {
                 r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
             ),
         );
-        let err = server::load_service_settings(&empty, server::ServeOverrides::default())
-            .unwrap_err();
+        let err =
+            server::load_service_settings(&empty, server::ServeOverrides::default()).unwrap_err();
         assert!(
             err.contains("source_registry path must not be empty"),
             "got: {err}"
@@ -632,11 +632,7 @@ mod parity_regression_tests {
     struct FixedEmbedder;
 
     impl atlas_core::QueryEmbedder for FixedEmbedder {
-        fn embed_query(
-            &self,
-            _text: &str,
-            _trunc: usize,
-        ) -> Result<Vec<f32>, atlas_core::Error> {
+        fn embed_query(&self, _text: &str, _trunc: usize) -> Result<Vec<f32>, atlas_core::Error> {
             Err(atlas_core::Error::fatal("no embedder in test"))
         }
     }
@@ -664,8 +660,7 @@ mod parity_regression_tests {
             .map(|arr| {
                 arr.iter().any(|o| {
                     o.get("tier").and_then(|t| t.as_str()) == Some(Tier::Secret.name())
-                        || o.get("source").and_then(|s| s.as_str())
-                            == Some("repo@commit:path")
+                        || o.get("source").and_then(|s| s.as_str()) == Some("repo@commit:path")
                 })
             })
             .unwrap_or(false);
@@ -673,16 +668,13 @@ mod parity_regression_tests {
             !leaked,
             "personal caller must not receive secret-tier occurrence provenance: {personal}"
         );
-        let secret = engine
-            .chunk(7, 0, ProtoSensitivity::SecretBearing)
-            .unwrap();
+        let secret = engine.chunk(7, 0, ProtoSensitivity::SecretBearing).unwrap();
         let seen = secret
             .get("occurrences")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().any(|o| {
-                    o.get("source").and_then(|s| s.as_str()) == Some("repo@commit:path")
-                })
+                arr.iter()
+                    .any(|o| o.get("source").and_then(|s| s.as_str()) == Some("repo@commit:path"))
             })
             .unwrap_or(false);
         assert!(

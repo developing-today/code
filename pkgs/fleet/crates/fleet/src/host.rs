@@ -314,10 +314,7 @@ pub fn run(args: &[String]) -> i32 {
                 };
                 println!("{marker} {}", candidate.label());
             }
-            println!(
-                "selected: {}",
-                resolution.selected.label()
-            );
+            println!("selected: {}", resolution.selected.label());
             println!("decision: {}", resolution.decision);
             0
         }
@@ -378,8 +375,7 @@ mod tests {
         assert!(resolution.candidates.contains(&resolution.selected));
         let label = resolution.selected.label();
         assert!(
-            label.contains(resolution.selected.offer)
-                && label.contains(resolution.selected.form),
+            label.contains(resolution.selected.offer) && label.contains(resolution.selected.form),
             "label names offer and form: {label}"
         );
         assert!(

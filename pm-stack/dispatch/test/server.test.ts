@@ -128,27 +128,36 @@ describe("POST /v1/agent-wake", () => {
     const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({ id: "ses_wake_1" });
     const sendPrompt = spyOn(OpenCodeClient.prototype, "sendPrompt").mockResolvedValue(undefined);
     try {
-      const response = await handler(new Request("http://x/v1/agent-wake", {
-        method: "POST",
-        headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
-        body: JSON.stringify({
-          event: "message.created",
-          address: "agent:agent-next-20-local",
-          message_ids: [42],
-          kind: "instruction",
-          from: ["drew"],
-          text: "bridge summary that must not become a task prompt",
+      const response = await handler(
+        new Request("http://x/v1/agent-wake", {
+          method: "POST",
+          headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
+          body: JSON.stringify({
+            event: "message.created",
+            address: "agent:agent-next-20-local",
+            message_ids: [42],
+            kind: "instruction",
+            from: ["drew"],
+            text: "bridge summary that must not become a task prompt",
+          }),
         }),
-      }));
+      );
 
       expect(response.status).toBe(202);
-      expect(await response.json()).toEqual({ agent: "agent-next-20-local", session_id: "ses_wake_1", status: "started" });
+      expect(await response.json()).toEqual({
+        agent: "agent-next-20-local",
+        session_id: "ses_wake_1",
+        status: "started",
+      });
       expect(createSession).toHaveBeenCalledWith({
         directory: "/home/user/git/code",
         title: "Fleet wake: agent-next-20-local",
         model: null,
       });
-      expect(sendPrompt).toHaveBeenCalledWith("ses_wake_1", expect.stringContaining("fleet agent next --agent agent-next-20-local"));
+      expect(sendPrompt).toHaveBeenCalledWith(
+        "ses_wake_1",
+        expect.stringContaining("fleet agent next --agent agent-next-20-local"),
+      );
       expect(sendPrompt.mock.calls[0]?.[1]).not.toContain("bridge summary that must not become a task prompt");
     } finally {
       createSession.mockRestore();
@@ -157,13 +166,17 @@ describe("POST /v1/agent-wake", () => {
   });
 
   test("rejects channel and malformed addresses without starting a session", async () => {
-    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({ id: "ses_wake_invalid" });
+    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({
+      id: "ses_wake_invalid",
+    });
     try {
-      const response = await handler(new Request("http://x/v1/agent-wake", {
-        method: "POST",
-        headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
-        body: JSON.stringify({ event: "message.created", address: "channel:chatgpt", message_ids: [42] }),
-      }));
+      const response = await handler(
+        new Request("http://x/v1/agent-wake", {
+          method: "POST",
+          headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
+          body: JSON.stringify({ event: "message.created", address: "channel:chatgpt", message_ids: [42] }),
+        }),
+      );
       expect(response.status).toBe(400);
       expect(createSession).not.toHaveBeenCalled();
     } finally {

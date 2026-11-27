@@ -192,8 +192,7 @@ export function reconciledInProgress(data: ReconciledInProgressInput): Reconcile
     // the card contributes lands on a single canonical row instead of one
     // row per linked ref. Prefer the linked issue as the row identity so
     // the row reads as the tracked issue carrying its open PR.
-    const canonical =
-      boardItem.links.find((link) => data.items?.get(link.ref)?.kind !== "pr") ?? boardItem.links[0];
+    const canonical = boardItem.links.find((link) => data.items?.get(link.ref)?.kind !== "pr") ?? boardItem.links[0];
     if (!canonical) continue;
     const canonicalItem = data.items?.get(canonical.ref);
     const title = canonicalItem?.title ?? boardItem.title;

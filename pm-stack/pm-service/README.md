@@ -275,20 +275,22 @@ First wave of the CF-5 programme's M5 surfaces. Per-surface record:
 
 Both new routes are pure derivations in `src/read-api/waves.ts`
 over the projections the existing routes already read (merged pool
-+ board summaries), served by both handlers (`api.ts` /
-`async-api.ts`); the async parity suite pins them byte-identical.
 
-- **Freshness visible:** every wave response carries `freshness` —
+- board summaries), served by both handlers (`api.ts` /
+  `async-api.ts`); the async parity suite pins them byte-identical.
+
+* **Freshness visible:** every wave response carries `freshness` —
   the per-board latest snapshot stamps and the newest as
   `latestSnapshotAt` (null when no snapshot has landed).
-- **Write-amplification check (#14865 gate):** zero new writes.
+* **Write-amplification check (#14865 gate):** zero new writes.
   This wave adds no projection, table, or write path; it issues
   only the SELECTs the existing routes already issue, so the
   collector's snapshot landing remains the sole writer.
-- **Live cutover** follows the CF-5c deploy: the routes ship with
+* **Live cutover** follows the CF-5c deploy: the routes ship with
   the Worker on its next versions deploy; until the tenant secrets
   land (#14969's remaining acceptance) the Worker serves them as
   the designed honest 503, like the §6 routes.
+
 ## Slice 4 — dashboard surfaces (#12829)
 
 `src/dashboard/dashboard.ts` serves the design §4 V1 parity list as

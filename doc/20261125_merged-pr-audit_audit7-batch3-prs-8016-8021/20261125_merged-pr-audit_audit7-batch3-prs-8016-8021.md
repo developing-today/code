@@ -18,13 +18,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8016 | #7892 | `audit:complete` | Rejects non-unsigned `chat.history` count values with the documented invalid-arguments response instead of silently substituting the default. |
-| #8018 | #7948 | `audit:partial` | Adds GitHub identity lists, soft/hard classification, durable rotation state and App token minting. Daemon call wiring later landed in #11236, but live activation remains open in #8017; #7948 closed prematurely. Lane 2 pointer: #13871 comment 7161621192. PR note: #7161623223. |
-| #8019 | #2168 | `audit:complete` | Shares script resolution between CLI and daemon, resolves bare names on `/v1/exec`, and adds the explicit `--remote-file` mode while preserving default `--remote` behavior. |
-| #8020 | none (coverage-contract follow-up to #8019) | `audit:no-issue` | Adds a reasoned exemption for daemon-only `--remote-file` in the #2188 exec-flag coverage contract and regenerates the flag index. No separate source issue was filed. PR note: #7161624797. |
-| #8021 | #6536 | `audit:complete` | Encrypts DNS Terraform state into a same-directory temporary file, verifies non-empty and decrypt-back equality, then atomically replaces the saved ciphertext; failure preserves the prior record. |
+| Payload number |                              Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                              |
+| -------------: | ------------------------------------------: | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #8016 |                                       #7892 | `audit:complete` | Rejects non-unsigned `chat.history` count values with the documented invalid-arguments response instead of silently substituting the default.                                                                                                                                        |
+|          #8018 |                                       #7948 | `audit:partial`  | Adds GitHub identity lists, soft/hard classification, durable rotation state and App token minting. Daemon call wiring later landed in #11236, but live activation remains open in #8017; #7948 closed prematurely. Lane 2 pointer: #13871 comment 7161621192. PR note: #7161623223. |
+|          #8019 |                                       #2168 | `audit:complete` | Shares script resolution between CLI and daemon, resolves bare names on `/v1/exec`, and adds the explicit `--remote-file` mode while preserving default `--remote` behavior.                                                                                                         |
+|          #8020 | none (coverage-contract follow-up to #8019) | `audit:no-issue` | Adds a reasoned exemption for daemon-only `--remote-file` in the #2188 exec-flag coverage contract and regenerates the flag index. No separate source issue was filed. PR note: #7161624797.                                                                                         |
+|          #8021 |                                       #6536 | `audit:complete` | Encrypts DNS Terraform state into a same-directory temporary file, verifies non-empty and decrypt-back equality, then atomically replaces the saved ciphertext; failure preserves the prior record.                                                                                  |
 
 ## Slice state
 

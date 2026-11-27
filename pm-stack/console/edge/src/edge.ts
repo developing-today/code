@@ -88,11 +88,7 @@ import {
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
-import {
-  parseWorkerCheckSet,
-  WORKER_CHECKS_KEY,
-  type WorkerCheckSet,
-} from "./worker-checks.ts";
+import { parseWorkerCheckSet, WORKER_CHECKS_KEY, type WorkerCheckSet } from "./worker-checks.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";

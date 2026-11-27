@@ -97,9 +97,9 @@ describe("dnsSnapshotStatements", () => {
 
   test("refuses a section the shared gate would not serve", () => {
     expect(() => dnsSnapshotStatements({ ...SECTION, entries: [] }, RECEIVED_AT)).toThrow("invalid DNS section");
-    expect(() =>
-      dnsSnapshotStatements({ ...SECTION, totalAnnualListUsd: -1 }, RECEIVED_AT),
-    ).toThrow("invalid DNS section");
+    expect(() => dnsSnapshotStatements({ ...SECTION, totalAnnualListUsd: -1 }, RECEIVED_AT)).toThrow(
+      "invalid DNS section",
+    );
   });
 
   test("refuses an unparseable receivedAt", () => {
@@ -144,7 +144,8 @@ describe("createDnsPublisher", () => {
 
   test("an authentication refusal fails without the token reaching the error", async () => {
     const { fetchFn } = fakeD1Endpoint(
-      () => new Response(JSON.stringify({ success: false, errors: [{ message: `bad token ${TOKEN}` }] }), { status: 401 }),
+      () =>
+        new Response(JSON.stringify({ success: false, errors: [{ message: `bad token ${TOKEN}` }] }), { status: 401 }),
     );
     const publisher = createDnsPublisher({ accountId: ACCOUNT_ID, databaseId: DATABASE_ID, token: TOKEN, fetchFn });
     const err = await publisher.publish(SECTION, RECEIVED_AT).catch((e: unknown) => e);

@@ -64,7 +64,11 @@ export interface BrokerTaskRead {
   } | null;
   block: { reason_class: string | null; blocked_deps: string[]; dep_blocked_until: string | null } | null;
   binding: { progress_session_id: string | null; ledger_session_id: string | null | "not_read" };
-  eligibility: { state: "eligible" | "ineligible" | "manual_only"; reason_codes: string[]; hard_blocker_refs: string[] };
+  eligibility: {
+    state: "eligible" | "ineligible" | "manual_only";
+    reason_codes: string[];
+    hard_blocker_refs: string[];
+  };
 }
 
 export interface SessionReadback {
@@ -142,17 +146,17 @@ const PERSON_WAIT_CONDITION_KINDS = new Set(["person_answer"]);
 // Project #4 Status names that agree with a column. "Todo" covers both
 // Backlog and Ready; anything unlisted disagrees.
 const PROJECT_STATUS_COLUMNS: Record<string, BoardColumn[]> = {
-  "todo": ["Backlog", "Ready"],
-  "backlog": ["Backlog"],
-  "ready": ["Ready"],
+  todo: ["Backlog", "Ready"],
+  backlog: ["Backlog"],
+  ready: ["Ready"],
   "in progress": ["In Progress"],
-  "review": ["Review"],
+  review: ["Review"],
   "in review": ["Review"],
-  "blocked": ["Blocked"],
-  "parked": ["Parked"],
-  "done": ["Done"],
-  "triage": ["Inbox/Triage"],
-  "inbox": ["Inbox/Triage"],
+  blocked: ["Blocked"],
+  parked: ["Parked"],
+  done: ["Done"],
+  triage: ["Inbox/Triage"],
+  inbox: ["Inbox/Triage"],
   "inbox/triage": ["Inbox/Triage"],
 };
 
@@ -181,7 +185,12 @@ function analyzeClaim(e: LifecycleEvidence, o: LifecyclePolicyOptions): ClaimAna
   const nowMs = Date.parse(o.now);
   const conflicts: LifecycleConflict[] = [];
   const reasons: string[] = [];
-  const verdict = (claim: ClaimBindingVerdict["claim"], fresh = false, binding: "verified" | "unknown" = "unknown", bound: string | null = null): ClaimAnalysis => ({
+  const verdict = (
+    claim: ClaimBindingVerdict["claim"],
+    fresh = false,
+    binding: "verified" | "unknown" = "unknown",
+    bound: string | null = null,
+  ): ClaimAnalysis => ({
     verdict: { claim, fresh, session_binding: binding, bound_session_id: bound, reason_codes: sorted(reasons) },
     conflicts,
   });
@@ -200,7 +209,10 @@ function analyzeClaim(e: LifecycleEvidence, o: LifecyclePolicyOptions): ClaimAna
   const leaseLive = task.worker_id !== null && Number.isFinite(leaseMs) && leaseMs > observedMs;
   if (!leaseLive) {
     if (task.lease_until !== null) {
-      conflicts.push({ code: "claimed_lease_expired", detail: `claimed task ${task.task_id} has lease_until at or before the broker read` });
+      conflicts.push({
+        code: "claimed_lease_expired",
+        detail: `claimed task ${task.task_id} has lease_until at or before the broker read`,
+      });
     }
     reasons.push("claim_lease_expired_awaiting_reclaim");
     return verdict("claimed_lease_expired");
@@ -220,7 +232,10 @@ function analyzeClaim(e: LifecycleEvidence, o: LifecyclePolicyOptions): ClaimAna
   const ledger = task.binding.ledger_session_id;
   if (ledger !== "not_read" && ledger !== bound) {
     if (ledger !== null) {
-      conflicts.push({ code: "binding_session_mismatch", detail: `broker binding names ${bound} in progress and ${ledger} in the lane ledger` });
+      conflicts.push({
+        code: "binding_session_mismatch",
+        detail: `broker binding names ${bound} in progress and ${ledger} in the lane ledger`,
+      });
     }
     return verdict("claimed_live", true);
   }
@@ -241,12 +256,21 @@ function analyzeClaim(e: LifecycleEvidence, o: LifecyclePolicyOptions): ClaimAna
   const confirming = forBound.filter((s) => sameWork(s.bound_work, e.work) && s.state !== "terminal");
   if (confirming.length === 1) return verdict("claimed_live", true, "verified", bound);
   if (forBound.some((s) => s.state === "terminal")) {
-    conflicts.push({ code: "bound_session_terminal", detail: `the bound session ${bound} is reported terminal by its adapter` });
+    conflicts.push({
+      code: "bound_session_terminal",
+      detail: `the bound session ${bound} is reported terminal by its adapter`,
+    });
     return verdict("claimed_live", true);
   }
   const others = sessions.value.filter((s) => s.session_id !== bound && sameWork(s.bound_work, e.work));
   if (others.length > 0) {
-    conflicts.push({ code: "binding_session_mismatch", detail: `broker binds ${bound}; the adapter binds ${others.map((s) => s.session_id).sort().join(", ")}` });
+    conflicts.push({
+      code: "binding_session_mismatch",
+      detail: `broker binds ${bound}; the adapter binds ${others
+        .map((s) => s.session_id)
+        .sort()
+        .join(", ")}`,
+    });
     return verdict("claimed_live", true);
   }
   reasons.push("session_readback_absent");
@@ -258,7 +282,11 @@ export function evaluateClaimBinding(e: LifecycleEvidence, o: LifecyclePolicyOpt
 }
 
 export function toClaimInput(v: ClaimBindingVerdict, worker?: string, lane?: string): ClaimInput {
-  const out: ClaimInput = { state: v.claim === "unclaimed" ? "unclaimed" : "claimed", fresh: v.fresh, session_binding: v.session_binding };
+  const out: ClaimInput = {
+    state: v.claim === "unclaimed" ? "unclaimed" : "claimed",
+    fresh: v.fresh,
+    session_binding: v.session_binding,
+  };
   if (worker !== undefined) out.worker = worker;
   if (lane !== undefined) out.lane = lane;
   return out;
@@ -319,7 +347,15 @@ export function projectLifecycleColumn(e: LifecycleEvidence, o: LifecyclePolicyO
     reasons.add("unknown_queue_status");
     return finish(null, "R0");
   }
-  const facets: (Read<unknown> | undefined)[] = [e.broker, e.sessions, e.remote, e.project_status, e.completion, ...policyKeys.map((k) => e.policy[k]), e.dispatch_directive];
+  const facets: (Read<unknown> | undefined)[] = [
+    e.broker,
+    e.sessions,
+    e.remote,
+    e.project_status,
+    e.completion,
+    ...policyKeys.map((k) => e.policy[k]),
+    e.dispatch_directive,
+  ];
   if (facets.every((f) => f === undefined || f.state === "absent")) {
     reasons.add("nothing_sourced");
     return finish(null, "R0");
@@ -343,23 +379,43 @@ export function projectLifecycleColumn(e: LifecycleEvidence, o: LifecyclePolicyO
 
   // Facet conflicts (record D7, MOB-01 D6). Details are fixed text plus refs.
   if (issueOpen && prMerged) conflict("issue_open_pr_merged", "the own issue is open while a linked PR is merged");
-  if ((queueDone || receipt) && issueOpen) conflict("work_terminal_issue_open", "the work reads terminal while its own issue is open");
+  if ((queueDone || receipt) && issueOpen)
+    conflict("work_terminal_issue_open", "the work reads terminal while its own issue is open");
   if ((queueDone || receipt) && prOpen.length > 0) {
-    conflict("work_terminal_pr_open", `the work reads terminal while ${prOpen.map((p) => p.locator).sort().join(", ")} is open`);
+    conflict(
+      "work_terminal_pr_open",
+      `the work reads terminal while ${prOpen
+        .map((p) => p.locator)
+        .sort()
+        .join(", ")} is open`,
+    );
   }
   if (issueClosed && status !== null && OPEN_QUEUE_STATUSES.has(status)) {
     conflict("issue_closed_work_open", `the own issue is closed while the queue task is ${status}`);
   }
-  if (terminalSignal && !receipt) conflict("completion_unverified", "a terminal signal is present without a verified terminal receipt");
+  if (terminalSignal && !receipt)
+    conflict("completion_unverified", "a terminal signal is present without a verified terminal receipt");
   if (brokerBinding !== null && status !== null && OPEN_QUEUE_STATUSES.has(status) && status !== "claimed") {
     conflict("binding_without_claim", `the broker binds ${brokerBinding} to a task that is ${status}, not claimed`);
   }
   const held = status !== null && HELD_STATUSES.has(status);
   if (held && boundWorkSessions.length > 0) {
-    conflict("held_with_active_binding", `${boundWorkSessions.map((s) => s.session_id).sort().join(", ")} is bound to ${status} work`);
+    conflict(
+      "held_with_active_binding",
+      `${boundWorkSessions
+        .map((s) => s.session_id)
+        .sort()
+        .join(", ")} is bound to ${status} work`,
+    );
   }
   if (!held && brokerBinding === null && boundWorkSessions.length > 0) {
-    conflict("session_shell_unbound", `${boundWorkSessions.map((s) => s.session_id).sort().join(", ")} names this work but the broker has no binding`);
+    conflict(
+      "session_shell_unbound",
+      `${boundWorkSessions
+        .map((s) => s.session_id)
+        .sort()
+        .join(", ")} names this work but the broker has no binding`,
+    );
   }
   if (boundWorkSessions.length > 1) {
     conflict("extra_session_for_work", `${boundWorkSessions.length} adapter sessions name this work`);
@@ -368,13 +424,18 @@ export function projectLifecycleColumn(e: LifecycleEvidence, o: LifecyclePolicyO
   // Informational reasons, added wherever their condition holds.
   const waitingOnPerson =
     (status === "blocked" && task?.block?.reason_class != null && PERSON_WAIT_CLASSES.has(task.block.reason_class)) ||
-    (status === "parked" && task?.park?.condition_kind != null && PERSON_WAIT_CONDITION_KINDS.has(task.park.condition_kind));
+    (status === "parked" &&
+      task?.park?.condition_kind != null &&
+      PERSON_WAIT_CONDITION_KINDS.has(task.park.condition_kind));
   if (waitingOnPerson) reasons.add("waiting_on_person");
   if (remote?.prs.some((p) => p.state === "open" && p.draft)) reasons.add("draft_pr_open");
   if (status === "handed_off" && task?.worker_id === null && brokerBinding === null) reasons.add("handed_off_unbound");
   if (remote?.follow_ups.some((f) => f.state === "open")) reasons.add("follow_up_open_elsewhere");
 
-  const promoting = truthy(e.policy.high_or_above) || truthy(e.policy.owner_assigned) || truthy(e.policy.explicitly_prepared) ||
+  const promoting =
+    truthy(e.policy.high_or_above) ||
+    truthy(e.policy.owner_assigned) ||
+    truthy(e.policy.explicitly_prepared) ||
     (present(e.dispatch_directive) && e.dispatch_directive.value === "do_now");
 
   // R1: verified receipt and no present facet contradicting it.
@@ -412,12 +473,22 @@ export function projectLifecycleColumn(e: LifecycleEvidence, o: LifecyclePolicyO
   if (truthy(e.policy.triage_required)) r6.push("triage_required");
   if (status === "failed") r6.push("queue_failed");
   if (status === "cancelled") r6.push("queue_cancelled");
-  if (task !== null && task.attempts >= task.max_attempts && (status === "queued" || verdict.claim === "claimed_lease_expired")) {
+  if (
+    task !== null &&
+    task.attempts >= task.max_attempts &&
+    (status === "queued" || verdict.claim === "claimed_lease_expired")
+  ) {
     r6.push("attempt_cap_reached");
   }
-  if ((verdict.claim === "claimed_live" || verdict.claim === "claimed_read_stale") && verdict.session_binding === "unknown") {
+  if (
+    (verdict.claim === "claimed_live" || verdict.claim === "claimed_read_stale") &&
+    verdict.session_binding === "unknown"
+  ) {
     r6.push("claim_binding_unverified");
-    conflict("claimed_binding_unknown", `task ${task?.task_id ?? ""} is claimed but its session binding is not verified`);
+    conflict(
+      "claimed_binding_unknown",
+      `task ${task?.task_id ?? ""} is claimed but its session binding is not verified`,
+    );
   }
 
   // R5: an open, non-draft PR, or a terminal signal without R1.

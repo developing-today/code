@@ -50,15 +50,15 @@ Non-goals:
 
 - Placement contract (admission rule): a new data class lands only with `(tier, backup_path, growth_expectation, cost_home)` recorded in the inventory. Cold-store nightly, Supabase DIY, and nix-cache push paths are the first three callers to conform.
 - Tier table (unchanged policy from the living DRAFT, carried forward):
-  | Tier | Home | Holds | Rule |
-  | --- | --- | --- | --- |
-  | Hot ledger | Turso | coordination, registries, mirrors, Atlas hot set | named DB per domain; size watched |
-  | Relational platform | Supabase Postgres (muse-dev) | agent/ci/ideas/ainventory schemas | $30 ceiling; DIY backups on |
-  | Edge operational | R2 per-tenant buckets | backups in flight, cache nars, snapshots, payloads | buckets stay separate; no cold bulk by default |
-  | Binary cache | R2 `nix-cache-nars` via nix-cache | nix nars/narinfo | retention GC required (slice S3) |
-  | Cold archive | Google Drive cold-store | sealed 4–16 GB bundles + manifests | 3 TiB project budget; index outside Drive |
-  | Local canonical | laptop / lab machines | atlas.db, nix stores, working trees | never the sole copy — a backup path must exist |
-  | Offsite personal | Backblaze (laptop) + B2 (Atlas shards) | machine backup, corpus shards | per X19/A1 |
+  | Tier                | Home                                   | Holds                                              | Rule                                           |
+  | ------------------- | -------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
+  | Hot ledger          | Turso                                  | coordination, registries, mirrors, Atlas hot set   | named DB per domain; size watched              |
+  | Relational platform | Supabase Postgres (muse-dev)           | agent/ci/ideas/ainventory schemas                  | $30 ceiling; DIY backups on                    |
+  | Edge operational    | R2 per-tenant buckets                  | backups in flight, cache nars, snapshots, payloads | buckets stay separate; no cold bulk by default |
+  | Binary cache        | R2 `nix-cache-nars` via nix-cache      | nix nars/narinfo                                   | retention GC required (slice S3)               |
+  | Cold archive        | Google Drive cold-store                | sealed 4–16 GB bundles + manifests                 | 3 TiB project budget; index outside Drive      |
+  | Local canonical     | laptop / lab machines                  | atlas.db, nix stores, working trees                | never the sole copy — a backup path must exist |
+  | Offsite personal    | Backblaze (laptop) + B2 (Atlas shards) | machine backup, corpus shards                      | per X19/A1                                     |
 - Never-delete vs GC contract: never-delete binds the nix store and the cold archive (grow-only). Caches (nix-cache nars) and edge payloads (mail/webhook staging) are cache-class with written retention. R2 tenant payload retention is decided in S1 (open question O1 below), not by accident.
 
 ### 4.2 Data model
