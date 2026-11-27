@@ -42,6 +42,12 @@ import {
   type EdgeOptions,
   type Acted,
   LAST_WINS,
+  ENROLL_CODE_MS,
+  ENROLL_CODE_ALPHABET,
+  KID,
+  type MachineKey,
+  type MachineHost,
+  type EnrollCode,
   SECTIONS,
   WATCHED,
   SYNC_LIMIT,
@@ -339,6 +345,10 @@ export class Edge {
   private keyFetchRead = false;
   private hostSeen: number | null = null;
   private hostSeq: number | null = null;
+  /** When each enrolled second machine last reported, by its key id:
+   * the in-memory side of `mhost:<kid>`, read back in ready() so a new
+   * object knows. The first machine's time stays in hostSeen. */
+  private machineSeen = new Map<string, number>();
   /** For each section, the content the host last said it has and when
    * it read it: a copy with that content is current as of that read. */
   private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
@@ -1191,6 +1201,39 @@ export class Edge {
     const told = await this.toldConfig();
     const owner = await this.ownerSettings();
     const differs = told === null ? [] : settingsDifferences(told).filter((d) => !ownerChanged(owner, d.name));
+    // Every machine that reports: the first, whose key this side learned
+    // through the tunnel, then each the owner enrolled under its own key.
+    // An enrolled machine that never reported yet shows with seen null.
+    const machines: MachinesAnswer["machines"] =
+      seen === null
+        ? []
+        : [
+            {
+              name: this.machine?.name ?? "A machine",
+              seen,
+              quiet: this.now() - seen >= HOST_QUIET_MS,
+              version: this.hostVersion,
+              actions: this.machine?.actions ?? [],
+              sections: this.machine?.sections ?? [],
+              ...(differs.length > 0 ? { differs } : {}),
+              settingsRev: this.hostSettingsRev,
+            },
+          ];
+    for (const enrolled of ((await this.kv.get("machines:index")) as string[] | undefined) ?? []) {
+      const kept = (await this.kv.get(`mhost:${enrolled}`)) as MachineHost | undefined;
+      const said = machineReport(kept?.machine);
+      const at = kept?.seen ?? null;
+      machines.push({
+        name: said?.name ?? "A machine",
+        seen: at,
+        quiet: at === null || this.now() - at >= HOST_QUIET_MS,
+        version: kept?.version ?? null,
+        actions: said?.actions ?? [],
+        sections: said?.sections ?? [],
+        ...(differs.length > 0 ? { differs } : {}),
+        settingsRev: kept?.settingsRev ?? null,
+      });
+    }
     return {
       served: "edge",
       platform: {
@@ -1209,22 +1252,7 @@ export class Edge {
         settings: settingsInForce(told, owner),
         settingsRev: owner?.rev ?? 0,
       },
-      // One machine can report today: the one whose key this side holds.
-      machines:
-        seen === null
-          ? []
-          : [
-              {
-                name: this.machine?.name ?? "A machine",
-                seen,
-                quiet: this.now() - seen >= HOST_QUIET_MS,
-                version: this.hostVersion,
-                actions: this.machine?.actions ?? [],
-                sections: this.machine?.sections ?? [],
-                ...(differs.length > 0 ? { differs } : {}),
-                settingsRev: this.hostSettingsRev,
-              },
-            ],
+      machines,
       held: await this.heldSaid(cfg),
     };
   }
@@ -1330,6 +1358,13 @@ export class Edge {
       this.hostVersion = host?.version ?? null;
       this.machine = machineReport(host?.machine);
       this.hostSettingsRev = settingsRevSaid(host?.settingsRev);
+      // When each enrolled second machine last reported, so a new object
+      // knows one is there without waiting for its next report.
+      for (const kid of ((await this.kv.get("machines:index")) as string[] | undefined) ?? []) {
+        const kept = (await this.kv.get(`mhost:${kid}`)) as MachineHost | undefined;
+        if (typeof kept?.seen === "number") this.machineSeen.set(kid, kept.seen);
+        else this.machineSeen.delete(kid);
+      }
     }
     if (!this.awayRead) {
       this.awayRead = true;
@@ -1624,9 +1659,13 @@ export class Edge {
     if (mine.length > 0) await this.docs.reread(mine);
   }
 
-  /** A machine reported within the minute, so it can be asked. */
+  /** A machine reported within the minute, so it can be asked: the
+   * first machine, or any the owner enrolled. */
   private machineThere(): boolean {
-    return this.now() - (this.hostSeen ?? 0) < HOST_QUIET_MS;
+    const now = this.now();
+    if (now - (this.hostSeen ?? 0) < HOST_QUIET_MS) return true;
+    for (const at of this.machineSeen.values()) if (now - at < HOST_QUIET_MS) return true;
+    return false;
   }
 
   /** Tell the owner what changed. What this side reads itself is
@@ -1781,14 +1820,126 @@ export class Edge {
   // ---- the host's report -------------------------------------------------
 
   /** The host's public key, given by the stateless part after it asked
-   * the host through the tunnel. */
+   * the host through the tunnel. A removed key is never taken back this
+   * way: removal is the owner's word, and only a new enrollment code
+   * from the owner enrolls again. */
   private async enroll(req: Request): Promise<Response> {
     const key = publicKey(((await req.json().catch(() => null)) as { key?: unknown } | null)?.key);
     if (!key) return json({ error: "not a key" }, 400);
-    await this.kv.put("key", { kid: await keyId(key), jwk: key });
+    const kid = await keyId(key);
+    if (await this.kv.get(`revoked:${kid}`)) return json({ error: "that machine was removed" }, 410);
+    await this.kv.put("key", { kid, jwk: key });
     return json({ ok: true });
   }
 
+  /** The enrolled machine keys: the first machine's tunnel-learned key
+   * under "key", then every owner-enrolled key under its `mkey:<kid>`. */
+  private async machineKeys(): Promise<{ kid: string; jwk: PublicKey }[]> {
+    const keys: { kid: string; jwk: PublicKey }[] = [];
+    const first = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
+    if (first && typeof first.kid === "string" && publicKey(first.jwk)) keys.push(first);
+    const index = ((await this.kv.get("machines:index")) as string[] | undefined) ?? [];
+    for (const kid of index) {
+      if (keys.some((k) => k.kid === kid)) continue;
+      const kept = (await this.kv.get(`mkey:${kid}`)) as MachineKey | undefined;
+      if (kept && kept.kid === kid && publicKey(kept.jwk)) keys.push({ kid, jwk: kept.jwk });
+    }
+    return keys;
+  }
+
+  /** The key a report signed with, or undefined for a stranger. */
+  private async machineKey(kid: string): Promise<{ kid: string; jwk: PublicKey } | undefined> {
+    return (await this.machineKeys()).find((k) => k.kid === kid);
+  }
+
+  /** Whether this key id is the first machine's tunnel-learned one. */
+  private async isFirstKey(kid: string): Promise<boolean> {
+    const first = (await this.kv.get("key")) as { kid: string } | undefined;
+    return first?.kid === kid;
+  }
+
+  /** A second machine enrolls with an enrollment code the owner minted
+   * and its public key. The code is the approval: the owner made it on
+   * the Machines screen for whoever holds the new machine. Single use;
+   * a code unknown here, or past its time, enrolls nothing. */
+  private async enrollMachine(req: Request): Promise<Response> {
+    const body = (await req.json().catch(() => null)) as { key?: unknown; code?: unknown } | null;
+    const key = publicKey(body?.key);
+    const code = typeof body?.code === "string" ? body.code.toUpperCase().trim() : "";
+    if (!key || code === "") return json({ error: "a machine key and its enrollment code" }, 400);
+    const kept = (await this.kv.get(`enroll:${code}`)) as EnrollCode | undefined;
+    if (!kept || typeof kept.expires !== "number" || this.now() >= kept.expires) {
+      if (kept) await this.kv.delete(`enroll:${code}`);
+      return json({ error: "that code is not one the owner minted, or it ran out" }, 410);
+    }
+    const kid = await keyId(key);
+    await this.kv.delete(`enroll:${code}`);
+    // A fresh code is fresh approval, even for a key removed before.
+    await this.kv.delete(`revoked:${kid}`);
+    await this.kv.put(`mkey:${kid}`, { kid, jwk: key, enrolledAt: this.now(), by: kept.by } satisfies MachineKey);
+    // Enrolling the first machine's key changes nothing: its
+    // tunnel-learned copy stays the record of it, and no second entry
+    // is listed for it.
+    if (!(await this.isFirstKey(kid))) {
+      const index = new Set(((await this.kv.get("machines:index")) as string[] | undefined) ?? []);
+      index.add(kid);
+      await this.kv.put("machines:index", [...index].sort());
+    }
+    return json({ ok: true, kid });
+  }
+
+  /** The owner mints an enrollment code for a second machine: shown on
+   * the Machines screen, typed on the machine, used once. */
+  private async mintEnrollCode(by: string): Promise<Response> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const bytes = crypto.getRandomValues(new Uint8Array(6));
+      let code = "";
+      for (const b of bytes) code += ENROLL_CODE_ALPHABET[b % ENROLL_CODE_ALPHABET.length];
+      if (await this.kv.get(`enroll:${code}`)) continue;
+      const expires = this.now() + ENROLL_CODE_MS;
+      await this.kv.put(`enroll:${code}`, { expires, by } satisfies EnrollCode);
+      return json({ ok: true, code, expiresAt: new Date(expires).toISOString() });
+    }
+    return json({ error: "mint another code" }, 503);
+  }
+
+  /** The owner removes a machine: its key stops verifying, its last
+   * report leaves the Machines screen, and the tunnel never learns it
+   * again without a fresh enrollment code. What it reported stays in
+   * the shared copies, as the app's state. */
+  private async removeMachine(kid: string, by: string): Promise<Response> {
+    if (!KID.test(kid)) return json({ error: "not a machine" }, 400);
+    if (!(await this.machineKey(kid))) return json({ error: "no such machine" }, 404);
+    if (await this.isFirstKey(kid)) {
+      await this.kv.delete("key");
+      await this.kv.delete("host");
+      this.hostSeen = null;
+      this.hostSeq = null;
+      // The shared section copies and their freshness stay: what the
+      // removed machine reported is still the app's state until another
+      // machine's reports replace it.
+      this.hostVersion = null;
+      this.machine = null;
+      this.hostSettingsRev = null;
+    } else {
+      await this.kv.delete(`mkey:${kid}`);
+      await this.kv.delete(`mhost:${kid}`);
+      const index = new Set(((await this.kv.get("machines:index")) as string[] | undefined) ?? []);
+      index.delete(kid);
+      await this.kv.put("machines:index", [...index].sort());
+      this.machineSeen.delete(kid);
+    }
+    await this.kv.put(`revoked:${kid}`, { at: this.now(), by });
+    await this.audit({
+      at: new Date(this.now()).toISOString(),
+      by,
+      action: "machine.remove",
+      kid,
+      phase: "done",
+      ok: true,
+    });
+    return json({ ok: true, removed: kid });
+  }
   /** The stateless part's round of Worker checks (#15793): it asks
    * each bound Worker by its service binding and hands the set here
    * to keep. Only a set in the shape worker-checks.ts writes is
@@ -1827,9 +1978,14 @@ export class Edge {
     if (kid === "" || !SIGNATURE.test(signature)) {
       return refuse({ error: "this is not signed with the host's key" }, 401);
     }
-    const key = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
+    const key = await this.machineKey(kid);
     const now = this.now();
-    if (!key || key.kid !== kid) {
+    // A removed machine stays removed: its reports are refused, and its
+    // key is never learned again through the tunnel.
+    if (!key && (await this.kv.get(`revoked:${kid}`))) {
+      return refuse({ error: "that machine was removed" }, 410);
+    }
+    if (!key) {
       // A key this side has not seen: ask the host for its key, but not
       // on every stranger's request. Nothing has been read yet. The
       // gate is kept in storage: without it every new object would ask
@@ -1878,7 +2034,13 @@ export class Edge {
     if (msg?.v !== 1 || typeof msg.at !== "number") return json({ error: "not a sync this side understands" }, 400);
     if (Math.abs(msg.at - now) > SYNC_SKEW_MS) return json({ error: "clock", now }, 409);
     await this.ready();
-    const last = this.hostSeq ?? 0;
+    // Each machine's reports must move forward: the replay line is per
+    // machine, so two machines reporting in turn never trip each other.
+    const first = await this.isFirstKey(kid);
+    const kept = first
+      ? null
+      : ((await this.kv.get(`mhost:${kid}`)) as MachineHost | undefined) ?? null;
+    const last = first ? (this.hostSeq ?? 0) : (kept?.seq ?? 0);
     if (msg.at <= last) return json({ error: "replay", last }, 409);
     const says = edgeConfig(msg.config);
     if (!says) return json({ error: "config: not one this side can use" }, 400);
@@ -1964,20 +2126,36 @@ export class Edge {
     const wasSilent = (await this.kv.get("silent")) === true;
     // One value, written once a report: when the host last reported, the
     // time its report carried (which the next must exceed), and how
-    // current it says each section is.
-    this.hostSeen = now;
-    this.hostSeq = msg.at;
-    this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
-    this.machine = machineReport(msg.machine);
-    this.hostSettingsRev = settingsRevSaid(msg.settingsRev);
-    await this.kv.put("host", {
-      seen: now,
-      seq: msg.at,
-      confirmed: this.confirmed,
-      version: this.hostVersion,
-      machine: this.machine,
-      settingsRev: this.hostSettingsRev,
-    });
+    // current it says each section is. A second machine's time is kept
+    // under its own key, so the two never trip each other's replay line.
+    const version =
+      typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
+    const said = machineReport(msg.machine);
+    const settingsRev = settingsRevSaid(msg.settingsRev);
+    if (first) {
+      this.hostSeen = now;
+      this.hostSeq = msg.at;
+      this.hostVersion = version;
+      this.machine = said;
+      this.hostSettingsRev = settingsRev;
+      await this.kv.put("host", {
+        seen: now,
+        seq: msg.at,
+        confirmed: this.confirmed,
+        version: this.hostVersion,
+        machine: this.machine,
+        settingsRev: this.hostSettingsRev,
+      });
+    } else {
+      this.machineSeen.set(kid, now);
+      await this.kv.put(`mhost:${kid}`, {
+        seen: now,
+        seq: msg.at,
+        version,
+        machine: said,
+        settingsRev,
+      } satisfies MachineHost);
+    }
     if (wasSilent) {
       try {
         const delivery = await this.push.send("trouble", {
@@ -2342,6 +2520,11 @@ export class Edge {
     if (path === "/manifest.webmanifest" && method === "GET") return manifest();
     if (ICONS.test(path) && (method === "GET" || method === "HEAD")) return next("asset", { path, type: "image/png" });
     if (path === `${BASE}/edge/sync` && method === "POST") return this.sync(req);
+    // A second machine enrolls with the owner's code and its public key.
+    // The code is the approval (the owner minted it on the Machines
+    // screen); the machine cannot sign in, so this path carries its own
+    // check instead of the sign-in, like the sync and the phone's link.
+    if (path === `${BASE}/edge/enroll` && method === "POST") return this.enrollMachine(req);
     // Before the host's first report this side knows no owner: it stays
     // out of the way, and the host answers as it did before.
     if (cfg === null) return next("relay", { mode: "page" });
@@ -2545,8 +2728,17 @@ export class Edge {
         // Everything else is read from the host as it is now.
         return next("relay", { mode: "live" });
       }
+      if (method === "DELETE" && seg.length === 2 && seg[0] === "machines") {
+        // The owner removes a machine on the Machines screen (#13492).
+        if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
+        return this.removeMachine(seg[1], by);
+      }
       if (method !== "POST") return json({ error: "method not allowed" }, 405);
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
+      if (seg.length === 2 && seg[0] === "machines" && seg[1] === "enroll-code") {
+        // The owner mints an enrollment code for a second machine (#13492).
+        return this.mintEnrollCode(by);
+      }
       if (seg.length === 1 && seg[0] === "route") {
         // The owner's route flip (#14944, CF-4): the operator surface
         // for the same flip the deploy pipeline makes on the internal
