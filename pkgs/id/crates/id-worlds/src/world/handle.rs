@@ -1892,9 +1892,31 @@ impl WorldHandle {
     /// Render the current world for an authorized participant. A chat-only
     /// world returns `None`.
     pub async fn view(&self, token: JoinCapability) -> Result<Option<String>> {
+        self.view_with_caller(token, None).await
+    }
+
+    /// Render the current world for a joined session using its server supplied
+    /// billing account for the duration of this guest call.
+    pub(crate) async fn view_from_session(
+        &self,
+        token: JoinCapability,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
+        self.view_with_caller(token, caller_account).await
+    }
+
+    async fn view_with_caller(
+        &self,
+        token: JoinCapability,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(WorldCommand::View { token, reply })
+            .send(WorldCommand::View {
+                token,
+                caller_account,
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
         response
@@ -1910,12 +1932,36 @@ impl WorldHandle {
         width: u16,
         height: u16,
     ) -> Result<Option<String>> {
+        self.view_at_with_caller(token, width, height, None).await
+    }
+
+    /// Render a joined session at a viewport using its server supplied billing
+    /// account for the duration of the layout and any fallback view call.
+    pub(crate) async fn view_at_from_session(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
+        self.view_at_with_caller(token, width, height, caller_account)
+            .await
+    }
+
+    async fn view_at_with_caller(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        caller_account: Option<String>,
+    ) -> Result<Option<String>> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::ViewAt {
                 token,
                 width,
                 height,
+                caller_account,
                 reply,
             })
             .await

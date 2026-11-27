@@ -1335,7 +1335,14 @@ impl WorldActor {
             } => {
                 let _ = reply.send(self.core.project_for(&token, &event));
             }
-            WorldCommand::View { token, reply } => {
+            WorldCommand::View {
+                token,
+                caller_account,
+                reply,
+            } => {
+                let previous_account = self
+                    .program
+                    .replace_caller_account(caller_account.as_deref());
                 let result = match self.core.viewer(&token) {
                     Ok(viewer) if self.program_healthy => match self.program.view(&viewer) {
                         Ok(view) => {
@@ -1366,14 +1373,20 @@ impl WorldActor {
                     )),
                     Err(error) => Err(error),
                 };
+                self.program
+                    .replace_caller_account(previous_account.as_deref());
                 let _ = reply.send(result);
             }
             WorldCommand::ViewAt {
                 token,
                 width,
                 height,
+                caller_account,
                 reply,
             } => {
+                let previous_account = self
+                    .program
+                    .replace_caller_account(caller_account.as_deref());
                 let result = match self.core.viewer(&token) {
                     Ok(viewer) if self.program_healthy => {
                         match self.program.layout(&viewer, width, height) {
@@ -1446,6 +1459,8 @@ impl WorldActor {
                     )),
                     Err(error) => Err(error),
                 };
+                self.program
+                    .replace_caller_account(previous_account.as_deref());
                 let _ = reply.send(result);
             }
             WorldCommand::InstallProgram {

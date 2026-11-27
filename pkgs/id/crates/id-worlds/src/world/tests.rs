@@ -8377,6 +8377,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8396,6 +8397,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8442,6 +8444,7 @@ mod tests {
         actor
             .handle(WorldCommand::View {
                 token: token.clone(),
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8457,7 +8460,13 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor.handle(WorldCommand::View { token, reply }).await;
+        actor
+            .handle(WorldCommand::View {
+                token,
+                caller_account: None,
+                reply,
+            })
+            .await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),
@@ -8542,6 +8551,7 @@ mod tests {
                 token: token.clone(),
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8592,6 +8602,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;
@@ -8649,6 +8660,7 @@ mod tests {
                 token,
                 width: 120,
                 height: 50,
+                caller_account: None,
                 reply,
             })
             .await;

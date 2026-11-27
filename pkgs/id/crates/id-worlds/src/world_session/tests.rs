@@ -307,7 +307,12 @@ mod tests {
 
         let snapshot = budget.snapshot();
         assert!(snapshot.accounts["acct-ada"].settled_fuel > 0);
-        assert!(snapshot.accounts.get("lobby").is_none_or(|account| account.admitted == 0));
+        assert!(
+            snapshot
+                .accounts
+                .get("lobby")
+                .is_none_or(|account| account.admitted == 0)
+        );
         peer.close().await;
     }
 
