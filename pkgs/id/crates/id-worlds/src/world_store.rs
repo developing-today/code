@@ -189,6 +189,43 @@ struct JournalPartition {
     jurisdiction: String,
 }
 
+/// Nearest ancestor of `parent` that already exists (#16131). Snapshotted
+/// BEFORE `create_dir_all`, so the post-creation sync covers exactly the
+/// directories this open created. `Ok(None)` means nothing up to the
+/// filesystem root exists yet (the creation then fails loudly below).
+fn nearest_existing_ancestor(parent: &Path) -> Result<Option<PathBuf>> {
+    let mut probe = Some(parent);
+    while let Some(dir) = probe {
+        if dir.try_exists()? {
+            return Ok(Some(dir.to_path_buf()));
+        }
+        probe = dir.parent().filter(|p| !p.as_os_str().is_empty());
+    }
+    Ok(None)
+}
+
+/// Sync the journal's parent directory and every ancestor directory created
+/// by this open, innermost first (#16131). A newly created journal filename
+/// is not durable until its directory entry is synced: file-content syncing
+/// alone does not survive an OS/power crash on filesystems that require a
+/// parent-directory fsync. Syncing stops before `existing_ancestor`, whose
+/// own entry was already durable. Failures propagate: a directory-sync
+/// failure must never report a successful creation.
+fn sync_created_journal_dirs(parent: &Path, existing_ancestor: Option<&Path>) -> Result<()> {
+    let mut dir = Some(parent);
+    while let Some(current) = dir {
+        if Some(current) == existing_ancestor {
+            break;
+        }
+        File::open(current)
+            .with_context(|| format!("open {} for sync", current.display()))?
+            .sync_all()
+            .with_context(|| format!("sync {}", current.display()))?;
+        dir = current.parent().filter(|p| !p.as_os_str().is_empty());
+    }
+    Ok(())
+}
+
 // Caller holds the stable journal lock. Never infer a binding for a legacy
 // journal; the sidecar is committed before the first journal bytes exist.
 fn check_journal_partition(path: &Path, world_id: &str, jurisdiction: Option<&str>) -> Result<()> {
@@ -350,7 +387,14 @@ impl FileJournal {
         ack_mode: JournalAckMode,
         jurisdiction: Option<&str>,
     ) -> Result<(Self, Vec<JournalEntry>)> {
-        if let Some(parent) = path.parent() {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty());
+        // Snapshot the nearest already-durable ancestor BEFORE creating
+        // anything (#16131): the post-creation sync below must cover exactly
+        // the directories this open creates, innermost first.
+        let existing_ancestor = parent.map(nearest_existing_ancestor).transpose()?.flatten();
+        if let Some(parent) = parent {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
@@ -371,6 +415,12 @@ impl FileJournal {
         options.read(true).append(true).create(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        // Under the journal lock, so no racing creator can slip a journal
+        // in between this probe and the create below; a stale `true` only
+        // costs a redundant sync, never a missed one.
+        let journal_existed = path
+            .try_exists()
+            .with_context(|| format!("stat world journal {}", path.display()))?;
         let mut file = options
             .open(path)
             .with_context(|| format!("open world journal {}", path.display()))?;
@@ -411,6 +461,20 @@ impl FileJournal {
             };
             journal.append(&header)?;
             entries.push(header);
+        }
+        // A newly created journal filename is durable only once its
+        // directory entry is synced (#16131): without this, an OS/power
+        // crash could lose the entry and a reopen would create a fresh
+        // header, losing acknowledged history. This runs before any
+        // successful return, and only on the creation path — steady-state
+        // opens and appends pay no extra directory fsync.
+        if !journal_existed {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                sync_created_journal_dirs(parent, existing_ancestor.as_deref())?;
+            }
         }
         // Journals written before the issue-#227 contract can already hold
         // an entry a version-1 binary cannot read under a version-1 header.
@@ -2839,6 +2903,66 @@ mod tests {
         );
     }
 
+    // #16131 (creation durability): a newly created journal filename is
+    // durable before `open` reports success — the parent directory entry
+    // (and any ancestor entries this open created) is synced after the
+    // header append and before the successful return. This exercises the
+    // full creation path through nested new directories, then proves the
+    // returned journal replays.
+    #[test]
+    fn new_journal_creation_syncs_parent_dirs_before_success() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a").join("b").join("journal.jsonl");
+        let (mut journal, opened) = FileJournal::open(&path, "w").unwrap();
+        assert!(
+            matches!(
+                opened.first(),
+                Some(JournalEntry::Created { world_id, .. }) if world_id == "w"
+            ),
+            "creation writes the header before returning success"
+        );
+        let entry = JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        };
+        journal.append(&entry).unwrap();
+        drop(journal);
+        let (_journal, replayed) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(replayed.len(), 2);
+        assert_eq!(&replayed[1..], &[entry]);
+    }
+
+    // #16131 (creation durability): a directory-sync failure cannot report
+    // success. Fault injection at the sync helper: a directory entry that
+    // vanishes before its sync must surface as an error, never `Ok`.
+    #[test]
+    fn created_journal_dir_sync_failure_is_not_success() {
+        let dir = TempDir::new().unwrap();
+        let existing = dir.path().join("existing");
+        std::fs::create_dir_all(&existing).unwrap();
+        let missing_child = existing.join("vanished");
+        let error = sync_created_journal_dirs(&missing_child, Some(dir.path()))
+            .expect_err("syncing a missing directory must fail");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("vanished"),
+            "the failure names the unsyncable directory, got: {message}"
+        );
+    }
+
+    // #16131 (creation durability): the ancestor snapshot stops the sync
+    // walk before already-durable directories — pre-existing parents are
+    // left alone while newly created ones sync innermost-first.
+    #[test]
+    fn created_journal_dir_sync_covers_only_new_dirs() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("new-parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        sync_created_journal_dirs(&parent, Some(dir.path()))
+            .expect("a created parent under a durable ancestor syncs cleanly");
+        let ancestor = nearest_existing_ancestor(&parent.join("deeper").join("x"))
+            .expect("ancestor probe reads metadata cleanly");
+        assert_eq!(ancestor.as_deref(), Some(parent.as_path()));
+    }
     // #557 (ack modes): WorldLimits carries the mode and defaults to
     // Sync, so every existing world keeps the old contract.
     #[test]
