@@ -72,6 +72,10 @@ buildNpmPackage {
   };
 
   postPatch = ''
+    # The vendored manifest carries the uuid override: npm ci --offline must
+    # see it, otherwise it re-resolves uuid against the registry and fails
+    # with ENOTCACHED (same class as grok-cli c5be2b83).
+    cp ${./package.json} package.json
     cp ${./package-lock.json} package-lock.json
     chmod +w package.json package-lock.json
 
