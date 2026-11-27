@@ -136,9 +136,9 @@ function makeSet(setId: string, createdAt: string, open: number, settled: number
 }
 
 describe("questionsSectionHtml (#9354)", () => {
-  const urlFor = (s: { setId: string; token?: string }) => `/decisions/${s.setId}?t=tok-${s.setId}`;
+  const urlFor = (s: { setId: string; token?: string }) => `https://pm.security.cab/decisions?set=${encodeURIComponent(s.setId)}`;
 
-  test("open counts, token link for an open set, newest first — oracle: the rendered section HTML", () => {
+  test("open counts, canonical credential-free link for an open set, newest first — oracle: the rendered section HTML", () => {
     const older = makeSet("set-old", "2026-11-10T12:00:00.000Z", 2, 1);
     const newer = makeSet("set-new", "2026-11-12T12:00:00.000Z", 1, 0);
     const html = questionsSectionHtml([summary(older), summary(newer)], (s) => urlFor(s));
@@ -146,8 +146,8 @@ describe("questionsSectionHtml (#9354)", () => {
     expect(html).toContain("Questions");
     expect(html).toContain("2 open sets");
     expect(html).toContain("3 open questions");
-    expect(html).toContain('href="/decisions/set-new?t=tok-set-new"');
-    expect(html).toContain('href="/decisions/set-old?t=tok-set-old"');
+    expect(html).toContain('href="https://pm.security.cab/decisions?set=set-new"');
+    expect(html).toContain('href="https://pm.security.cab/decisions?set=set-old"');
     expect(html).toContain('href="/decisions"');
     expect(html).toContain("Live from the decision-set store at page load.");
     // Newest first.
