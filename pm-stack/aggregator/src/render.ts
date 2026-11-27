@@ -645,6 +645,9 @@ export function renderSearch(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  // #14060 slice 2: when the caller renders one bounded page, the true
+  // match count rides here so the heading never understates it.
+  totalResults?: number,
 ): string {
   const cards = results
     .map((result) => {
@@ -664,7 +667,7 @@ export function renderSearch(
       return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${totalResults ?? results.length} result${(totalResults ?? results.length) === 1 ? "" : "s"} for “${esc(query)}”</h2>${totalResults !== undefined && totalResults > results.length ? `<p class="muted">Showing the first ${results.length} — refine the query to narrow the rest.</p>` : ""}${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
   // #1212 slice 2: the search page carries the same freshness facets
   // as the home page of each result kind present (board/roadmap/items
   // for work, registry for sessions, dns for the register, quota and
