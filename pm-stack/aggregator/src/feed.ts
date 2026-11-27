@@ -1183,11 +1183,11 @@ export async function loadFeed(
     // The raw optional PAYG section may be malformed or absent. Remove
     // it (and any stale count) before projecting only the sanitized rows
     // and this load's own drop count.
-    const feed = { ...parsed };
-    delete feed.payg;
-    delete feed.paygDropped;
+    const sanitizedBase = { ...parsed };
+    delete sanitizedBase.payg;
+    delete sanitizedBase.paygDropped;
     const feed: FleetFeed = {
-      ...feed,
+      ...sanitizedBase,
       meta,
       quota: san.view,
       saas: saas.rows,
