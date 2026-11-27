@@ -20,11 +20,10 @@ import {
   mobileView,
   workViewLike,
   type ViewContext,
-  type WorkView,
 } from "../src/work-mobile-views.ts";
 import { itemMatchesView } from "../src/views.ts";
 // Type-only import keeps the runtime dependency one-way (views <- projection).
-import type {} from "../src/work-projection.ts";
+import type { WorkView } from "../src/work-projection.ts";
 
 const GEN = "2026-11-26T12:00:00Z";
 const CTX: ViewContext = {
