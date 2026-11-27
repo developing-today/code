@@ -440,6 +440,10 @@ fn generate_stress_world(
         read_back.len(),
         entries.len()
     );
+    // The replay slate wipes on every program install (the restore's
+    // own semantics), so the expected replay length must be computed
+    // from the entries before the restore consumes them.
+    let expected_replay = stress_expected_replay_len(&read_back);
     let restored = WorldCore::restore(name, WorldLimits::default(), read_back)
         .map_err(|e| anyhow::anyhow!("restore generated stress world {name}: {e:#}"))?;
     ensure!(
@@ -469,7 +473,6 @@ fn generate_stress_world(
             "{name}: restored world has a program, generated no installs"
         );
     }
-    let expected_replay = stress_expected_replay_len(&read_back);
     ensure!(
         restored.replay.len() as u64 == expected_replay,
         "{name}: restored replay holds {} inputs, generated {} after the last install",
@@ -822,8 +825,13 @@ fn bench_stress_mem_resident(tier: &StressTier, seed: u64) -> Result<()> {
     black_box(&resident);
 
     let held = resident.len();
-    let per_world =
-        |delta: u64, count: usize| -> u64 { if count == 0 { 0 } else { delta / count as u64 } };
+    let per_world = |delta: u64, count: usize| -> u64 {
+        if count == 0 {
+            0
+        } else {
+            delta / count as u64
+        }
+    };
     println!(
         "profile stress_mem tier={} seed={} worlds_held={} idle_held={} active_held={} hot_held={} rss_start_bytes={} rss_after_idle_bytes={} rss_after_active_bytes={} rss_final_bytes={} peak_rss_bytes={} rss_per_world_bytes={} rss_per_idle_world_bytes={} rss_per_active_world_bytes={} rss_hot_delta_bytes={} walls={} elapsed_secs={:.3}",
         tier.name,
@@ -1574,111 +1582,138 @@ pub fn bench_stress_join(quick: bool) -> Result<()> {
     Ok(())
 }
 
+/// Self-check entry point for the generator oracles below
+/// (`--only stress_selfcheck`): the `#[cfg(test)]` unit tests in a
+/// `harness = false` bench target are never compiled by cargo (bench
+/// targets build without `--test`, so the test fns are absent from
+/// the binary — verified by symbol inspection, #16042), and no
+/// nextest-based gate builds bench targets at all. These same bodies
+/// therefore also run as ordinary assertions inside the bench
+/// binary, so `--quick --only stress_selfcheck` executes them on the
+/// laptop and in the nightly bench. The thin `#[test]` wrappers at
+/// the bottom stay so the oracles also run if the harness ever
+/// changes.
+pub fn bench_stress_selfcheck() -> Result<()> {
+    check_stress_schedule_interleaves_the_declared_mix();
+    println!("selfcheck stress_schedule_interleaves_the_declared_mix ... ok");
+    check_stress_program_install_restores_a_real_program()?;
+    println!("selfcheck stress_program_install_restores_a_real_program ... ok");
+    check_stress_state_hash_tracks_restored_state()?;
+    println!("selfcheck stress_state_hash_tracks_restored_state ... ok");
+    Ok(())
+}
+
+/// Oracle: the declared mix table itself — 700 chat / 200 doc
+/// edits / 100 program installs per 1,000 events — plus the
+/// fixture-size windows the tiers actually generate (20-event
+/// active worlds, 100-event active worlds, the 200-event quick
+/// hot world), each of which must contain all three shapes.
+fn check_stress_schedule_interleaves_the_declared_mix() {
+    let counts = |window: u64| {
+        let (mut chat, mut doc, mut install) = (0_u64, 0_u64, 0_u64);
+        for index in 0..window {
+            match stress_shape_at(index) {
+                StressShape::Chat => chat += 1,
+                StressShape::DocEdit => doc += 1,
+                StressShape::ProgramInstall => install += 1,
+            }
+        }
+        (chat, doc, install)
+    };
+    assert_eq!(counts(1_000), (700, 200, 100));
+    assert_eq!(counts(20), (14, 4, 2));
+    assert_eq!(counts(100), (70, 20, 10));
+    assert_eq!(counts(200), (140, 40, 20));
+    // Every aligned 10-event window holds all three shapes.
+    for start in (0..1_000).step_by(10) {
+        let shapes: Vec<StressShape> = (start..start + 10).map(stress_shape_at).collect();
+        assert!(shapes.contains(&StressShape::Chat));
+        assert!(shapes.contains(&StressShape::DocEdit));
+        assert!(shapes.contains(&StressShape::ProgramInstall));
+    }
+}
+
+/// Oracle: `WorldCore::restore` over the generated entries — a
+/// program install must surface as the restored world's active
+/// program (the bench counter artifact at the run seed), and the
+/// restored replay must hold exactly the inputs committed after
+/// the last install.
+fn check_stress_program_install_restores_a_real_program() -> Result<()> {
+    let (entries, chat, doc_edits, program_installs) =
+        stress_world_entries(42, "stress-test-world", 0, 20, 1)?;
+    assert_eq!((chat, doc_edits, program_installs), (14, 4, 2));
+    let installs: Vec<&WorldEvent> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Committed { event }
+                if matches!(event.kind, WorldEventKind::ProgramInstalled { .. }) =>
+            {
+                Some(event)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(installs.len(), 2);
+    for event in &installs {
+        assert_eq!(event.participant_id, 0, "installs are host-authored");
+        match &event.kind {
+            WorldEventKind::ProgramInstalled {
+                module_hash, seed, ..
+            } => {
+                assert_eq!(module_hash, &stress_program_module_hash());
+                assert_eq!(*seed, 42);
+            }
+            _ => unreachable!(),
+        }
+    }
+    let expected_replay = stress_expected_replay_len(&entries);
+    let restored = WorldCore::restore("stress-test-world", WorldLimits::default(), entries)?;
+    let program = restored
+        .program
+        .as_ref()
+        .context("restored stress world has no program")?;
+    assert_eq!(program.module_hash, stress_program_module_hash());
+    assert_eq!(program.seed, 42);
+    // The last install is event 16 of 20; the only doc edit after
+    // it is event 19, so the replay holds exactly that one input.
+    assert_eq!(restored.replay.len(), 1);
+    assert_eq!(restored.replay.len() as u64, expected_replay);
+    Ok(())
+}
+
+/// Oracle: the hash definition itself — the same (seed, world)
+/// restored twice hashes identically; a different seed diverges
+/// (different program seed and corpus); and a different world at
+/// the same seed and the same restored sequence diverges too,
+/// because its replay state differs: the hash is over restored
+/// semantic state, not over journal bytes and sequence alone.
+fn check_stress_state_hash_tracks_restored_state() -> Result<()> {
+    let hash_of = |seed: u64, world_index: u32, events: u64| -> Result<String> {
+        let (entries, ..) =
+            stress_world_entries(seed, "stress-hash-world", world_index, events, 1)?;
+        let restored = WorldCore::restore("stress-hash-world", WorldLimits::default(), entries)?;
+        Ok(stress_state_hash(&restored))
+    };
+    assert_eq!(hash_of(42, 0, 20)?, hash_of(42, 0, 20)?);
+    assert_ne!(hash_of(42, 0, 20)?, hash_of(43, 0, 20)?);
+    assert_ne!(hash_of(42, 0, 20)?, hash_of(42, 1, 20)?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use anyhow::{Context as _, Result};
-    use id::world::{JournalEntry, WorldCore, WorldEvent, WorldEventKind, WorldLimits};
-
-    /// Oracle: the declared mix table itself — 700 chat / 200 doc
-    /// edits / 100 program installs per 1,000 events — plus the
-    /// fixture-size windows the tiers actually generate (20-event
-    /// active worlds, 100-event active worlds, the 200-event quick
-    /// hot world), each of which must contain all three shapes.
     #[test]
     fn stress_schedule_interleaves_the_declared_mix() {
-        let counts = |window: u64| {
-            let (mut chat, mut doc, mut install) = (0_u64, 0_u64, 0_u64);
-            for index in 0..window {
-                match stress_shape_at(index) {
-                    StressShape::Chat => chat += 1,
-                    StressShape::DocEdit => doc += 1,
-                    StressShape::ProgramInstall => install += 1,
-                }
-            }
-            (chat, doc, install)
-        };
-        assert_eq!(counts(1_000), (700, 200, 100));
-        assert_eq!(counts(20), (14, 4, 2));
-        assert_eq!(counts(100), (70, 20, 10));
-        assert_eq!(counts(200), (140, 40, 20));
-        // Every aligned 10-event window holds all three shapes.
-        for start in (0..1_000).step_by(10) {
-            let shapes: Vec<StressShape> = (start..start + 10).map(stress_shape_at).collect();
-            assert!(shapes.contains(&StressShape::Chat));
-            assert!(shapes.contains(&StressShape::DocEdit));
-            assert!(shapes.contains(&StressShape::ProgramInstall));
-        }
+        super::check_stress_schedule_interleaves_the_declared_mix();
     }
 
-    /// Oracle: `WorldCore::restore` over the generated entries — a
-    /// program install must surface as the restored world's active
-    /// program (the bench counter artifact at the run seed), and the
-    /// restored replay must hold exactly the inputs committed after
-    /// the last install.
     #[test]
-    fn stress_program_install_restores_a_real_program() -> Result<()> {
-        let (entries, chat, doc_edits, program_installs) =
-            stress_world_entries(42, "stress-test-world", 0, 20, 1)?;
-        assert_eq!((chat, doc_edits, program_installs), (14, 4, 2));
-        let installs: Vec<&WorldEvent> = entries
-            .iter()
-            .filter_map(|entry| match entry {
-                JournalEntry::Committed { event }
-                    if matches!(event.kind, WorldEventKind::ProgramInstalled { .. }) =>
-                {
-                    Some(event)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(installs.len(), 2);
-        for event in &installs {
-            assert_eq!(event.participant_id, 0, "installs are host-authored");
-            match &event.kind {
-                WorldEventKind::ProgramInstalled {
-                    module_hash, seed, ..
-                } => {
-                    assert_eq!(module_hash, &stress_program_module_hash());
-                    assert_eq!(*seed, 42);
-                }
-                _ => unreachable!(),
-            }
-        }
-        let expected_replay = stress_expected_replay_len(&entries);
-        let restored = WorldCore::restore("stress-test-world", WorldLimits::default(), entries)?;
-        let program = restored
-            .program
-            .as_ref()
-            .context("restored stress world has no program")?;
-        assert_eq!(program.module_hash, stress_program_module_hash());
-        assert_eq!(program.seed, 42);
-        // The last install is event 16 of 20; the only doc edit after
-        // it is event 19, so the replay holds exactly that one input.
-        assert_eq!(restored.replay.len(), 1);
-        assert_eq!(restored.replay.len() as u64, expected_replay);
-        Ok(())
+    fn stress_program_install_restores_a_real_program() -> anyhow::Result<()> {
+        super::check_stress_program_install_restores_a_real_program()
     }
 
-    /// Oracle: the hash definition itself — the same (seed, world)
-    /// restored twice hashes identically; a different seed diverges
-    /// (different program seed and corpus); and a different world at
-    /// the same seed and the same restored sequence diverges too,
-    /// because its replay state differs: the hash is over restored
-    /// semantic state, not over journal bytes and sequence alone.
     #[test]
-    fn stress_state_hash_tracks_restored_state() -> Result<()> {
-        let hash_of = |seed: u64, world_index: u32, events: u64| -> Result<String> {
-            let (entries, ..) =
-                stress_world_entries(seed, "stress-hash-world", world_index, events, 1)?;
-            let restored =
-                WorldCore::restore("stress-hash-world", WorldLimits::default(), entries)?;
-            Ok(stress_state_hash(&restored))
-        };
-        assert_eq!(hash_of(42, 0, 20)?, hash_of(42, 0, 20)?);
-        assert_ne!(hash_of(42, 0, 20)?, hash_of(43, 0, 20)?);
-        assert_ne!(hash_of(42, 0, 20)?, hash_of(42, 1, 20)?);
-        Ok(())
+    fn stress_state_hash_tracks_restored_state() -> anyhow::Result<()> {
+        super::check_stress_state_hash_tracks_restored_state()
     }
 }
