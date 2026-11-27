@@ -89,6 +89,28 @@ cd pkgs/id && python3 scripts/board-games-two-player.py --id-bin target/debug/id
 
 A later slice of #14862 adds the three-machine demonstration.
 
+### Reuse a compiled board-game artifact
+
+The `id roc game` workflow publishes both games in one
+`board-games-<commit>` artifact. To verify an existing artifact again
+without rebuilding either game (or the arcade game), manually dispatch
+that workflow with **both** `source_run_id` and `source_artifact_id` from
+its original successful build. Leave both blank for a fresh build.
+For example, using IDs from a successful producer run:
+
+```sh
+gh workflow run id-roc-game.yml --repo developing-today/code --ref main \
+  -f source_run_id=RUN_ID -f source_artifact_id=ARTIFACT_ID
+```
+
+The reuse run skips both compiler jobs, downloads that exact artifact
+from the selected run, and records its source and wasm hashes in the
+consumer summary. An expired/deleted artifact or a mismatched run/ID
+fails the download; there is no fallback rebuild. This is only an
+artifact-reuse check, not a live game or a server restart. The artifact
+still contains wasm bundles, not an `id` executable; runtime provisioning
+and the Actions/Blacksmith/laptop game remain outstanding under #15112.
+
 ## Build
 
 ```sh
