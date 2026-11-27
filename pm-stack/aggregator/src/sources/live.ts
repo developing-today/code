@@ -2315,7 +2315,7 @@ export function liveSource(
         provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
         return store;
       })().finally(() => {
-        opts?.onRegistryTiming?.("sessionsFirstHitMs", performance.now() - firstHitStarted);
+        opts?.onRegistryTiming?.("registryReadMs", performance.now() - firstHitStarted);
         registryInFlight = null;
       });
       registryInFlight = pending;

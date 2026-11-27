@@ -7,6 +7,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
+import { ActionsStore } from "../src/actions.ts";
+import { identitiesFromRecords } from "../src/registry.ts";
+import { parseRegistryQuery, queryRegistry } from "../src/registry-view.ts";
+import { renderSessions } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
 const USAGE = "usage: registry-profile-14060.ts --records <n> [--cold-runs <n>] [--warm-runs <n>]";
@@ -92,14 +96,34 @@ async function profileRun(dir: string, runs: number): Promise<Record<string, num
       },
     },
   );
+  const actionsStore = new ActionsStore(join(dir, "actions.json"));
   const out: Record<string, number>[] = [];
   for (let i = 0; i < runs; i++) {
     const stages: Record<string, number> = { ...(i === 0 ? { fixtureWriteMs } : {}) };
     currentStages = stages;
     const started = performance.now();
     const records = await source.registry();
-    stages.sessionsFirstHitMs = stages.sessionsFirstHitMs ?? performance.now() - started;
+    const queryStarted = performance.now();
+    const view = queryRegistry(records, parseRegistryQuery(new URLSearchParams()));
+    stages.registryQueryMs = performance.now() - queryStarted;
+    const identityStarted = performance.now();
+    const identities = identitiesFromRecords(records);
+    stages.identityMapMs = performance.now() - identityStarted;
+    const actionsStarted = performance.now();
+    const actionsByObject = await actionsStore.byObject();
+    stages.actionsLoadMs = performance.now() - actionsStarted;
+    const renderStarted = performance.now();
+    const html = renderSessions(
+      view.records,
+      source.provenance(),
+      source.provenanceDetail?.(),
+      { actionsByObject, identities },
+      view,
+    );
+    stages.sessionsRenderMs = performance.now() - renderStarted;
+    stages.sessionsFirstHitMs = performance.now() - started;
     stages.recordsReturned = records.length;
+    stages.sessionsHtmlBytes = Buffer.byteLength(html);
     out.push(stages);
   }
   return out;
@@ -120,6 +144,11 @@ try {
     "feedSanitizeMs",
     "laptopMapMs",
     "registryMergeMs",
+    "registryReadMs",
+    "registryQueryMs",
+    "identityMapMs",
+    "actionsLoadMs",
+    "sessionsRenderMs",
     "sessionsFirstHitMs",
   ];
   const summarize = (samples: Record<string, number>[]) =>
