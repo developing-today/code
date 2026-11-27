@@ -280,7 +280,7 @@ fn ensure_safe_parents(root: &Path, rel: &Path) -> Result<()> {
             std::path::Component::Normal(name) => current.push(name),
             _ => {
                 return Err(crate::error::CertError::policy(
-                    "unsafe staging path component".into(),
+                    "unsafe staging path component",
                 ));
             }
         }
