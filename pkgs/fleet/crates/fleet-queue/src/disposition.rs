@@ -820,7 +820,11 @@ pub fn from_gh(
         let state = p.get("state").and_then(|x| x.as_str()).unwrap_or("");
         merged_at.is_null() && state != "closed"
     });
-    let verdict = if merged {
+    let verdict = if state == "open" && unfinished {
+        // Older merged PRs do not resolve newer, still-open work linked to
+        // the same issue; the follow-up disposition must own that remainder.
+        "open_draft_with_followup"
+    } else if merged {
         "merged_verified"
     } else if state == "closed" && !unfinished {
         "closed_verified"
@@ -952,6 +956,32 @@ mod tests {
     }
 
     const NOW: i64 = 1_794_807_540;
+
+    #[test]
+    fn open_work_takes_precedence_over_historical_merged_prs() {
+        let record = from_gh(
+            &json!({"number": 10032, "state": "OPEN"}),
+            &json!([
+                {"number": 15200, "state": "CLOSED", "isDraft": false,
+                 "mergedAt": "2026-11-25T19:27:38Z", "body": "Part of #10032"},
+                {"number": 16005, "state": "OPEN", "isDraft": false,
+                 "mergedAt": null, "body": "Part of #10032"}
+            ]),
+            &[15200, 16005],
+            Some(json!({"task_id": 26157, "reason": "PR #16005 remains under review"})),
+            "2026-11-27T08:33:45Z",
+        );
+        assert_eq!(record["verdict"], "open_draft_with_followup");
+        let rec = parse_record(&record).expect("readback parses");
+        check(
+            &rec,
+            Some(10032),
+            &[15200, 16005],
+            rec.checked_at_epoch,
+            DEFAULT_STALENESS_SECONDS,
+        )
+        .expect("follow-up disposition accepts historical merged and current open work");
+    }
 
     #[test]
     fn parse_and_check_clean_records() {
