@@ -1133,10 +1133,19 @@ export function sanitizePayg(v: unknown): PaygSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
-export async function loadFeed(path: string): Promise<FleetFeed | null> {
+export async function loadFeed(
+  path: string,
+  onTiming?: (stage: "feedReadMs" | "feedParseMs" | "feedSanitizeMs", elapsedMs: number) => void,
+): Promise<FleetFeed | null> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    let started = performance.now();
+    const text = await readFile(path, "utf8");
+    onTiming?.("feedReadMs", performance.now() - started);
+    started = performance.now();
+    const parsed: unknown = JSON.parse(text);
+    onTiming?.("feedParseMs", performance.now() - started);
     if (!isFleetFeed(parsed)) return null;
+    started = performance.now();
     // The gate pins the section-level shape; element-level damage is
     // dropped here so every loadFeed consumer (live source, server)
     // sees only renderer-safe pools/windows (#2429). Drop counts are
@@ -1177,7 +1186,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const feed = { ...parsed };
     delete feed.payg;
     delete feed.paygDropped;
-    return {
+    const feed: FleetFeed = {
       ...feed,
       meta,
       quota: san.view,
@@ -1205,6 +1214,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
       ...chargesPart,
     };
+    onTiming?.("feedSanitizeMs", performance.now() - started);
+    return feed;
   } catch {
     return null;
   }
