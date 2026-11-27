@@ -195,6 +195,7 @@ const ROUTES: [string, string][] = [
   ["item (unknown ref)", `/api/item/${encodeURIComponent(ref(424242))}.json`],
   ["roadmap", "/api/roadmap.json"],
   ["releases", "/api/releases.json"],
+  ["program (CF-5d wave)", "/api/program.json"],
   ["overview (CF-5d wave)", "/api/overview.json"],
   ["queue (CF-5d wave)", "/api/queue.json"],
   ["unknown path", "/api/nope.json"],

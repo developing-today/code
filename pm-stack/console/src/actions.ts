@@ -23,6 +23,11 @@ export interface Action {
   audit: (args: Args) => Args;
 }
 
+/** How a queue packet is handed over. Given by whoever runs these
+ * actions, so that the edge can file it without a machine's fleet
+ * binary while a machine goes on running `fleet queue enqueue`. */
+export type Enqueue = (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }>;
+
 const ids =
   (...keys: string[]) =>
   (args: Args) =>
@@ -72,6 +77,7 @@ export function actions(
   push?: Push,
   devices?: Devices,
   plan: Plan = new Plan(ops, work),
+  enqueue: Enqueue = (packet) => ops.enqueue(packet),
 ): Record<string, Action> {
   return {
     ...ownActions(push, devices),
@@ -134,7 +140,7 @@ export function actions(
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
+        const queued = await enqueue(
           promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
         );
         if (queued.code !== 0) {
@@ -204,6 +210,9 @@ export function actions(
       touch: [],
       audit: ids("operation", "database", "secret_name"),
     },
+    // Start a store migration in its workflow (#14256). The audit keeps
+    // the store's name only.
+    "store.migrate": { run: (a) => ops.storeMigrate(a), touch: [], audit: ids("store") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

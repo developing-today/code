@@ -25,12 +25,23 @@ cargo test -p id-tui-shell   # capability-statement tests
 - **Capability statement — recorded** (this slice, per decision
   D3 of the v2 outline: the claimed subset is recorded before
   implementation starts). See the section below.
-- **Feature completion — open** on issue #12818: the frame
-  builders, session fold, and three-panel presentation (room /
-  object selector, room/document, chatroom — #1071) land in
-  this crate on top of the statement, followed by conformance
-  on the recorded session plus behavioral completion checks
-  for the workflow, per the v1 gate.
+- **Frame builders, session fold and reconnect — landed**
+  (`src/frames.rs`, `src/session.rs`), with the recorded
+  sessions `contract/sessions/tui.jsonl` and
+  `tui-reconnect.jsonl` checked against the shell suite.
+- **Three-panel text projection — landed** (`src/present.rs`):
+  room/object selector, room/document and chatroom (#1071),
+  a pure function of the session fold with every host string
+  made escape-free. `tests/present.rs` pins the panels for the
+  recorded sessions.
+- **Renderer — landed** (`src/render.rs`): ratatui draws the
+  three panels and the input line, with the chat kept on its
+  newest lines and the cursor after the typed text.
+  `tests/render.rs` checks the recorded session on ratatui's
+  test backend.
+- **Open** on issue #12818: the terminal loop (crossterm
+  backend, key handling into the frame builders) and the iroh
+  connection that drives the fold.
 
 ## Capability statement
 

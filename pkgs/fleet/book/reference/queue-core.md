@@ -146,7 +146,7 @@ task     priority  status  age   dedupe_key                                     
 ## fleet queue claim
 
 ```text
-usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]
+usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]
 ```
 
 | Flag                         | Argument          | Default                                       | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -190,6 +190,17 @@ $ fleet queue claim --worker repo-worker-code --lane code-a
 no claimable task — 0 queued (0 at the attempt cap, 0 not yet due), 0 parked due
 (exit 5)
 ```
+
+**Manual parked claim.** `--task ID --manual-override REASON` deliberately claims an
+under-cap parked task without incrementing attempts. The reason must be non-empty;
+transfer (`--from-session`), handoff picks, and batches cannot be combined with it.
+The task's `result.manual_override` and the `claimed` event's `manual_override`
+record the worker/lane, supplied session, time, reason, and prior status, attempts,
+max-attempts, `not_before`, park reason/kind, wait kind, and ready condition. The live
+wait fields are cleared and unrelated result data is preserved. Without the flag a
+parked by-ID claim still refuses; queued and handed-off by-ID claims keep their
+ordinary behavior. Attempt-capped overrides and supervision handling are separate
+slices.
 
 ## fleet queue release
 

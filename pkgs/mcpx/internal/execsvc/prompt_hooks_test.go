@@ -48,7 +48,9 @@ func TestValidateHooksPromptActions(t *testing.T) {
 		{"both actions", Hook{Phase: HookBefore, Script: "x.ts", Prompt: "look"}, "both script and prompt"},
 		{"neither action", Hook{Phase: HookBefore}, "neither script nor prompt"},
 		{"prompt effect apply", Hook{Phase: HookOnSuccess, Prompt: "fix it", Effect: "apply"}, "not implemented"},
-		{"prompt effect ask", Hook{Phase: HookOnSuccess, Prompt: "ask me", Effect: "ask"}, "not implemented"},
+		{"prompt effect ask on success", Hook{Phase: HookOnSuccess, Prompt: "ask me", Effect: "ask"}, "only available"},
+		{"prompt ask before", Hook{Phase: HookBefore, Prompt: "ask me", Effect: "ask"}, ""},
+		{"prompt ask suffix", Hook{Phase: HookSuffix, Prompt: "ask me", Effect: "ask"}, "only available"},
 		{"prompt propose on success", Hook{Phase: HookOnSuccess, Prompt: "propose a fix for @result", Effect: "propose"}, ""},
 		{"prompt propose on error", Hook{Phase: HookOnError, Prompt: "propose a fix for @error", Effect: "propose"}, ""},
 		{"prompt propose before", Hook{Phase: HookBefore, Prompt: "propose", Effect: "propose"}, "only available"},
@@ -469,5 +471,127 @@ func TestRunPromptHookReportsDuration(t *testing.T) {
 	}
 	if run.Frame.DurationMs < 25 {
 		t.Fatalf("frame durationMs = %d, want at least 25", run.Frame.DurationMs)
+	}
+}
+
+// Oracle for the ask slice (#15809): an ask hook can only stop or
+// pass the run — never alter its value. It is fail-closed, unlike
+// advise/propose: every inability to check refuses.
+
+func askHook() Hook {
+	return Hook{Phase: HookBefore, Prompt: "gate this run", Effect: "ask"}
+}
+
+func TestRunPromptHookAskRefuseReply(t *testing.T) {
+	fake := &fakeProvider{text: `{"refuse": "destructive without a backup"}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+	run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+	if run.Refusal == "" || !strings.Contains(run.Refusal, "destructive without a backup") {
+		t.Fatalf("refusal = %q, want the structured reason", run.Refusal)
+	}
+	if run.Frame.Refuse != "destructive without a backup" {
+		t.Fatalf("frame refuse = %q", run.Frame.Refuse)
+	}
+	if res.Result != "ok" {
+		t.Fatalf("result changed by ask hook: %v", res.Result)
+	}
+}
+
+func TestRunPromptHookAskApprovedProceeds(t *testing.T) {
+	fake := &fakeProvider{text: `{"ask": "run the destructive script?"}`}
+	var gotQ string
+	s := &Service{ModelProvider: fake, PromptAsk: func(_ context.Context, q string) (bool, error) {
+		gotQ = q
+		return true, nil
+	}}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+	run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+	if run.Refusal != "" || run.Failed {
+		t.Fatalf("approved ask must pass: refusal=%q err=%q", run.Refusal, run.Frame.Error)
+	}
+	if gotQ != "run the destructive script?" || run.Frame.Ask != gotQ {
+		t.Fatalf("broker question = %q, frame ask = %q", gotQ, run.Frame.Ask)
+	}
+	if res.Result != "ok" {
+		t.Fatalf("result changed by ask hook: %v", res.Result)
+	}
+}
+
+func TestRunPromptHookAskUnansweredRefuses(t *testing.T) {
+	for name, broker := range map[string]func(context.Context, string) (bool, error){
+		"no broker": nil,
+		"declined":  func(context.Context, string) (bool, error) { return false, nil },
+		"error":     func(context.Context, string) (bool, error) { return false, errors.New("broker gone") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeProvider{text: `{"ask": "proceed?"}`}
+			s := &Service{ModelProvider: fake, PromptAsk: broker}
+			res := &Result{RunID: "r1", Result: "ok"}
+			hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+			run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+			if run.Refusal == "" || !strings.Contains(run.Refusal, "unanswered") {
+				t.Fatalf("refusal = %q, want unanswered refusal", run.Refusal)
+			}
+		})
+	}
+}
+
+func TestRunPromptHookAskNoProviderRefuses(t *testing.T) {
+	s := &Service{}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+	run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+	if run.Refusal == "" || !strings.Contains(run.Frame.Error, "no model provider is configured") {
+		t.Fatalf("ask with no provider must refuse fail-closed: %+v", run)
+	}
+}
+
+func TestRunPromptHookAskUnparseableRefuses(t *testing.T) {
+	for _, reply := range []string{"plain text", `{"propose": 1}`, `{"ask": "q", "refuse": "r"}`, `{"ask": 3}`, `{"refuse": ""}`} {
+		fake := &fakeProvider{text: reply}
+		s := &Service{ModelProvider: fake}
+		res := &Result{RunID: "r1", Result: "ok"}
+		hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+		run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+		if run.Refusal == "" {
+			t.Fatalf("reply %q must refuse fail-closed", reply)
+		}
+	}
+}
+
+func TestRunPromptHookAskExplicitPass(t *testing.T) {
+	fake := &fakeProvider{text: `{"ask": ""}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+	run := s.runPromptHook(context.Background(), HookBefore, askHook(), hctx, runner.Options{}, res)
+	if run.Refusal != "" || run.Failed {
+		t.Fatalf("explicit pass must proceed: %+v", run)
+	}
+	if !strings.Contains(fake.last.Messages[0].Content, "gating hook") {
+		t.Fatalf("ask system text not used: %q", fake.last.Messages[0].Content)
+	}
+}
+
+// Pass-through oracle: a proceeding ask run's retained frame exists
+// and the result is byte-identical to the no-hook result.
+func TestRunHooksAskFrameRetainedAndResultIdentical(t *testing.T) {
+	fake := &fakeProvider{text: `{"ask": ""}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
+	before, _ := json.Marshal(res.Result)
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookBefore}
+	var frames []Frame
+	runs := s.runHooks(context.Background(), HookBefore,
+		[]Hook{askHook()}, hctx, runner.Options{}, res, func(f Frame) { frames = append(frames, f) })
+	if len(runs) != 1 || runs[0].Refusal != "" || len(frames) != 1 {
+		t.Fatalf("runs=%+v frames=%d", runs, len(frames))
+	}
+	after, _ := json.Marshal(res.Result)
+	if string(before) != string(after) {
+		t.Fatalf("result changed: %s -> %s", before, after)
 	}
 }

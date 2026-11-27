@@ -1384,6 +1384,13 @@ export class Edge {
     return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
   }
 
+  /** Whether this side holds where the decision-events Worker is and
+   * the secret its reads take (#13491): the two together make the
+   * Questions discovery section this side's. */
+  private decisionEventsReady(): boolean {
+    return Boolean(this.direct?.decisionEvents?.url) && Boolean(this.direct?.decisionEvents?.secret);
+  }
+
   /** The kinds this side does itself when it does the core. The
    * composer's kinds — a message, its broaden, its offer (#14375) —
    * are this side's only with the bridge held (bridgeReady): without
@@ -1441,7 +1448,12 @@ export class Edge {
         // machine goes on reporting the list, as it did before.
         (name !== "agents" || this.bridgeReady()) &&
         // The pipeline count is the bridge's the same way (#14377).
-        (name !== "pipeline" || this.bridgeReady()),
+        (name !== "pipeline" || this.bridgeReady()) &&
+        // The Questions discovery section is the decision-events
+        // Worker's: read here only while this side holds where it is
+        // and the secret its reads take (#13491). Without them a
+        // machine goes on reporting the section, as it did before.
+        (name !== "questionSets" || this.decisionEventsReady()),
     );
   }
 
@@ -1465,6 +1477,7 @@ export class Edge {
         queueToken: this.direct?.queueToken,
         bridgeToken: this.direct?.bridgeToken,
         bridgeFetch: this.direct?.bridgeFetch as never,
+        decisionEvents: this.direct?.decisionEvents,
         githubApi: this.direct?.githubApi,
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
@@ -1482,7 +1495,7 @@ export class Edge {
       this.kept = {
         ...made,
         cfg,
-        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan),
+        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan, made.queueEnqueue),
         recalled: false,
       };
     }
@@ -1511,7 +1524,7 @@ export class Edge {
     const from = this.outwardN;
     let data: unknown;
     try {
-      data = await directRead(name, mine.ops, mine.work);
+      data = await directRead(name, mine.ops, mine.work, mine.questionSets);
     } catch (error) {
       // This side's token may not read this. For the next hour (or, if
       // it was only calling too often, a few minutes) it is a machine's
@@ -1647,8 +1660,12 @@ export class Edge {
       // being refused: the check is how this side finds it can read
       // the section itself again.
       if ((name === "agents" || name === "pipeline") && !this.bridgeReady()) continue;
+      // The Questions discovery section is the decision-events
+      // Worker's the same way (#13491): with no source held there is
+      // no path here to prove, and the section is a machine's.
+      if (name === "questionSets" && !this.decisionEventsReady()) continue;
       try {
-        await directRead(name, direct.ops, direct.work);
+        await directRead(name, direct.ops, direct.work, direct.questionSets);
         kinds[name] = { ok: true };
       } catch (error) {
         kinds[name] = { ok: false, error: (error as Error).message.slice(0, 200) };
@@ -1701,21 +1718,31 @@ export class Edge {
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
-    const prompt = (packet: unknown, intent?: string) =>
-      this.holdLater(
+    const prompt = async (packet: unknown, intent?: string) => {
+      let queued: { code: number; stdout: string; stderr: string };
+      try {
+        queued = await direct.queueEnqueue(packet);
+      } catch {
+        // A store that cannot be reached is the same as one that refused:
+        // the issue is filed, and its task goes to the machine instead.
+        queued = { code: 1, stdout: "", stderr: "queue store unreachable" };
+      }
+      if (queued.code === 0) return queued;
+      // Keep the established machine fallback if the direct store is
+      // unavailable; a filed issue must never be left without its task.
+      return this.holdLater(
         {
           kind: "prompt.enqueue",
           args: {
             issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
             text: String(args.text ?? ""),
             at: new Date(this.now()).toISOString(),
-            // What kind of prompt it is, where it is not simply something
-            // to do: the machine files the task for that kind.
             ...(intent !== undefined && intent !== "task" ? { intent } : {}),
           },
         },
         by,
       );
+    };
     const from = this.outwardN;
     try {
       let result: unknown;

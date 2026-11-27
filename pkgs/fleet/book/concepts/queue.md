@@ -3,7 +3,11 @@
 The queue is the fleet's shared work queue: one queue of _tasks_ (units of
 repo work), served by the queue broker over a dedicated Turso store, with a
 GitHub-issue-comment fallback queue behind it. The client surface is
-`fleet queue` (argv0 alias `repo-queue`) with 32 verbs. Inside the binary,
+`fleet queue` (argv0 alias `repo-queue`) with 40 verbs. The count is one per
+dispatch arm of `run()` in the client, which is also the command list
+`fleet help queue` prints from the registry: `history` (an alias of
+`timeline`) counts as its own verb, and `dispatch`, `session` and
+`surfaces` count as three. Inside the binary,
 every per-verb usage string spells the program `repo-queue`; the two
 spellings are the same code path.
 

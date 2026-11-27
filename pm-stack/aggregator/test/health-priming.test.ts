@@ -72,6 +72,11 @@ beforeAll(async () => {
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
+  // #15718: the in-process fleet-feed scheduler starts immediately in
+  // live mode and publishes over cfg.feedFile. Keep this deterministic
+  // fixture in place for the first-health response assertions.
+  const feedPauseFile = join(dir, "fleet-feed.pause");
+  await writeFile(feedPauseFile, "paused for health-priming fixture\n");
   // #14167: the spawned server must not touch the real machine — its
   // background jobs (the pm-core quota/fleet-feed schedulers, the Meta
   // renewal keeper and the snapshot/hot-list consumers) run real
@@ -106,6 +111,7 @@ beforeAll(async () => {
       PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "live",
       PM_AGG_FEED_FILE: feedFile,
+      PM_CORE_FEED_PAUSE_FILE: feedPauseFile,
       PM_AGG_QUOTA_CURRENT_FILE: join(dir, "quota-current.json"),
       QUOTA_CURRENT_PATH: join(dir, "quota-current.json"),
       QUOTA_HEARTBEAT_PATH: join(dir, "quota-gatherer-heartbeat.json"),

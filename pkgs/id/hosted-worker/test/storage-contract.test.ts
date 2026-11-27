@@ -339,16 +339,85 @@ test("manifest: created at generation 1, validated, advanced, and checked agains
   assert.equal(stale?.kind === "unavailable" && stale.generation, 1);
 });
 
+test("manifest: D1 placement preserves the tenant database id", () => {
+  const base = createManifest({
+    unit: A,
+    backend: "d1",
+    databaseId: "d1-tenant-a",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
+  const checked = validateManifest({ ...base, database_id: "d1-tenant-a" }, A);
+  assert.equal(checked.ok, true);
+  if (checked.ok) {
+    assert.equal(
+      (checked.value as unknown as { database_id?: string }).database_id,
+      "d1-tenant-a",
+    );
+  }
+});
+
+test("manifest: D1 placement without a database id fails closed", () => {
+  const base = createManifest({
+    unit: A,
+    backend: "d1",
+    databaseId: "d1-tenant-a",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
+  const checked = validateManifest({ ...base, database_id: undefined }, A);
+  assert.equal(checked.ok, false);
+  assert.equal(
+    !checked.ok && checked.refusal.kind === "unavailable" && checked.refusal.reason,
+    "placement_unknown",
+  );
+});
+
+test("manifest: D1 cutover records its database id and clears it on cutover away", () => {
+  const current = createManifest({
+    unit: A,
+    backend: "do_sqlite",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
+  const missingId = advanceManifest(current, {
+    backend: "d1",
+    cutoverSeq: 10,
+    recordedAt: "2026-11-27T00:00:00.000Z",
+  });
+  assert.equal(missingId.ok, false);
+
+  const toD1 = advanceManifest(current, {
+    backend: "d1",
+    databaseId: "d1-tenant-a",
+    cutoverSeq: 10,
+    recordedAt: "2026-11-27T00:00:00.000Z",
+  });
+  assert.equal(toD1.ok, true);
+  if (toD1.ok) assert.equal(toD1.value.database_id, "d1-tenant-a");
+
+  const awayFromD1 = advanceManifest(toD1.value, {
+    backend: "turso",
+    cutoverSeq: 20,
+    recordedAt: "2026-11-28T00:00:00.000Z",
+  });
+  assert.equal(awayFromD1.ok, true);
+  if (awayFromD1.ok) assert.equal("database_id" in awayFromD1.value, false);
+});
+
 test("manifest: missing, malformed or conflicting placement fails closed as placement_unknown", () => {
   // #5867 §2.4: "Missing, invalidly signed, conflicting, or too-stale
   // placement data fails closed with a typed unavailable/placement-
   // unknown result"; a newer record is a #5863 §5.3 version refusal.
-  const good = createManifest({ unit: A, backend: "d1", recordedAt: "2026-11-26T00:00:00.000Z" });
+  const good = createManifest({
+    unit: A,
+    backend: "d1",
+    databaseId: "d1-tenant-a",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
   const bad: unknown[] = [
     null,
     "manifest",
     [],
     { ...good, backend: "postgres" },
+    { ...good, backend: "turso" },
     { ...good, generation: 0 },
     { ...good, generation: 1.5 },
     { ...good, cutover_seq: -1 },

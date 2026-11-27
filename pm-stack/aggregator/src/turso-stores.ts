@@ -41,7 +41,15 @@ export function storeStatement(input: string): { sql: string; args: StoreArg[] }
     .replace(/\bpublic\.(agg_[a-z_]+|shared_[a-z_]+|orch_runs)\b/g, "$1")
     .replace(/\balerts\.(incidents|incident_events|push_subscriptions|notification_sends)\b/g, "alerts_$1")
     .replace(/\bpush_subscriptions\.classes\b/g, "alerts_push_subscriptions.classes")
-    .replace(/array\[([^\]]*)\]::text\[\]/gi, "json_array($1)")
+    // A text[] of literals becomes one JSON text argument rather than a
+    // json_array() call: D1 caps a function at 127 arguments, and seen-id
+    // lists run to thousands (#15671 follow-up).
+    .replace(/array\[([^\]]*)\]::text\[\]/gi, (m, inner: string) => {
+      const items = inner.split(",").map((s) => s.trim());
+      if (!items.every((s) => /^\?\d+$/.test(s))) return `json_array(${inner})`;
+      args.push({ type: "text", value: JSON.stringify(items.map((s) => args[Number(s.slice(1)) - 1].value)) });
+      return `json(?${args.length})`;
+    })
     .replace(/(\?\d+)::text\[\]/g, (_m, p) => {
       const n = Number(p.slice(1)) - 1;
       if (args[n].value !== "{}") throw new Error("unsupported PostgreSQL array literal");

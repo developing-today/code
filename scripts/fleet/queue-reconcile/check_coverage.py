@@ -969,6 +969,18 @@ def _enqueue_response(stdout: str) -> dict:
     return response if isinstance(response, dict) else {}
 
 
+_TERMINAL_TASK_STATUSES = {"done", "failed", "cancelled"}
+
+
+def _is_terminal_dedupe_response(response: dict) -> bool:
+    """Recognize both broker metadata and the CLI's returned terminal row."""
+    dedupe_match = response.get("dedupe_match") or {}
+    return (
+        dedupe_match.get("rule") == "dedupe_key_terminal"
+        or response.get("status") in _TERMINAL_TASK_STATUSES
+    )
+
+
 def _terminal_retry_key(packet: dict) -> str | None:
     """Give a previously completed packet one new, deterministic key.
 
@@ -1052,8 +1064,7 @@ def enqueue_packet(
         return False, (out.stderr or out.stdout).strip()[:300]
 
     response = _enqueue_response(out.stdout)
-    dedupe_match = response.get("dedupe_match") or {}
-    if dedupe_match.get("rule") != "dedupe_key_terminal":
+    if not _is_terminal_dedupe_response(response):
         return True, out.stdout.strip()[:300]
 
     retry_key = _terminal_retry_key(packet)
@@ -1062,17 +1073,25 @@ def enqueue_packet(
             "terminal dedupe hit, but packet has no safe dispatch suffix: "
             f"{out.stdout.strip()[:240]}"
         )
-    retry_packet = {**packet, "dedupe_key": retry_key}
+    retry_payload = {
+        **packet["payload"],
+        "dedupe_override": (
+            "Coverage reconciliation retried this still-open item after its previous "
+            "queue task reached a terminal state."
+        ),
+    }
+    retry_packet = {
+        **packet,
+        "dedupe_key": retry_key,
+        "payload": retry_payload,
+    }
     try:
         retry = run_once(retry_packet)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"terminal dedupe retry could not run: {exc}"
     if retry.returncode != 0:
         return False, (retry.stderr or retry.stdout).strip()[:300]
-    retry_match = (_enqueue_response(retry.stdout).get("dedupe_match") or {}).get(
-        "rule"
-    )
-    if retry_match == "dedupe_key_terminal":
+    if _is_terminal_dedupe_response(_enqueue_response(retry.stdout)):
         return False, (
             "dispatch-suffixed terminal dedupe retry was not filed: "
             f"{retry.stdout.strip()[:240]}"

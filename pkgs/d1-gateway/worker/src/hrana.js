@@ -137,7 +137,79 @@ function stmtArgs(stmt) {
   return (stmt?.args ?? []).map(hranaToJs);
 }
 
+// D1 binds at most 100 parameters per statement ("variable number must
+// be between ?1 and ?100"); libSQL takes far more, and PM Stack's
+// multi-row inserts send more. Past the limit the values go into the SQL
+// as literals instead, which SQLite reads back as the same values.
+export const D1_MAX_BOUND_PARAMS = 100;
+
+function sqlLiteral(v) {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) return "NULL";
+    return Number.isInteger(v) ? String(v) : v.toExponential(17);
+  }
+  if (typeof v === "string") return "'" + v.replace(/'/g, "''") + "'";
+  if (v instanceof Uint8Array) {
+    let hex = "";
+    for (const b of v) hex += b.toString(16).padStart(2, "0");
+    return "X'" + hex + "'";
+  }
+  throw new HranaError(`cannot inline argument of type ${typeof v}`, "ARGS_INVALID");
+}
+
+// Replace ?, ?NNN placeholders with literals, leaving string literals,
+// quoted identifiers and comments alone.
+export function inlineArgs(sql, args) {
+  let out = "";
+  let next = 0;
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    if (c === "'" || c === '"' || c === "`" || c === "[") {
+      const close = c === "[" ? "]" : c;
+      let j = i + 1;
+      for (;;) {
+        if (j >= sql.length) break;
+        if (sql[j] === close) {
+          if (close !== "]" && sql[j + 1] === close) {
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        j++;
+      }
+      out += sql.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === "-" && sql[i + 1] === "-") {
+      const nl = sql.indexOf("\n", i);
+      const end = nl < 0 ? sql.length : nl;
+      out += sql.slice(i, end);
+      i = end;
+    } else if (c === "/" && sql[i + 1] === "*") {
+      const e = sql.indexOf("*/", i + 2);
+      const end = e < 0 ? sql.length : e + 2;
+      out += sql.slice(i, end);
+      i = end;
+    } else if (c === "?") {
+      let j = i + 1;
+      while (j < sql.length && sql[j] >= "0" && sql[j] <= "9") j++;
+      const n = j > i + 1 ? Number(sql.slice(i + 1, j)) : ++next;
+      if (j > i + 1) next = Math.max(next, n);
+      if (n < 1 || n > args.length) throw new HranaError(`parameter ?${n} has no argument`, "ARGS_INVALID");
+      out += sqlLiteral(args[n - 1]);
+      i = j;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
 function prepare(db, sql, args) {
+  if (args.length > D1_MAX_BOUND_PARAMS) return db.prepare(inlineArgs(sql, args));
   const p = db.prepare(sql);
   return args.length > 0 ? p.bind(...args) : p;
 }

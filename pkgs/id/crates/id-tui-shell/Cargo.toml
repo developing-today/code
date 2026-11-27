@@ -16,6 +16,10 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 id = { path = "../..", default-features = false, features = ["world"] }
+# Renderer only: no terminal backend here. The crossterm backend comes
+# with the terminal loop, so the drawing code stays testable on
+# ratatui's in-memory test backend.
+ratatui = { version = "0.30.2", default-features = false, features = ["std"] }
 serde_json = "1"
 
 [lints.rust]

@@ -124,7 +124,7 @@ ${links ? `<div class="links">${links}</div>` : ""}
 <p id="status" class="context"></p>
 <script>
 const token = ${JSON.stringify(item.token)};
-const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+const endpoint = ${JSON.stringify(`/api/needs-user/${encodeURIComponent(item.ledgerId)}/answer`)};
 async function answer(payload) {
   const status = document.getElementById('status');
   status.textContent = 'Sending…';

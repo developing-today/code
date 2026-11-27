@@ -25,6 +25,9 @@ class Stmt {
     this.args = args;
   }
   bind(...args) {
+    if (args.length > 100) {
+      throw new Error("D1_ERROR: variable number must be between ?1 and ?100 at offset 0: SQLITE_ERROR");
+    }
     return new Stmt(this.db, this.sql, args);
   }
   #prep() {

@@ -34,8 +34,8 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   R2 keys are scoped to the owning binding and dedupe only per user.
   DELETE drops only this user's reference); and the signed-object bridge routes (`GET
   /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
-  /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
-  `GET /v1/bridge/ws`), covered in the bridge section below. Storage
+  /v1/bridge/pull`, `GET /v1/bridge/export`, `GET /v1/bridge/ws`),
+  covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps. So is the per-binding request cap
   (#15485): with `USER_REQUEST_CEILING` set, requests past that many
@@ -82,8 +82,12 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   no state of its own and resumes from the directory's phase after a
   crash or a lost response. `abortMigration` discards the staged copy,
   moves the directory back to the source at a fresh epoch and reopens
-  the source, which then refuses a stale freeze. Nothing exposes the
-  coordinator to callers yet.
+  the source, which then refuses a stale freeze. The internal operator
+  API at `POST /v1/internal/migrations/{start,resume,abort}` exposes these
+  operations only when the dedicated `MIGRATION_OPERATOR_TOKEN` secret is
+  configured; it is unset by default, so the route remains disabled.
+  Requests use a binding ID and stable migration ID, and retries resume
+  from the durable directory phase. Abort remains refused after switch.
 
 ## Storage contract, budget ladder and backend manifest (#15483)
 
@@ -203,7 +207,11 @@ serves no authoritative snapshot.
   reference client.
 - Routes: `GET /v1/bridge/challenge`, `GET /v1/bridge/heads`,
   `POST /v1/bridge/push`, `POST /v1/bridge/pull`,
-  `GET /v1/bridge/ws`. Bridge bytes count toward the storage
+  `GET /v1/bridge/ws`. Push/ACK outcomes surface conflict reports
+  naming both forked event IDs; no branch is selected. `SyncCoord`
+  persists one live owner and the latest tenant watermark per peer in
+  the tenant DB; it stores no event content.
+  Bridge bytes count toward the storage
   ceiling. Design record:
   `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
   Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.
