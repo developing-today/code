@@ -1594,7 +1594,8 @@ mod tests {
         parse_list_entries, parse_peer_secrets, parse_rfc3339_unix, parse_ttl_s, persist_watermark,
         pre_body_refusal, resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
     };
-    use serde_json::json;
+    use super::handle_http;
+    use serde_json::{Value, json};
     use std::time::Duration;
 
     #[test]
