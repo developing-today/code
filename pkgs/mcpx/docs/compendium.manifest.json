@@ -1215,6 +1215,13 @@
       "note": "daemon authentication design (#13659 slice 1): per-user keys, capability ceilings, the loopback migration and the door-selector mapping"
     },
     {
+      "path": "docs/adapters/claude-code.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 104,
+      "note": "Claude Code adapter feasibility research; findings and assumptions, not an adapter design"
+    },
+    {
       "path": "worker/README.md",
       "chapter": null,
       "role": "not-compendium",
