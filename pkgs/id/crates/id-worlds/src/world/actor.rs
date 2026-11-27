@@ -246,6 +246,9 @@ pub(crate) struct WorldActor {
     /// The connection whose input is being processed. Ephemeral actor context;
     /// it is deliberately absent from `WorldEvent` and the journal.
     pub(crate) acting_session: Option<SessionId>,
+    /// Authenticated billing account for the current participant input. It
+    /// is actor-local, never persisted, and cleared between commands.
+    pub(crate) acting_account: Option<String>,
 }
 
 /// One actor-local form presentation and its host-generated generation token.
@@ -424,6 +427,7 @@ impl WorldActor {
             self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
+            self.acting_account = None;
             self.acting_device_input = None;
         }
     }
@@ -1046,6 +1050,7 @@ impl WorldActor {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move,
                 reply,
@@ -1073,12 +1078,9 @@ impl WorldActor {
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         self.acting_session = session_id;
+                        self.acting_account = caller_account;
                         self.acting_device_input = device_input;
-                        match self
-                            .program
-                            .update(&candidate)
-                            .and_then(|()| program_records(self.program.as_mut()))
-                        {
+                        match self.update_for_caller(&candidate) {
                             Ok(records) => {
                                 // A signed input and its acceptance are one
                                 // journal transaction (Codex review on PR
@@ -4099,6 +4101,7 @@ impl WorldActor {
             stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
+            acting_account: None,
             acting_device_input: None,
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
