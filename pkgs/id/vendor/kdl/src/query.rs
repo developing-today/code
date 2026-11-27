@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, str::FromStr, sync::Arc};
 
-use crate::{KdlDiagnostic, KdlDocument, KdlNode, KdlValue, query_parser::KdlQueryParser};
+use crate::{query_parser::KdlQueryParser, KdlDiagnostic, KdlDocument, KdlNode, KdlValue};
 
 /// A parsed KQL query. For details on the syntax, see the [KQL
 /// spec](https://github.com/kdl-org/kdl/blob/main/QUERY-SPEC.md).

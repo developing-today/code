@@ -1,32 +1,28 @@
 # `kdl` Release Changelog
 
 <a name="6.7.1"></a>
-
 ## 6.7.1 (2026-05-31)
 
 ### Bug Fixes
 
-- **serde:** get flag bools/options and #rest working for `se` (#166) ([c7121536](https://github.com/kdl-org/kdl-rs/commit/c71215361addc7dd03efd16a1c4b0e799c17e259))
+* **serde:** get flag bools/options and #rest working for `se` (#166) ([c7121536](https://github.com/kdl-org/kdl-rs/commit/c71215361addc7dd03efd16a1c4b0e799c17e259))
 
 <a name="6.7.0"></a>
-
 ## 6.7.0 (2026-05-30)
 
 ### Features
 
-- **serde:** add diagnostic info to error (#162) ([f824881c](https://github.com/kdl-org/kdl-rs/commit/f824881cabce33c2bbcfc1cd51862977c59dd8f4))
-- **serde:** Add support for flags and #rest (#163) ([e81b1482](https://github.com/kdl-org/kdl-rs/commit/e81b148201ad0f1fda58e2b327394c7ba0ca556b))
+* **serde:** add diagnostic info to error (#162) ([f824881c](https://github.com/kdl-org/kdl-rs/commit/f824881cabce33c2bbcfc1cd51862977c59dd8f4))
+* **serde:** Add support for flags and #rest (#163) ([e81b1482](https://github.com/kdl-org/kdl-rs/commit/e81b148201ad0f1fda58e2b327394c7ba0ca556b))
 
 <a name="6.6.1"></a>
-
 ## 6.6.1 (2026-05-29)
 
 ### Bug Fixes
 
-- **docs:** remove docsrs thing that was preventing doc build ([80db365d](https://github.com/kdl-org/kdl-rs/commit/80db365d7a43518a7fde2b88c6ffbbe4a45ae43f))
+* **docs:** remove docsrs thing that was preventing doc build ([80db365d](https://github.com/kdl-org/kdl-rs/commit/80db365d7a43518a7fde2b88c6ffbbe4a45ae43f))
 
 <a name="6.6.0"></a>
-
 ## 6.6.0 (2026-05-29)
 
 This is the long-awaited "SERDE SUPPORT? FINALLY" release.
@@ -36,14 +32,14 @@ in the future (with a semver-major).
 
 ### Features
 
-- **serde:** Add Serde support (#83) ([92998aac](https://github.com/kdl-org/kdl-rs/commit/92998aac93bfa18702434ad8c2b0369d9f2bdc49))
+* **serde:** Add Serde support (#83) ([92998aac](https://github.com/kdl-org/kdl-rs/commit/92998aac93bfa18702434ad8c2b0369d9f2bdc49))
 
 ### Bug Fixes
 
-- **deps:** update to winnow 0.7 (#143) ([dd44f5be](https://github.com/kdl-org/kdl-rs/commit/dd44f5be42dcafde3cf65a5606a096bb85b72459))
-- **parser:** allow trailing space after node (#151) ([68417342](https://github.com/kdl-org/kdl-rs/commit/68417342339912afe652b3235f59788ea36d9374))
-- **lsp:** clamp char index to rope length in char_to_position (#154) ([9f3c2154](https://github.com/kdl-org/kdl-rs/commit/9f3c2154fc8b3bc0c08bde43b96330ce752f50f4))
-- **deps:** switch to num-traits ([09177a1a](https://github.com/kdl-org/kdl-rs/commit/09177a1a0d413bd9b06939384df2ce1a2fd48864))
+* **deps:** update to winnow 0.7 (#143) ([dd44f5be](https://github.com/kdl-org/kdl-rs/commit/dd44f5be42dcafde3cf65a5606a096bb85b72459))
+* **parser:** allow trailing space after node (#151) ([68417342](https://github.com/kdl-org/kdl-rs/commit/68417342339912afe652b3235f59788ea36d9374))
+* **lsp:** clamp char index to rope length in char_to_position (#154) ([9f3c2154](https://github.com/kdl-org/kdl-rs/commit/9f3c2154fc8b3bc0c08bde43b96330ce752f50f4))
+* **deps:** switch to num-traits ([09177a1a](https://github.com/kdl-org/kdl-rs/commit/09177a1a0d413bd9b06939384df2ce1a2fd48864))
 
 <a name="6.5.0"></a>
 
@@ -253,9 +249,9 @@ few days.
 ### Features
 
 - **api:** Improve .get()/.entry() APIs to be more consistent with Rust conventions ([3d8778a6](https://github.com/kdl-org/kdl-rs/commit/3d8778a610e65720ed5cf25bc612aada93349119))
-  - **BREAKING CHANGE**: KdlNode::get* are now KdlNode::entry*. Additionally, KdlDocument::get_dash_vals has been renamed to KdlDocument::get_dash_args.
+    - **BREAKING CHANGE**: KdlNode::get* are now KdlNode::entry*. Additionally, KdlDocument::get_dash_vals has been renamed to KdlDocument::get_dash_args.
 - **spans:** rework the span API to be strictly by-val (#60) ([04471a53](https://github.com/kdl-org/kdl-rs/commit/04471a537ecf97867e7dc8ee987cce0caba61982))
-  - **BREAKING CHANGE**: this removes all the `.span_mut()` methods and changes the signature for `.span()`.
+    - **BREAKING CHANGE**: this removes all the `.span_mut()` methods and changes the signature for `.span()`.
 - **kql:** implement KQL query engine (#61) ([6d1a516e](https://github.com/kdl-org/kdl-rs/commit/6d1a516eb92415f99f7a5170ac61ce3252d6a4b5))
 
 <a name="6.0.0-alpha.3"></a>
@@ -338,9 +334,9 @@ Language](https://github.com/kdl-org/kdl/blob/main/QUERY-SPEC.md).
 
 - **kql:** implement KQL query engine (#61) ([6d1a516e](https://github.com/kdl-org/kdl-rs/commit/6d1a516eb92415f99f7a5170ac61ce3252d6a4b5))
 - **api:** Improve .get()/.entry() APIs to be more consistent with Rust conventions ([3d8778a6](https://github.com/kdl-org/kdl-rs/commit/3d8778a610e65720ed5cf25bc612aada93349119))
-  - **BREAKING CHANGE**:
+    - **BREAKING CHANGE**:
 - **spans:** rework the span API to be strictly by-val (#60) ([04471a53](https://github.com/kdl-org/kdl-rs/commit/04471a537ecf97867e7dc8ee987cce0caba61982))
-  - **BREAKING CHANGE**: this removes all the `.span_mut()` methods and changes the signature for `.span()`.
+    - **BREAKING CHANGE**: this removes all the `.span_mut()` methods and changes the signature for `.span()`.
 
 <a name="4.6.0"></a>
 
@@ -426,7 +422,7 @@ about it!
 ### Features
 
 - **api:** complete rewrite into document-oriented parser (#29) ([364ea617](https://github.com/kdl-org/kdl-rs/commit/364ea6173c0bcfc2f5e4b21e19120179f6a5c5ed))
-  - **BREAKING CHANGE**: Completely new API and bumped MSRV to 1.56.0.
+    - **BREAKING CHANGE**: Completely new API and bumped MSRV to 1.56.0.
 - **tests:** add test for kdl-schema.kdl (#30) ([ad34cfd9](https://github.com/kdl-org/kdl-rs/commit/ad34cfd93a9e6d8018b8086821a3463b764fb363))
 - **types:** add type annotation support (#31) ([16c82f1e](https://github.com/kdl-org/kdl-rs/commit/16c82f1ec18c221b0d98dfcfb805ed3642354f5b))
 - **errors:** improve parsing errors and fix some bugs (#33) ([8ed6a5cd](https://github.com/kdl-org/kdl-rs/commit/8ed6a5cd068e60de03a0e14493383f2515b98f81))
@@ -446,7 +442,7 @@ about it!
 ### Features
 
 - **spec:** update parser to handle KDL 1.0.0 ([f811c5c8](https://github.com/kdl-org/kdl-rs/commit/f811c5c89c18cb02cc3e7bdd8c872ea42308ae3e))
-  - **BREAKING CHANGE**: Various things have changed in the process of moving to KDL 1.0.0. Please test your stuff
+    - **BREAKING CHANGE**: Various things have changed in the process of moving to KDL 1.0.0. Please test your stuff
 
 <a name="2.0.0"></a>
 
@@ -455,7 +451,7 @@ about it!
 ### Features
 
 - **license:** change license to Apache-2.0 ([0dbf75c7](https://github.com/kdl-org/kdl-rs/commit/0dbf75c78eb918b6966aae27fb1d7591791f15de))
-  - **BREAKING CHANGE**: This is a significant licensing change. Please review.
+    - **BREAKING CHANGE**: This is a significant licensing change. Please review.
 
 <a name="1.1.0"></a>
 

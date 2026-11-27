@@ -3,7 +3,7 @@ use crate::query::{
     KdlQuery, KdlQueryAttributeOp, KdlQueryMatcher, KdlQueryMatcherAccessor,
     KdlQueryMatcherDetails, KdlQuerySelector, KdlQuerySelectorSegment, KdlSegmentCombinator,
 };
-use crate::v1_parser::{KdlParser, value};
+use crate::v1_parser::{value, KdlParser};
 use crate::{KdlDiagnostic, KdlErrorKind, KdlParseError, KdlValue};
 use miette::Severity;
 use nom::branch::alt;
@@ -153,9 +153,7 @@ fn node_matchers<'a: 'b, 'b>(
                     len: start.len() - input.len(),
                     kind: None,
                     label: Some("scope()"),
-                    help: Some(
-                        "Make sure scope() precedes any other items within a (comma-separated) selector.",
-                    ),
+                    help: Some("Make sure scope() precedes any other items within a (comma-separated) selector."),
                     touched: false,
                     context: Some("scope() to be the first item in this selector"),
                 }));
@@ -304,9 +302,7 @@ fn attribute_matcher_inner<'a: 'b, 'b>(
                                 len: prev.len() - input.len(),
                                 kind: None,
                                 label: Some("non-string operator value"),
-                                help: Some(
-                                    "Only strings can be used as arguments for string-related operators (*=, ^=, $=).",
-                                ),
+                                help: Some("Only strings can be used as arguments for string-related operators (*=, ^=, $=)."),
                                 touched: false,
                                 context: Some("a string as an operator value"),
                             }))
@@ -327,9 +323,7 @@ fn attribute_matcher_inner<'a: 'b, 'b>(
                         len: 0,
                         kind: None,
                         label: Some("operator value"),
-                        help: Some(
-                            "Only valid KDL values can be used on the right hand side of attribute matcher operators.",
-                        ),
+                        help: Some("Only valid KDL values can be used on the right hand side of attribute matcher operators."),
                         touched: false,
                         context: Some("a valid operator argument"),
                     }))

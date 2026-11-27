@@ -110,7 +110,7 @@ removing the case.)
   structs keep one annotation's inner whitespace
   (`before_ty_name` / `after_ty_name` / `after_ty` describe the first
   annotation). Additional annotations render canonically as `(name)`
-  with no inner whitespace, and whitespace _between_ annotations, and
+  with no inner whitespace, and whitespace *between* annotations, and
   between a children annotation and its `{`, is normalized on
   render. AST round-trips are exact; byte round-trips are exact for
   all spec documents and for extension documents in canonical form.

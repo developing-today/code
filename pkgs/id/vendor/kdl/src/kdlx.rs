@@ -108,7 +108,9 @@ impl KdlDocument {
             _ => None,
         };
         let extensions = match node.get("extensions") {
-            Some(KdlValue::String(s)) => s.split_whitespace().map(|t| t.to_string()).collect(),
+            Some(KdlValue::String(s)) => {
+                s.split_whitespace().map(|t| t.to_string()).collect()
+            }
             _ => Vec::new(),
         };
         Some(KdlxDeclaration {
@@ -154,7 +156,12 @@ fn used_extensions(nodes: &[KdlNode]) -> Vec<&'static str> {
     let mut multi = false;
     let mut prop_key = false;
     let mut children = false;
-    fn walk(nodes: &[KdlNode], multi: &mut bool, prop_key: &mut bool, children: &mut bool) {
+    fn walk(
+        nodes: &[KdlNode],
+        multi: &mut bool,
+        prop_key: &mut bool,
+        children: &mut bool,
+    ) {
         for node in nodes {
             *multi |= node.annotations().len() > 1;
             *children |= !node.children_annotations().is_empty();
@@ -231,7 +238,9 @@ mod test {
 
     #[test]
     fn partially_declared_use_lints_the_gap() {
-        let doc = parse("kdlx version=1 extensions=\"multi-annotation\"\n(a)(b)node (k)key=1\n");
+        let doc = parse(
+            "kdlx version=1 extensions=\"multi-annotation\"\n(a)(b)node (k)key=1\n",
+        );
         assert_eq!(
             doc.lint_kdlx(),
             vec![KdlxLint::UndeclaredExtension {

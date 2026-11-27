@@ -31,10 +31,10 @@ Depending on the violation, the maintainers may decide that violations of this c
 
 If you've already followed the [initial enforcement steps](#enforcement), these are the steps maintainers will take for further enforcement, as needed:
 
-1. Repeat the request to stop.
-2. If the person doubles down, they will have offending messages removed or edited by a maintainers given an official warning. The PR or Issue may be locked.
-3. If the behavior continues or is repeated later, the person will be blocked from participating for 24 hours.
-4. If the behavior continues or is repeated after the temporary block, a long-term (6-12mo) ban will be used.
+  1. Repeat the request to stop.
+  2. If the person doubles down, they will have offending messages removed or edited by a maintainers given an official warning. The PR or Issue may be locked.
+  3. If the behavior continues or is repeated later, the person will be blocked from participating for 24 hours.
+  4. If the behavior continues or is repeated after the temporary block, a long-term (6-12mo) ban will be used.
 
 On top of this, maintainers may remove any offending messages, images, contributions, etc, as they deem necessary.
 
@@ -80,7 +80,7 @@ Sometimes, though, you need to get maintainers involved. Maintainers will do the
 
 > Patt: "@keeperofbits Okay sorry. I'm just frustrated and I'm kinda burnt out and I guess I got carried away. I'll DM Alex a note apologizing and edit my messages. Sorry for the trouble."
 
-> KeeperOfCommitBits: "@patt Thanks for that. I hear you on the stress. Burnout sucks :/. Have a good one!"
+> KeeperOfCommitBits: "@patt Thanks for that. I hear you on the stress. Burnout sucks :/.  Have a good one!"
 
 ### The Nope Case
 
@@ -103,3 +103,4 @@ at
 [http://contributor-covenant.org/version/1/4](http://contributor-covenant.org/version/1/4),
 and the LGBTQ in Technology Slack [Code of
 Conduct](http://lgbtq.technology/coc.html).
+

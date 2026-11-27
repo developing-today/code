@@ -5,13 +5,13 @@
 
 use std::ops::RangeTo;
 
-use crate::nom_compat::{many_till, many0, many1};
+use crate::nom_compat::{many0, many1, many_till};
 use miette::{Severity, SourceSpan};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while, take_while_m_n};
 use nom::character::complete::{anychar, char, none_of, one_of};
 use nom::combinator::{all_consuming, cut, eof, map, map_opt, map_res, opt, peek, recognize};
-use nom::error::{ParseError, context};
+use nom::error::{context, ParseError};
 use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::{Finish, IResult, Offset, Parser, Slice};
 
@@ -248,9 +248,7 @@ fn errant_plain_identifier<'a: 'b, 'b>(
             context: Some("a valid node entry"),
             len: name.len(),
             label: Some("plain identifiers can't be used here"),
-            help: Some(
-                "If this was supposed to be a string, wrap it in quotes.\nIf this was supposed to be a new node, terminate the previous node with `;` or a newline.",
-            ),
+            help: Some("If this was supposed to be a string, wrap it in quotes.\nIf this was supposed to be a new node, terminate the previous node with `;` or a newline."),
             kind: None,
             touched: false,
         }))
@@ -276,7 +274,7 @@ fn plain_identifier<'a: 'b, 'b>(
                     help: Some("Reserved keywords cannot be used as identifiers."),
                     kind: None,
                     touched: false,
-                }));
+                }))
             }
             _ => {}
         }
@@ -826,7 +824,11 @@ fn binary(input: &str) -> IResult<&str, (String, KdlValue), KdlParseError<&str>>
 fn sign(input: &str) -> IResult<&str, i64, KdlParseError<&str>> {
     let (input, sign) = opt(alt((char('+'), char('-'))))(input)?;
     let mult = if let Some(sign) = sign {
-        if sign == '+' { 1 } else { -1 }
+        if sign == '+' {
+            1
+        } else {
+            -1
+        }
     } else {
         1
     };

@@ -20,7 +20,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-ingest = ["dep:p2panda-stream"]
+ingest = [
+  "dep:p2panda-stream",
+]
 test_utils = [
   "dep:rand",
   "dep:tracing-subscriber",
@@ -32,28 +34,17 @@ test_utils = [
 # Every `workspace = true` below is resolved to the root's value, since this copy is outside that workspace.
 [dependencies]
 futures-channel = "0.3.32"
-futures-util = { version = "0.3.32", default-features = true, features = [
-  "sink",
-] }
+futures-util = { version = "0.3.32", default-features = true, features = ["sink"] }
 p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = true }
 # Changed from the upstream line `p2panda-store = { workspace = true, default-features = true }`.
 # The upstream default is `sqlite`, which pulls in sqlx. Our traits do not need it.
 p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
-p2panda-stream = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", optional = true, default-features = false, features = [
-  "ingest",
-] }
+p2panda-stream = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", optional = true, default-features = false, features = ["ingest"] }
 pin-project-lite = "0.2.16"
 rand = { version = "0.10.1", optional = true }
 serde = "1.0.228"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", default-features = true, features = [
-  "macros",
-  "sync",
-] }
-tokio-stream = { version = "0.1.18", default-features = false, features = [
-  "sync",
-] }
+tokio = { version = "1.52.3", default-features = true, features = ["macros", "sync"] }
+tokio-stream = { version = "0.1.18", default-features = false, features = ["sync"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = [
-  "env-filter",
-], optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }

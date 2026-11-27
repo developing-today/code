@@ -94,7 +94,6 @@ fn main() -> miette::Result<()> {
 ```
 
 This will display a message like:
-
 ```
 Error:
   × Expected valid value.
@@ -108,10 +107,10 @@ Error:
 
 ### Features
 
-- `span` (default) - Includes spans in the various document-related structs.
-- `v1` - Adds support for v1 parsing. This will pull in the entire previous
+* `span` (default) - Includes spans in the various document-related structs.
+* `v1` - Adds support for v1 parsing. This will pull in the entire previous
   version of `kdl-rs`, and so may be fairly heavy.
-- `v1-fallback` - Implies `v1`. Makes it so the various `*::parse()` and
+* `v1-fallback` - Implies `v1`. Makes it so the various `*::parse()` and
   `FromStr` implementations try to parse their inputs as `v2`, and, if that
   fails, try again with `v1`. For `KdlDocument`, a heuristic will be applied
   if both `v1` and `v2` parsers fail, to pick which error(s) to return. For
@@ -132,11 +131,11 @@ KDL itself does not specify a particular representation for numbers and
 accepts just about anything valid, no matter how large and how small. This
 means a few things:
 
-- Numbers without a decimal point are interpreted as [`i128`].
-- Numbers with a decimal point are interpreted as [`f64`].
-- The keywords `#inf`, `#-inf`, and `#nan` evaluate to [`f64::INFINITY`],
+* Numbers without a decimal point are interpreted as [`i128`].
+* Numbers with a decimal point are interpreted as [`f64`].
+* The keywords `#inf`, `#-inf`, and `#nan` evaluate to [`f64::INFINITY`],
   [`f64::NEG_INFINITY`], and [`f64::NAN`].
-- The original _representation/text_ of these numbers will be preserved,
+* The original _representation/text_ of these numbers will be preserved,
   unless you [`KdlDocument::autoformat`] in which case the original
   representation will be thrown away and the actual value will be used when
   serializing.

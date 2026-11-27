@@ -12,23 +12,23 @@ By necessity, the files in `expected_kdl` are not identical to their
 corresponding inputs. They are instead pretty-printed according to the
 following rules:
 
-- All comments removed
-- Extra empty lines removed except for a newline after the last node
-- All nodes should be reformatted without escaped newlines
-- Node fields should be `identifier <values> <properties> <children only if non-empty>`
-- All values and all children must be in the same order as they were defined.
-- Properties must be in _alphabetical order_ and separated by a single space.
-- All strings must be represented as regular strings, with appropriate escapes
+* All comments removed
+* Extra empty lines removed except for a newline after the last node
+* All nodes should be reformatted without escaped newlines
+* Node fields should be `identifier <values> <properties> <children only if non-empty>`
+* All values and all children must be in the same order as they were defined.
+* Properties must be in _alphabetical order_ and separated by a single space.
+* All strings must be represented as regular strings, with appropriate escapes
   for invalid bare characters. That means that raw strings must be converted
   to plain strings, and escaped.
-- Any literal newlines or other ascii escape characters in escaped strings
+* Any literal newlines or other ascii escape characters in escaped strings
   replaced with their escape sequences.
-- All identifiers must be unquoted unless they _must_ be quoted. That means
+* All identifiers must be unquoted unless they _must_ be quoted. That means
   `"foo"` becomes `foo`, and `"foo bar"` stays that way.
-- Any duplicate properties must be removed, with only the rightmost one
+* Any duplicate properties must be removed, with only the rightmost one
   remaining. This also means duplicate properties must be allowed.
-- 4 space indents
-- All numbers must be converted to their simplest decimal representation. That
+* 4 space indents
+* All numbers must be converted to their simplest decimal representation. That
   means that hex, octal, and binary must all be converted to decimals. All
   floats must be represented using `E` notation, with a single digit left of
   the decimal point if the float is less than 1. While parsers are required to
