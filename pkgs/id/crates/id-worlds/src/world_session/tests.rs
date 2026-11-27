@@ -1525,6 +1525,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                idle_timeout: Duration::from_mins(10),
                 documents_store: None,
             },
         );
@@ -1544,6 +1545,7 @@ mod tests {
         };
         let config = SessionConfig {
             join_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_mins(10),
             documents_store: None,
         };
 
@@ -1557,6 +1559,101 @@ mod tests {
             io.send_calls, 1,
             "the session attempts its refusal frame once"
         );
+    }
+
+    /// Oracle for #15976: a joined session that goes silent is reaped
+    /// when the idle deadline passes — the session task ends, the hub
+    /// presence (lease) count drops to zero, and the freed permit lets
+    /// a new session join a hub whose ceiling is one.
+    #[tokio::test]
+    async fn idle_joined_session_releases_its_permit_and_presence() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_sessions: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(500),
+            documents_store: None,
+        };
+        let mut silent = Peer::connect_hub(hub.clone(), config);
+        silent
+            .say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(silent.next().await.unwrap()["type"], "snapshot");
+        // Presence is recorded just after the snapshot is sent; poll
+        // briefly, well inside the idle window.
+        let mut presence = 0;
+        for _ in 0..50 {
+            presence = hub
+                .list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence);
+            if presence == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(presence, 1, "the joined session holds its lease");
+
+        // The peer now goes silent with its transport open. The idle
+        // deadline must end the session on its own.
+        let Peer {
+            to_server: _to_server,
+            from_server: _from_server,
+            task,
+        } = silent;
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("a silent joined session must be reaped at the idle deadline")
+            .unwrap();
+        assert_eq!(
+            hub.list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence),
+            0,
+            "the reaped session releases its presence"
+        );
+
+        // The freed permit admits a new join under the ceiling of one.
+        let mut next = Peer::connect_hub(hub, SessionConfig::default());
+        next.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(next.next().await.unwrap()["type"], "snapshot");
+        next.close().await;
+    }
+
+    /// Oracle for #15976, other side: a session that keeps sending
+    /// frames more often than the idle deadline is never reaped.
+    #[tokio::test]
+    async fn active_session_survives_past_the_idle_deadline() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(150),
+            documents_store: None,
+        };
+        let mut peer = Peer::connect_hub(hub, config);
+        peer.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        // Chat every 50 ms for ~450 ms: three idle windows pass while
+        // the session stays active.
+        for n in 0..9 {
+            peer.say(serde_json::json!({"type":"chat","text": format!("ping {n}")}))
+                .await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        peer.say(serde_json::json!({"type":"chat","text": "still here"}))
+            .await;
+        let event = next_of_type(&mut peer, "event").await;
+        assert_eq!(event["event"]["kind"], "chat");
+        peer.close().await;
     }
 
     #[tokio::test]
