@@ -334,7 +334,7 @@ reveal_right_of() {
   while ! tap_text "$target"; do
     rc=$?
     tries=$((tries + 1))
-    [ "$tries" -gt 6 ] && return 1
+    [ "$tries" -gt 8 ] && return 1
     # Occluded is the bottom tab bar over page content, not the
     # strip: scroll the page so the target moves clear of it.
     if [ "$rc" -eq 2 ]; then
@@ -342,7 +342,14 @@ reveal_right_of() {
       sleep 2
       continue
     fi
-    axy="$(tap_xy "$anchor")" || return 1
+    # Where the neighbour chip itself reports no box, the whole
+    # strip is out of view above the fold: swipe down to bring the
+    # top of the page back before trying the strip.
+    if ! axy="$(tap_xy "$anchor")"; then
+      adb shell input swipe 540 700 540 1400 300 >/dev/null 2>&1 || true
+      sleep 2
+      continue
+    fi
     ax="${axy% *}"; ay="${axy#* }"
     adb shell input swipe "$((ax + 250))" "$ay" "$((ax - 250))" "$ay" 300 >/dev/null 2>&1 || true
     sleep 2
