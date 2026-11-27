@@ -67,7 +67,7 @@ beforeAll(async () => {
       // default state directory does not exist, so point it at the
       // temp dir (the pre-existing boot suites rely on the laptop's
       // state dir instead and fail without it — not this suite's bug).
-      PM_METADATA_DB_PATH: join(dir, "pm-metadata.sqlite"),
+      FLEET_METADATA_DB: join(dir, "pm-metadata.sqlite"),
     },
     stdout: "pipe",
     stderr: "inherit",
