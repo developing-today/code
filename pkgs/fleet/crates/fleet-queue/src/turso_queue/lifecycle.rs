@@ -415,6 +415,7 @@ pub(crate) fn claim_pick_once(
     lease_seconds: i64,
     family: Option<String>,
     claim_session: Option<String>,
+    resume_fallback: Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
     remaining_budget_minutes: Option<i64>,
@@ -639,12 +640,18 @@ pub(crate) fn claim_pick_once(
         "pick": if handoff_pick { "handed_off" } else { "default" },
     });
     // #9178 §1 (FDR-0001), claim-wire slice: same requested/actual
-    // pair as the by-id path; unhinted picks stay byte-identical.
+    // pair as the by-id path, plus the fallback reason (explicit
+    // null when the claim names none); unhinted picks stay
+    // byte-identical.
     if let Some(requested) = row.get("resume_session_id").and_then(|v| v.as_str()) {
         claim_detail["resume_requested_session_id"] = json!(requested);
         claim_detail["resume_actual_session_id"] = claim_session
             .as_deref()
             .map(|s| json!(s))
+            .unwrap_or(Value::Null);
+        claim_detail["resume_fallback"] = resume_fallback
+            .as_deref()
+            .map(|f| json!(f))
             .unwrap_or(Value::Null);
     }
     event(
@@ -817,6 +824,7 @@ pub(crate) fn verb_claim_batch(
                 lease_seconds,
                 family.clone(),
                 claim_session.clone(),
+                None,
                 model,
                 handoff_pick,
                 remaining_budget_minutes,
@@ -921,6 +929,20 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // The claiming session's own id, when the surface knows it:
     // another mark for the claimed event, never required.
     let claim_session = req_str(req, "session_id").map(str::to_string);
+    // #9178 §1 (FDR-0001): the claimer's recorded reason when the
+    // session actually used is a fallback for the task's resume
+    // hint. Only the two FDR-0001 values exist; anything else is a
+    // caller error, never silently recorded or dropped.
+    let resume_fallback = match req_str(req, "resume_fallback") {
+        None => None,
+        Some(f @ ("missing_session" | "worktree_mismatch")) => Some(f.to_string()),
+        Some(other) => {
+            return fail(
+                2,
+                format!("claim_repo_task: unknown resume_fallback {other:?}"),
+            );
+        }
+    };
     // #8176: the claiming session's own model, stamped on the row
     // the claim returns (claim_provider / claim_model /
     // claim_variant). Absent fields stamp nothing.
@@ -1030,6 +1052,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 family.as_deref(),
                 &model,
                 claim_session.as_deref(),
+                resume_fallback.as_deref(),
                 &pool,
                 req_str(req, "manual_override"),
             );
@@ -1042,6 +1065,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             lease_seconds,
             family,
             claim_session,
+            resume_fallback,
             &model,
             handoff_pick,
             remaining_budget_minutes,
@@ -4421,6 +4445,82 @@ mod claim_resume_event_tests {
             "{detail}"
         );
         assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
+    }
+
+    #[test]
+    fn hinted_by_id_with_fallback_records_reason_9178() {
+        let (t, id) = enqueue(91905, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual", "resume_fallback": "missing_session"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert_eq!(detail["resume_actual_session_id"], json!("ses_actual"), "{detail}");
+        assert_eq!(
+            detail["resume_fallback"],
+            json!("missing_session"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn hinted_by_id_without_fallback_records_null_9178() {
+        let (t, id) = enqueue(91906, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(detail.get("resume_fallback").is_some(), "{detail}");
+        assert!(detail["resume_fallback"].is_null(), "{detail}");
+    }
+
+    #[test]
+    fn unhinted_by_id_with_fallback_carries_no_resume_keys_9178() {
+        let (t, id) = enqueue(91907, None);
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual", "resume_fallback": "missing_session"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(detail.get("resume_requested_session_id").is_none(), "{detail}");
+        assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
+        assert!(detail.get("resume_fallback").is_none(), "{detail}");
+    }
+
+    #[test]
+    fn unknown_resume_fallback_fails_the_claim_9178() {
+        let (t, id) = enqueue(91908, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "resume_fallback": "bogus_reason"}),
+        );
+        assert_eq!(out["ok"], false, "{out}");
+    }
+
+    #[test]
+    fn hinted_pick_with_fallback_records_reason_9178() {
+        let (t, id) = enqueue(91909, Some("ses_pick_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "resume_fallback": "worktree_mismatch"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_fallback"],
+            json!("worktree_mismatch"),
+            "{detail}"
+        );
     }
 
     #[test]
