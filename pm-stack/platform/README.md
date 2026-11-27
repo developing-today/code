@@ -54,9 +54,11 @@ schedule (#15793, steps 1–2 of #13494): it asks each by the binding
 for the commit it was deployed from — a Worker cannot ask another on
 the same account by its public address without a setting the console
 does not have — and keeps the answers, shown in its health answer.
-The hand-written `state` here still covers the Workers the edge has
-no binding to yet; the Platform screen drawing the edge's checks in
-its place is step 3 of #13494.
+The edge now holds a binding to every Worker this list says is in
+service, so its checks cover the whole in-service list; the
+hand-written `state` still covers the Workers that are not deployed,
+which have nothing to ask. The Platform screen drawing the edge's
+checks in its place is step 3 of #13494.
 
 The Platform screen says "last deploy" only for a Worker whose list
 entry has `"runDeploys": true`: its workflow, when it succeeds, has put

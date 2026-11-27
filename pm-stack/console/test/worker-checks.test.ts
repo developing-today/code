@@ -8,15 +8,21 @@
 // hands it is what its health-facing read gives back, and a body
 // that is not a set is refused.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Edge, type KV } from "../edge/src/edge.ts";
 import {
   parseWorkerCheckSet,
   probeWorker,
   probeWorkers,
   selfCheck,
+  WORKER_BINDINGS,
   WORKER_CHECKS_KEY,
+  workerCheckTargets,
+  type WorkerBinding,
   type WorkerCheckSet,
 } from "../edge/src/worker-checks.ts";
+import { workersList } from "../src/platform.ts";
 
 const AT = 1_800_000_000_000;
 
@@ -112,6 +118,51 @@ describe("probeWorkers and selfCheck", () => {
       via: "self",
     });
     expect(selfCheck("pm-console-edge", undefined, AT).commit).toBeNull();
+  });
+});
+
+describe("the binding roster", () => {
+  // Oracles: the repository itself — the platform's list of Workers
+  // and the edge's own wrangler file. Every Worker the list says is
+  // in service is asked on the schedule: by binding, or (the edge
+  // itself) by selfCheck.
+  const listed = workersList(
+    JSON.parse(readFileSync(join(import.meta.dir, "../../platform/workers.json"), "utf8")),
+  );
+  const wrangler = readFileSync(join(import.meta.dir, "../edge/wrangler.jsonc"), "utf8");
+
+  test("every in-service Worker is on the roster, and nothing else is", () => {
+    const inService = listed.workers
+      .filter((w) => w.state === "in service")
+      .map((w) => w.name)
+      .sort();
+    const roster = [...WORKER_BINDINGS.map((spec) => spec.name), "pm-console-edge"].sort();
+    expect(roster).toEqual(inService);
+    expect(new Set(WORKER_BINDINGS.map((spec) => spec.binding)).size).toBe(WORKER_BINDINGS.length);
+  });
+
+  test("wrangler.jsonc declares the binding for every roster entry", () => {
+    for (const spec of WORKER_BINDINGS) {
+      expect([spec.name, wrangler.includes(`"binding": "${spec.binding}", "service": "${spec.name}"`)]).toEqual([
+        spec.name,
+        true,
+      ]);
+    }
+  });
+
+  test("targets are the configured bindings, in roster order, asked through the binding", async () => {
+    const configured = new Set(["PKARR", "BRIDGE", "GITHUB_CI"]);
+    const resolve = (binding: string): WorkerBinding | undefined =>
+      configured.has(binding) ? { fetch: answering({ commit: `c-${binding}` }) } : undefined;
+    const targets = workerCheckTargets(resolve);
+    expect(targets.map((t) => t.name)).toEqual(["message-bridge", "github-ci", "pkarr"]);
+    const check = await probeWorker(targets[0], AT);
+    expect(check).toMatchObject({ name: "message-bridge", answering: true, commit: "c-BRIDGE" });
+  });
+
+  test("with every binding configured the round covers the whole roster", () => {
+    const targets = workerCheckTargets(() => ({ fetch: answering({}) }));
+    expect(targets.map((t) => t.name)).toEqual(WORKER_BINDINGS.map((spec) => spec.name));
   });
 });
 
