@@ -89,6 +89,14 @@ pub enum Capability {
     Actions,
     /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
     Orgs,
+    /// `fleet kv …` — identity-scoped key/value bytes in the host-local
+    /// store (code#13314). A working-seat client surface, so full only.
+    Kv,
+    /// `fleet id …` — the iroh-native ID transport surface (design
+    /// #10391 pass 2): session key lifecycle + stamping first
+    /// (code#15430, §4.1); proxy, initiator and serve-ws verbs land
+    /// as later slices of the same design. Full only.
+    Id,
 }
 
 impl Capability {
@@ -118,6 +126,8 @@ impl Capability {
             Capability::Cert => "cert",
             Capability::Actions => "actions",
             Capability::Orgs => "orgs",
+            Capability::Kv => "kv",
+            Capability::Id => "id",
         }
     }
 
@@ -146,6 +156,8 @@ impl Capability {
         Capability::Cert,
         Capability::Actions,
         Capability::Orgs,
+        Capability::Kv,
+        Capability::Id,
     ];
 }
 
@@ -273,6 +285,7 @@ pub const DOMAINS: &[Domain] = &[
             "validate",
             "enqueue",
             "list",
+            "meta",
             "claim",
             "release",
             "lane",
@@ -287,6 +300,7 @@ pub const DOMAINS: &[Domain] = &[
             "dep-recheck",
             "quarantine-recheck",
             "repair",
+            "resolution-backfill",
             "cancel",
             "revive",
             "fail",
@@ -294,7 +308,11 @@ pub const DOMAINS: &[Domain] = &[
             "verify-disposition",
             "timeline",
             "history",
+            "staleness",
+            "needs-user",
             "show",
+            "note",
+            "link",
             "models",
             "health",
             "signal",
@@ -321,7 +339,7 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put/copy).",
         capabilities: &[
             Capability::ProxyServe,
             Capability::ProxyConnect,
@@ -329,7 +347,9 @@ pub const DOMAINS: &[Domain] = &[
         ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh", "splice", "get", "put"],
+        subcommands: &[
+            "serve", "connect", "init", "ssh", "splice", "get", "put", "copy",
+        ],
     },
     Domain {
         name: "dispatch",
@@ -395,6 +415,36 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &["list", "sync"],
     },
     Domain {
+        name: "kv",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override, rebase and revert, per --namespace; snapshot and restore back up the whole host store. --global pins get, set, list and delete to the central store (#13316): authoritative-head reads and compare-and-swap writes; sync sweeps local intents to central, and namespace/blob administer the central plane.",
+        capabilities: &[Capability::Kv],
+        primary: Capability::Kv,
+        aliases: &[],
+        subcommands: &[
+            "get",
+            "set",
+            "list",
+            "delete",
+            "clear-override",
+            "rebase",
+            "revert",
+            "sync",
+            "backup",
+            "snapshot",
+            "restore",
+            "namespace",
+            "blob",
+        ],
+    },
+    Domain {
+        name: "id",
+        summary: "Iroh-native ID transport (design #10391 pass 2): session-key mints this session's NodeId stamp (FLEET_ID_NODE_ID / FLEET_ID_SECRET, §4.1); proxy-mode reports the §4.2 mode rule and proxy moves bytes to an ID peer (modes 1-2; mode 3 is the initiator surface).",
+        capabilities: &[Capability::Id],
+        primary: Capability::Id,
+        aliases: &[],
+        subcommands: &["session-key", "proxy-mode", "proxy"],
+    },
+    Domain {
         name: "agent",
         summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
         capabilities: &[Capability::Agent],
@@ -416,7 +466,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &["search", "get-chunk", "serve"],
+        subcommands: &["search", "get-chunk", "serve", "backup"],
     },
     Domain {
         name: "cert",
@@ -466,7 +516,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopSsh],
         primary: Capability::LaptopSsh,
         aliases: &[],
-        subcommands: &["health", "exec", "close"],
+        subcommands: &["health", "sessions", "sweep", "exec", "close"],
     },
     Domain {
         name: "laptop",
@@ -475,6 +525,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Laptop,
         aliases: &[],
         subcommands: &["tiers", "exec"],
+    },
+    Domain {
+        name: "host",
+        summary: "Resolve a host name through the machine registry and select a transport offer × invocation form with fleet-pool (#14716); `fleet host laptop` resolves the amd record.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &[],
     },
     Domain {
         name: "actions",

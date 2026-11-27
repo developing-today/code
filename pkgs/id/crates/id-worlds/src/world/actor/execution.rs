@@ -140,6 +140,7 @@ impl WorldActor {
             JoinCapability,
             Vec<u8>,
             Option<SessionId>,
+            Option<String>,
             Option<serde_json::Value>,
             oneshot::Sender<Result<WorldEvent>>,
         );
@@ -150,17 +151,25 @@ impl WorldActor {
                     token,
                     input,
                     session_id,
+                    caller_account,
                     device_input,
                     signed_move: None,
                     reply,
-                } => Some((token, input, session_id, device_input, reply)),
+                } => Some((
+                    token,
+                    input,
+                    session_id,
+                    caller_account,
+                    device_input,
+                    reply,
+                )),
                 // The run loop only drains unsigned Inputs into a batch.
                 _ => None,
             })
             .collect();
         if let Err(error) = self.check_writable() {
             let message = format!("{error:#}");
-            for (_, _, _, _, reply) in items {
+            for (_, _, _, _, _, reply) in items {
                 let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
             }
             return;
@@ -173,7 +182,9 @@ impl WorldActor {
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_spends: HashMap<u64, u32> = HashMap::new();
         let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
-        while let Some((token, input, session_id, device_input, reply)) = items.pop_front() {
+        while let Some((token, input, session_id, caller_account, device_input, reply)) =
+            items.pop_front()
+        {
             let sequence = self.core.sequence + staged.len() as u64 + 1;
             let candidate =
                 match self
@@ -202,12 +213,9 @@ impl WorldActor {
             }
             self.acting = Some(candidate.participant_id);
             self.acting_session = session_id;
+            self.acting_account = caller_account;
             self.acting_device_input = device_input;
-            match self
-                .program
-                .update(&candidate)
-                .and_then(|()| program_records(self.program.as_mut()))
-            {
+            match self.update_for_caller(&candidate) {
                 Ok(records) => {
                     self.core
                         .note_staged_spend(candidate.participant_id, &mut staged_spends);
@@ -282,11 +290,12 @@ impl WorldActor {
         }
         // Whatever the batch did not stage goes through the single-command
         // path, in order, with its semantics untouched.
-        for (token, input, session_id, device_input, reply) in items {
+        for (token, input, session_id, caller_account, device_input, reply) in items {
             self.handle(WorldCommand::Input {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move: None,
                 reply,
@@ -727,6 +736,20 @@ impl DeliveryOutcome {
 }
 
 impl WorldActor {
+    /// Run a participant-input update and its record projection with the
+    /// authenticated caller account installed only for these guest calls.
+    pub(super) fn update_for_caller(&mut self, event: &WorldEvent) -> Result<Option<Records>> {
+        let account = self.acting_account.clone();
+        let previous_account = self.program.replace_caller_account(account.as_deref());
+        let result = self
+            .program
+            .update(event)
+            .and_then(|()| program_records(self.program.as_mut()));
+        self.program
+            .replace_caller_account(previous_account.as_deref());
+        result
+    }
+
     /// Deliver a host-originated event to the program: journal it first is
     /// impossible (the program must accept it for the journal to be true), so
     /// the order is update, then journal, exactly like participant input.
@@ -819,9 +842,8 @@ impl WorldActor {
     /// is anchored to it at construction), so this bound holds on
     /// either clock.
     fn note_fuel_refusal(&mut self) {
-        self.fuel_retry_not_before = Some(
-            self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW,
-        );
+        self.fuel_retry_not_before =
+            Some(self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW);
     }
 
     /// Deliver a capability result, or queue it when the account's fuel
@@ -1956,6 +1978,7 @@ impl WorldActor {
             .ok_or(CapError::bad_args())?;
         let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
         let hash = super::super::blob_id(&bytes);
+        self.check_blob_boundary()?;
         if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
             tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
@@ -1989,6 +2012,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         let data = match self.core.blobs.get(hash) {
             None => serde_json::Value::Null,
             Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
@@ -2010,6 +2034,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         if !self.core.blobs.contains_key(hash) {
             return Ok(serde_json::json!({"hash": hash, "deleted": false}));
         }
@@ -2023,6 +2048,12 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    fn check_blob_boundary(&self) -> Result<(), CapError> {
+        self.core
+            .check_blob_boundary_for(self.acting)
+            .map_err(|error| CapError::bad_args_with(format!("{error:#}")))
     }
 
     /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
@@ -2373,6 +2404,30 @@ impl WorldActor {
         } else {
             Err(crate::directory::Refusal::Forbidden(format!(
                 "only an admin or a moderator {what}"
+            ))
+            .into())
+        }
+    }
+
+    /// The world's owner (an account holding an admin seat in one of its
+    /// groups) or the operator (the process admin) may change its
+    /// lifecycle; everyone else gets the same forbidden refusal any other
+    /// owner-only act gives (#10694).
+    pub(super) fn require_ownership(&self, authority: &Authority, what: &str) -> Result<()> {
+        let directory = self.core.directory();
+        let allowed = match authority {
+            Authority::Admin => true,
+            Authority::Signed(key) => directory.account_for_key(key).is_some_and(|account| {
+                directory.groups().any(|group| {
+                    directory.level_in(&account, group.id) == Some(crate::directory::Level::Admin)
+                })
+            }),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(crate::directory::Refusal::Forbidden(format!(
+                "only the world's owner or the operator {what}"
             ))
             .into())
         }

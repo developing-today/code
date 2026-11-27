@@ -330,9 +330,14 @@ Python cold members accept keyword arguments or one positional argument
 dictionary. TypeScript object/promise machinery such as an unknown `then`
 is not synthesized; use the existing raw `call` escape hatch for such names.
 
-This is a correctness fallback, not a change to eager startup waits. Discovery
-and generation still perform no per-namespace network fetch; only a requested
-cold-member invocation refreshes its target. Virtual namespaces refresh the
+This is a correctness fallback, and since #1868 point 3 slice 2 the CLI no
+longer pays a blocking full refresh up front on implicit entry paths:
+`ensureAnySchemas` starts the schema read in the background and serves the
+cached namespaces immediately, while the first use of a cold namespace
+awaits its read daemon-side. An explicit `--ns` selection still awaits
+that namespace's read. Discovery and generation still perform no
+per-namespace network fetch; only a requested cold-member invocation
+refreshes its target. Virtual namespaces refresh the
 selected mount's source, not every unrelated source. Existing visibility,
 capability, argument and confirmation policies still apply.
 

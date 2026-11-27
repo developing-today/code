@@ -13,11 +13,11 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync } from "node:fs";
 import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, UserDO } from "../src/user-do.ts";
 import { authTranscript, bodyHashHex, type AuthContext } from "../src/bridge-auth.ts";
-import { blake3 } from "../src/blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
 import { encodeBatch } from "../src/bridge-session.ts";
-import type { CborValue } from "../src/canonical-cbor.ts";
+import type { CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 const BINDING = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FIXTURE_PATH = new URL("./fixtures/hosted-export-sets.json", import.meta.url);
@@ -83,7 +83,7 @@ function makeDO(sql: Sql, bucket: Bucket, env: Record<string, unknown> = {}) {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return new UserDO(state as never, { BLOBS: bucket, ...env } as never);
+  return new UserDO(state as never, { BLOBS_US: bucket, ...env } as never);
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {

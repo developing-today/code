@@ -31,7 +31,9 @@ impl WorldCommand {
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
             Self::HandoffWriteLease { .. } => "HandoffWriteLease",
+            Self::RecoverExpiredLease { .. } => "RecoverExpiredLease",
             Self::FailoverWriteLease { .. } => "FailoverWriteLease",
+            Self::DispatchSpillCopy { .. } => "DispatchSpillCopy",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -46,6 +48,8 @@ impl WorldCommand {
             Self::SetCapsCeiling { .. } => "SetCapsCeiling",
             Self::SetExecutionProfile { .. } => "SetExecutionProfile",
             Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::SetPresentationPolicy { .. } => "SetPresentationPolicy",
+            Self::PresentationPolicyInfo { .. } => "PresentationPolicyInfo",
             Self::ManifestState { .. } => "ManifestState",
             Self::AdminScheduleAt { .. } => "AdminScheduleAt",
             Self::AdminCancelSchedule { .. } => "AdminCancelSchedule",
@@ -60,6 +64,7 @@ impl WorldCommand {
             Self::DeliverPortal { .. } => "DeliverPortal",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
+            Self::AuthorizeLifecycle { .. } => "AuthorizeLifecycle",
             Self::IsolationInfo { .. } => "IsolationInfo",
             Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
             Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
@@ -158,6 +163,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        caller_account: Option<String>,
         device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
@@ -206,6 +212,14 @@ pub(crate) enum WorldCommand {
         expires_at_ms: Option<u64>,
         reply: oneshot::Sender<Result<u64>>,
     },
+    /// DO-authority control request. Recover an expired native lease by
+    /// journaling revoke then grant back to the DO (#13938 slice 1).
+    /// The live lease tracks the journaled prefix after each entry, so
+    /// a failed grant append between them leaves the world holder-less
+    /// (writers refused `holder-lost`), never split-brained.
+    RecoverExpiredLease {
+        reply: oneshot::Sender<Result<u64>>,
+    },
     /// DO-authority control request. The actor plans a spill v2
     /// failover (design #5787 §1) from its journaled lease and the
     /// supplied grantor-side pool, then journals the plan's
@@ -216,6 +230,15 @@ pub(crate) enum WorldCommand {
         max_catch_up_lag: u64,
         term_ms: u64,
         reply: oneshot::Sender<Result<spill_pool::FailoverExecution>>,
+    },
+    /// Release copied journal bytes only after the current lease and its
+    /// grant replay barrier pass on the serialized authority actor.
+    DispatchSpillCopy {
+        holder: String,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+        reply: oneshot::Sender<Result<Vec<u8>>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -305,6 +328,17 @@ pub(crate) enum WorldCommand {
     /// Read this world's requested runtime profile.
     ExecutionProfileInfo {
         reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
+    },
+    /// Admin: durably replace this world's presentation policy (#14731
+    /// slice 2b). It applies to the next presentation decision.
+    SetPresentationPolicy {
+        policy: id_core::presentation_policy::PresentationPolicy,
+        reply: oneshot::Sender<Result<id_core::presentation_policy::PresentationPolicy>>,
+    },
+    /// Read this world's presentation policy. It is public: a world
+    /// publishes it so a user can see it before joining (#5970 §5).
+    PresentationPolicyInfo {
+        reply: oneshot::Sender<id_core::presentation_policy::PresentationPolicy>,
     },
     /// Admin: read the manifest-reconciliation state — the active install
     /// seed and the pending schedules. The seed stays inside the actor and
@@ -403,6 +437,13 @@ pub(crate) enum WorldCommand {
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Owner or operator: may this authority change the world's
+    /// lifecycle (wake, pause, archive; #10694)? Changes nothing.
+    AuthorizeLifecycle {
+        authority: Authority,
+        act: &'static str,
+        reply: oneshot::Sender<Result<()>>,
     },
     /// Admin or moderator: change the world's isolation.
     SetIsolation {

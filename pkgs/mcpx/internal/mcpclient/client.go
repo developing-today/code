@@ -77,6 +77,10 @@ type rpcResponse struct {
 type Client struct {
 	t      Transport
 	nextID atomic.Int64
+	// recorder is the RecordTransport wrapping t when the client was
+	// dialed with Options.TraceCapture, and nil otherwise. It is set
+	// once before the read loop starts and never reassigned.
+	recorder *RecordTransport
 
 	mu      sync.Mutex
 	pending map[int64]chan *rpcResponse
@@ -393,8 +397,13 @@ func NewWithPreference(ctx context.Context, t Transport, clientName, clientVersi
 }
 
 func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
+	// Opt-in capture wraps the transport before the handshake, so the
+	// recorded session starts at the first frame. Off by default, t
+	// passes through untouched.
+	t, rec := wrapCapture(t, o.TraceCapture)
 	c := &Client{
 		t:                        t,
+		recorder:                 rec,
 		pending:                  map[int64]chan *rpcResponse{},
 		closeCh:                  make(chan struct{}),
 		clientName:               o.ClientName,

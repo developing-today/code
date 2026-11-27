@@ -79,6 +79,7 @@ LAPTOP_AGENT_NO_SSH_FALLBACK=1.
 """
 
 import json
+import math
 import os
 import signal
 import socket
@@ -1651,17 +1652,40 @@ def main():
         _threading.Thread(target=_watchdog, daemon=True).start()
         try:
             while True:
+                wait_s = max(0, min(10, math.ceil(deadline - time.time())))
                 out = request(
-                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}"
+                    "GET",
+                    f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}",
                 )
                 sys.stdout.write(out.get("stdout", ""))
                 sys.stdout.flush()
                 sys.stderr.write(out.get("stderr", ""))
                 sys.stderr.flush()
+                got = (out["out_next"] - offs["out"]) + (out["err_next"] - offs["err"])
                 offs = {"out": out["out_next"], "err": out["err_next"]}
                 off_file.write_text(json.dumps(offs))
                 if out["state"] == "done":
+                    # Drain a finished job's spool to the end (#15420):
+                    # one reply carries at most 1 MiB per stream. Stop
+                    # once the cursors reach the reported sizes, or a
+                    # page carries nothing (daemons without sizes).
+                    sizes = (out.get("out_size"), out.get("err_size"))
+                    drained = got <= 0 or (
+                        None not in sizes
+                        and offs["out"] >= sizes[0]
+                        and offs["err"] >= sizes[1]
+                    )
+                    if not drained:
+                        continue
                     state["done"] = True
+                    dropped = out.get("bytes_dropped") or 0
+                    if dropped > 0:
+                        # The daemon's spool cap discarded output; say
+                        # so instead of truncating silently (#15420).
+                        print(
+                            f"[spool cap reached: {dropped} bytes dropped]",
+                            file=sys.stderr,
+                        )
                     print(
                         f"[laptop-agent] job {job_id} done "
                         f"exit={out['exit']} "
@@ -1672,11 +1696,6 @@ def main():
                 if time.time() >= deadline:
                     print(f"[laptop-agent] job {job_id} still running", file=sys.stderr)
                     return
-                try:
-                    time.sleep(min(3, max(0.0, deadline - time.time())))
-                except CallTimeout:
-                    _poll_cancel()
-                    _exit_timeout()
         except CallTimeout:
             _poll_cancel()
             _exit_timeout()

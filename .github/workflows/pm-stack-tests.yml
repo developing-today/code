@@ -167,18 +167,27 @@ jobs:
           fi
           echo "tailnet-bindings script suite passed."
 
+      - name: Test PM aggregator backend readiness gate
+        run: bash nixos/services/pm-stack/pm-aggregator-backend-ready.test.sh
+
       # Fencing and cutover suites for #6816: pm-stack/scripts/
       # fence-check.test.sh proves the fencing rule (old writer fenced
-      # before promotion, fail closed when state is unreadable) and
+      # before promotion, fail closed when state is unreadable, per-store
+      # so one store can go final while another still runs),
       # kaneo-cutover.test.sh proves the promotion gate built on it —
       # refuse while unfenced and touch nothing, demand exact table/row
-      # parity, and refuse to report PASS otherwise. Both were run by no
-      # workflow. Files are named explicitly and asserted to exist first,
-      # so a green run cannot be a silently skipped suite.
-      - name: Test fence-check and kaneo-cutover script suites
+      # parity, and refuse to report PASS otherwise — and
+      # grist-pad-sync.test.sh proves the Grist/Pad file-store driver —
+      # sync the declared file set with post-copy sha256 parity, refuse
+      # final while unfenced or the pad WAL is dirty, refuse unaccounted
+      # target files, and never delete. All were run by no workflow
+      # before this one. Files are named explicitly and asserted to
+      # exist first, so a green run cannot be a silently skipped suite.
+      - name: Test fence-check, kaneo-cutover and grist-pad-sync script suites
         run: |
+          python3 -I pm-stack/scripts/kaneo-recovery-point-check.test.py
           fail=0
-          for t in pm-stack/scripts/fence-check.test.sh pm-stack/scripts/kaneo-cutover.test.sh; do
+          for t in pm-stack/scripts/fence-check.test.sh pm-stack/scripts/kaneo-cutover.test.sh pm-stack/scripts/grist-pad-sync.test.sh; do
             if [ ! -f "$t" ]; then
               echo "::error::Missing suite file $t — the pm-stack fencing/cutover suites were not run."
               fail=1
@@ -190,7 +199,7 @@ jobs:
             echo "::error::pm-stack fencing/cutover suites failed (see above)."
             exit 1
           fi
-          echo "fence-check and kaneo-cutover script suites passed."
+          echo "fence-check, kaneo-cutover and grist-pad-sync script suites passed."
 
       # Ownership-map guard for #3989 criterion 1:
       # pm-stack/scripts/ownership-map.test.sh pins the
@@ -403,9 +412,10 @@ jobs:
       # (tenant-store.test.ts, the component A PM tenant store
       # schema + migrations conformance suite; collector.test.ts,
       # the hosted collector acceptance suite; read-api.test.ts,
-      # the hosted read API parity suite) must not be silently
-      # skipped suites either. They need only bun (bun:sqlite is
-      # built in), no install step.
+      # the hosted read API parity suite; dual-edition-conformance.test.ts,
+      # which compares shared projections with the laptop aggregator)
+      # must not be silently skipped suites either. They need only bun
+      # (bun:sqlite is built in), no install step.
       - name: Test pm-service suites
         working-directory: pm-stack/pm-service
         run: |

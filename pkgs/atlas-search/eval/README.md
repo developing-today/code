@@ -15,6 +15,7 @@ rows" below.
 
 - Library: `crates/atlas-core/src/eval.rs` (`atlas_core::eval`)
 - Runner: `cargo run -p atlas-core --bin atlas-eval -- <eval.json> <dev|test>`
+- Optional precision report: `cargo run -p atlas-core --bin atlas-eval -- --precision-at-k <k> <eval.json> <dev|test>`
 - Smoke fixture: `fixtures/eval-smoke.json`
 
 ## Python reference and v3 golden set (#5670)
@@ -105,6 +106,22 @@ from the report alone. Reports are deterministic — sorted signals,
 queries, and classes, floats rounded to 6dp (the crate's Python
 parity convention) — so the same input serializes byte-identically
 on every run.
+
+### Precision@k report
+
+The optional CLI mode emits a separate `atlas-eval-precision-report/v1`
+format, preserving the original command's report bytes:
+
+```sh
+cargo run -p atlas-core --bin atlas-eval -- --precision-at-k 10 eval.json dev
+```
+
+`k` is bounded to `1..=1000`. The report contains per-query hit counts,
+the fixed denominator `k`, precision values, and macro means overall and
+per class for each signal. Every query contributes, including one with no
+positive qrels. Short and missing rankings score unfilled slots as zero;
+for example, one hit in a one-result ranking at `k=3` is `1/3`. Values
+are deterministic and rounded to six decimal places.
 
 ## Split discipline (the held-out rule)
 

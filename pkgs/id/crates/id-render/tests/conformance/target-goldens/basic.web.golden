@@ -1,0 +1,52 @@
+{
+  "target": "web",
+  "class_set": [],
+  "root": {
+    "path": "document",
+    "kind": "document",
+    "tag": "html",
+    "role": "document",
+    "attributes": {},
+    "classes": [],
+    "children": [
+      {
+        "path": "document/page[0]",
+        "kind": "page",
+        "tag": "main",
+        "role": "main region",
+        "attributes": {},
+        "classes": [],
+        "children": [
+          {
+            "path": "document/page[0]/heading[0]",
+            "kind": "heading",
+            "tag": "h1",
+            "role": "heading",
+            "attributes": {},
+            "classes": [],
+            "children": [
+              {"text": "Settings"}
+            ]
+          },
+          {
+            "path": "document/page[0]/button[0]",
+            "kind": "button",
+            "tag": "button",
+            "role": "button",
+            "attributes": {},
+            "classes": [],
+            "children": [
+              {"text": "Save"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "report": {
+    "mapped": [],
+    "defaulted": [],
+    "element_defaults": [],
+    "reported_overrides": []
+  }
+}

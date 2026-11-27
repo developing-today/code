@@ -663,6 +663,21 @@ never inherits `MCPX_CLIENT`, `MCPX_RUNTIME`, `MCPX_ENTRY` or
 goes without (no generated client, no enforced permission profiles,
 skipped launcher phases).
 
+`script.imports=prepare` is the opt-in that installs resolved packages into
+mcpx's content-addressed cache. With the default
+`script.importsCrossProject=isolate`, packages declared by an imported file's
+foreign project manifest are prepared in a separate cache entry keyed by that
+manifest identity and its pinned packages. Node and Bun receive an mcpx-owned
+`node_modules` symlink at that foreign manifest directory so the imported
+file resolves against its own project set; the runner holds the normal
+directory lock and cache lease, does not replace a real `node_modules`
+directory or unrelated symlink, and removes a foreign-scope symlink it
+created or refreshed when the run ends (only if it still targets that
+prepared cache entry). Deno receives the corresponding manifest-scoped
+import-map entries and no project-directory link. `report` and
+`importsCrossProject=ignore` do not install subsets or create subset links.
+No registry install or project link is performed unless prepare is requested.
+
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
 ### adapters
@@ -687,6 +702,12 @@ skipped launcher phases).
 | `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored | `TestArtifactsMaxBytesRefusesALargeArtifact` |
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold | `TestArtifactsQuotaBoundsTheStore` |
 | `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected | `TestArtifactsTTLExpiresAnArtifactFromTheEnvironment` |
+
+### auth
+
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `auth.mode` | enum | `off` | daemon | no | `--auth-mode` | `MCPX_AUTH_MODE` | whether the daemon's HTTP surface honours or requires per-user keys | `TestAuthModeRequiredGatesTCPButNotTheSocket` |
 
 ### autonomy
 
@@ -732,7 +753,7 @@ skipped launcher phases).
 | `daemon.endpoint` | string | *(empty)* | client | no | `--daemon-endpoint` | `MCPX_DAEMON_ENDPOINT` | a daemon somewhere else, instead of the local socket | `TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment` |
 | `daemon.idleExit` | duration | `0s` | daemon | no | `--daemon-idle-exit`, `--idle-exit` | `MCPX_DAEMON_IDLE_EXIT` | stop the daemon after this long with nothing to do | `TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment` |
 | `daemon.inline` | enum | `off` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process; one of off (also false), fallback (also true), always | `TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment` |
-| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed | Exempt — daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically |
+| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed | `TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment` |
 | `daemon.inlineStartTimeout` | duration | `5s` | client | no | `--daemon-inline-start-timeout` | `MCPX_DAEMON_INLINE_START_TIMEOUT` | *(plumbing)* how long an in-process daemon has to become reachable | `TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment` |
 | `daemon.leaseTTL` | duration | `30m0s` | daemon | yes | `--daemon-lease-ttl` | `MCPX_DAEMON_LEASE_TTL` | *(plumbing)* how long a silent caller's instances are remembered | `TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment` |
 | `daemon.port` | int | `0` | daemon | no | `--daemon-port`, `--port` | `MCPX_DAEMON_PORT` | listen on a TCP port instead of choosing one | `TestDaemonPortBindsTheChosenPortFromTheEnvironment` |
@@ -793,7 +814,7 @@ skipped launcher phases).
 | `embeddings.backend` | string | `auto` | daemon | yes | `--embeddings-backend` | `MCPX_EMBEDDINGS_BACKEND` | which embedding engine to use (auto, local, remote, wasm) | `TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint` |
 | `embeddings.model` | string | `text-embedding-3-small` | daemon | yes | `--embeddings-model` | `MCPX_EMBEDDINGS_MODEL` | model name for remote embeddings endpoint | `TestEmbeddingsModelNamesTheRequestedModel` |
 | `embeddings.url` | string | *(empty)* | daemon | yes | `--embeddings-url` | `MCPX_EMBEDDINGS_URL` | OpenAI-compatible embeddings endpoint URL | `TestEmbeddingsURLSendsSemanticSearchToTheEndpoint` |
-| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model | Exempt — embeddings backend: needs a compiled wasm model fixture the harness does not provide; the Go wasm runtime (wazero) can compile a module but no embed-exporting model ships with the repo, so the setting's effect (wasm embedder availability) is not observable end to end |
+| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model | `TestEmbeddingsWasmPathLoadsTheModel` |
 
 ### events
 
@@ -1059,6 +1080,7 @@ skipped launcher phases).
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed | `TestScriptPhasesRunFromTheEnvironment` |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log | `TestScriptCaptureConsoleOffDropsConsoleOutput` |
 | `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict | `TestScriptTypecheckOnRefusesATypeError` |
+| `script.checkJs` | bool | `true` | client | no | `--script-check-js` | `MCPX_SCRIPT_CHECK_JS` | validate JavaScript scripts with // @ts-check and their .d.ts declarations | `TestScriptCheckJsDecidesWhetherJavaScriptIsChecked` |
 | `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | what to do when script checking finds an error | `TestScriptCheckOnErrorDecidesOnACheckError` |
 | `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | what to do when the selected runtime cannot check the script | `TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes` |
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir | `TestScriptCwdIsReachableFromTheEnvironment` |

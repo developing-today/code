@@ -210,10 +210,42 @@ describe("validation (design §1 shapes, rejected loudly)", () => {
   });
 
   test("event mirror requires a stable id, transition envelope, timestamp, and payload", () => {
-    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: { class: "quota-wall" } }).ok).toBe(true);
-    expect(validateMirrorEvent({ mirrorId: "", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: {} }).ok).toBe(false);
-    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "yesterday", payload: {} }).ok).toBe(false);
-    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: [] }).ok).toBe(false);
+    expect(
+      validateMirrorEvent({
+        mirrorId: "m",
+        objectRef: "quota:a",
+        transition: "raised",
+        raisedAt: "2026-11-24T00:00:00Z",
+        payload: { class: "quota-wall" },
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateMirrorEvent({
+        mirrorId: "",
+        objectRef: "quota:a",
+        transition: "raised",
+        raisedAt: "2026-11-24T00:00:00Z",
+        payload: {},
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateMirrorEvent({
+        mirrorId: "m",
+        objectRef: "quota:a",
+        transition: "raised",
+        raisedAt: "yesterday",
+        payload: {},
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateMirrorEvent({
+        mirrorId: "m",
+        objectRef: "quota:a",
+        transition: "raised",
+        raisedAt: "2026-11-24T00:00:00Z",
+        payload: [],
+      }).ok,
+    ).toBe(false);
   });
 });
 

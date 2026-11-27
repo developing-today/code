@@ -68,16 +68,20 @@ query, result, meta}`.
   entry. The query key is a SHA-256 digest, so per-prefix purge
   cannot enumerate matching entries without a separate index and is
   intentionally not provided.
-- `POST /mcp` — gated with the same `GATE_TOKEN`; a stateless
-  MCP (Model Context Protocol) Streamable HTTP endpoint (#8625)
+- `POST /mcp` — gated by `AGENT_TOKENS` identities when configured,
+  otherwise the same `GATE_TOKEN`; a stateless MCP (Model Context
+  Protocol) Streamable HTTP endpoint (#8625)
   exposing one tool, `search`, over the exact same execution
-  path as `POST /v1/search` (same pinned context and ceiling,
-  same Durable Object cache — an MCP search and a REST search
-  for the same query share one cache entry). Cache purge and
+  path as `POST /v1/search` (pinned `hosted-per-user` context,
+  per-agent ceiling from `AGENT_POLICY` defaulting to the surface
+  pin `personal`, same Durable Object cache namespaced per query
+  and ceiling — an MCP search and a REST search for the same query
+  share one cache entry only when the ceilings match). Cache purge and
   inspect are deliberately not MCP tools: purge is a write and
-  inspect is an operator/audit surface. Callers share the one
-  hosted identity (`hosted-per-user`); per-agent identity and
-  scoping are #8625's later slices. The laptop's mcpx connects
+  inspect is an operator/audit surface. Callers authenticate by
+  `AGENT_TOKENS` identities (each search runs under that agent's
+  policy ceiling and is audit-logged with it); corpus scoping is
+  #8625's follow-on slice. The laptop's mcpx connects
   to this endpoint as its `atlas` server (remote transport,
   bearer auth expanded from the daemon's environment).
 
@@ -118,6 +122,74 @@ a store operation. Neither is wired into the request path yet:
 event consumption is invoked by the ingest-completion consumer and
 the purge is operator-only, never called by automated paths;
 read-path integration (#13105) is what consults the recorded state.
+
+## Retained objects (#9140, writers off)
+
+`src/retained_object.ts` is build slice 1 of the recommendation, search
+history and retention record
+(`doc/2026-11-24T15-00-00Z_design_atlas_recommendations_history_retention/`):
+the shared envelope, the four retention classes (`hot-short`,
+`recommendation`, `search-history`, `snapshot-audit`) and an append-only
+store over migration `migrations/0003_retained_objects.sql`, in the same
+D1 database as the hot cache. A class may lengthen its window or raise its
+keep-newest floor, never go below the design default: the store and the
+table's CHECKs both refuse it. Every class starts disabled, so nothing is
+written until a family's writer lands and its class is enabled.
+Search-history query text is dropped unless the class allows it.
+
+Slice 2 (`src/recommendation_history.ts`): when the recommendation
+accumulator has a `RETAINED` D1 binding and the `recommendation` class is
+enabled, each new pinned snapshot is kept as one `recommendation` version
+whose inputs name the parent snapshot and whose payload (rule id, input
+digest, ordered items with scores) the same parent reproduces. Keeping it
+is best effort and never fails a start.
+
+Slice 3 (`src/search_history.ts`): `POST /v1/search` takes an optional
+`session` (1 to 128 of `A-Za-z0-9._:-`). With a `RETAINED` binding and the
+`search-history` class enabled, each answered search in that session is
+kept as the next version of `search-session:<session>`: `k`, hit or miss,
+and the returned chunk refs. The query text is dropped unless the class
+allows it. Keeping it is best effort and never fails a search.
+
+Slice 4 (`src/hot_snapshot.ts`, `migrations/0004_retained_objects_retirement.sql`):
+each new pinned snapshot in the accumulator also captures its top
+`HOT_WINDOW` (10) items as the next `hot_snapshot` version of
+`hot:<tenant>/<subject>` under `hot-short`, when that class is enabled.
+After each capture the store retires every version older than the class
+window and outside its keep-newest floor. Retiring marks a version cold
+(`retired_at_ms`); nothing is deleted.
+
+Slice 5 (`src/audit_report.ts`): the admin before/after report.
+`POST /v1/admin/retained/audit {object, version}` pins a stored version
+into the `snapshot-audit` set (a copy under `audit:<object>`, refused while
+that class is disabled). `GET /v1/admin/retained/compare?object=&from=&to=`
+compares two pinned versions and reads only the audit set: changed payload
+fields, added, removed and moved items, score changes (only within one rule
+id), and added or removed search result refs. Both routes sit behind the
+gate token and answer 503 without a `RETAINED` binding.
+
+Slice 6 (`src/retention_report.ts`, `migrations/0005_retention_modes_and_reports.sql`):
+retention wiring after the rule engine design (#6041). Every class has a
+mode and starts in `dry-run`, where nothing is retired. A report lists, per
+class, the live versions past the class window and outside its floor
+(action `report-only`, or `cold-tier` once live), the versions the floor
+protected, and deltas against the previous report of the same kind; it
+names versions by id only. `promoteClass` moves a class to `live-cold` only
+after it appears unchanged in the two latest scheduled reports, and
+changing a class's window or floor returns it to `dry-run`. Nothing
+deletes. `POST /v1/admin/retained/report` runs an on-demand report, which
+never counts toward promotion.
+
+Slice 7 (`runScheduledCycle`, the `scheduled` handler and the `[triggers]`
+cron in `wrangler.toml`, every six hours at minute 17): each cron event
+stores a scheduled report under run id `scheduled-<cron time>`, then
+retires what that report lists in `live-cold` classes, at most 200 objects
+per cycle (the rest wait for the next). A repeated delivery of the same
+cron time finds its report stored and does nothing. Without a `RETAINED`
+binding the handler does nothing. `POST /v1/admin/retained/promote {class}`
+is the reviewed step that moves a class to `live-cold`; it answers 409
+`not_earned` until the class's two latest scheduled reports agree, and 404
+for an unknown class.
 
 ## Secrets (names only; set with `wrangler secret put`)
 

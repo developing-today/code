@@ -29,12 +29,12 @@
 //! 512-character paste budget as [`crate::invites::MAX_PASTE_CHARS`],
 //! so an offer or accept survives any chat box a QR scan feeds.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest, Sha256};
 
 use crate::directory::hex_to_array;
-use crate::keyset::{body_bytes, verify_signature, verifying_key, KeysetEntry, KeysetRecord};
+use crate::keyset::{KeysetEntry, KeysetRecord, body_bytes, verify_signature, verifying_key};
 use id_core::hex::hex_encode;
 
 /// The scheme of an enrolment offer and its accept.
@@ -699,13 +699,14 @@ mod tests {
         assert!(file.complete_enrol(&key(2), &accept).is_err());
         assert!(file.enrol_offer(&key(2), "rogue").is_err());
         file.complete_enrol(&key(1), &accept).unwrap();
-        assert!(file
-            .revoke_scanned(
+        assert!(
+            file.revoke_scanned(
                 &key(2),
                 &DeviceQr::parse(&DeviceQr::for_key(&key(2)).qr_payload()).unwrap(),
                 "self",
             )
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]

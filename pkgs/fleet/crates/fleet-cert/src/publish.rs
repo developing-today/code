@@ -13,11 +13,10 @@
 //!   cross-certificates);
 //! - §13 phase F is the program phase that schedules this work,
 //!   not a competing spec section.
-//! This module implements the read-only half: `plan` renders the
-//! publication plan without touching live points, `verify` checks a
-//! published mirror read-only. `apply`/`status` (live mutation and
-//! live state) are explicitly deferred to a later production-gated
-//! slice per the #9155 gate map and must never execute here.
+//! `plan` renders without touching live points, `verify` checks a
+//! mirror read-only, and `apply_staging` writes public bytes only to
+//! an explicit local staging directory. Live `status` remains deferred
+//! per the #9155 gate map; this module has no network publication path.
 
 use crate::bundle::load_bundle;
 use crate::chain::Check;
@@ -88,14 +87,20 @@ pub struct PublishVerifyReport {
     pub checks: Vec<Check>,
 }
 
+/// Result of applying public artifacts to a local staging mirror.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishApplyReport {
+    pub bundle: String,
+    pub staging_dir: String,
+    pub written: Vec<String>,
+}
+
 /// MIME type for a published object path (§24.7).
 pub fn media_type_for(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".p7c") || lower.ends_with(".p7b") {
         "application/pkcs7-mime"
-    } else if lower.ends_with(".crl")
-        || lower.ends_with(".crl.pem")
-        || lower.ends_with(".crl.der")
+    } else if lower.ends_with(".crl") || lower.ends_with(".crl.pem") || lower.ends_with(".crl.der")
     {
         "application/pkix-crl"
     } else {
@@ -185,6 +190,115 @@ pub fn plan_bundle(req: &PublishPlanRequest) -> Result<PublishPlan> {
     })
 }
 
+/// Apply only public bundle artifacts to an explicit local staging mirror.
+/// This function has no network or live-endpoint path. Existing symlinks,
+/// path traversal, and non-directory parents are refused before writing.
+pub fn apply_staging(bundle_dir: &Path, staging_dir: &Path) -> Result<PublishApplyReport> {
+    let bundle = load_bundle(bundle_dir)?;
+    ensure_staging_root(staging_dir)?;
+    let canonical_root = std::fs::canonicalize(staging_dir)?;
+    let mut public_files = Vec::new();
+    for file in &bundle.manifest.files {
+        if file.visibility != "public" {
+            continue;
+        }
+        let rel = url_path_for(&file.path);
+        let rel_path = Path::new(rel);
+        if rel_path.as_os_str().is_empty()
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(crate::error::CertError::policy(format!(
+                "unsafe publication path '{}'",
+                file.path
+            )));
+        }
+        let source = bundle_dir.join(&file.path);
+        let bytes = std::fs::read(&source)?;
+        if bytes.len() as u64 != file.bytes || crate::bundle::sha256_hex(&bytes) != file.sha256 {
+            return Err(crate::error::CertError::validation(format!(
+                "bundle artifact checksum/size mismatch: {}",
+                file.path
+            )));
+        }
+        public_files.push((rel_path.to_path_buf(), bytes));
+    }
+
+    // Validate the complete destination tree before any artifact write.
+    for (rel, _) in &public_files {
+        ensure_safe_parents(&canonical_root, rel)?;
+        let target = canonical_root.join(rel);
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+                return Err(crate::error::CertError::policy(format!(
+                    "unsafe staging destination: {}",
+                    target.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut written = Vec::new();
+    for (rel, bytes) in public_files {
+        let target = canonical_root.join(&rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, bytes)?;
+        written.push(rel.display().to_string());
+    }
+    written.sort();
+    Ok(PublishApplyReport {
+        bundle: bundle_dir.display().to_string(),
+        staging_dir: canonical_root.display().to_string(),
+        written,
+    })
+}
+
+fn ensure_staging_root(root: &Path) -> Result<()> {
+    if root.exists() {
+        let meta = std::fs::symlink_metadata(root)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(crate::error::CertError::policy(format!(
+                "staging directory must be a real directory: {}",
+                root.display()
+            )));
+        }
+    } else {
+        std::fs::create_dir_all(root)?;
+    }
+    Ok(())
+}
+
+fn ensure_safe_parents(root: &Path, rel: &Path) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in rel.parent().into_iter().flat_map(Path::components) {
+        match component {
+            std::path::Component::Normal(name) => current.push(name),
+            _ => {
+                return Err(crate::error::CertError::policy(
+                    "unsafe staging path component",
+                ));
+            }
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(crate::error::CertError::policy(format!(
+                    "unsafe staging parent: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Verify a published mirror read-only: every public bundle file
 /// must exist under `published_dir` at its URL path with identical
 /// SHA-256. Never writes, never fetches over the network.
@@ -192,14 +306,20 @@ pub fn verify_bundle(req: &PublishVerifyRequest) -> Result<PublishVerifyReport> 
     let bundle = load_bundle(&req.bundle)?;
     let plan_req = PublishPlanRequest {
         bundle: req.bundle.clone(),
-        host: req.host.clone().unwrap_or_else(|| DEFAULT_PUBLISH_HOST.to_string()),
+        host: req
+            .host
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PUBLISH_HOST.to_string()),
         dns_target: None,
     };
     let plan = plan_bundle(&plan_req)?;
     let mut checks = vec![Check {
         name: "manifest-checksums".into(),
         ok: true,
-        detail: format!("{} files verified in source bundle", bundle.manifest.files.len()),
+        detail: format!(
+            "{} files verified in source bundle",
+            bundle.manifest.files.len()
+        ),
     }];
     for art in &plan.artifacts {
         let rel = url_path_for(&art.source);
@@ -232,7 +352,11 @@ pub fn verify_bundle(req: &PublishVerifyRequest) -> Result<PublishVerifyReport> 
             Err(e) => checks.push(Check {
                 name,
                 ok: false,
-                detail: format!("missing published file {} ({}): {e}", path.display(), art.url),
+                detail: format!(
+                    "missing published file {} ({}): {e}",
+                    path.display(),
+                    art.url
+                ),
             }),
         }
     }
@@ -281,7 +405,11 @@ pub fn render_plan_yaml(plan: &PublishPlan) -> String {
 pub fn render_plan_text(plan: &PublishPlan) -> String {
     let mut out = format!(
         "Publish plan: {} ({}, {})\n  host: {} (base {})\n  artifacts: {}\n",
-        plan.bundle, plan.bundle_id, plan.bundle_type, plan.host, plan.base_url,
+        plan.bundle,
+        plan.bundle_id,
+        plan.bundle_type,
+        plan.host,
+        plan.base_url,
         plan.artifacts.len()
     );
     for a in &plan.artifacts {
@@ -322,7 +450,10 @@ mod tests {
     #[test]
     fn url_and_mime_rules() {
         // Oracle: §4.4 example shape + §24.7 MIME table.
-        assert_eq!(url_path_for("public/bundles/roots-all.pem"), "bundles/roots-all.pem");
+        assert_eq!(
+            url_path_for("public/bundles/roots-all.pem"),
+            "bundles/roots-all.pem"
+        );
         assert_eq!(url_path_for("leaf.crt.pem"), "leaf.crt.pem");
         assert_eq!(media_type_for("ca.crt.pem"), "application/pkix-cert");
         assert_eq!(media_type_for("issuers.p7c"), "application/pkcs7-mime");

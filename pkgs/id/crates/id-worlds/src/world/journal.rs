@@ -310,6 +310,22 @@ pub enum JournalEntry {
         /// The new isolation.
         isolation: Isolation,
     },
+    /// The world's presentation policy (#14731 slice 2b, design #5970 §5),
+    /// written whole on every change. Absent means the default policy:
+    /// user shaders and disguise-class filters denied, uploads allowed up
+    /// to the rich rung. Compaction re-emits it when it is not the default.
+    PresentationPolicy {
+        /// The new policy.
+        policy: id_core::presentation_policy::PresentationPolicy,
+    },
+    /// Template role definitions attached to a world created from a template
+    /// (#8282 D5). Definitions are export metadata (name and purpose), not the
+    /// access-control role configuration or membership; both are stored elsewhere.
+    /// Written whole so the latest set can be projected and checkpointed.
+    TemplateRolesSet {
+        /// Role definitions; membership is deliberately not represented.
+        roles: Vec<crate::world_template::RoleDefinition>,
+    },
     /// Whether other unisolated worlds may write here, set by a moderator or
     /// the admin. `enabled: false` also clears a force. Absent means off.
     CrossWorldWrite {
@@ -895,10 +911,20 @@ pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
 /// Unstamped (position 0) lease entries keep version 7.
 pub const JOURNAL_VERSION_LEASE_POSITION: u32 = 16;
 
+/// Journal version 17 (#14731 slice 2b): a
+/// [`JournalEntry::PresentationPolicy`] entry. A version-16 binary cannot
+/// parse the entry kind and would fail mid-replay, so a journal containing
+/// one must be refused at the header check instead.
+pub const JOURNAL_VERSION_PRESENTATION_POLICY: u32 = 17;
+
+/// Journal version 18 (#8282 slice 6): template role-definition records.
+/// Older readers cannot parse the entry kind and must refuse such journals.
+pub const JOURNAL_VERSION_TEMPLATE_ROLES: u32 = 18;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_LEASE_POSITION;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_TEMPLATE_ROLES;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -908,6 +934,8 @@ pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_LEASE_POSITION;
 /// retained events, profile and presence field. A lease entry carrying a
 /// stamped journal position requires version 16, as does a checkpoint whose
 /// lease history carries one; unstamped lease entries keep version 7.
+/// A presentation-policy entry requires version 17. A template-roles
+/// entry requires version 18.
 ///
 /// Any entry that records a program-bundle install additionally requires
 /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
@@ -1016,6 +1044,8 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
         JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
+        JournalEntry::PresentationPolicy { .. } => JOURNAL_VERSION_PRESENTATION_POLICY,
+        JournalEntry::TemplateRolesSet { .. } => JOURNAL_VERSION_TEMPLATE_ROLES,
         JournalEntry::Checkpoint {
             transfers,
             lease,
@@ -1049,7 +1079,8 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
                         .events
                         .iter()
                         .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
-                }) {
+                })
+            {
                 JOURNAL_VERSION_NOTIFY
             } else if blobs.is_some() {
                 JOURNAL_VERSION_BLOB

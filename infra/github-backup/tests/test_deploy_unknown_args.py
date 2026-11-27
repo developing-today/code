@@ -26,12 +26,29 @@ Run: python3 infra/github-backup/tests/test_deploy_unknown_args.py
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.abspath(os.path.join(HERE, "..", "worker", "deploy.mjs"))
+
+# #14267: these tests drive the real deploy.mjs with node. On a host
+# without node (e.g. the fleet-command executor image) skip with a named
+# reason instead of dying on FileNotFoundError and aborting every later
+# test file. CI sets GITHUB_BACKUP_REQUIRE_NODE=1 so a missing node
+# fails there rather than skipping.
+if shutil.which("node") is None:
+    if os.environ.get("GITHUB_BACKUP_REQUIRE_NODE") == "1":
+        print(
+            "FAIL test_deploy_unknown_args.py: node is not on PATH and GITHUB_BACKUP_REQUIRE_NODE=1"
+        )
+        sys.exit(1)
+    print(
+        "SKIP test_deploy_unknown_args.py: node is not on PATH; it drives the real deploy.mjs"
+    )
+    sys.exit(0)
 
 PASS = []
 
@@ -162,7 +179,11 @@ for typo in ("--dry-rnu", "--bogus-flag", "--dryrun", "--deploy-versoin"):
     check(f"{typo}: no stub call at all", calls == "")
 
 # 2. stray positionals and trailing args are rejected the same way.
-for args in (["some-positional"], ["--dry-run", "extra"], ["--deploy-version", "v1", "extra"]):
+for args in (
+    ["some-positional"],
+    ["--dry-run", "extra"],
+    ["--deploy-version", "v1", "extra"],
+):
     proc, calls = run_simple(args)
     label = "/".join(args)
     check(f"{label}: exit 2", proc.returncode == 2)
@@ -187,7 +208,10 @@ for flaglike in ("--dry-run", "--bogus-flag"):
     check(f"flag-like {flaglike}: no stub call at all", calls == "")
 
 # 4. duplicates and the dry-run/deploy-version combination are rejected.
-for args in (["--dry-run", "--dry-run"], ["--deploy-version", "v1", "--deploy-version", "v2"]):
+for args in (
+    ["--dry-run", "--dry-run"],
+    ["--deploy-version", "v1", "--deploy-version", "v2"],
+):
     proc, calls = run_simple(args)
     check(f"{'/'.join(args)}: non-zero exit", proc.returncode != 0)
     check(f"{'/'.join(args)}: no stub call at all", calls == "")
@@ -204,7 +228,9 @@ check("combo: no bws invocation", "bws" not in calls)
 # 5. valid invocations are unchanged.
 proc, calls = run_simple(["--dry-run"])
 check("dry-run: exit 0", proc.returncode == 0)
-check("dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls)
+check(
+    "dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls
+)
 check("dry-run: no versions deploy", "versions deploy" not in calls)
 
 proc, calls = run_simple(["--deploy-version", "version-stub"])

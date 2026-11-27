@@ -741,7 +741,8 @@ let
         name: recipe: !(recipe.private or false) && name != "default"
       ) justRecipes.recipes;
 
-      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      # The standalone flake package is the explicit checked build target.
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { doCheck = true; };
       mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
         wrapWithRuntimes = false;
         doCheck = false;
@@ -851,6 +852,12 @@ let
         cf = pkgs.callPackage ../pkgs/cf { };
         wrangler = pkgs.callPackage ../pkgs/wrangler { };
       };
+      # Turso -> D1 move (2026-11-25): Turso-protocol endpoint over D1.
+      d1Gateway = pkgs.callPackage ../pkgs/d1-gateway/worker/package.nix { };
+      d1GatewayDeploy = pkgs.callPackage ../pkgs/d1-gateway/worker/deploy.nix {
+        inherit d1Gateway;
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
       # Issue #5767, external-Worker slice: the hatch-personal Workers'
       # deploy apps (pinned rev staged at deploy time).
       agentInboxDeploy = pkgs.callPackage ../pkgs/external-workers/agent-inbox-deploy.nix { };
@@ -877,6 +884,8 @@ let
           queueTransportAlertDeploy
           messageBridge
           messageBridgeDeploy
+          d1Gateway
+          d1GatewayDeploy
           agentInboxDeploy
           webhookGatewayDeploy
           webhookGatewaySinkDeploy
@@ -968,6 +977,7 @@ let
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
         message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";
+        d1-gateway-deploy = mkApp d1GatewayDeploy "Deploy the d1-gateway Worker (Turso-protocol endpoint over D1) through the wrangler versions flow; --deploy-version <id> rolls back (needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)";
         agent-inbox-deploy = mkApp agentInboxDeploy "Deploy the agent-inbox Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
         webhook-gateway-deploy = mkApp webhookGatewayDeploy "Deploy the webhook-gateway Worker from the pinned dezren39/hatch-personal source — deploy the sink first on a fresh account (needs hatch-personal read access plus Bitwarden and sops access)";
         webhook-gateway-sink-deploy = mkApp webhookGatewaySinkDeploy "Deploy the webhook-gateway-sink Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
@@ -1436,6 +1446,7 @@ let
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
+        "stable-entrypoints"
         "laptop-untracked-review"
         "openclaw-backup"
         "oc-password-sync"
@@ -1874,11 +1885,12 @@ let
 
   make-mcpx-overlay = {
     overlays = {
+      # Consumer overlays skip the standalone suite; CI checks that target.
       default = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
       mcpx = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
     };
   };

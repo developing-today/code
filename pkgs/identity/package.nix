@@ -2,7 +2,7 @@
   lib,
   buildGoModule,
   buildTag ? "sqlite",
-  vendorHash ? "sha256-teRh+AXehLGDkgeqB/SWI9NiKTBXO7obMcQWlYc/eT0=",
+  vendorHash ? "sha256-ZEK9x7v/pBfu9zELiW0S7NHokWQtOSmmE81VCcdyNCc=",
 }:
 buildGoModule {
   pname = "charm-${buildTag}";

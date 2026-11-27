@@ -7,6 +7,8 @@
 //! Command-line contract (#3352): the whole command line is
 //! declared here and parsed strictly before any file is opened;
 //! anything unaccounted for is a usage error with exit code 2.
+//! Exit codes (family contract, #15766): 0 success, 2 usage /
+//! invalid invocation, 1 execution failure.
 //!
 //! Usage:
 //!   atlas-classify --db CORPUS.db run [--commit]
@@ -53,7 +55,19 @@ use std::process::ExitCode;
 use atlas_core::classify::{self, Disposition, ReviewerIdentity, RunConfig, SchemaDoc, iso_now};
 use serde_json::Value as Json;
 
+/// Execution failure (family contract, #15766): exit 1.
 fn fail(msg: &str) -> ExitCode {
+    eprintln!("atlas-classify: {msg}");
+    ExitCode::FAILURE
+}
+
+/// Usage / invalid-invocation error (family contract, #15766): exit 2.
+/// Action errors carry this prefix when they are usage-shaped
+/// (flag parse, missing/invalid flag values); all other action
+/// errors are execution failures.
+const USAGE_PREFIX: &str = "usage: ";
+
+fn usage_fail(msg: &str) -> ExitCode {
     eprintln!("atlas-classify: {msg}");
     ExitCode::from(2)
 }
@@ -95,19 +109,19 @@ impl Flags {
             if value_flags.contains(&arg.as_str()) {
                 let value = args
                     .get(i + 1)
-                    .ok_or_else(|| format!("{arg} needs a value"))?;
+                    .ok_or_else(|| format!("usage: {arg} needs a value"))?;
                 if values.insert(arg.clone(), value.clone()).is_some() {
-                    return Err(format!("{arg} given twice"));
+                    return Err(format!("usage: {arg} given twice"));
                 }
                 i += 2;
             } else if switch_flags.contains(&arg.as_str()) {
                 if switches.contains(arg) {
-                    return Err(format!("{arg} given twice"));
+                    return Err(format!("usage: {arg} given twice"));
                 }
                 switches.push(arg.clone());
                 i += 1;
             } else {
-                return Err(format!("unknown argument {arg:?}"));
+                return Err(format!("usage: unknown argument {arg:?}"));
             }
         }
         Ok(Flags { values, switches })
@@ -118,7 +132,8 @@ impl Flags {
     }
 
     fn require(&self, name: &str) -> Result<&str, String> {
-        self.get(name).ok_or_else(|| format!("missing {name}"))
+        self.get(name)
+            .ok_or_else(|| format!("usage: missing {name}"))
     }
 
     fn has(&self, name: &str) -> bool {
@@ -150,7 +165,7 @@ fn emit(doc: &Json, manifest_out: Option<&str>) -> Result<(), String> {
 
 fn parse_u64(raw: &str, flag: &str) -> Result<u64, String> {
     raw.parse::<u64>()
-        .map_err(|_| format!("{flag} must be an unsigned integer, got {raw:?}"))
+        .map_err(|_| format!("usage: {flag} must be an unsigned integer, got {raw:?}"))
 }
 
 fn action_run(db: &Path, args: &[String]) -> Result<Json, String> {
@@ -179,9 +194,9 @@ fn action_run(db: &Path, args: &[String]) -> Result<Json, String> {
     if let Some(days) = flags.get("--window-days") {
         config.window_days = days
             .parse::<i64>()
-            .map_err(|_| format!("--window-days must be an integer, got {days:?}"))?;
+            .map_err(|_| format!("usage: --window-days must be an integer, got {days:?}"))?;
         if config.window_days < 0 {
-            return Err("--window-days must not be negative".to_string());
+            return Err("usage: --window-days must not be negative".to_string());
         }
     }
     if let Some(v) = flags.get("--schema-version") {
@@ -191,7 +206,7 @@ fn action_run(db: &Path, args: &[String]) -> Result<Json, String> {
         config.max_decisions = Some(
             parse_u64(v, "--max-decisions")?
                 .try_into()
-                .map_err(|_| "--max-decisions is too large".to_string())?,
+                .map_err(|_| "usage: --max-decisions is too large".to_string())?,
         );
     }
     let manifest = classify::run_classification(db, flags.has("--commit"), &config)
@@ -211,10 +226,10 @@ fn action_schema_review(db: &Path, args: &[String]) -> Result<Json, String> {
         ],
         &[],
     )?;
-    let old =
-        SchemaDoc::parse(&read_json(flags.require("--old-schema")?)?).map_err(|e| e.to_string())?;
-    let new =
-        SchemaDoc::parse(&read_json(flags.require("--new-schema")?)?).map_err(|e| e.to_string())?;
+    let old_path = flags.require("--old-schema")?;
+    let new_path = flags.require("--new-schema")?;
+    let old = SchemaDoc::parse(&read_json(old_path)?).map_err(|e| e.to_string())?;
+    let new = SchemaDoc::parse(&read_json(new_path)?).map_err(|e| e.to_string())?;
     // The review's config provenance binds the reviewer identity
     // and both schema documents.
     let config_canonical = format!(
@@ -251,12 +266,12 @@ fn action_schema_apply(db: &Path, args: &[String]) -> Result<Json, String> {
         &["--review", "--dispositions", "--now", "--manifest-out"],
         &[],
     )?;
-    let review: classify::SchemaReview =
-        serde_json::from_value(read_json(flags.require("--review")?)?)
-            .map_err(|e| format!("parse review: {e}"))?;
+    let review_path = flags.require("--review")?;
+    let dispositions_path = flags.require("--dispositions")?;
+    let review: classify::SchemaReview = serde_json::from_value(read_json(review_path)?)
+        .map_err(|e| format!("parse review: {e}"))?;
     let dispositions: BTreeMap<String, Disposition> =
-        classify::parse_dispositions(&read_json(flags.require("--dispositions")?)?)
-            .map_err(|e| e.to_string())?;
+        classify::parse_dispositions(&read_json(dispositions_path)?).map_err(|e| e.to_string())?;
     let now = flags
         .get("--now")
         .map(str::to_owned)
@@ -273,7 +288,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("atlas-classify {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "atlas-classify {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
         return ExitCode::SUCCESS;
     }
     // Global flags: exactly one --db, then the action and its args.
@@ -283,14 +301,14 @@ fn main() -> ExitCode {
     while i < args.len() {
         if args[i] == "--db" {
             if db.is_some() {
-                return fail("--db given twice");
+                return usage_fail("--db given twice");
             }
             match args.get(i + 1) {
                 Some(path) => {
                     db = Some(PathBuf::from(path));
                     i += 2;
                 }
-                None => return fail("--db needs a value"),
+                None => return usage_fail("--db needs a value"),
             }
         } else {
             rest.push(args[i].clone());
@@ -307,7 +325,7 @@ fn main() -> ExitCode {
         "run" => action_run(&db, action_args),
         "schema-review" => action_schema_review(&db, action_args),
         "schema-apply" => action_schema_apply(&db, action_args),
-        other => return fail(&format!("unknown action {other:?}")),
+        other => return usage_fail(&format!("unknown action {other:?}")),
     };
     match result {
         Ok(doc) => {
@@ -323,6 +341,9 @@ fn main() -> ExitCode {
                 Err(msg) => fail(&msg),
             }
         }
-        Err(msg) => fail(&msg),
+        Err(msg) => match msg.strip_prefix(USAGE_PREFIX) {
+            Some(msg) => usage_fail(msg),
+            None => fail(&msg),
+        },
     }
 }

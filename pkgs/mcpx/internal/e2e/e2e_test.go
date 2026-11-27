@@ -267,6 +267,22 @@ func TestLsStartsDaemonAndListsNamespaces(t *testing.T) {
 	}
 }
 
+func TestIdenticalUpstreamsNeverMerge(t *testing.T) {
+	// The oracle is the configured upstream identity: alpha and beta have
+	// identical command definitions, but the visible namespace set must keep
+	// both names instead of collapsing them into one server.
+	e := newEnv(t, twoVisibleServers)
+	out := e.run("ls")
+	for _, namespace := range []string{"alpha", "beta"} {
+		if !strings.Contains(out, namespace) {
+			t.Errorf("identical upstream namespace %q was lost:\n%s", namespace, out)
+		}
+	}
+	if strings.Contains(out, "namespace collision") {
+		t.Fatalf("identical upstreams must receive distinct namespaces, not collide:\n%s", out)
+	}
+}
+
 func TestLsIsFastOnceCached(t *testing.T) {
 	e := newEnv(t, oneServer)
 	e.run("ls")
@@ -3344,6 +3360,23 @@ func TestMain(m *testing.M) {
 
 func guardedMain(m *testing.M) int {
 	before := callerDaemonSet()
+	// The suite must not publish into the caller's real state directory: a
+	// daemon record the suite writes there is indistinguishable from a
+	// daemon the caller owns, and the before/after snapshot below reports a
+	// successful run as a disturbance. Child daemons already get their own
+	// XDG_STATE_HOME; point this process at one too before any test resolves
+	// daemon.Paths().
+	state := os.Getenv("XDG_STATE_HOME")
+	stateDir, err := os.MkdirTemp("", "mcpx-e2e-state-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: making an isolated state dir: %v\n", err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(stateDir) }()
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: isolating XDG_STATE_HOME: %v\n", err)
+		return 1
+	}
 	for _, name := range []string{"MCPX_DAEMON_ENDPOINT", "MCPX_SOCKET"} {
 		if v := os.Getenv(name); v != "" && childWouldInherit(name) {
 			fmt.Fprintf(os.Stderr,
@@ -3354,6 +3387,12 @@ func guardedMain(m *testing.M) int {
 		}
 	}
 	code := m.Run()
+	if state == "" {
+		_ = os.Unsetenv("XDG_STATE_HOME")
+	} else if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: restoring XDG_STATE_HOME: %v\n", err)
+		return 1
+	}
 	after := callerDaemonSet()
 	if !slices.Equal(before, after) {
 		fmt.Fprintf(os.Stderr,

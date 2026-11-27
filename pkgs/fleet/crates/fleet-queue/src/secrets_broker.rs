@@ -14,6 +14,12 @@
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
+//!   GET /secrets?prefix=P -> {names: [...]} holding only names that
+//!                          start with `P.` (#10358 D6); an empty
+//!                          `prefix=` is refused (400). `&project=<id>`
+//!                          (or alone) narrows further to names whose
+//!                          recorded Bitwarden project is that id
+//!                          (#10358 S3); an empty `project=` is a 400
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
 //!
@@ -71,7 +77,6 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use std::net::TcpListener;
 
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
@@ -102,7 +107,17 @@ struct RefreshProgress {
 
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
+    /// The durable watermark of the last successful refresh (#13948
+    /// S2). Also the `last_upstream_refresh_at` peers see (S3).
     last_refresh: RwLock<Option<u64>>,
+    /// Whether the peer verbs are served (#13948 S3, §8). Off by
+    /// default: with it off, /peer/status is an unknown route and the
+    /// broker behaves as it did before S3.
+    peer_status_enabled: bool,
+    /// Trusted peer's HTTP base URL; sync remains dark unless the S3
+    /// peer-status flag is enabled and this URL is configured.
+    peer_url: Option<String>,
+    peer_token: String,
     /// The most recent vault-refresh failure, cleared by the next
     /// successful refresh. Served on the not-loaded 503 so a client
     /// can see WHY the broker has no secrets (#10743) instead of
@@ -122,6 +137,15 @@ struct State {
     /// for the same name wait on the gate instead of stampeding the
     /// vault with duplicate list+get pairs.
     inflight: Mutex<HashMap<String, Arc<FetchGate>>>,
+    /// The Bitwarden project each cached name belongs to, from the
+    /// `projectId` of the list entry that carried it (#10358 S3).
+    /// A name absent here has an unknown project (a read-through
+    /// install, or a listing without project ids): a `project=`
+    /// listing never returns it, so a project-scoped caller sees
+    /// only names proven to be in its project. Kept beside the
+    /// cache, not inside it, so refresh/watermark semantics are
+    /// untouched (#13948).
+    projects: RwLock<HashMap<String, String>>,
 }
 
 /// The outcome slot of one in-flight read-through fetch: the leader
@@ -229,6 +253,170 @@ fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
 }
 
+/// Parse and verify a peer's full-set payload. Project metadata is kept
+/// beside the cache (S3), so a full S4 adoption must move it with the
+/// corresponding names and values when project-scoped listings are enabled.
+fn parse_peer_secrets(
+    token: &str,
+    rows: &[Value],
+    expected_count: u64,
+    expected_hash: &str,
+) -> Result<(HashMap<String, CachedSecret>, HashMap<String, String>), String> {
+    if rows.len() as u64 != expected_count {
+        return Err("peer payload count does not match status".into());
+    }
+    let mut adopted = HashMap::with_capacity(rows.len());
+    let mut projects = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let name = row["name"].as_str().ok_or("peer secret missing name")?;
+        let value = row["value"].as_str().ok_or("peer secret missing value")?;
+        let id = row["id"].as_str().unwrap_or("");
+        adopted.insert(
+            name.to_string(),
+            CachedSecret {
+                id: id.to_string(),
+                value: value.to_string(),
+                fetched_at_unix: now_unix(),
+            },
+        );
+        if let Some(project) = row["projectId"].as_str().filter(|p| !p.is_empty()) {
+            projects.insert(name.to_string(), project.to_string());
+        }
+    }
+    let (verified_hash, count) = keyed_set_hash(token, &adopted);
+    if count as u64 != expected_count {
+        return Err("peer payload contains duplicate secret names".into());
+    }
+    if verified_hash != expected_hash {
+        return Err("peer payload hash did not match advertised status".into());
+    }
+    Ok((adopted, projects))
+}
+
+/// Ask the trusted peer for its keyed status, then pull its complete set
+/// only when it is newer and differs. `Ok(None)` means use the upstream
+/// delta/full fallback; `Ok(Some(n))` means the peer served this cycle.
+fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
+    let started = std::time::Instant::now();
+    if !state.peer_status_enabled {
+        return Ok(None);
+    }
+    let Some(base) = state.peer_url.as_deref() else {
+        return Ok(None);
+    };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .build()
+        .into();
+    let request = |path: &str| {
+        agent
+            .get(&format!("{base}{path}"))
+            .header("X-Agent-Token", &state.peer_token)
+            .call()
+            .map_err(|e| format!("peer {path} request failed: {e}"))
+    };
+    let mut status = match request("/peer/status") {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log::info(
+                "secrets-broker",
+                &format!("peer unavailable; upstream fallback: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let body: Value = status
+        .body_mut()
+        .read_json()
+        .map_err(|_| "peer status response invalid".to_string())?;
+    let peer_hash = body["set_hash"]
+        .as_str()
+        .ok_or("peer status missing set hash")?;
+    let peer_watermark = body["last_upstream_refresh_at"].as_u64();
+    let local_watermark = *state.last_refresh.read().unwrap();
+    let (local_hash, local_count) =
+        keyed_set_hash(&state.peer_token, &state.secrets.read().unwrap());
+    let peer_count = body["count"].as_u64().unwrap_or(0);
+    if peer_hash == local_hash {
+        // The set is already equal, so no payload is needed; advancing
+        // the watermark still prevents a later stale peer from appearing
+        // newer after this broker observes the peer's fresher state.
+        if let Some(peer) = peer_watermark
+            && local_watermark.is_none_or(|local| peer > local)
+        {
+            *state.last_refresh.write().unwrap() = Some(peer);
+            if let Err(e) = persist_watermark(peer) {
+                crate::log::info(
+                    "secrets-broker",
+                    &format!("synced peer watermark persist failed: {e}"),
+                );
+            }
+        }
+        crate::log::info(
+            "secrets-broker",
+            &format!(
+                "peer sync: synced count {local_count}, hash {}, elapsed_ms {}",
+                &local_hash[..12],
+                started.elapsed().as_millis()
+            ),
+        );
+        return Ok(Some(local_count));
+    }
+    if peer_watermark.is_none_or(|peer| local_watermark.is_some_and(|local| peer <= local)) {
+        crate::log::info(
+            "secrets-broker",
+            &format!("peer stale or watermark unavailable (count {peer_count}); upstream fallback"),
+        );
+        return Ok(None);
+    }
+    let mut response = match request("/peer/secrets") {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log::info(
+                "secrets-broker",
+                &format!("peer pull failed; upstream fallback: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let payload: Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|_| "peer secrets response invalid".to_string())?;
+    let rows = payload["secrets"]
+        .as_array()
+        .ok_or("peer secrets payload missing list")?;
+    let (adopted, adopted_projects) =
+        parse_peer_secrets(&state.peer_token, rows, peer_count, peer_hash)?;
+    let count = adopted.len();
+    let verified_hash = peer_hash;
+    // Match the lock order used by upstream refresh and project-scoped
+    // listing: project metadata first, then the cache itself.
+    let mut projects = state.projects.write().unwrap();
+    let mut secrets = state.secrets.write().unwrap();
+    *projects = adopted_projects;
+    *secrets = adopted;
+    drop(secrets);
+    drop(projects);
+    let watermark = peer_watermark.unwrap();
+    *state.last_refresh.write().unwrap() = Some(watermark);
+    if let Err(e) = persist_watermark(watermark) {
+        crate::log::info(
+            "secrets-broker",
+            &format!("peer adopted; watermark persist failed: {e}"),
+        );
+    }
+    crate::log::info(
+        "secrets-broker",
+        &format!(
+            "peer sync: adopted {count} secrets, hash {}, elapsed_ms {}",
+            &verified_hash[..12],
+            started.elapsed().as_millis()
+        ),
+    );
+    Ok(Some(count))
+}
+
 /// One full vault refresh: one `bws secret list` call carrying values,
 /// validated strictly, then installed atomically (#13948 S1).
 fn refresh(state: &Arc<State>) -> Result<usize, String> {
@@ -239,7 +427,11 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         }
         *r = true;
     }
-    let result = do_refresh(state);
+    let result = match peer_sync(state) {
+        Ok(Some(count)) => Ok(count),
+        Ok(None) => do_refresh(state),
+        Err(e) => Err(e),
+    };
     // The refresh-error bookkeeping lives here, in the one shared
     // operation, so every caller records it — the background loop
     // AND the manual POST /refresh path, whose caller discards the
@@ -562,6 +754,7 @@ fn resolve_list_id(list: &Value, name: &str) -> Result<Option<String>, String> {
 }
 
 fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
+    let started = std::time::Instant::now();
     // The watermark is the START of the last successful refresh minus
     // the skew overlap (#13948 §5.1): record the start before the one
     // `bws secret list` call lands, so a change timestamped during
@@ -585,17 +778,52 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     let fetched_at_unix = now_unix();
     let watermark_new = started_unix.saturating_sub(WATERMARK_SKEW_S);
     let outcome = apply_delta_refresh(state, &entries, watermark, fetched_at_unix, watermark_new);
+    // #10358 S3: record each listed name's project from the same
+    // validated list, then drop project records for names the cache
+    // no longer holds. A listed entry without a string `projectId`
+    // clears any stale record — its project is unknown, and a
+    // `project=` listing must not claim it.
+    if let Some(arr) = list.as_array() {
+        let mut projects = state.projects.write().unwrap();
+        for entry in arr {
+            let (Some(key), project) = (
+                entry.get("key").and_then(|v| v.as_str()),
+                entry.get("projectId").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            match project {
+                Some(p) if !p.is_empty() => {
+                    projects.insert(key.to_string(), p.to_string());
+                }
+                _ => {
+                    projects.remove(key);
+                }
+            }
+        }
+        let cached = state.secrets.read().unwrap();
+        projects.retain(|name, _| cached.contains_key(name));
+    }
     // Durability is best-effort after a successful apply: the
     // in-memory watermark has already advanced, and a persist failure
     // merely degrades the next process start to a full apply (safe).
     if let Err(e) = persist_watermark(watermark_new) {
         crate::log::info("secrets-broker", &format!("watermark persist failed: {e}"));
     } else {
+        let leg = if watermark.is_none() {
+            "upstream-full"
+        } else {
+            "upstream-delta"
+        };
         crate::log::info(
             "secrets-broker",
             &format!(
-                "delta refresh: applied {} of {}, deleted {}, total {}",
-                outcome.applied, total, outcome.deleted, outcome.total
+                "{leg}: applied {} of {}, deleted {}, total {}, elapsed_ms {}",
+                outcome.applied,
+                total,
+                outcome.deleted,
+                outcome.total,
+                started.elapsed().as_millis()
             ),
         );
     }
@@ -738,6 +966,51 @@ fn fetch_through_with(
     result
 }
 
+/// HMAC-SHA256 (RFC 2104) over sha2, which fleet-queue already
+/// depends on; no extra crate for one keyed hash.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        let mut h = Sha256::new();
+        h.update(key);
+        block[..32].copy_from_slice(&h.finalize());
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(msg);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(&inner);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&outer.finalize());
+    out
+}
+
+/// Keyed whole-set hash (#13948 §5.3): names sorted, each (name,
+/// value) pair HMAC'd under the peer token, the pair hashes
+/// concatenated in name order and HMAC'd again. Keyed, so a leaked
+/// set hash does not let an attacker test low-entropy values offline.
+/// Returns the hex digest and the number of secrets it covers.
+fn keyed_set_hash(token: &str, secrets: &HashMap<String, CachedSecret>) -> (String, usize) {
+    let mut names: Vec<&String> = secrets.keys().collect();
+    names.sort();
+    let mut pairs = Vec::with_capacity(names.len() * 32);
+    for name in &names {
+        let mut msg = name.as_bytes().to_vec();
+        msg.push(0);
+        msg.extend_from_slice(secrets[*name].value.as_bytes());
+        pairs.extend_from_slice(&hmac_sha256(token.as_bytes(), &msg));
+    }
+    let set = hmac_sha256(token.as_bytes(), &pairs);
+    let hex: String = set.iter().map(|b| format!("{b:02x}")).collect();
+    (hex, names.len())
+}
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -826,9 +1099,64 @@ fn handle_request(
     } else if !token_matches(provided_token, token) {
         (401, json!({"error": "unauthorized"}))
     } else if method == "GET" && path == "/secrets" {
-        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        // #10358 D6: a scoped caller sends `?prefix=P` and is answered
+        // only the cached names under `P.`, so unscoped names never
+        // cross the socket to it. The cache itself is unchanged.
+        // #10358 S3 (D8): `?project=<id>` beside it answers only names
+        // whose recorded Bitwarden project is that id; a name with no
+        // recorded project is never claimed by a project filter.
+        let lead = match secrets_list_prefix(url) {
+            Ok(None) => None,
+            Ok(Some(prefix)) => Some(format!("{prefix}.")),
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let project = match secrets_list_project(url) {
+            Ok(project) => project,
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let projects = state.projects.read().unwrap();
+        let mut names: Vec<String> = state
+            .secrets
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|name| lead.as_deref().is_none_or(|l| name.starts_with(l)))
+            .filter(|name| {
+                project
+                    .as_deref()
+                    .is_none_or(|p| projects.get(name.as_str()).map(String::as_str) == Some(p))
+            })
+            .cloned()
+            .collect();
         names.sort();
         (200, json!({"names": names}))
+    } else if method == "GET" && path == "/peer/secrets" && state.peer_status_enabled {
+        let projects = state.projects.read().unwrap();
+        let secrets = state.secrets.read().unwrap();
+        let mut entries: Vec<_> = secrets
+            .iter()
+            .map(|(name, cached)| {
+                json!({
+                    "name": name,
+                    "id": cached.id,
+                    "value": cached.value,
+                    "fetched_at_unix": cached.fetched_at_unix,
+                    "projectId": projects.get(name),
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        (200, json!({"secrets": entries}))
+    } else if method == "GET" && path == "/peer/status" && state.peer_status_enabled {
+        let (set_hash, count) = keyed_set_hash(token, &state.secrets.read().unwrap());
+        (
+            200,
+            json!({
+                "set_hash": set_hash,
+                "last_upstream_refresh_at": *state.last_refresh.read().unwrap(),
+                "count": count,
+            }),
+        )
     } else if method == "POST" && path == "/refresh" {
         let st = Arc::clone(state);
         std::thread::spawn(move || {
@@ -993,13 +1321,24 @@ pub fn run() -> i32 {
     if loaded_watermark.is_some() {
         crate::log::info("secrets-broker", "loaded durable watermark from disk");
     }
+    let peer_status_enabled = std::env::var("SECRETS_BROKER_PEER_STATUS")
+        .map(|v| matches!(v.as_str(), "1" | "true"))
+        .unwrap_or(false);
+    let peer_url = std::env::var("SECRETS_BROKER_PEER_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim_end_matches('/').to_string());
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(loaded_watermark),
+        peer_status_enabled,
+        peer_url,
+        peer_token: token.clone(),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
+        projects: RwLock::new(HashMap::new()),
     });
 
     // Background refresh loop: initial load + TTL refresh,
@@ -1018,7 +1357,8 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match TcpListener::bind(&bind) {
+    // #15533: same tailnet-race guard as queue-broker above.
+    let server = match crate::bind_guard::tcp_bind_with_retry("secrets-broker", &bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1072,6 +1412,7 @@ pub fn run() -> i32 {
                             &req.target,
                             req.header("X-Agent-Token"),
                         );
+                        crate::uds_http::log_ctx_trip("secrets-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1120,6 +1461,7 @@ pub fn run() -> i32 {
                 &req.target,
                 req.header("X-Agent-Token"),
             );
+            crate::uds_http::log_ctx_trip("secrets-broker", req, status);
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1127,6 +1469,42 @@ pub fn run() -> i32 {
         },
     );
     0
+}
+
+/// The `prefix` query parameter of a `GET /secrets` target (#10358
+/// D6): `Ok(None)` when absent, `Err` when present but empty. Only
+/// `%XX` decodes, as in a path segment.
+fn secrets_list_prefix(url: &str) -> Result<Option<String>, &'static str> {
+    secrets_list_param(url, "prefix", "empty prefix")
+}
+
+/// The `project` query parameter of a `GET /secrets` target (#10358
+/// S3): `Ok(None)` when absent, `Err` when present but empty.
+fn secrets_list_project(url: &str) -> Result<Option<String>, &'static str> {
+    secrets_list_param(url, "project", "empty project")
+}
+
+/// One named query parameter of a request target: the first
+/// occurrence wins; `%XX` decodes, as in a path segment.
+fn secrets_list_param(
+    url: &str,
+    param: &str,
+    empty_error: &'static str,
+) -> Result<Option<String>, &'static str> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(None);
+    };
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == param {
+            let decoded = url_decode(value);
+            if decoded.is_empty() {
+                return Err(empty_error);
+            }
+            return Ok(Some(decoded));
+        }
+    }
+    Ok(None)
 }
 
 fn url_decode(s: &str) -> String {
@@ -1156,11 +1534,12 @@ mod tests {
     use super::{
         CachedSecret, DEFAULT_TTL_S, DeltaOutcome, MIN_TTL_S, State, WATERMARK_SKEW_S,
         apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
-        entry_revision_unix, fetch_through_with, handle_request, install_list_refresh,
-        load_watermark, note_refresh_fetch, now_unix, parse_delta_entries, parse_list_entries,
-        parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        url_decode,
+        entry_revision_unix, fetch_through_with, handle_request, hmac_sha256, install_list_refresh,
+        keyed_set_hash, load_watermark, note_refresh_fetch, now_unix, parse_delta_entries,
+        parse_list_entries, parse_peer_secrets, parse_rfc3339_unix, parse_ttl_s, persist_watermark,
+        pre_body_refusal, resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
     };
+    use serde_json::json;
     use std::time::Duration;
 
     #[test]
@@ -1191,13 +1570,21 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     fn empty_state() -> Arc<State> {
+        empty_state_with_peer_status_enabled(true)
+    }
+
+    fn empty_state_with_peer_status_enabled(enabled: bool) -> Arc<State> {
         Arc::new(State {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
+            peer_status_enabled: enabled,
+            peer_url: None,
+            peer_token: "tok".into(),
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
+            projects: RwLock::new(HashMap::new()),
         })
     }
 
@@ -1277,6 +1664,129 @@ mod tests {
         assert_eq!(body["fetched_at_unix"], 7);
         let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
         assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn secrets_list_answers_a_prefix_with_only_its_names() {
+        // #10358 S2 (D6): scoped list, refused empty prefix, unscoped
+        // list unchanged.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "42.42.x".to_string(), "v".to_string()),
+                ("4".to_string(), "420.y".to_string(), "v".to_string()),
+                ("5".to_string(), "43.z".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x", "42.alpha"]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?prefix=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty prefix");
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(
+            body["names"],
+            json!(["42.42.x", "42.alpha", "420.y", "43.z", "alpha"])
+        );
+        // A dotted prefix matches as a whole, and the token still gates
+        // the scoped form.
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42.42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x"]));
+        let (status, _) = handle_request(&state, "tok", "GET", "/secrets?prefix=42", None);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn secrets_list_answers_a_project_with_only_its_names() {
+        // #10358 S3 (D8): a project filter answers only names whose
+        // recorded project is that id; a name with no recorded
+        // project is never claimed, and the filters compose.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "beta".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        {
+            let mut projects = state.projects.write().unwrap();
+            projects.insert("alpha".to_string(), "proj-1".to_string());
+            projects.insert("42.alpha".to_string(), "proj-1".to_string());
+            projects.insert("beta".to_string(), "proj-2".to_string());
+        }
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?project=proj-1", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha", "alpha"]));
+        let (status, body) = handle_request(
+            &state,
+            "tok",
+            "GET",
+            "/secrets?prefix=42&project=proj-1",
+            Some("tok"),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha"]));
+        let (status, body) = handle_request(
+            &state,
+            "tok",
+            "GET",
+            "/secrets?prefix=42&project=proj-2",
+            Some("tok"),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!([]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?project=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty project");
+        // A name whose project record is removed drops out of every
+        // project listing but stays in the unfiltered one.
+        state.projects.write().unwrap().remove("beta");
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?project=proj-2", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!([]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.alpha", "alpha", "beta"]));
+    }
+
+    #[test]
+    fn secrets_list_prefix_parses_the_query() {
+        assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
+        assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
+        assert_eq!(
+            secrets_list_prefix("/secrets?prefix=42"),
+            Ok(Some("42".to_string()))
+        );
+        assert_eq!(
+            secrets_list_prefix("/secrets?x=1&prefix=a%26b"),
+            Ok(Some("a&b".to_string()))
+        );
+        assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
+        assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
+        // #10358 S3: project parses the same way, beside prefix.
+        assert_eq!(secrets_list_project("/secrets"), Ok(None));
+        assert_eq!(
+            secrets_list_project("/secrets?prefix=42&project=p%2D1"),
+            Ok(Some("p-1".to_string()))
+        );
+        assert_eq!(
+            secrets_list_project("/secrets?project="),
+            Err("empty project")
+        );
     }
 
     #[test]
@@ -2005,5 +2515,127 @@ mod tests {
             );
             assert!(warning.contains(raw), "warning: {warning}");
         }
+    }
+
+    fn set_of(pairs: &[(&str, &str)]) -> HashMap<String, CachedSecret> {
+        pairs
+            .iter()
+            .map(|(n, v)| {
+                (
+                    n.to_string(),
+                    CachedSecret {
+                        id: format!("id-{n}"),
+                        value: v.to_string(),
+                        fetched_at_unix: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn peer_set_hash_is_equal_for_equal_sets_regardless_of_insertion_order() {
+        let a = set_of(&[("alpha", "1"), ("beta", "2")]);
+        let b = set_of(&[("beta", "2"), ("alpha", "1")]);
+        assert_eq!(keyed_set_hash("tok", &a), keyed_set_hash("tok", &b));
+        assert_eq!(keyed_set_hash("tok", &a).1, 2);
+    }
+
+    #[test]
+    fn peer_set_hash_changes_when_one_value_flips() {
+        let a = set_of(&[("alpha", "1"), ("beta", "2")]);
+        let b = set_of(&[("alpha", "1"), ("beta", "3")]);
+        assert_ne!(keyed_set_hash("tok", &a).0, keyed_set_hash("tok", &b).0);
+    }
+
+    #[test]
+    fn peer_set_hash_is_keyed_by_the_peer_token() {
+        let a = set_of(&[("alpha", "1")]);
+        assert_ne!(keyed_set_hash("tok", &a).0, keyed_set_hash("other", &a).0);
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc4231_case_1() {
+        let key = [0x0bu8; 20];
+        let out: String = hmac_sha256(&key, b"Hi There")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            out,
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
+
+    #[test]
+    fn peer_status_returns_keyed_set_metadata_to_an_authenticated_peer() {
+        let state = empty_state();
+        let secrets = set_of(&[("alpha", "1"), ("beta", "2")]);
+        *state.secrets.write().unwrap() = secrets.clone();
+        *state.last_refresh.write().unwrap() = Some(42);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 200);
+        assert_eq!(body["set_hash"], keyed_set_hash("tok", &secrets).0);
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["last_upstream_refresh_at"], 42);
+    }
+
+    #[test]
+    fn peer_full_set_is_authenticated_and_contains_the_complete_cache() {
+        let state = empty_state();
+        *state.secrets.write().unwrap() = set_of(&[("alpha", "one"), ("beta", "two")]);
+        state.projects.write().unwrap().extend([
+            ("alpha".into(), "project-a".into()),
+            ("beta".into(), "project-b".into()),
+        ]);
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        let rows = body["secrets"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "alpha");
+        assert_eq!(rows[1]["name"], "beta");
+        assert_eq!(rows[0]["id"], "id-alpha");
+        assert_eq!(rows[1]["id"], "id-beta");
+        assert_eq!(rows[0]["projectId"], "project-a");
+        assert_eq!(rows[1]["projectId"], "project-b");
+    }
+
+    #[test]
+    fn peer_full_set_adoption_preserves_project_metadata() {
+        let secrets = set_of(&[("alpha", "one"), ("beta", "two")]);
+        let (set_hash, count) = keyed_set_hash("tok", &secrets);
+        let rows = vec![
+            json!({"name":"alpha","id":"id-alpha","value":"one","projectId":"project-a"}),
+            json!({"name":"beta","id":"id-beta","value":"two","projectId":"project-b"}),
+        ];
+
+        let (adopted, projects) = parse_peer_secrets("tok", &rows, count as u64, &set_hash)
+            .expect("the advertised hash and count match the complete peer set");
+        assert_eq!(keyed_set_hash("tok", &adopted).0, set_hash);
+        assert_eq!(projects.get("alpha").map(String::as_str), Some("project-a"));
+        assert_eq!(projects.get("beta").map(String::as_str), Some("project-b"));
+    }
+
+    #[test]
+    fn peer_status_refuses_missing_or_wrong_peer_tokens() {
+        let state = empty_state();
+
+        for provided in [None, Some("wrong")] {
+            let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", provided);
+            assert_eq!(status, 401);
+            assert_eq!(body["error"], "unauthorized");
+        }
+    }
+
+    #[test]
+    fn peer_status_is_not_routed_when_the_feature_is_disabled() {
+        let state = empty_state_with_peer_status_enabled(false);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+
+        assert_eq!(status, 404);
+        assert_eq!(body["error"], "not found");
     }
 }

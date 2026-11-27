@@ -1,0 +1,32 @@
+# Build-variant feature sets for pkgs/id — the single profile source (S2)
+#
+# S2 of developing-today/code#14056 (plan §7.4 and §10): the Nix package
+# definitions, the justfile cargo recipes and `scripts/build.sh` take their
+# variant feature sets from this file; none of them may spell a set out
+# inline. `composition/validate.py` check 8 pins this (root features exist,
+# root default matches, and every consumer reads the source rather than
+# redefining a list), so drift fails validation instead of shipping
+# silently — the §0.1 three-sources-of-truth failure, closed mechanically.
+#
+# Read by:
+# - `flake.nix` — `builtins.fromTOML (builtins.readFile ./composition/variants.toml)`
+#   for both `id-web` and `id-lib` (`cargoExtraArgs` and `buildFeatures`).
+# - `scripts/build.sh` — through `scripts/variant-features.sh`.
+# - `justfile` — the cargo recipes call `scripts/variant-features.sh`.
+#
+# The sets are the resolved cargo feature lists, not catalogue profile
+# names: the catalogue profiles (S1) plus the S7 `id-compose` emitter own
+# the profile → feature mapping end to end; until that lands, this file is
+# the checked-in mirror of the two shipped variants.
+
+[variant.web]
+description = "Primary product: flake default package `id-web`, `just build`, `just release`, `./scripts/build.sh web`. Web UI on top of execution and ssh."
+features = ["web", "sandbox", "ssh", "world"]
+
+[variant.lib]
+description = "Library/plain build: flake `id-lib`, `just build-lib`, `just release-lib`, `./scripts/build.sh lib`. Equals the root default build — no web, no ssh."
+features = ["sandbox", "world"]
+
+[root]
+# Must equal the root Cargo.toml `[features] default`.
+default = ["sandbox", "world"]

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {webcrypto} from 'node:crypto';
 const els={};
-const context=vm.createContext({console,URL,crypto:webcrypto,structuredClone,window:{},document:{querySelector:s=>els[s]??=( {innerHTML:'',textContent:''}),addEventListener:()=>{},querySelectorAll:()=>[]},localStorage:{getItem:()=>null,setItem:()=>{}},fetch:async()=>({ok:true,json:async()=>({user:{id:'x',email:'test@example.test'},stores:[],invitations:[],settings:{}})})});
+const context=vm.createContext({console,URL,crypto:webcrypto,structuredClone,window:{},document:{querySelector:s=>els[s]??=( {innerHTML:'',textContent:'',open:false,showModal(){this.open=true},close(){this.open=false}}),addEventListener:()=>{},querySelectorAll:()=>[]},localStorage:{getItem:()=>null,setItem:()=>{}},fetch:async()=>({ok:true,json:async()=>({user:{id:'x',email:'test@example.test'},stores:[],invitations:[],settings:{}})})});
 vm.runInContext(fs.readFileSync('public/seed.js','utf8'),context);
 let src=fs.readFileSync('public/app.js','utf8');
 assert(context.window.SEED.items.length>=3);
@@ -14,6 +14,15 @@ vm.runInContext(src,context);
 await new Promise(r=>setTimeout(r,20));
 assert.match(els['#app'].innerHTML,/Build a buying guide/);
 assert.match(els['#storebar'].innerHTML,/New store/);
+assert.match(fs.readFileSync('public/index.html','utf8'),/id="modal" aria-labelledby="dialog-title"/);
+for (const title of ['First dialog','Second dialog']) {
+  context.title=title;
+  vm.runInContext("dlg(title,'',()=>{})",context);
+  assert.match(els['#dialogform'].innerHTML,new RegExp('<h2 id="dialog-title">'+title+'</h2>'));
+}
+vm.runInContext('restore()',context);
+assert.match(els['#dialogform'].innerHTML,/<h2 id="dialog-title">Restore a tracker backup<\/h2>/);
+console.log('Passed: the shared dialog label reference resolves to its current visible heading.');
 const evalJSON=s=>JSON.parse(vm.runInContext('JSON.stringify('+s+')',context));
 assert.equal(evalJSON("key('https://www.amazon.com/gp/product/b01ckmp24e/ref=test?tag=foo')"),'asin:B01CKMP24E');
 assert.equal(evalJSON("tidy('日本語\u200d\u0001 Привет')"),'日本語 Привет');

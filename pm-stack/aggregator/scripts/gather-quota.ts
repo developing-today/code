@@ -4,13 +4,13 @@
 // timer, units in pm-stack/systemd/, installed by install.sh) beside
 // the aggregator and the snapshot store.
 //
-// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): every quota
-// reading in this tick comes from ONE producer — the opencode fork's
-// quota subcommand, `opencode quota --json`, whose per-provider quota
-// functions live in the providers that own the credentials
-// (developing-today-forks/opencode#1718). The gatherer invokes the
-// subcommand; it never fetches a provider itself. What the tick does
-// around that single read:
+// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): quota readings
+// come from OpenCode-owned provider code. The configured listing and
+// ordinary asks use `opencode quota --json`; OpenDesign prefers the
+// server's provider-only quota endpoint when the deployed server and
+// its credential support it. The CLI result remains the compatibility
+// fallback during rollout. The gatherer never fetches a provider API
+// itself. What the tick does around those OpenCode reads:
 //
 //   1. The OpenDesign session keeper (src/opendesign-renewal.ts,
 //      Drew's 2026-11-05 provider browser-auth auto-renewal rule):
@@ -47,7 +47,10 @@
 //      pools are live are always fetched when named, the same
 //      discipline the gatherer's out-of-band asks kept before the
 //      rewire. An explicit-ask result replaces a listing result for
-//      the same provider + credential. The subcommand exits non-zero
+//      the same provider + credential. When available, the OpenDesign
+//      provider-only server answer replaces its CLI result; unavailable
+//      auth, route or credential leaves the CLI result as fallback. The
+//      subcommand exits non-zero
 //      when a requested provider produced no successful result; that
 //      is a per-provider failure, not a tick failure — stdout still
 //      carries the results, and only an unparseable/empty stdout
@@ -159,7 +162,6 @@
 //      turso.fleet-platform-rw-token).
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
@@ -186,13 +188,21 @@ import {
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { fleetPlatformUrl } from "../src/decision-events-sync.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { fetchOpenCodeProviderQuota } from "../src/opencode-provider-quota.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
 import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
 import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
+import {
+  buildResetDurationLedgerRows,
+  deriveResetDurationRecords,
+  resetDurationSubjectKey,
+  resetObservationsFor,
+} from "../src/quota-reset-duration.ts";
 import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
@@ -213,9 +223,10 @@ import { sectionPoolIdsFromConfig } from "../src/aa.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
+import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = homedir();
+const HOME = requireHome("the gather-quota paths");
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
 /** Candidate checkouts for the OpenDesign keeper's managed credential
@@ -726,6 +737,31 @@ function parseSubcommandResults(stdout: string, label: string): QuotaProviderRes
 }
 
 /**
+ * Prefer the provider-only OpenCode server surface for OpenDesign when
+ * the deployed server has it and holds the session-cookie credential.
+ * Missing auth, an older server, or an unbound credential returns null
+ * so the existing quota subcommand remains the rollout fallback.
+ */
+async function fetchServerOpenDesignQuota(): Promise<QuotaProviderResult | null> {
+  const authPath = process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local/state/opencode/service-prod.json");
+  let auth: { username?: unknown; password?: unknown };
+  try {
+    auth = JSON.parse(await readFile(authPath, "utf8")) as { username?: unknown; password?: unknown };
+  } catch {
+    return null;
+  }
+  if (typeof auth.password !== "string" || auth.password.length === 0) return null;
+  return fetchOpenCodeProviderQuota({
+    baseUrl: process.env.OPENCODE_URL ?? "http://127.0.0.1:13420",
+    auth: {
+      username: typeof auth.username === "string" && auth.username.length > 0 ? auth.username : "opencode",
+      password: auth.password,
+    },
+    providerId: "opendesign",
+  });
+}
+
+/**
  * THE tick's only quota read: the subcommand's configured listing,
  * plus the explicit ask for the route-disabled live pools
  * (EXPLICIT_ASK_PROVIDERS). Explicit results replace listing results
@@ -743,6 +779,10 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   const askStdout = await execSubcommand(subcommandArgv(EXPLICIT_ASK_PROVIDERS));
   const asked = parseSubcommandResults(askStdout, "explicit ask");
   const askMs = Date.now() - askT0;
+
+  const serverT0 = Date.now();
+  const serverOpenDesign = await fetchServerOpenDesignQuota().catch(() => null);
+  const serverMs = Date.now() - serverT0;
 
   // Per-provider group choice, the pre-rewire discipline generalized:
   // a listing group with an ok row wins (the ask is not consulted for
@@ -780,6 +820,14 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     // Both ok: the listing group stands — it is the canonical,
     // credential-keyed enumeration; the ask exists to rescue a
     // missing or errored listing group, not to override a good one.
+  }
+  // Once present, OpenCode's provider-only result outranks both CLI
+  // reads: the server uses its bound session-cookie credential itself.
+  // A missing route/auth/credential returns null above and leaves the
+  // established subcommand result as the compatibility fallback.
+  if (serverOpenDesign) {
+    byProvider.set("opendesign", { results: [serverOpenDesign], ms: serverMs });
+    console.log("quota-gatherer: opendesign quota answered by OpenCode provider API");
   }
 
   const runs: ProviderRun[] = [];
@@ -869,7 +917,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
 }
 
 const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
-const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_URL = fleetPlatformUrl();
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
@@ -1371,9 +1419,11 @@ export async function main(): Promise<number> {
   // previous forecast stands and ages, exactly as a failed tick
   // leaves the previous quota-current.json standing.
   let forecast: QuotaForecastFile | null = null;
+  let history: SnapshotRecord[] = [];
   try {
     const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
-    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    history = [...stored, ...fresh];
+    forecast = buildQuotaForecast(file, history, new Date(tickAt));
     await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
     const forecastRows = buildForecastLedgerRows(forecast, tickAt);
     await writeTursoForecastRecords(forecastRows, tickAt);
@@ -1426,6 +1476,49 @@ export async function main(): Promise<number> {
     } catch (err) {
       console.error(
         `quota-gatherer: downtime failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // C4.2 (#13258, C4 design §1/§7): the reset-duration prediction
+  // records — derived by src/quota-reset-duration.ts for each walled
+  // or near-wall pool window from the forecast product and the
+  // snapshot history's resetsAt cadence, appended to the same C4
+  // prediction log and mirrored into the Turso ledger under source
+  // "quota-prediction". Advisory only; fail-soft like the downtime
+  // block. Honesty states (no_basis, insufficient_history) publish
+  // as records, never as invented ranges.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; window?: string };
+          };
+          if (parsed.kind === "reset_duration" && parsed.id && parsed.subject?.pool && parsed.subject.window) {
+            previous.set(resetDurationSubjectKey(parsed.subject.pool, parsed.subject.window), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = deriveResetDurationRecords(forecast, resetObservationsFor(forecast, history), previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildResetDurationLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: reset-duration predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: reset-duration failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
       );
     }
   }

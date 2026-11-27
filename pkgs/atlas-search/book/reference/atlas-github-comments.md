@@ -4,7 +4,7 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs](h
 
 `atlas-github-comments` is a one-verb writer: it extracts GitHub comments — issue comments, pull-request review comments, and pull-request reviews — from the repositories the user controls, and appends them as `atlas-github-comment/v1` records to a JSONL file, so the comments become a corpus source (source class `github comments`, source id `github-comments`). There are no subcommands and no other mode; the single invocation below is the whole tool.
 
-The complete surface exists only in the source header. `--help` / `-h` prints the usage line to stdout, exit 0, and `--version` / `-V` prints `atlas-github-comments 0.1.0` — and, stated plainly, because it surprises everyone: **every failure in this binary exits 1, including pure argument errors**. There is no exit-2 path.
+The complete surface exists only in the source header. `--help` / `-h` prints the usage line to stdout, exit 0, and `--version` / `-V` prints `atlas-github-comments 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history) — and, stated plainly, the exit codes follow the Atlas family contract (#15766): **argument errors exit 2; every other failure exits 1**.
 
 ## Invocation
 
@@ -14,13 +14,13 @@ atlas-github-comments --state <watermarks.json> --out <records.jsonl> [--repo <o
 
 | Flag              | Argument                       | Default                        | Meaning                                                                                                                                                                                                                                                                                                                 |
 | ----------------- | ------------------------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--state`         | path to a JSON watermark store | required                       | Per-repo progress: the stored `updated_at` watermark for each repository already extracted. Missing flag: `--state is required`, exit 1.                                                                                                                                                                                |
-| `--out`           | path to a JSONL file           | required                       | Append target for the emitted `atlas-github-comment/v1` records. Missing flag: `--out is required`, exit 1.                                                                                                                                                                                                             |
+| `--state`         | path to a JSON watermark store | required                       | Per-repo progress: the stored `updated_at` watermark for each repository already extracted. Missing flag: `--state is required`, exit 2.                                                                                                                                                                                |
+| `--out`           | path to a JSONL file           | required                       | Append target for the emitted `atlas-github-comment/v1` records. Missing flag: `--out is required`, exit 2.                                                                                                                                                                                                             |
 | `--repo`          | `&lt;owner&gt;/&lt;name&gt;`   | — (whole estate)               | Restrict the run to these repositories. Repeatable. With no `--repo`, the estate is enumerated from the GitHub API: the `developing-today` and `developing-today-forks` organisations plus the `dezren39` account — the #6023 our-repos estate. External repositories are never extracted here; that is gated on #6024. |
 | `--skip-reviews`  | (switch)                       | off                            | Skip the per-PR reviews walk (issue comments and review comments are still extracted).                                                                                                                                                                                                                                  |
 | `--observed-date` | `YYYY-MM-DD`                   | today, UTC (via `date -u +%F`) | The observation date stamped on the emitted documents.                                                                                                                                                                                                                                                                  |
 
-Any other argument — including the literal word `help` — is `atlas-github-comments: unknown argument: &lt;arg&gt;`, exit 1. A flag missing its value is named the same way, for example `--state needs a path`, exit 1.
+Any other argument — including the literal word `help` — is `atlas-github-comments: unknown argument: &lt;arg&gt;`, exit 2. A flag missing its value is named the same way, for example `--state needs a path`, exit 2.
 
 ## Behaviour
 
@@ -61,7 +61,7 @@ Running the identical command again appends nothing for that repository unless n
 
 ## Failure shapes
 
-- Missing `--state` or `--out`, an unknown argument, or a flag missing its value: `atlas-github-comments: &lt;message&gt;` on stderr, exit 1.
+- Missing `--state` or `--out`, an unknown argument, or a flag missing its value: `atlas-github-comments: &lt;message&gt;` on stderr, exit 2.
 - A `gh` failure mid-run: the run stops, watermarks saved so far stay saved, the error notes `(state saved; rerun resumes)`, exit 1.
 - File errors on the state or output paths: exit 1.
 - The one non-failure: HTTP 451 repositories are skipped and counted, and do not by themselves change the exit code.
@@ -71,4 +71,5 @@ Running the identical command again appends nothing for that repository unless n
 | Code | Meaning                                                                                                     |
 | ---- | ----------------------------------------------------------------------------------------------------------- |
 | 0    | Success — including runs in which HTTP 451 repositories were skipped.                                       |
-| 1    | **Everything else**: argument errors, `gh` failures, and file errors alike. This binary has no exit-2 path. |
+| 1    | Execution failure: `gh` failures and file errors. |
+| 2    | Usage / invalid invocation: missing `--state`/`--out`, an unknown argument, or a flag missing its value. |

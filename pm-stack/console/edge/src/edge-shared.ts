@@ -3,13 +3,51 @@
 // what is held, and the mirrors of the host's sections.
 // Extracted from edge.ts for the production-line guard (#14547):
 // moves only, no behaviour change.
-import { type Held, type HeldFor, subjectOf, type SyncSection } from "../../src/edge-proto.ts";
+import { type Held, type HeldFor, type PublicKey, subjectOf, type SyncSection } from "../../src/edge-proto.ts";
 import type { Store } from "../../src/store.ts";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
  * held runs first, in the order it was done. */
 export const LAST_WINS = new Set(["issue.rank"]);
+
+/** A second machine's enrollment code lasts this long: long enough to
+ * read from the app and type on the machine, short enough that a
+ * forgotten code stops working the same day (#13492). */
+export const ENROLL_CODE_MS = 15 * 60_000;
+/** An enrollment code: unambiguous letters and digits, no look-alikes. */
+export const ENROLL_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+/** A machine key's short name, as keyId makes it. */
+export const KID = /^[A-Za-z0-9_-]{16}$/;
+
+/** One enrolled second machine's key, as kept under `mkey:<kid>`. */
+export interface MachineKey {
+  kid: string;
+  jwk: PublicKey;
+  /** When it was enrolled, in milliseconds, and by whose code. */
+  enrolledAt: number;
+  by: string;
+}
+
+/** One enrolled second machine's last report, as kept under
+ * `mhost:<kid>`. The sections it reported join the shared copies (as
+ * the first machine's do); what is per-machine is when it last
+ * reported, the time its reports carry, and what it says of itself. */
+export interface MachineHost {
+  seen: number;
+  seq: number;
+  version: string | null;
+  machine: unknown;
+  settingsRev: number | null;
+}
+
+/** One enrollment code the owner minted, as kept under `enroll:<code>`. */
+export interface EnrollCode {
+  /** When the code stops working, in milliseconds. */
+  expires: number;
+  /** Who minted it, as the edge verified them. */
+  by: string;
+}
 
 /** The edge's own storage: small values by key. */
 export interface KV {
@@ -27,6 +65,7 @@ export const SECTIONS: Record<string, number> = {
   asks: 45_000,
   questionCount: 45_000,
   questions: 45_000,
+  questionSets: 45_000,
   prs: 90_000,
   priorities: 180_000,
   done: 120_000,
@@ -192,6 +231,11 @@ export interface EdgeOptions {
      * as service:pm-stack. Either missing, they stay a machine's. */
     bridgeToken?: string;
     bridgeFetch?: unknown;
+    /** The decision-events Worker (#13491): where it is and the
+     * shared secret its reads take. With both, the Questions
+     * discovery section is this side's; without either, it stays a
+     * machine's. The secret is never logged or returned. */
+    decisionEvents?: { url: string; secret: string };
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */
@@ -204,6 +248,34 @@ export interface EdgeOptions {
      * the rule for one (what comes after it waits behind it) has to
      * hold for the next that is. */
     kinds?: readonly string[];
+  };
+  /** The hosted M4 ledger surfaces (#14968, CF-5b): the fleet-platform
+   * ledger store, present only when the Worker's LEDGER_PAGES flag
+   * reads `on`. With it, this side serves /alerts, /notifications and
+   * /comments (and their /api twins) itself from the ledger; without
+   * it, those pages stay the host's. The store is the D1 database
+   * named fleet-platform since the owner ruling of 2026-11-26 on
+   * #14866, or the Turso ledger (address + credential) when the
+   * Worker's LEDGER_STORE var does not read `d1` — the rollback. */
+  ledgerPages?:
+    | { store: "turso"; url: string; token?: string }
+    | { store: "d1"; db?: import("./ledger-pages.ts").LedgerD1Database };
+  /** Hosted /dns (#14968 slice 2): the #902 register snapshot the
+   * collector publishes into the same fleet-platform D1 database,
+   * present only when the Worker's DNS_PAGES flag reads `on`. With
+   * it, this side serves /dns and /api/dns.json itself from the
+   * snapshot row; without it, those pages stay the host's. */
+  dnsPages?: { db?: import("./ledger-pages.ts").LedgerD1Database };
+  /** C6 quota page (#15018): opt-in. Envelope + existing question sets
+   * are supplied by the host; dispatchReset is the existing pool-steward
+   * machinery. Absent/off: /console/api/quota answers 503. */
+  quota?: {
+    enabled: boolean;
+    envelope?: unknown;
+    questions?: import("../../src/quota-page.ts").ExistingQuestionSet[];
+    dispatchReset?: (
+      p: import("../../src/quota-page.ts").ResetProposal,
+    ) => Promise<{ queueTaskId: string; result: string }>;
   };
   /** The live connections to the app, which the platform holds (they
    * stay open while this object is put away): take a request to be
@@ -341,5 +413,117 @@ export class Mirrors {
       chunks,
       written: section.at,
     });
+  }
+}
+
+/** A list of records that each carry their name (`id`), kept one
+ * record per key with a small index of the names in order, instead of
+ * one whole-array value rewritten at every change (#14960): a change
+ * to one record writes that record and the index, never the whole
+ * list. Records are written first, the index after them, and
+ * forgotten records deleted last, so a write stopped midway leaves
+ * records the index never names — never an index naming a record
+ * that is not there (the same rule as the mirrors' pieces). What an
+ * older copy kept as one array under the plain name is taken in on
+ * first read and kept the new way from then on. */
+export class StoredRecords<T extends { id: string }> {
+  /** The records as storage holds them, by name, in the JSON they
+   * were written with: what a save has to change is read off it. A
+   * record's entry is marked stored only once its write has
+   * finished, so a save stopped by a failing store is read aright by
+   * the next one. */
+  private stored = new Map<string, string>();
+  /** The index as storage holds it, in the same JSON. */
+  private index: string | null = null;
+  private loaded = false;
+
+  constructor(
+    private kv: KV,
+    /** The collection's plain name: its old whole-array key, and the
+     * stem of its index key (`<name>:index`). */
+    private name: string,
+    /** Where one record is kept: `held:<id>`, and the like. */
+    private entryKey: (id: string) => string,
+  ) {}
+
+  private indexKey(): string {
+    return `${this.name}:index`;
+  }
+
+  /** The list as storage holds it, oldest first as the index says. */
+  async load(): Promise<T[]> {
+    this.loaded = true;
+    const index = await this.kv.get(this.indexKey());
+    if (Array.isArray(index)) {
+      const items: T[] = [];
+      const ids: string[] = [];
+      this.stored.clear();
+      for (const id of index) {
+        if (typeof id !== "string") continue;
+        const value = (await this.kv.get(this.entryKey(id))) as T | undefined;
+        // A name whose record is not there is not in the list: the
+        // record was forgotten and the forgetting of its name is
+        // finished by the next save.
+        if (value === undefined || value === null) continue;
+        items.push(value);
+        ids.push(id);
+        this.stored.set(id, JSON.stringify(value));
+      }
+      this.index = JSON.stringify(ids);
+      return items;
+    }
+    const legacy = await this.kv.get(this.name);
+    if (Array.isArray(legacy)) {
+      // Kept as one array by an older copy: kept the new way now.
+      const items: T[] = [];
+      const seen = new Set<string>();
+      for (const item of legacy as Partial<T>[]) {
+        if (!item || typeof item !== "object" || typeof item.id !== "string" || seen.has(item.id)) continue;
+        seen.add(item.id);
+        items.push(item as T);
+      }
+      for (const item of items) {
+        await this.kv.put(this.entryKey(item.id), item);
+        this.stored.set(item.id, JSON.stringify(item));
+      }
+      await this.kv.put(
+        this.indexKey(),
+        items.map((item) => item.id),
+      );
+      this.index = JSON.stringify(items.map((item) => item.id));
+      await this.kv.delete(this.name);
+      return items;
+    }
+    this.stored.clear();
+    this.index = JSON.stringify([]);
+    return [];
+  }
+
+  /** Keep the list as it now stands: only the records that changed
+   * are written, and only they and the index. */
+  async save(items: T[]): Promise<void> {
+    if (!this.loaded) await this.load();
+    const now = new Map(items.map((item) => [item.id, JSON.stringify(item)]));
+    for (const item of items) {
+      const written = now.get(item.id) as string;
+      if (this.stored.get(item.id) !== written) {
+        await this.kv.put(this.entryKey(item.id), item);
+        this.stored.set(item.id, written);
+      }
+    }
+    const index = JSON.stringify(items.map((item) => item.id));
+    if (this.index !== index) {
+      await this.kv.put(
+        this.indexKey(),
+        items.map((item) => item.id),
+      );
+      this.index = index;
+    }
+    for (const id of [...this.stored.keys()]) {
+      if (!now.has(id)) {
+        await this.kv.delete(this.entryKey(id));
+        this.stored.delete(id);
+      }
+    }
   }
 }

@@ -11,7 +11,7 @@ import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
 import { BridgeStore, BRIDGE_SCHEMA } from "../src/bridge-store.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import type { CborValue } from "../src/canonical-cbor.ts";
+import type { CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 import {
   BridgeClient,
   decodeBatch,
@@ -75,7 +75,7 @@ function makeDO(env: Record<string, unknown> = {}) {
     storage: { sql },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return { doA: new UserDO(state as never, { BLOBS: bucket, ...env } as never), bucket, sql };
+  return { doA: new UserDO(state as never, { BLOBS_US: bucket, ...env } as never), bucket, sql };
 }
 
 function routed(path: string, irohHex: string | null, init: RequestInit = {}): Request {
@@ -236,22 +236,42 @@ class FakeSocket {
   peer!: FakeSocket;
   private listeners = new Map<string, ((ev: { data?: unknown }) => void)[]>();
   private pendingMessages: { data?: unknown }[] = [];
+  private attachment: string | null = null;
+  private isClosed = false;
+  private closeEmitted = false;
   accepted = false;
+  /** Set once the DO hands this socket to the hibernation API: the
+   * runtime then delivers its events to whichever instance of the
+   * object is current, one at a time, never to listeners. */
+  host: (() => UserDO) | null = null;
+  private chain: Promise<void> = Promise.resolve();
 
   accept(): void {
     this.accepted = true;
   }
 
+  serializeAttachment(value: unknown): void {
+    // Structured-clone semantics: the attachment is a copy.
+    this.attachment = JSON.stringify(value);
+  }
+
+  deserializeAttachment(): unknown {
+    return this.attachment === null ? null : JSON.parse(this.attachment);
+  }
+
   send(data: Uint8Array): void {
+    if (this.isClosed) return;
     const copy = new Uint8Array(data);
     const peer = this.peer;
     queueMicrotask(() => peer.emit("message", { data: copy.buffer }));
   }
 
   close(): void {
+    if (this.isClosed) return;
+    this.isClosed = true;
     const peer = this.peer;
     queueMicrotask(() => {
-      this.emit("close", {});
+      if (!this.host) this.emit("close", {});
       peer.emit("close", {});
     });
   }
@@ -270,12 +290,28 @@ class FakeSocket {
   }
 
   emit(type: string, ev: { data?: unknown }): void {
+    if (type === "close") {
+      if (this.closeEmitted) return;
+      this.closeEmitted = true;
+    }
+    const host = this.host;
+    if (host) {
+      this.chain = this.chain.then(async () => {
+        if (type === "message") await host().webSocketMessage(this, ev.data as ArrayBuffer);
+        else if (type === "close") await host().webSocketClose(this, 1000, "");
+      });
+      return;
+    }
     const list = this.listeners.get(type) ?? [];
     if (type === "message" && list.length === 0) {
       this.pendingMessages.push(ev);
       return;
     }
     for (const cb of list) cb(ev);
+  }
+
+  settled(): Promise<void> {
+    return this.chain;
   }
 }
 
@@ -290,11 +326,38 @@ class FakeWebSocketPair {
   }
 }
 
-test("the WebSocket leg runs a full session through the real DO route", async () => {
+/** A DO whose state offers the hibernation API. With `evict`, every
+ * frame the runtime delivers first replaces the object with a fresh
+ * instance over the same storage, as an eviction would (#15484). */
+function makeHibernatingDO(opts: { evict?: boolean } = {}) {
+  const bucket = fakeBucket();
+  const sql = fakeSql();
+  const hibernated: FakeSocket[] = [];
+  let evictions = 0;
+  const state = {
+    id: { name: BINDING },
+    storage: { sql },
+    blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    acceptWebSocket(ws: FakeSocket) {
+      hibernated.push(ws);
+      ws.host = () => {
+        if (opts.evict) {
+          current = new UserDO(state as never, { BLOBS_US: bucket } as never);
+          evictions++;
+        }
+        return current;
+      };
+    },
+  };
+  let current = new UserDO(state as never, { BLOBS_US: bucket } as never);
+  return { doA: () => current, sql, hibernated, evictions: () => evictions };
+}
+
+/** Run `fn` with workerd's WebSocketPair and a Response that takes
+ * status 101 (Node's refuses it; workerd's accepts it with a
+ * webSocket). */
+async function withWorkerdGlobals(fn: () => Promise<void>): Promise<void> {
   (globalThis as Record<string, unknown>).WebSocketPair = FakeWebSocketPair;
-  // Node's Response refuses status 101 (the range is 200-599);
-  // workerd's accepts it with a webSocket. Stub the constructor so
-  // the route's 101 is observable here.
   const RealResponse = globalThis.Response;
   class TestResponse extends RealResponse {
     constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: unknown }) {
@@ -304,48 +367,43 @@ test("the WebSocket leg runs a full session through the real DO route", async ()
   }
   (globalThis as Record<string, unknown>).Response = TestResponse;
   try {
-    await runWsSession();
+    await fn();
   } finally {
     (globalThis as Record<string, unknown>).Response = RealResponse;
   }
-});
+}
 
-async function runWsSession(): Promise<void> {
-  const key = await importIdKey(new Uint8Array(32).fill(61));
-  const author = await importIdKey(new Uint8Array(32).fill(65));
-  const { doA, sql } = makeDO();
-  const events = await chainOf(author, 3);
+function memorySql() {
+  const db = new DatabaseSync(":memory:");
+  return {
+    exec(query: string, ...params: unknown[]) {
+      const stmt = db.prepare(query);
+      if (/^\s*select/i.test(query)) {
+        const rows = stmt.all(...(params as never[])) as Record<string, unknown>[];
+        return { toArray: () => rows };
+      }
+      stmt.run(...(params as never[]));
+      return { toArray: () => [] as Record<string, unknown>[] };
+    },
+  };
+}
 
-  // The client's own store starts with the events; the DO starts empty.
-  const clientSql = (() => {
-    const db = new DatabaseSync(":memory:");
-    return {
-      exec(query: string, ...params: unknown[]) {
-        const stmt = db.prepare(query);
-        if (/^\s*select/i.test(query)) {
-          const rows = stmt.all(...(params as never[])) as Record<string, unknown>[];
-          return { toArray: () => rows };
-        }
-        stmt.run(...(params as never[]));
-        return { toArray: () => [] as Record<string, unknown>[] };
-      },
-    };
-  })();
-  for (const statement of BRIDGE_SCHEMA) clientSql.exec(statement);
-  const clientStore = new BridgeStore(clientSql as never);
-  clientStore.ingestBatch(events, Date.now());
-
+/** Open the bridge socket on the DO; returns the client end. */
+async function openWs(doA: UserDO, irohHex: string): Promise<{ client: FakeSocket; server: FakeSocket }> {
   const headers = new Headers();
   headers.set(HDR_BINDING, BINDING);
   headers.set(HDR_JURISDICTION, "us");
   headers.set(HDR_ROUTED, "restricted");
-  headers.set(HDR_IROH, key.publicHex);
+  headers.set(HDR_IROH, irohHex);
   headers.set("upgrade", "websocket");
   const res = await doA.fetch(new Request("https://do/v1/bridge/ws", { headers }));
   assert.equal(res.status, 101);
   const pair = FakeWebSocketPair.instances[FakeWebSocketPair.instances.length - 1];
-  const clientSocket = pair[0];
-  const transport: FrameTransport = {
+  return { client: pair[0], server: pair[1] };
+}
+
+function clientTransport(clientSocket: FakeSocket): FrameTransport {
+  return {
     send: (d) => clientSocket.send(d),
     onMessage: (cb) =>
       clientSocket.addEventListener("message", (ev) => {
@@ -354,18 +412,157 @@ async function runWsSession(): Promise<void> {
     onClose: (cb) => clientSocket.addEventListener("close", () => cb()),
     close: () => clientSocket.close(),
   };
-  const client = new BridgeClient(transport, {
+}
+
+function wsSessionRows(sql: ReturnType<typeof fakeSql>): number {
+  return Number(sql.exec("SELECT COUNT(*) AS n FROM bridge_ws_sessions").toArray()[0].n);
+}
+
+test("the WebSocket leg runs a full session through the real DO route", async () => {
+  await withWorkerdGlobals(() => runWsSession({ evict: false }));
+});
+
+test("a hibernating bridge session survives an eviction before every frame (#15484)", async () => {
+  await withWorkerdGlobals(() => runWsSession({ evict: true }));
+});
+
+async function runWsSession(opts: { evict: boolean }): Promise<void> {
+  const key = await importIdKey(new Uint8Array(32).fill(61));
+  const author = await importIdKey(new Uint8Array(32).fill(65));
+  const host = makeHibernatingDO({ evict: opts.evict });
+  const { sql } = host;
+  const events = await chainOf(author, 3);
+
+  // The client's own store starts with the events; the DO starts empty.
+  const clientSql = memorySql();
+  for (const statement of BRIDGE_SCHEMA) clientSql.exec(statement);
+  const clientStore = new BridgeStore(clientSql as never);
+  clientStore.ingestBatch(events, Date.now());
+
+  const { client: clientSocket, server } = await openWs(host.doA(), key.publicHex);
+  // Hibernating, never accepted in place: the object may be evicted
+  // while the socket stays open.
+  assert.equal(server.accepted, false);
+  assert.deepEqual(host.hibernated, [server]);
+  assert.equal(wsSessionRows(sql), 1);
+  const client = new BridgeClient(clientTransport(clientSocket), {
     store: clientStore,
     key,
     bindingId: BINDING,
   });
   const result = await client.sync();
   assert.ok(result.token);
+  if (opts.evict) {
+    // Every frame woke a fresh instance with no session in memory.
+    assert.ok(host.evictions() >= 5, `only ${host.evictions()} evictions`);
+  }
   // The DO's store now holds the whole chain, byte for byte.
   const doStore = new BridgeStore(sql as never);
   assert.equal(doStore.chainOf(author.publicHex).next_seq, 3);
   assert.deepEqual(doStore.canonical(), clientStore.canonical());
+  const activeCoord = sql.exec(
+    "SELECT tenant_id, peer_id, state, watermark FROM sync_coord WHERE peer_id = ?",
+    key.publicHex,
+  ).toArray()[0];
+  assert.equal(activeCoord.tenant_id, BINDING);
+  assert.equal(activeCoord.state, "active");
+  assert.deepEqual(JSON.parse(String(activeCoord.watermark)), [
+    { author: author.publicHex, next_seq: 3, head: events[2].id },
+  ]);
+
+  // Closing the socket releases ownership without discarding the watermark.
+  clientSocket.close();
+  await new Promise((r) => setTimeout(r, 0));
+  await server.settled();
+  assert.equal(wsSessionRows(sql), 0);
+  const idleCoord = sql.exec(
+    "SELECT state, watermark FROM sync_coord WHERE peer_id = ?",
+    key.publicHex,
+  ).toArray()[0];
+  assert.equal(idleCoord.state, "idle");
+  assert.deepEqual(JSON.parse(String(idleCoord.watermark)), [
+    { author: author.publicHex, next_seq: 3, head: events[2].id },
+  ]);
+
+  // A reconnecting client resumes against the same DO state with its
+  // token, and has nothing left to send.
+  const next = await openWs(host.doA(), key.publicHex);
+  const resumed = await new BridgeClient(clientTransport(next.client), {
+    store: clientStore,
+    key,
+    bindingId: BINDING,
+    resumeToken: result.token,
+  }).sync();
+  assert.ok(resumed.token);
+  assert.deepEqual(
+    resumed.serverHeads.map((h) => [h.author, h.next_seq]),
+    [[author.publicHex, 3]],
+  );
+  assert.equal(new BridgeStore(sql as never).chainOf(author.publicHex).next_seq, 3);
 }
+
+test("a socket whose session state is gone is told session_lost and closed (#15484)", async () => {
+  await withWorkerdGlobals(async () => {
+    const key = await importIdKey(new Uint8Array(32).fill(61));
+    const host = makeHibernatingDO({ evict: true });
+    const { client, server } = await openWs(host.doA(), key.publicHex);
+    const received: Uint8Array[] = [];
+    let closed = false;
+    client.addEventListener("message", (ev) => received.push(new Uint8Array(ev.data as ArrayBuffer)));
+    client.addEventListener("close", () => {
+      closed = true;
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    // The CHALLENGE arrived; then the row is lost while hibernating.
+    assert.equal(received.length, 1);
+    host.sql.exec("DELETE FROM bridge_ws_sessions");
+    client.send(new Uint8Array([0x02, 0x7b, 0x7d]));
+    await new Promise((r) => setTimeout(r, 0));
+    await server.settled();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(received.length, 2);
+    assert.equal(received[1][0], 0x1f);
+    const body = JSON.parse(new TextDecoder().decode(received[1].subarray(1))) as { code: string };
+    assert.equal(body.code, "session_lost");
+    assert.ok(closed);
+  });
+});
+
+test("a damaged session row fails closed the same way (#15484)", async () => {
+  await withWorkerdGlobals(async () => {
+    const key = await importIdKey(new Uint8Array(32).fill(61));
+    const host = makeHibernatingDO({ evict: true });
+    const { client, server } = await openWs(host.doA(), key.publicHex);
+    const received: Uint8Array[] = [];
+    client.addEventListener("message", (ev) => received.push(new Uint8Array(ev.data as ArrayBuffer)));
+    await new Promise((r) => setTimeout(r, 0));
+    host.sql.exec("UPDATE bridge_ws_sessions SET state = ?", JSON.stringify({ v: 1, authed: "yes" }));
+    client.send(new Uint8Array([0x02, 0x7b, 0x7d]));
+    await new Promise((r) => setTimeout(r, 0));
+    await server.settled();
+    await new Promise((r) => setTimeout(r, 0));
+    const last = received[received.length - 1];
+    assert.equal(last[0], 0x1f);
+    assert.equal((JSON.parse(new TextDecoder().decode(last.subarray(1))) as { code: string }).code, "session_lost");
+    assert.equal(wsSessionRows(host.sql), 0);
+  });
+});
+
+test("without the hibernation API the WebSocket leg fails closed (#15484)", async () => {
+  await withWorkerdGlobals(async () => {
+    const key = await importIdKey(new Uint8Array(32).fill(61));
+    const { doA } = makeDO();
+    const headers = new Headers();
+    headers.set(HDR_BINDING, BINDING);
+    headers.set(HDR_JURISDICTION, "us");
+    headers.set(HDR_ROUTED, "restricted");
+    headers.set(HDR_IROH, key.publicHex);
+    headers.set("upgrade", "websocket");
+    const res = await doA.fetch(new Request("https://do/v1/bridge/ws", { headers }));
+    assert.equal(res.status, 500);
+    assert.equal(((await res.json()) as { error: string }).error, "websocket_hibernation_unavailable");
+  });
+});
 
 // A checkpoint event padded to an exact byte size: the segment
 // map tolerates extra entries, and the event tree caps each byte

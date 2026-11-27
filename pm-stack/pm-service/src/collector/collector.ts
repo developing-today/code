@@ -42,6 +42,8 @@ export interface CollectorDeps {
   /** The board's IngestDO (real DO stub in the Worker; an IngestDO
    * over MemoryIngestStorage in tests). */
   ingestDoFor: (boardId: string) => IngestDO;
+  /** Poke the board's live-state DO after its tenant-DB snapshot commits. */
+  boardDoFor: (boardId: string) => { snapshotLanded(snapshotId: string): Promise<void> };
   now?: () => string;
 }
 
@@ -207,6 +209,7 @@ export async function runHostedCollector(deps: CollectorDeps): Promise<Collector
         bodies: entry.bodies,
         now: now(),
       });
+      await deps.boardDoFor(entry.board.id).snapshotLanded(entry.snapshotId);
     }
   }
 

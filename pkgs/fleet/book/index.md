@@ -3,7 +3,7 @@
 `fleet` is one multicall binary for the fleet's tools. A _multicall binary_ is a
 single executable that behaves as many different programs depending on the name
 it is invoked under and the first argument it is given. The fleet binary is
-version `0.1.0`. Invoked as `fleet`, it dispatches to one of nineteen _domains_ —
+version `0.1.0`. Invoked as `fleet`, it dispatches to one of twenty-two _domains_ —
 a domain is a named tool area, such as the work queue or the secrets resolver —
 and invoked under one of its alias names (`repo-queue`, `queue-broker`,
 `secrets-broker`, `laptop-agent-broker`, `atlas-search`, `laptop-agent`) it
@@ -79,6 +79,8 @@ answers with a stub message and exit code 69. The full mechanics are in
 | `gh`            | The real `gh` CLI, passed through under a rotating fleet token (the fleet's GitHub Apps, then personal last); rate-limit and permission failures fail over to the next token.    |
 | `bridge`        | Fleet messaging through the message bridge: central sends messages or commands to an agent, a group, or all; agents read their mailbox, answer, and ack.                         |
 | `orgs`          | Turso-backed GitHub org, App and installation registry.                                                                                                                          |
+| `kv`            | Key/value bytes for this session in the host-local store: get, set, list, delete, clear-override and revert, per namespace; snapshot and restore back up the whole host store.   |
+| `id`            | Iroh-native ID transport: `session-key` mints this session's NodeId stamp.                                                                                                       |
 | `agent`         | The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder.                                        |
 | `shell`         | Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.                                                                                           |
 | `search`        | Atlas corpus search over the session history (hybrid full-text plus vector search). Alias: `atlas-search`.                                                                       |
@@ -88,6 +90,7 @@ answers with a stub message and exit code 69. The full mechanics are in
 | `http`          | Tier T2 (http/fleet) of the laptop route forms: the laptop-agent daemon HTTP API as a fleet subcommand (HTTP legs only; never ssh).                                              |
 | `ssh`           | Tier T3 (ssh/fleet) of the laptop route forms: real SSH to the laptop under a binary-owned client contract.                                                                      |
 | `laptop`        | Tier T0 (tiered/fleet) of the laptop route forms: the generic tiered command — walks T1 → T2 → T3 and reports the serving tier.                                                  |
+| `host`          | Resolve a host name through the machine registry and select a transport offer and invocation form with `fleet-pool`; `fleet host laptop` resolves the amd record.                |
 | `actions`       | Live short-lived exec sessions inside GitHub Actions runners: start a session in a runner, run commands in it, stream its IO, renew or extend its lease, close it.               |
 
 Alongside the domains there are five built-in commands that are not domains:

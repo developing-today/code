@@ -28,6 +28,9 @@ const CHAIN_LEN: usize = 8 + 32 + 1;
 /// events are reported as outcomes, not errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// A tenant transport, protocol, SQL or transaction operation failed.
+    #[error("event store tenant database: {0}")]
+    Tenant(#[from] crate::turso::TursoError),
     /// The directory could not be read or written.
     #[error("event store file I/O: {0}")]
     Io(#[from] io::Error),
@@ -68,13 +71,6 @@ pub enum StoreError {
         /// The ID of the event whose body was asked for.
         id: Hash,
     },
-    /// A prune was refused because the store holds compacted residue (#13401).
-    /// Prune erases presence; compaction preserves it as residue, and the two
-    /// are not composed yet: a prune over residue would silently under-erase
-    /// and rewrite chains below live residue positions. The refusal changes
-    /// nothing.
-    #[error("prune refused: the store holds {0} compacted residue positions")]
-    PruneOverResidue(usize),
     /// A write failed, and the waiting events could not be rebuilt from disk. The store
     /// refuses further calls. Reopening it rebuilds them.
     #[error("event store is unusable after a failed write: reopen it")]

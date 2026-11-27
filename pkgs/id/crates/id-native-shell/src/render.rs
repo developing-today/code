@@ -18,15 +18,47 @@
 //! the default font, so bold is not yet visually distinct — the model
 //! keeps the flag so a bold font asset can be wired without a contract
 //! or model change.
+//!
+//! Every row is drawn at a pinned size ([`CELL_FONT_PX`] in Bevy's
+//! built-in monospace face, [`CELL_HEIGHT_PX`] line height), so one
+//! terminal cell is exactly [`CELL_WIDTH_PX`] × [`CELL_HEIGHT_PX`]
+//! logical pixels. The binary sizes each session's grid from the
+//! window with these metrics (#15022), so the host renders for the
+//! grid the window can actually show.
 
 use bevy::prelude::{
-    App, Color, Commands, Component, Entity, Plugin, Query, Res, Resource, Startup, Text,
-    TextColor, TextSpan, Update, With, World,
+    App, Color, Commands, Component, Entity, Plugin, PositionType, Query, Res, Resource, Startup,
+    Text, TextColor, TextSpan, Update, Val, With, World,
 };
+use bevy::text::{FontSize, LineHeight, TextFont};
 use id::world_presentation::WorldSurface;
 
 use crate::form::{FormPresenter, FormStatusOutcome, FormWidgets};
 use crate::session::SessionView;
+
+/// Font size of every rendered terminal row, in logical pixels.
+///
+/// This is Bevy's default text size, pinned on the rows so the cell
+/// metrics below cannot drift if that default changes.
+pub const CELL_FONT_PX: f32 = 20.0;
+/// Width of one terminal cell, in logical pixels.
+///
+/// The rows use Bevy's built-in `FiraMono-subset` face (the
+/// `default_font` feature): a monospace font with 1000 units per em
+/// and a 600-unit advance on every glyph, so a cell is 0.6 em, which
+/// is 12 px at [`CELL_FONT_PX`].
+pub const CELL_WIDTH_PX: f32 = 12.0;
+/// Height of one terminal row, in logical pixels: the line height
+/// pinned on every row (1.2 em, the face's own ascent plus descent).
+pub const CELL_HEIGHT_PX: f32 = 24.0;
+
+/// The pinned text font for terminal rows and their spans.
+fn cell_font() -> TextFont {
+    TextFont {
+        font_size: FontSize::Px(CELL_FONT_PX),
+        ..Default::default()
+    }
+}
 
 /// One styled cell of the render model.
 #[derive(Clone, Debug, PartialEq)]
@@ -300,16 +332,32 @@ impl Plugin for ShellRenderPlugin {
     }
 }
 
-fn spawn_root(mut commands: Commands<'_, '_>) {
-    commands.spawn((
-        ScreenRoot,
-        bevy::prelude::Node {
-            flex_direction: bevy::prelude::FlexDirection::Column,
-            width: bevy::prelude::Val::Percent(100.0),
-            height: bevy::prelude::Val::Percent(100.0),
-            ..Default::default()
-        },
-    ));
+pub(crate) fn screen_root_node(directory_layout: bool) -> bevy::prelude::Node {
+    let (left, width) = if directory_layout {
+        (
+            Val::Percent(crate::directory::DIRECTORY_PANEL_PERCENT),
+            Val::Percent(100.0 - crate::directory::DIRECTORY_PANEL_PERCENT),
+        )
+    } else {
+        (Val::Percent(0.0), Val::Percent(100.0))
+    };
+    bevy::prelude::Node {
+        position_type: PositionType::Absolute,
+        left,
+        top: Val::Percent(0.0),
+        flex_direction: bevy::prelude::FlexDirection::Column,
+        width,
+        height: Val::Percent(100.0),
+        overflow: bevy::prelude::Overflow::clip(),
+        ..Default::default()
+    }
+}
+
+fn spawn_root(
+    mut commands: Commands<'_, '_>,
+    directory_layout: Option<Res<'_, crate::directory::DirectoryPanelLayout>>,
+) {
+    commands.spawn((ScreenRoot, screen_root_node(directory_layout.is_some())));
 }
 
 /// Rebuild the row nodes when the presented view's sequence changes.
@@ -345,11 +393,21 @@ fn rebuild_rows(
         _ => ScreenGrid::from_view(view),
     };
     for row in &grid.rows {
-        let mut row_entity =
-            commands.spawn((ScreenRow, bevy::prelude::Node::default(), Text::new("")));
+        let mut row_entity = commands.spawn((
+            ScreenRow,
+            bevy::prelude::Node::default(),
+            Text::new(""),
+            cell_font(),
+            LineHeight::Px(CELL_HEIGHT_PX),
+        ));
         row_entity.with_children(|parent| {
             for (text, fg, _bg, _bold) in ScreenGrid::row_runs(row) {
-                parent.spawn((TextSpan::new(text), TextColor(fg)));
+                parent.spawn((
+                    TextSpan::new(text),
+                    TextColor(fg),
+                    cell_font(),
+                    LineHeight::Px(CELL_HEIGHT_PX),
+                ));
             }
         });
         let row_id = row_entity.id();
@@ -444,6 +502,45 @@ mod tests {
             .map(|(span, _)| span.0.clone())
             .collect();
         assert_eq!(spans, vec!["hi".to_string()]);
+    }
+
+    #[test]
+    fn rows_and_spans_carry_the_pinned_cell_metrics() {
+        let mut app = headless_app();
+        app.update();
+        present_in_world(app.world_mut(), screen_view());
+        app.update();
+
+        // Oracle: #15022 sizes the session grid from CELL_WIDTH_PX x
+        // CELL_HEIGHT_PX, so every row and span must be drawn at
+        // exactly that font size and line height, not Bevy's
+        // defaults (which could change underneath the shell).
+        let mut rows = app
+            .world_mut()
+            .query_filtered::<(&TextFont, &LineHeight), With<ScreenRow>>();
+        let rows: Vec<(FontSize, LineHeight)> = rows
+            .iter(app.world())
+            .map(|(font, line)| (font.font_size, *line))
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let mut spans = app
+            .world_mut()
+            .query_filtered::<(&TextFont, &LineHeight), With<TextSpan>>();
+        let spans: Vec<(FontSize, LineHeight)> = spans
+            .iter(app.world())
+            .map(|(font, line)| (font.font_size, *line))
+            .collect();
+        assert_eq!(spans.len(), 1);
+        for (font_size, line_height) in rows.into_iter().chain(spans) {
+            assert!(
+                matches!(font_size, FontSize::Px(px) if (px - CELL_FONT_PX).abs() < f32::EPSILON),
+                "{font_size:?}"
+            );
+            assert_eq!(line_height, LineHeight::Px(CELL_HEIGHT_PX));
+        }
+        // The metrics are the face's: 0.6 em wide, 1.2 em tall.
+        assert!((CELL_WIDTH_PX - CELL_FONT_PX * 0.6).abs() < f32::EPSILON);
+        assert!((CELL_HEIGHT_PX - CELL_FONT_PX * 1.2).abs() < 1e-4);
     }
 
     #[test]

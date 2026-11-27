@@ -40,7 +40,7 @@ owners: {…}, surfaces: […]}`. Each surface entry carries:
 | `selection_priority`     | Tier-1 sort key; code default 50. Shipped: 10 everywhere except `org-run` at 20. Lower sorts first.                                                                |
 | `public_targets_only`    | Only `fleet-forks` (true): eligibility does a live repo read and requires `"private": false`.                                                                      |
 | `budget`                 | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}`.                                                        |
-| `max_live`               | Only `codespace-overflow`: 3. Printed in the capacity summary; **never enforced** (source behaviour).                                                              |
+| `max_live`               | Only `codespace-overflow`: 3. **Advisory**: printed in the capacity summary, never enforced (the surface only reuses existing codespaces).                         |
 
 The seven shipped surfaces: `fleet-personal` (github-actions, dezren39/fleet,
 App dispatch, active), `fleet-org` (github-actions, developing-today/fleet,
@@ -75,7 +75,7 @@ From the registry's `owners` table:
 So the working summary is caps of 40/20/20, and a macOS cap of 5 for every
 owner. An owner missing from the table, or a missing cap field, yields cap 0
 — zero free slots, unusable in Tier 1. `plan` and `private_minutes_monthly`
-are registry documentation only; the placement code never reads them, and
+are **advisory** registry documentation; the placement code never reads them, and
 GitHub private-repo minute billing is not modelled in the cascade.
 
 For a macOS job the effective cap is `min(concurrent_jobs_cap,
@@ -243,11 +243,14 @@ signs the result's recursive path closure with the key (written to a 0600
 temp file) and copies it to the upload URL — the shared Fleet R2 cache. The
 endpoint is secret-configured, never hardcoded in the workflow.
 
-Two workflow-contract facts placement users hit: placement never sends the
-workflow's `timeout_minutes` input, so **all dispatches run under the
-60-minute default** (the workflow validates 5–120); and the `dispatch_id`
-input is a _fresh_ correlation id minted per dispatch, not the session
-handle, despite the workflow describing it as one.
+Two workflow-contract facts placement users hit: placement sends the
+workflow's `timeout_minutes` input only when the dispatch passes
+`--timeout-minutes N` (5–120, the range the workflow validates), so
+**without the flag a dispatch runs under the workflow's 60-minute
+default**; the value is stored with the job, so a coordinator-queued
+session re-dispatches with it. The `dispatch_id` input carries the
+placement session handle (`fp_…`), so the run's display title names the
+session that dispatched it.
 
 ## Sessions: `fp_` handles and portable references
 
@@ -265,10 +268,14 @@ A record carries the job, the surface (null in the queued case), the runner
 repo, the decision reasoning, the run id and URL, the state
 (`queued|dispatched|running|succeeded|failed|cancelled`), `submitted_by`,
 timestamps, and — when the run is known — the **portable id**
-`OWNER/REPO#RUN_ID` (for example `developing-today/fleet#45146933211`). One
-recorded-field caveat, stated as the source behaves: `actor` is hardcoded
-to `developing-today[bot] (GitHub App dispatch)` even for surfaces that
-dispatch as the user.
+`OWNER/REPO#RUN_ID` (for example `developing-today/fleet#45146933211`). The
+recorded `actor` follows the chosen surface's auth route:
+`developing-today[bot] (GitHub App dispatch)` for App surfaces,
+`user token (dispatch_as: user)` for `dispatch_as: user` surfaces
+(fleet-org, fleet-forks, Blacksmith), `user gh CLI credentials
+(codespace)` for codespaces, `laptop handoff (no remote dispatch)` for
+the laptop, and `none (no surface dispatched)` when every tier was
+exhausted.
 
 An `fp_` lookup for status, result or follow-up selects the newer copy by
 `updated_at` across the local store and the broker mirror. Status and result

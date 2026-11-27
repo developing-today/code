@@ -58,8 +58,13 @@
 //! **Scope, stated plainly.** The service executes the op
 //! set the PoC proved — `register_currency`, `grant_minter`,
 //! `issue`, `transfer` — plus the lifecycle ops `freeze` and
-//! `sunset` (#13342, next bullet). `convert` is phase 5
-//! (#3801/#3802); `balance`/`history` are reads and stay off
+//! `sunset` (#13342, next bullet) and `convert` (#14393, the
+//! [`convert`] submodule: a verified or quoted conversion
+//! executed as one linked transfer chain under the same
+//! write-ahead, idempotency and reconciliation rules, through
+//! [`GatewayService::handle_convert`] because the request must
+//! present the rate authorisation it relies on);
+//! `balance`/`history` are reads and stay off
 //! the write pipeline (see
 //! [`GatewayService::holder_balance`]). Abuse controls (design
 //! §4.3 step 6) and graph chain-continuity validation remain as
@@ -112,6 +117,14 @@ use id_currency_registry::{
 use serde::{Deserialize, Serialize};
 
 use crate::chain::{ChainError, Event};
+mod convert;
+
+pub use convert::{
+    ConversionLegRef, ConversionLegRole, ConversionOutcome, ConversionPresentation,
+    ConversionReceipt, ConversionRecord, ConversionResponse, GatewayConversionControl,
+};
+
+use crate::currency::conversion::{ConversionVerifier, FailedPreSubmit};
 use crate::currency::gateway::{
     Authorized, CurrencyOp, DeviceResolver, FixedDevices, GatewayError, GrantMinter, Issue,
     RegisterCurrency, Transfer, authorize, idempotency_id, verify_envelope,
@@ -186,6 +199,20 @@ pub enum ServiceError {
     /// Surfaced, never resolved by overwriting either side.
     #[error("ledger state contradicts the stored intent: {0}")]
     IntentConflict(String),
+    /// The conversion verifier refused the submission before
+    /// any ledger write (`FAILED_PRE_SUBMIT`, #3801/#3802).
+    #[error(transparent)]
+    Conversion(#[from] FailedPreSubmit),
+    /// The verified conversion does not fit the request or the
+    /// gateway's currencies (wrong pair, same currency, a quote
+    /// whose amounts no longer match the authorisation's terms).
+    #[error("conversion does not match the request: {0}")]
+    ConversionMismatch(&'static str),
+    /// The pure batch builder refused the conversion's terms
+    /// (rate, scale, fee, or account shape), before any ledger
+    /// write.
+    #[error("conversion batch refused: {0}")]
+    ConversionBatch(String),
 }
 
 impl From<PocError> for ServiceError {
@@ -266,6 +293,17 @@ pub struct GatewayIntent {
     /// stored before submission so a crash recovery resubmits
     /// byte-identical contents under the same ID.
     pub transfer: Option<LedgerTransfer>,
+    /// The exact pre-generated linked chain for a `convert`
+    /// intent (source leg, optional fee leg, destination leg),
+    /// stored before submission like `transfer`. Empty for
+    /// every other op.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<LedgerTransfer>,
+    /// The conversion's terms (`convert` intents only):
+    /// [`GatewayService::open`] rebuilds the authorisation usage
+    /// book from these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversion: Option<ConversionRecord>,
     /// The `user_data_128` graph stamp carried by the transfer.
     pub graph_stamp: Option<u128>,
     /// The graph object recording this write (event id, hex).
@@ -307,6 +345,8 @@ impl GatewayIntent {
             currency_key: Some(hex_encode(currency_key)),
             ledger_id: Some(ledger_id),
             transfer: Some(transfer),
+            legs: Vec::new(),
+            conversion: None,
             graph_stamp: Some(graph_stamp),
             graph_object: Some(graph_object),
             minter: None,
@@ -337,6 +377,8 @@ impl GatewayIntent {
             currency_key: currency_key.map(|key| hex_encode(key)),
             ledger_id: Some(ledger_id),
             transfer: None,
+            legs: Vec::new(),
+            conversion: None,
             graph_stamp: None,
             graph_object: None,
             minter,
@@ -361,6 +403,7 @@ impl GatewayIntent {
             transfer_id: self
                 .transfer
                 .as_ref()
+                .or_else(|| self.legs.first())
                 .map(|t| hex_encode(&t.id.to_be_bytes())),
             graph_object: self.graph_object.clone(),
         }
@@ -784,6 +827,7 @@ pub struct GatewayService<B: LedgerBackend, I: IntentStore> {
     issued: BTreeMap<String, u128>,
     indexed_accounts: HashSet<u128>,
     graph: GraphLog,
+    conversions: ConversionVerifier,
     intents: I,
 }
 
@@ -830,7 +874,20 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         let mut issued: BTreeMap<String, u128> = BTreeMap::new();
         let mut minters: BTreeMap<String, HashSet<String>> = BTreeMap::new();
         let mut registrations: Vec<&GatewayIntent> = Vec::new();
+        let mut conversions = ConversionVerifier::new();
         for intent in &all {
+            // Conversion usage counts every intent that holds a
+            // cap reservation: posted ones, and recorded ones whose
+            // outcome is still unresolved (#2063 §2.4: the
+            // reservation survives a crash and is released only
+            // by a definite failure).
+            if intent.op == "convert" && intent.state != IntentState::Failed {
+                if let Some(record) = &intent.conversion {
+                    if let Some(lp) = decode_key(&record.lp) {
+                        conversions.record_posted(&lp, record.authorisation_id, record.amount_in);
+                    }
+                }
+            }
             if intent.state != IntentState::Posted {
                 continue;
             }
@@ -956,6 +1013,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             issued,
             indexed_accounts: HashSet::new(),
             graph: GraphLog::default(),
+            conversions,
             intents,
         })
     }
@@ -1155,6 +1213,12 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                 &op.currency,
                 CurrencyStatus::Sunset,
             ),
+            // A conversion must present the rate authorisation it
+            // relies on, which the F3 op does not carry: it runs
+            // through `handle_convert`.
+            CurrencyOp::Convert(_) => Err(ServiceError::Unsupported(
+                "convert (present the rate authorisation through handle_convert)",
+            )),
             other => Err(ServiceError::Unsupported(other.name())),
         }
     }
@@ -1187,6 +1251,9 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             IntentState::Recorded => {
                 if let Some((event, body)) = graph {
                     self.graph.record(event, body);
+                }
+                if intent.op == "convert" {
+                    return self.recover_conversion(intent);
                 }
                 self.recover_recorded(intent)
             }
@@ -1700,49 +1767,60 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         };
         let mut intent_transfer_ids: HashSet<u128> = HashSet::new();
         for intent in &intents {
-            let Some(transfer) = &intent.transfer else {
+            // A value intent names one transfer; a conversion
+            // names its whole linked chain, and every leg is
+            // joined against the ledger the same way.
+            let transfers: Vec<&LedgerTransfer> =
+                intent.transfer.iter().chain(intent.legs.iter()).collect();
+            if transfers.is_empty() {
                 continue;
-            };
-            intent_transfer_ids.insert(transfer.id);
-            match intent.state {
-                IntentState::Recorded => {
-                    report.findings.push(IntentFinding::UnresolvedIntent {
-                        idempotency: intent.idempotency,
-                        op: intent.op.clone(),
-                    });
+            }
+            for transfer in &transfers {
+                intent_transfer_ids.insert(transfer.id);
+            }
+            if intent.state == IntentState::Recorded {
+                report.findings.push(IntentFinding::UnresolvedIntent {
+                    idempotency: intent.idempotency,
+                    op: intent.op.clone(),
+                });
+                continue;
+            }
+            for transfer in transfers {
+                match intent.state {
+                    IntentState::Recorded => {}
+                    IntentState::Posted => match self.backend.try_lookup_transfer(transfer.id) {
+                        Ok(Some(found)) if found == *transfer => {}
+                        Ok(Some(_)) => {
+                            report
+                                .findings
+                                .push(IntentFinding::PostedIntentTransferMismatch {
+                                    idempotency: intent.idempotency,
+                                    transfer_id: transfer.id,
+                                });
+                        }
+                        Ok(None) => {
+                            report
+                                .findings
+                                .push(IntentFinding::PostedIntentMissingTransfer {
+                                    idempotency: intent.idempotency,
+                                    transfer_id: transfer.id,
+                                });
+                        }
+                        Err(error) => return Err(ServiceError::Backend(error.to_string())),
+                    },
+                    IntentState::Failed => match self.backend.try_lookup_transfer(transfer.id) {
+                        Ok(Some(_)) => {
+                            report
+                                .findings
+                                .push(IntentFinding::FailedIntentTransferPresent {
+                                    idempotency: intent.idempotency,
+                                    transfer_id: transfer.id,
+                                });
+                        }
+                        Ok(None) => {}
+                        Err(error) => return Err(ServiceError::Backend(error.to_string())),
+                    },
                 }
-                IntentState::Posted => match self.backend.try_lookup_transfer(transfer.id) {
-                    Ok(Some(found)) if found == *transfer => {}
-                    Ok(Some(_)) => {
-                        report
-                            .findings
-                            .push(IntentFinding::PostedIntentTransferMismatch {
-                                idempotency: intent.idempotency,
-                                transfer_id: transfer.id,
-                            });
-                    }
-                    Ok(None) => {
-                        report
-                            .findings
-                            .push(IntentFinding::PostedIntentMissingTransfer {
-                                idempotency: intent.idempotency,
-                                transfer_id: transfer.id,
-                            });
-                    }
-                    Err(error) => return Err(ServiceError::Backend(error.to_string())),
-                },
-                IntentState::Failed => match self.backend.try_lookup_transfer(transfer.id) {
-                    Ok(Some(_)) => {
-                        report
-                            .findings
-                            .push(IntentFinding::FailedIntentTransferPresent {
-                                idempotency: intent.idempotency,
-                                transfer_id: transfer.id,
-                            });
-                    }
-                    Ok(None) => {}
-                    Err(error) => return Err(ServiceError::Backend(error.to_string())),
-                },
             }
         }
         // The orphan direction: ledger transfers carrying a
@@ -2290,6 +2368,8 @@ mod tests {
             currency_id: Some(record.currency_id.clone()),
             currency_key: Some(hex_encode(&key)),
             ledger_id: Some(record.ledger_id),
+            legs: Vec::new(),
+            conversion: None,
             transfer: Some(LedgerTransfer {
                 id: idem,
                 debit_account_id: from_spec.id,
@@ -2861,6 +2941,8 @@ mod tests {
                     currency_key: None,
                     ledger_id: None,
                     transfer: None,
+                    legs: Vec::new(),
+                    conversion: None,
                     graph_stamp: None,
                     graph_object: None,
                     minter: None,

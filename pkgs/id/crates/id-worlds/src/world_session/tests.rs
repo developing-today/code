@@ -26,6 +26,7 @@ mod tests {
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
         outbound: mpsc::Sender<String>,
+        authenticated_caller_account: Option<String>,
     }
 
     impl SessionIo for ChannelIo {
@@ -34,6 +35,26 @@ mod tests {
         }
         async fn send(&mut self, frame: String) -> bool {
             self.outbound.send(frame).await.is_ok()
+        }
+
+        fn authenticated_caller_account(&self) -> Option<&str> {
+            self.authenticated_caller_account.as_deref()
+        }
+    }
+
+    struct StalledSendIo {
+        inbound: std::collections::VecDeque<Inbound>,
+        send_calls: usize,
+    }
+
+    impl SessionIo for StalledSendIo {
+        async fn recv(&mut self) -> Inbound {
+            self.inbound.pop_front().unwrap_or(Inbound::Closed)
+        }
+
+        async fn send(&mut self, _frame: String) -> bool {
+            self.send_calls += 1;
+            std::future::pending().await
         }
     }
 
@@ -49,10 +70,22 @@ mod tests {
         }
 
         fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
+            Self::connect_hub_with_account(hub, config, None)
+        }
+
+        fn connect_hub_with_account(
+            hub: WorldHub,
+            config: SessionConfig,
+            authenticated_caller_account: Option<String>,
+        ) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
             let task = tokio::spawn(async move {
-                let mut io = ChannelIo { inbound, outbound };
+                let mut io = ChannelIo {
+                    inbound,
+                    outbound,
+                    authenticated_caller_account,
+                };
                 run_session_with(&hub, &mut io, config).await;
             });
             Self {
@@ -130,6 +163,105 @@ mod tests {
     struct NoProgram;
 
     impl crate::world::WorldProgram for NoProgram {}
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_input_update_without_becoming_durable() {
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm");
+        let sandbox =
+            crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut instance = sandbox.instantiate(1).unwrap();
+        let budget = Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+        instance.set_charge_key("lobby".to_owned());
+        instance.set_burn_budget(Arc::clone(&budget));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(instance),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world.clone(), None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        let mut peer = peer;
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "31",
+        }))
+        .await;
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("acct-ada")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("authenticated account receives the guest fuel charge");
+
+        let event = world
+            .events_after(capability.clone(), 0)
+            .await
+            .unwrap()
+            .events
+            .remove(0);
+        let persisted = serde_json::to_value(event).unwrap();
+        assert!(persisted.get("caller_account").is_none());
+        assert!(persisted.get("authenticated_caller_account").is_none());
+        let first = budget.snapshot();
+        let ada_calls = first.accounts["acct-ada"].admitted;
+        assert!(ada_calls > 0);
+        assert!(first.accounts["acct-ada"].settled_fuel > 0);
+        peer.close().await;
+
+        // A capability-only session on the same world charges the world
+        // bucket and does not inherit the previous connection's account.
+        let (_, capability) = world.issue("Grace", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(
+            WorldService::new(world.clone(), None),
+            SessionConfig::default(),
+        );
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "32",
+        }))
+        .await;
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            while budget
+                .snapshot()
+                .accounts
+                .get("lobby")
+                .is_none_or(|account| account.admitted == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capability-only input charges the world bucket");
+        world.events_after(capability, 1).await.unwrap();
+        let second = budget.snapshot();
+        assert_eq!(second.accounts["acct-ada"].admitted, ada_calls);
+        assert!(second.accounts["lobby"].admitted > 0);
+        peer.close().await;
+    }
 
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).
@@ -1509,6 +1641,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                idle_timeout: Duration::from_mins(10),
                 documents_store: None,
             },
         );
@@ -1517,6 +1650,126 @@ mod tests {
         assert!(frame["message"].as_str().unwrap().contains("timed out"));
         assert!(peer.next().await.is_none());
         peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_outbound_send_closes_the_session_after_its_deadline() {
+        let hub = WorldHub::single(service(None));
+        let mut io = StalledSendIo {
+            inbound: std::collections::VecDeque::from([Inbound::Text("not json".to_owned())]),
+            send_calls: 0,
+        };
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_mins(10),
+            documents_store: None,
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_session_with_send_deadline(&hub, &mut io, config, Duration::from_millis(10)),
+        )
+        .await
+        .expect("a stalled transport must not keep a session alive");
+        assert_eq!(
+            io.send_calls, 1,
+            "the session attempts its refusal frame once"
+        );
+    }
+
+    /// Oracle for #15976: a joined session that goes silent is reaped
+    /// when the idle deadline passes — the session task ends, the hub
+    /// presence (lease) count drops to zero, and the freed permit lets
+    /// a new session join a hub whose ceiling is one.
+    #[tokio::test]
+    async fn idle_joined_session_releases_its_permit_and_presence() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_sessions: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(500),
+            documents_store: None,
+        };
+        let mut silent = Peer::connect_hub(hub.clone(), config);
+        silent
+            .say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(silent.next().await.unwrap()["type"], "snapshot");
+        // Presence is recorded just after the snapshot is sent; poll
+        // briefly, well inside the idle window.
+        let mut presence = 0;
+        for _ in 0..50 {
+            presence = hub
+                .list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence);
+            if presence == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(presence, 1, "the joined session holds its lease");
+
+        // The peer now goes silent with its transport open. The idle
+        // deadline must end the session on its own.
+        let Peer {
+            to_server: _to_server,
+            from_server: _from_server,
+            task,
+        } = silent;
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("a silent joined session must be reaped at the idle deadline")
+            .unwrap();
+        assert_eq!(
+            hub.list()
+                .iter()
+                .find(|info| info.name == "arena")
+                .map_or(0, |info| info.presence),
+            0,
+            "the reaped session releases its presence"
+        );
+
+        // The freed permit admits a new join under the ceiling of one.
+        let mut next = Peer::connect_hub(hub, SessionConfig::default());
+        next.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(next.next().await.unwrap()["type"], "snapshot");
+        next.close().await;
+    }
+
+    /// Oracle for #15976, other side: a session that keeps sending
+    /// frames more often than the idle deadline is never reaped.
+    #[tokio::test]
+    async fn active_session_survives_past_the_idle_deadline() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let capability = invite_into(&hub, "arena", "ann").await;
+        let config = SessionConfig {
+            join_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_millis(150),
+            documents_store: None,
+        };
+        let mut peer = Peer::connect_hub(hub, config);
+        peer.say(serde_json::json!({"type":"join","capability": capability,"world":"arena"}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        // Chat every 50 ms for ~450 ms: three idle windows pass while
+        // the session stays active.
+        for n in 0..9 {
+            peer.say(serde_json::json!({"type":"chat","text": format!("ping {n}")}))
+                .await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        peer.say(serde_json::json!({"type":"chat","text": "still here"}))
+            .await;
+        let event = next_of_type(&mut peer, "event").await;
+        assert_eq!(event["event"]["kind"]["kind"], "chat");
+        peer.close().await;
     }
 
     #[tokio::test]
@@ -2235,7 +2488,7 @@ mod tests {
             .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
             .collect();
         let (page, next_after) = document_names_page(&names).unwrap();
-        assert!(!page.is_empty());
+        assert_ne!(page, [] as [String; 0]);
         assert!(page.len() < names.len());
         assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
         let used: usize = page.iter().map(|name| name.len() + 1).sum();
@@ -4665,7 +4918,9 @@ mod tests {
             );
             assert!(
                 bytes.len()
-                    < id_core::screen_codec::encode_view_patch(&frame).unwrap().len(),
+                    < id_core::screen_codec::encode_view_patch(&frame)
+                        .unwrap()
+                        .len(),
                 "the compressed frame is smaller than its version-1 form"
             );
             applied = frame

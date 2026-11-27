@@ -6,11 +6,16 @@ import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
 import {
-  loadWorldSnapshot,
-  saveWorldSnapshot,
-  type StoredWorldSnapshot,
-} from "./world-snapshot-store";
+  documentFrame,
+  documentsFrame,
+  documentsRefusal,
+  nextDocumentsCursor,
+  parseDocumentRead,
+  parseDocumentsPage,
+} from "./documents";
+import { loadWorldSnapshot, saveWorldSnapshot, type StoredWorldSnapshot } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
+import { viewportCellsForPane } from "./world-viewport";
 
 type WorldFrame = {
   type:
@@ -18,6 +23,8 @@ type WorldFrame = {
     | "event"
     | "view"
     | "records"
+    | "documents"
+    | "document"
     | "invite"
     | "upload_ready"
     | "module_installed"
@@ -50,6 +57,9 @@ type WorldFrame = {
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
+  names?: string[];
+  size?: number;
+  text?: string;
   next_after?: string | null;
   chunk_bytes?: number;
   module_hash?: string;
@@ -98,6 +108,10 @@ function initWorld(): void {
   const worldInput = element<HTMLInputElement>(root, "[data-world-world]");
   const recordsView = element<HTMLElement>(root, "[data-world-records]");
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
+  const documentsList = element<HTMLElement>(root, "[data-world-documents]");
+  const documentsView = element<HTMLElement>(root, "[data-world-document]");
+  const documentsRefresh = element<HTMLButtonElement>(root, "[data-world-documents-refresh]");
+  const documentsPrefix = element<HTMLInputElement>(root, "[data-world-documents-prefix]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   // The host controls (admin token, invite minting, module install,
@@ -158,6 +172,11 @@ function initWorld(): void {
   let recordsAfter: string | null = null;
   let recordsPending = false;
   let recordsRefetch = false;
+  let documentsNames: string[] = [];
+  let documentsAfter: string | null = null;
+  let documentsPages = 0;
+  let documentsPending = false;
+  let documentPending = false;
   let reconnects = 0;
   let intentionalClose = false;
   let hostMode = false;
@@ -177,6 +196,11 @@ function initWorld(): void {
   // accumulated snapshot belongs to.
   let offlineSnapshot: StoredWorldSnapshot | null = null;
   let offlineWorld: string | null = null;
+  // #10927 slice 2: offline cursors and a cursor carried across a
+  // disconnect have no durable journal identity. While set, the next join
+  // asks for an authoritative snapshot instead of replaying a suffix.
+  let requiresFreshSnapshot = false;
+  let notificationResyncPending = new URLSearchParams(location.search).has("client-notify");
   const persistOfflineSnapshot = () => {
     if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
   };
@@ -198,6 +222,10 @@ function initWorld(): void {
     offlineWorld = world;
     const stored = loadWorldSnapshot(localStorage, window.location.host, world);
     offlineSnapshot = stored;
+    // A world selection or a stored snapshot carries no proof that its
+    // sequence belongs to the host's current journal. The next join must
+    // re-snapshot rather than replay from that cursor (or the prior world).
+    requiresFreshSnapshot = true;
     if (!stored) return;
     cursor = stored.sequence;
     renderParticipants(stored.participants);
@@ -210,7 +238,10 @@ function initWorld(): void {
     }
     records = { ...stored.records };
     recordsView.textContent = JSON.stringify(records, null, 2);
-    appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
+    appendLine(
+      log,
+      `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`,
+    );
     setStatus("Offline — saved snapshot");
   };
 
@@ -344,6 +375,9 @@ function initWorld(): void {
           return;
         }
         cursor = snapshot.current_sequence;
+        // A live host snapshot proves journal continuity for this page
+        // lifetime: later reconnects may resume from the live cursor.
+        requiresFreshSnapshot = false;
         renderParticipants(snapshot.participants);
         // #10927: a snapshot (re)starts the offline read model for
         // this world. Records are reset — the records fetch below
@@ -519,6 +553,60 @@ function initWorld(): void {
         }
         break;
       }
+      case "documents": {
+        if (!documentsPending) return;
+        const refusal = documentsRefusal(frame);
+        if (refusal) {
+          documentsPending = false;
+          documentsPages = 0;
+          setStatus(refusal.message, "error");
+          return;
+        }
+        const page = parseDocumentsPage(frame);
+        if (!page) {
+          documentsPending = false;
+          documentsPages = 0;
+          rejectFrame();
+          return;
+        }
+        documentsPages += 1;
+        try {
+          documentsAfter = nextDocumentsCursor(documentsAfter, page.nextAfter, documentsPages);
+        } catch (error) {
+          documentsPending = false;
+          documentsPages = 0;
+          setStatus(error instanceof Error ? error.message : "Documents listing failed", "error");
+          return;
+        }
+        documentsNames.push(...page.names);
+        if (documentsAfter === null) {
+          documentsPending = false;
+          documentsPages = 0;
+          renderDocumentsList();
+        } else {
+          socket?.send(
+            JSON.stringify(
+              documentsFrame(capability.value.trim(), {
+                prefix: documentsPrefix?.value.trim() || null,
+                after: documentsAfter,
+              }),
+            ),
+          );
+        }
+        break;
+      }
+      case "document": {
+        if (!documentPending) return;
+        documentPending = false;
+        const read = parseDocumentRead(frame);
+        if (!read) {
+          rejectFrame();
+          return;
+        }
+        if (documentsView)
+          documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
+        break;
+      }
       case "invite": {
         const invite = frame.invite ?? frame;
         // #7924: a present capability must be a string before it can be
@@ -545,11 +633,51 @@ function initWorld(): void {
           rejectFrame();
           return;
         }
+        documentsPending = false;
+        documentsPages = 0;
+        documentPending = false;
         setStatus(frame.message ?? "World request failed", "error");
         appendLine(log, `error: ${frame.message ?? "world request failed"}`);
         break;
       }
     }
+  };
+
+  const renderDocumentsList = () => {
+    if (!documentsList) return;
+    documentsList.textContent = "";
+    for (const docName of documentsNames) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "btn btn-ghost btn-xs block";
+      item.textContent = docName;
+      item.addEventListener("click", () => requestDocument(docName));
+      documentsList.append(item);
+    }
+  };
+
+  const requestDocument = (docName: string) => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
+    documentPending = true;
+    socket.send(JSON.stringify(documentFrame(capability.value.trim(), docName)));
+  };
+
+  const requestDocuments = () => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
+    if (documentsPending) return;
+    documentsNames = [];
+    documentsAfter = null;
+    documentsPages = 0;
+    documentsPending = true;
+    socket.send(
+      JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })),
+    );
   };
 
   const requestRecords = () => {
@@ -598,6 +726,11 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
+    // The paste shortcut belongs to the browser, not the terminal encoder:
+    // encoding Ctrl+V as the C0 byte 0x16 and preventing default would
+    // cancel the paste event the listener below forwards as a paste frame,
+    // so keyboard paste could never reach the program (#15170).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") return;
     const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
@@ -633,9 +766,16 @@ function initWorld(): void {
   };
   const sendViewport = (force = false) => {
     if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
-    const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
-    const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
-    const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    const style = getComputedStyle(view);
+    const { width, height } = viewportCellsForPane({
+      clientWidth: view.clientWidth,
+      clientHeight: view.clientHeight,
+      fontSize: Number.parseFloat(style.fontSize) || 16,
+      paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+      paddingRight: Number.parseFloat(style.paddingRight) || 0,
+      paddingTop: Number.parseFloat(style.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(style.paddingBottom) || 0,
+    });
     const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
     // A same-size resize resets the host's retained screen baseline.
     // Keep it out of an unchanged reconnect so the resume token can
@@ -651,6 +791,7 @@ function initWorld(): void {
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
+  documentsRefresh?.addEventListener("click", requestDocuments);
 
   refreshHostView = async () => {
     if (!admin || !hostViewButton) return;
@@ -756,11 +897,23 @@ function initWorld(): void {
     // snapshot belongs to restores that world's stored snapshot first
     // (which also seeds the resume cursor sent as `after` on open).
     if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
+    if (notificationResyncPending) {
+      notificationResyncPending = false;
+      cursor = 0;
+      dropResumeUnit();
+      const url = new URL(location.href);
+      url.searchParams.delete("client-notify");
+      history.replaceState(null, "", url);
+    }
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
+    // A fetch on the previous socket cannot complete after this join.
+    documentsPending = false;
+    documentsPages = 0;
+    documentPending = false;
     // The resume unit (surface, revision, token) deliberately survives
     // a reconnect: the join below offers the token, and the host
     // answers with a catch-up patch against exactly this surface — or
@@ -780,16 +933,20 @@ function initWorld(): void {
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
+      // #10927 slice 2: a restored offline cursor or disconnected socket
+      // carries no proof of journal continuity, so request a fresh host
+      // snapshot. Resume tokens are only offered on a continuous live page.
+      const freshResnapshot = requiresFreshSnapshot;
       ws.send(
         JSON.stringify({
           type: "join",
           capability: token,
-          after: cursor || null,
+          after: freshResnapshot ? null : cursor || null,
           world: selectedWorld(),
           screen_patches: true,
           screen_msgpack: true,
           screen_compress: true,
-          resume_token: hasResumableScreen() ? resumeToken : undefined,
+          resume_token: !freshResnapshot && hasResumableScreen() ? resumeToken : undefined,
           device_input: {
             keys: 128,
             encoder: false,
@@ -800,7 +957,8 @@ function initWorld(): void {
       );
       // A fresh session needs its initial resize. A resumable
       // reconnect keeps the established viewport unless it changed.
-      sendViewport(!hasResumableScreen());
+      // Any request that forces a fresh snapshot resets the view base too.
+      sendViewport(!hasResumableScreen() || requiresFreshSnapshot);
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
@@ -817,7 +975,14 @@ function initWorld(): void {
       // This connection's records fetch, if any, can never complete.
       recordsPending = false;
       recordsRefetch = false;
+      documentsPending = false;
+      documentsPages = 0;
+      documentPending = false;
       if (intentionalClose) return;
+      // The server may have restarted or rebuilt its journal while this
+      // socket was down. Without a durable history identity, the next
+      // connection must re-snapshot instead of replaying from this cursor.
+      requiresFreshSnapshot = true;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
       window.setTimeout(() => {
@@ -1104,6 +1269,28 @@ function initWorld(): void {
     }
     intentionalClose = false;
     connect();
+  });
+
+  // #10930: the service worker forwards a notification click as a
+  // hint-only message. Sequence numbers do not prove journal identity:
+  // even a hint at the current head may follow a restore/rewrite. Always
+  // discard the resume base and ask the host for a fresh snapshot; the
+  // normal snapshot + records + view frames rebuild the projection and
+  // rendered view. The notification carries no world data.
+  navigator.serviceWorker?.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const hint = event.data;
+    if (!isRecord(hint) || hint.type !== "client.notify") return;
+    if (
+      hint.head !== undefined &&
+      hint.head !== null &&
+      (!Number.isSafeInteger(hint.head) || (hint.head as number) < 0)
+    ) {
+      return;
+    }
+    cursor = 0;
+    dropResumeUnit();
+    notificationResyncPending = true;
+    joinButton.click();
   });
 
   chatForm.addEventListener("submit", (event) => {

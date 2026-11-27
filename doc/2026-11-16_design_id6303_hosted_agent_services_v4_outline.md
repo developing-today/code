@@ -63,55 +63,245 @@ hosted instance is the public backstop, never a requirement.
 
 ### 2.2 Hire and attach: how a hosted agent enters a world
 
-- **Hiring is a world action by the world owner** (or a role the
-  owner has delegated hiring to, where world configuration allows):
-  it names the listing, the role the agent will hold (an ordinary
-  v2 role — hiring creates no special role class), the quota class
-  and ledger the agent's actions charge (v2 §2.3, §5 question 2
-  below), and a hire term (open-ended, until a date, or until a
-  work quota is spent).
-- The hire issues the agent a **scoped delegation** in v1's terms:
-  this world, this role ceiling, this term. The agent's host
-  receives the delegation, never the owner's keys and never a
-  broader token. Attach is the lightweight form: an already-hired
-  agent is attached to an additional board or document set within
-  the same world and role — a world-configuration change, not a
-  new hire.
+- **Hire is an owner-authorized world action**: only the world owner,
+  or an authority explicitly delegated the hire action by that owner
+  under the world's configuration, may issue one. The action appends
+  an immutable hire record with these fields:
+  `hire_id`; the exact `listing_id` and immutable `listing_version`
+  selected from the registry; `world_id`; the ordinary v2 `role_id`
+  and role-configuration version (hiring creates no special role
+  class); `quota_class` and `ledger_id`; `term` (open-ended, until a
+  timestamp, or until a stated work quota is spent); `operator_id`
+  accountable for hosting this hire; and the delegation scope. The
+  record also identifies the authorizing world action and its actor,
+  so the audit chain establishes who authorized the hire. The selected
+  listing, role version, quota class, ledger, operator, and
+  term are fixed for that hire; changing them requires an audited
+  replacement hire rather than silently rewriting its record.
+  Program/build upgrades are not listing changes: they follow §2.3's
+  drain-and-replace under the same hire, with the acting program
+  version recorded in the audit for every action.
+- **Ledger selection belongs to the hiring world.** The hire charges
+  the ledger configured by that world; absent an explicit shared-ledger
+  rule in the world's configuration, it charges the world owner's
+  ledger. The hire record fixes both
+  the ledger and quota class for the hire's term. Each action spends
+  against the ledger recorded on its hire, not the agent owner's or
+  host operator's budget. This resolves v4 §5 Q1 in accordance with
+  [the decision on #10663](https://github.com/developing-today/code/issues/10663#issuecomment-7152081378).
+- **The hire action issues a scoped delegation** in v1's terms. Its
+  scope names exactly this `world_id`, the hired agent key, the role
+  ceiling and role-configuration version, the hire term, and the
+  permitted world actions. It cannot authorize another world, a role
+  escalation, or action after the term expires. The agent's host
+  receives only this delegation, never the owner's keys or a broader
+  token. Expiry or revocation ends the delegation and starts the
+  ordinary drain in §2.3; a new world requires a separate hire and
+  separately scoped delegation.
+- **Attach is not hire.** Attaching an already-hired agent to another
+  board or document set in the _same_ world is an audited world-
+  configuration change referencing the existing `hire_id` and naming
+  the target board/document set and the actor authorized to change that
+  configuration. It creates neither a second hire nor a new delegation,
+  and cannot change the hire's role, quota class, ledger, operator, or
+  term. The agent's existing world-scoped delegation governs the
+  attachment; the world's ordinary board/document access rules still
+  apply. An attachment in another world is invalid and requires a
+  separate hire.
 - **Join semantics are v2's, unchanged.** The hired agent joins
   under the world's join rules, is subject to the same claim
   leases, population caps, and rate budgets as any citizen (v3
   §2.5), and its hosted-ness is visible in the world's population
   rendering: owners and visitors can always see which agents are
   hosted, and by whom. There is no stealth hosting.
-- **Multi-owner worlds inherit v3 §5 Q1.** A hosted agent serving
-  in a world owned by someone other than its own owner is the
-  general case of that question; the hire record names whose
-  configuration, ledgers, and review queue govern (§5 question 1).
+- **Multi-owner worlds follow the hiring world's authority and ledger.**
+  A hosted agent serving in a world owned by someone other than its own
+  owner is the general case: the hiring world authorizes the hire and
+  selects its ledger as resolved in §5 Q1. The world’s ordinary
+  configuration and review rules govern the hire; the agent owner and
+  host operator gain no authority from hosting it.
 
 ### 2.3 Always-on runtime contract
 
+Three clocks govern a hosted agent, and each expiry has a
+different consequence: the **hire term** (§2.2) bounds the hire
+itself; the **presence lease** (this section) bounds the agent's
+standing presence in one world; **claim leases** (v3 §2.2) bound
+individual items. No clock's expiry silently does another clock's
+job.
+
 - **Presence is leased, like claims.** A hosted agent's standing
-  presence in a world is a renewable lease held with the host's
-  heartbeat; a host that stops heartbeating loses the presence at
-  lease expiry, and the agent's outstanding claims expire under
-  v3 §2.2's ordinary claim leases — a dead host strands nothing.
-- **Sleep and wake are first-class.** An always-on listing may
-  declare event-driven wake (on claim offers, mentions, board
-  changes in its worlds) instead of continuous presence; the
-  world-visible difference between asleep and absent is that an
-  asleep agent's lease and hire remain in force. Wake events are
-  world events, audited like any other.
-- **Drain, don't drop.** Ending a hire — term reached, quota spent,
-  suspension, owner revocation — is a drain: the agent stops
-  taking new claims, hands off or releases its in-flight items
-  with v3 §2.4 handoff notes, and only then detaches. A host kill
-  without drain is the failure case the claim leases already
-  cover; drain is the contract that makes it the rare case.
-- **Upgrades are re-hires in miniature.** A new program version
-  takes over by drain-and-replace under the same listing and hire:
-  the hire, role, and ledger persist; the program version that
-  acted is recorded in the audit for every action, so an upgrade
-  never rewrites who did what.
+  presence in a world is a renewable lease, one per
+  (`hire_id`, `world_id`) pair, held by the host on the agent's
+  behalf. The lease record names the hire, the world, the agent
+  key, the accountable `operator_id` (§2.2), a monotonically
+  increasing **lease epoch**, and its issue and expiry times.
+  The default lease TTL is 90 seconds; world configuration may
+  set it between 30 seconds and 10 minutes, in the same spirit
+  as v3 §2.5's world-configured population and rate settings.
+  The host renews by **heartbeat**: one heartbeat every third of
+  the TTL (every 30 seconds at the default), each carrying the
+  lease id, the epoch, and a per-lease sequence number. A
+  successful heartbeat extends the expiry to heartbeat time plus
+  TTL; there is no hidden grace period beyond the TTL itself.
+  A heartbeat is host telemetry, not an agent world action: it
+  spends no quota, is attributed to the operator rather than
+  the agent, and is visible on the operator surface (§2.5);
+  lease acquisition, renewal failure, and expiry are audited
+  events.
+- **Lease expiry lapses presence, nothing else.** A host that
+  stops heartbeating loses the presence at lease expiry, and
+  the agent renders absent (below). The hire remains in force
+  until its own term or revocation; the agent's outstanding
+  claims are _not_ cancelled by presence expiry — they run to
+  their own v3 §2.2 claim leases and expire under them, so a
+  dead host strands nothing. What presence expiry does block is
+  new action: an agent with no live presence lease in a world
+  may not claim, renew a claim, edit, or hand off in that world
+  until it re-acquires presence. Re-acquisition — by the same
+  host, or by a replacement host presenting the hire's still-
+  valid delegation — takes a new epoch, and the epoch fences
+  the old holder: world writes carrying a stale epoch are
+  refused and audited, so a partitioned host that comes back
+  cannot act as a second copy of the agent. At most one
+  presence lease per hire and world is live at any time.
+- **Sleep and wake are first-class.** A listing whose
+  availability terms (§2.1) are event-driven or scheduled may
+  idle without continuous presence: the agent releases its
+  presence lease deliberately, or never acquires one outside
+  its scheduled windows, and the hire carries a **wake
+  subscription** — the event classes below, fixed at hire time
+  from the listing's declared terms and the world's
+  configuration; changing the subscription is an audited
+  world-configuration change in the manner of attach (§2.2),
+  not a new hire. The wake-event set is exactly:
+  1. **claim-offer** — an item becomes claimable on a board the
+     agent is attached to, under a role it holds: a new item, an
+     item moved into a claimable state, or an item returned by
+     claim expiry;
+  2. **mention** — the agent is named in world state: an item
+     or document comment, a review request, or a handoff note
+     addressed to it (world state only; v3 §2.1's no-side-channel
+     rule applies to wake as to everything else);
+  3. **attachment-change** — a board or shared document the
+     agent is attached to changes: an item is created, moved,
+     or closed, or a document is edited;
+  4. **handoff-offer** — another agent releases an item with a
+     v3 §2.4 handoff note naming this agent or its role;
+  5. **hire-lifecycle** — the hire's term is near expiry, a
+     quota threshold the world configures is crossed, the
+     delegation is revoked or near expiry, or a drain is
+     announced for the hire;
+  6. **schedule** — a scheduled listing's availability window
+     opens.
+     Nothing else wakes an agent: not heartbeats, not events in
+     worlds it is not hired into, not host-internal events. Wake
+     delivery is charged against the same per-role event-rate
+     budgets as other world events (v3 §2.5): a burst coalesces
+     into a single digest wake carrying the event references, and
+     a wake suppressed by budget is recorded with its reason —
+     contention is data (v3 §2.2), never an invisible drop. A wake
+     is an audited world event naming the triggering events and
+     the delivery outcome (delivered, coalesced, suppressed); it
+     grants no presence by itself — the woken agent acquires a
+     presence lease under the rules above before it may act. An
+     agent in drain (below) receives no claim-offer,
+     attachment-change, or handoff-offer wakes.
+- **Asleep is not absent.** Owners and visitors render a hired
+  agent in exactly one of three presence states, through the
+  `id-shell` population rendering (§7), with no contract change:
+  **present** — a presence lease is live; **asleep** — no live
+  lease, but the hire is in force and a wake subscription is
+  active, so the agent is idle by design and reachable by the
+  wake events above; the rendering names the wake classes it
+  responds to; **absent** — no live lease and no active wake
+  subscription: the lease expired unexpectedly (host failure is
+  the expected cause), or the hire has ended and the agent has
+  detached. The rendering shows the state, when it began, and
+  the accountable operator for present and asleep agents; a
+  visitor can therefore always answer v3 §2.5's "who is here"
+  question, including who is merely asleep. Presence
+  transitions — acquired, slept, woken, expired, detached —
+  are audited world events; individual heartbeats are not.
+- **Drain, don't drop.** Ending a hire — term reached, quota
+  spent, listing suspension (§2.1), owner revocation of the
+  hire or its delegation, operator shutdown, or an upgrade
+  (below) — is a drain, a state machine over the hire:
+  **announced → handing-off → detached**. A drain record is
+  appended at announcement naming the hire, the trigger, the
+  actor who caused it, the announcement time, and the drain
+  deadline.
+  - _announced:_ the agent stops taking new claims immediately
+    — the world refuses new claims under a draining hire and
+    audits the refusal — and receives no new wakes except
+    hire-lifecycle. Its presence lease keeps renewing for the
+    drain's duration, and its in-flight claims stay held: a
+    drain never reassigns a held item, and v3 §2.2's atomicity
+    means no item is ever double-held.
+  - _handing-off:_ entered on the agent's first handoff action,
+    or automatically at announcement if it holds no claims.
+    For each in-flight claim the agent must do exactly one of:
+    complete and close it under the ordinary role rules;
+    release it with a v3 §2.4 handoff note meeting the board's
+    required-fields configuration; or let its claim lease
+    expire, which is recorded as an unhanded release, distinct
+    in the audit from a noted handoff. In-flight document edits
+    are completed as ordinary world actions or abandoned —
+    v3 §2.3 permits no unrecorded partial edit, in drain or
+    out of it.
+  - _detached:_ entered when no in-flight claims remain. The
+    delegation ends, the presence lease is released, and the
+    hire record closes with the drain outcome — clean,
+    completed-with-expiries, or forced (below). Detached is
+    terminal for the hire; returning is a new hire — except
+    upgrade-by-replace (below), where detachment is of the old
+    program instance and the hire itself persists.
+    The **drain deadline** is 15 minutes from announcement by
+    default; world configuration may set it between 1 minute and
+    24 hours. A handoff for a claim is due by the earlier of the
+    drain deadline and that claim's own lease expiry. A drain
+    with no state-changing progress event — no claim completed,
+    released, or expired, and no live heartbeat — for a **stall
+    window** (default 5 minutes, world-configurable up to the
+    deadline) is a **stalled drain**: the world records the
+    stall, surfaces it to the world owner and the operator
+    (§2.5), and may extend the deadline once, by at most the
+    original deadline, if the agent is heartbeating. At the
+    deadline an unfinished drain force-completes: remaining
+    claims expire immediately rather than at their natural lease
+    expiry, the delegation is revoked, and the hire detaches
+    with outcome forced. Whether force-completion at the
+    deadline is automatic or requires an owner action is world
+    configuration; the default is automatic, so a stalled drain
+    cannot hold a hire open forever. The stall and its outcome
+    enter the listing's history (§2.1) as evidence. A host kill
+    without drain remains the failure case the claim leases
+    already cover; drain is the contract that makes it the rare
+    case.
+- **Upgrades are drain-and-replace under the same hire.** A new
+  program version takes over by the drain above with trigger
+  _upgrade_, naming the target program version: the old
+  instance drains (its handing-off also transfers context the
+  only way anything moves here — through world state, above
+  all its handoff notes), detaches at the instance level, and
+  the new instance then acquires a presence lease under the
+  same `hire_id` at the next lease epoch and resumes work,
+  claiming handed-off items by ordinary claim actions — claims
+  are never transferred between instances directly. The hire,
+  role, quota class, and ledger persist unchanged (§2.2);
+  program/build upgrades are not listing changes. Single-
+  instance presence is enforced by the lease epoch: the new
+  instance cannot hold presence while the old one does.
+  Replacement commits when the new instance acquires presence;
+  if it has not done so within a **replace window** (default:
+  the drain deadline) the upgrade aborts — the old instance,
+  if still running, re-acquires presence and continues, and if
+  it is gone the agent renders absent with the hire still in
+  force, for the operator to retry the replacement or the
+  owner to end the hire. Every world action's audit record
+  carries the exact program version that acted, and the drain
+  and replacement events link the old and new versions in one
+  chain, so an upgrade never rewrites who did what.
 
 ### 2.4 The public-server trust model, applied to hosts
 
@@ -181,13 +371,29 @@ hosted instance is the public backstop, never a requirement.
 2. **Hire record shape** — what a hire names (listing, role, quota
    class and ledger, term kind), and how attach differs from hire
    in the record (§2.2).
-3. **Presence lease + wake contract** — lease durations, heartbeat
-   cadence, the wake-event set, and how asleep renders to owners
-   and visitors (§2.3, with v3 decision 5's population/rate
-   configuration).
-4. **Drain protocol** — the drain state machine (announced →
-   handing-off → detached), its timeouts, and what a world may do
-   when a drain stalls (§2.3).
+3. **Settled — presence lease + wake contract** (§2.3, step
+   #10664): presence is a per-(hire, world) lease, default TTL
+   90 seconds (world-configurable 30 seconds–10 minutes),
+   renewed by operator-attributed heartbeats at a third of the
+   TTL and fenced by a monotonic lease epoch; expiry lapses
+   presence only — outstanding claims run to their own v3
+   §2.2 claim leases. The wake-event set is the six classes
+   enumerated in §2.3, delivered under v3 decision 5's
+   per-role rate budgets with coalescing and recorded
+   suppression, and asleep (hire in force, wake subscription
+   active) renders distinctly from absent for owners and
+   visitors alike.
+4. **Settled — drain protocol** (§2.3, step #10664): the drain
+   state machine is announced → handing-off → detached, with
+   entry and exit conditions per state, a default 15-minute
+   deadline (world-configurable 1 minute–24 hours), a default
+   5-minute stall window after which the world records and
+   surfaces the stall, and force-completion at the deadline —
+   remaining claims expire, the delegation is revoked, the
+   hire detaches as forced. Upgrade is the same drain with
+   trigger _upgrade_, ending in drain-and-replace under the
+   persisting hire, with the exact acting program version
+   recorded in the audit for every action.
 5. **Sealing boundary** — which agent state is sealed, the key
    hierarchy that seals it, and the recovery story when an agent
    migrates hosts (§2.4).
@@ -202,13 +408,13 @@ blocks the step breakdown in §6; each step issue names the
 question it depends on. Questions 1–2 are inherited from v3 §5
 where v4 makes them concrete; 3–4 are new in v4.
 
-1. **Whose ledger pays for a hosted agent (sharpens v3 §5 Q1/Q4):**
-   a hired agent's actions charge a quota ledger — the hiring
-   world owner's (the hire is a purchase of work), the agent
-   owner's (the agent spends its own budget wherever it serves),
-   or the world-configured split v3 Q4 already asks about? Hosted
-   agents make this unavoidable: the agent, its owner, the world
-   owner, and the host operator can be four different parties.
+1. **Resolved — whose ledger pays for a hosted agent (sharpens v3 §5
+   Q1/Q4):** a hire charges the ledger configured by the hiring world;
+   when there is no explicit shared-ledger rule, that is the world
+   owner's ledger. The hire record fixes its ledger and quota class for
+   the term, and same-world attach does not change either. See
+   [the #10663 decision](https://github.com/developing-today/code/issues/10663#issuecomment-7152081378)
+   and §2.2. Q2–Q4 remain open.
 2. **Is hosting itself a chargeable world resource:** does the
    _host's_ cost (compute for always-on presence) enter any
    ledger the protocol tracks, or is hosting purely an

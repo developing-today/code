@@ -246,6 +246,9 @@ pub(crate) struct WorldActor {
     /// The connection whose input is being processed. Ephemeral actor context;
     /// it is deliberately absent from `WorldEvent` and the journal.
     pub(crate) acting_session: Option<SessionId>,
+    /// Authenticated billing account for the current participant input. It
+    /// is actor-local, never persisted, and cleared between commands.
+    pub(crate) acting_account: Option<String>,
 }
 
 /// One actor-local form presentation and its host-generated generation token.
@@ -424,6 +427,7 @@ impl WorldActor {
             self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
+            self.acting_account = None;
             self.acting_device_input = None;
         }
     }
@@ -581,6 +585,83 @@ impl WorldActor {
         self.core.write_lease = next_lease;
         self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         Ok(epoch)
+    }
+
+    /// Recover an expired native lease back to the DO (#13938 slice 1):
+    /// journal `LeaseRevoked` for the expired holder, then journal
+    /// `LeaseGranted` for the DO. The live lease advances to match the
+    /// journaled prefix after each entry, so a crash — or a failed
+    /// grant append — between the revoke and the grant leaves the
+    /// world holder-less (writers refused `holder-lost`), never with
+    /// two holders. Only an expired native holder may recover this
+    /// way; a live term still needs a handoff. The host adapter
+    /// authenticates this control request before invoking it.
+    fn recover_expired_lease(&mut self) -> Result<u64> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "expired lease recovery requires a durable journal"
+        );
+        let now_ms = self.core.clock().now_ms();
+        let lease = self.core.write_lease().clone();
+        let former_holder = lease
+            .holder
+            .clone()
+            .context("expired lease recovery has no current holder")?;
+        ensure!(
+            former_holder != DO_WRITE_LEASE_HOLDER,
+            "expired lease recovery applies only to a native holder"
+        );
+        ensure!(
+            lease.is_expired(now_ms),
+            "expired lease recovery requires an expired term"
+        );
+        let revoke_epoch = lease
+            .epoch
+            .checked_add(1)
+            .context("expired lease recovery epoch overflow")?;
+        let grant_epoch = revoke_epoch
+            .checked_add(1)
+            .context("expired lease recovery epoch overflow")?;
+
+        // Revoke the expired holder first. The position is stamped from
+        // the lease history in the same serialized operation as the
+        // append; if the append fails the history never advances, so a
+        // retry reuses the same position and epoch.
+        let revoke_position = self.core.next_lease_position();
+        let mut revoked = lease.clone();
+        revoked.apply_revoke(
+            &former_holder,
+            revoke_epoch,
+            "term expired",
+            revoke_position,
+        )?;
+        self.persist(JournalEntry::LeaseRevoked {
+            former_holder: former_holder.clone(),
+            epoch: revoke_epoch,
+            reason: "term expired".to_owned(),
+            position: revoke_position,
+        })?;
+        self.core.write_lease = revoked;
+        self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+
+        // Grant the DO only after the revoke is durable. A failed
+        // grant append leaves the live state holder-less with storage
+        // failed latched: DO writes stay refused until the operator
+        // repairs the journal, never resumed on an undurable grant.
+        let grant_position = self.core.next_lease_position();
+        let mut granted = self.core.write_lease().clone();
+        granted.apply_grant(DO_WRITE_LEASE_HOLDER, grant_epoch, None, grant_position)?;
+        self.persist(JournalEntry::LeaseGranted {
+            holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+            epoch: grant_epoch,
+            expires_at_ms: None,
+            position: grant_position,
+        })?;
+        self.core.write_lease = granted;
+        self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        Ok(grant_epoch)
     }
 
     /// Execute a spill v2 automatic failover (design #5787 §1, #7572):
@@ -969,6 +1050,7 @@ impl WorldActor {
                 token,
                 input,
                 session_id,
+                caller_account,
                 device_input,
                 signed_move,
                 reply,
@@ -996,12 +1078,9 @@ impl WorldActor {
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         self.acting_session = session_id;
+                        self.acting_account = caller_account;
                         self.acting_device_input = device_input;
-                        match self
-                            .program
-                            .update(&candidate)
-                            .and_then(|()| program_records(self.program.as_mut()))
-                        {
+                        match self.update_for_caller(&candidate) {
                             Ok(records) => {
                                 // A signed input and its acceptance are one
                                 // journal transaction (Codex review on PR
@@ -1050,9 +1129,8 @@ impl WorldActor {
                                     // and stays healthy; the same
                                     // input can succeed once the
                                     // account's window rolls.
-                                    Err(error.context(
-                                        "world program refused input at its fuel rate",
-                                    ))
+                                    Err(error
+                                        .context("world program refused input at its fuel rate"))
                                 } else {
                                     self.program_healthy = false;
                                     Err(error.context("world program rejected input"))
@@ -1154,6 +1232,10 @@ impl WorldActor {
                 let result = self.handoff_write_lease(to, epoch, expires_at_ms);
                 let _ = reply.send(result);
             }
+            WorldCommand::RecoverExpiredLease { reply } => {
+                let result = self.recover_expired_lease();
+                let _ = reply.send(result);
+            }
             WorldCommand::FailoverWriteLease {
                 pool,
                 journal_tip,
@@ -1163,6 +1245,18 @@ impl WorldActor {
             } => {
                 let result =
                     self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::DispatchSpillCopy {
+                holder,
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            } => {
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -1633,6 +1727,44 @@ impl WorldActor {
                 // would misattribute a participant read.
                 let _ = reply.send(profile);
             }
+            WorldCommand::SetPresentationPolicy { policy, reply } => {
+                // A summary, not the whole policy: its lists and maps are
+                // bounded but can run to hundreds of entries.
+                let audit_parameters = serde_json::json!({
+                    "user_uploads": policy.assets.user_uploads,
+                    "max_rung": policy.assets.max_rung,
+                    "disguise": policy.filters.disguise,
+                    "shaders": policy.shaders.enabled,
+                });
+                let result = self
+                    .check_writable()
+                    .and_then(|()| {
+                        policy.validate().map_err(|error| {
+                            anyhow::anyhow!("invalid presentation policy: {error}")
+                        })
+                    })
+                    .and_then(|()| {
+                        self.persist(JournalEntry::PresentationPolicy {
+                            policy: policy.clone(),
+                        })
+                    })
+                    .map(|()| {
+                        self.core.presentation = policy;
+                        self.core.presentation.clone()
+                    });
+                self.audit_admin_result(
+                    "admin",
+                    "SetPresentationPolicy",
+                    audit_parameters,
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PresentationPolicyInfo { reply } => {
+                // No audit record: the policy is public pre-join metadata,
+                // readable without a capability (#5970 §5).
+                let _ = reply.send(self.core.presentation.clone());
+            }
             WorldCommand::ManifestState { reply } => {
                 let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
@@ -1836,6 +1968,20 @@ impl WorldActor {
                     authority_identity(&authority),
                     "SetIsolation",
                     serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            } => {
+                let result = self.require_ownership(&authority, act);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "AuthorizeLifecycle",
+                    serde_json::json!({"act": act}),
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
@@ -2683,7 +2829,7 @@ mod replication_feed_tests {
         let snapshot = snapshot_source.read().unwrap();
         assert_eq!(reset.bytes, snapshot.bytes);
         let chunks = split_entry_payload(&snapshot.bytes).unwrap();
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [Vec<u8>; 0]);
         assert!(
             chunks
                 .iter()
@@ -3955,6 +4101,7 @@ impl WorldActor {
             stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
+            acting_account: None,
             acting_device_input: None,
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
