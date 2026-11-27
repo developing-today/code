@@ -351,8 +351,10 @@ fn rebuild_after_a_source_revision_carries_only_the_current_source() {
     let mut revised = entries[0].clone();
     revised.text = "A corrected transcript of the same memory.".to_string();
     revised.created_at_ms = Some(revised.created_at_ms.unwrap() + 60_000.0);
-    let (second, second_ranking) =
-        rebuild_and_rank(&temp_dir("rebuild-rev-second"), std::slice::from_ref(&revised));
+    let (second, second_ranking) = rebuild_and_rank(
+        &temp_dir("rebuild-rev-second"),
+        std::slice::from_ref(&revised),
+    );
 
     assert_eq!(second.items, 1);
     assert_eq!(second.chunks, 1);

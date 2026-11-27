@@ -120,6 +120,10 @@ pub struct WorldCore {
     /// journaled before its result is delivered, and replay rebuilds
     /// the store from the journal.
     pub(crate) kv: BTreeMap<String, String>,
+    /// D5 template role definitions, without membership or access-control
+    /// policy. Re-emitted by checkpoints so durable template metadata survives
+    /// journal compaction.
+    pub(crate) template_roles: Vec<crate::world_template::RoleDefinition>,
     /// The world's blob set (#1062): content address (the blob's
     /// iroh-blobs hash as lowercase hex) to content bytes. Bounded
     /// by the `MAX_BLOB_*` caps; every mutation is journaled before
@@ -435,6 +439,7 @@ impl WorldCore {
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             kv: BTreeMap::new(),
+            template_roles: Vec::new(),
             blobs: BTreeMap::new(),
             http_fetch_attempts: VecDeque::new(),
             notify_attempts: VecDeque::new(),
@@ -979,6 +984,16 @@ impl WorldCore {
                         .validate()
                         .context("invalid presentation policy in journal")?;
                     core.presentation = policy;
+                }
+                JournalEntry::TemplateRolesSet { roles } => {
+                    let mut names = BTreeSet::new();
+                    ensure!(
+                        roles
+                            .iter()
+                            .all(|role| !role.name.is_empty() && names.insert(&role.name)),
+                        "journal template roles have an empty or duplicate name"
+                    );
+                    core.template_roles = roles;
                 }
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
@@ -1876,6 +1891,11 @@ impl WorldCore {
         if self.presentation != id_core::presentation_policy::PresentationPolicy::default() {
             entries.push(JournalEntry::PresentationPolicy {
                 policy: self.presentation.clone(),
+            });
+        }
+        if !self.template_roles.is_empty() {
+            entries.push(JournalEntry::TemplateRolesSet {
+                roles: self.template_roles.clone(),
             });
         }
         if self.cross_world_forced {

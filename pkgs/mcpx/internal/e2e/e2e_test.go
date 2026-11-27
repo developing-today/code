@@ -267,6 +267,22 @@ func TestLsStartsDaemonAndListsNamespaces(t *testing.T) {
 	}
 }
 
+func TestIdenticalUpstreamsNeverMerge(t *testing.T) {
+	// The oracle is the configured upstream identity: alpha and beta have
+	// identical command definitions, but the visible namespace set must keep
+	// both names instead of collapsing them into one server.
+	e := newEnv(t, twoVisibleServers)
+	out := e.run("ls")
+	for _, namespace := range []string{"alpha", "beta"} {
+		if !strings.Contains(out, namespace) {
+			t.Errorf("identical upstream namespace %q was lost:\n%s", namespace, out)
+		}
+	}
+	if strings.Contains(out, "namespace collision") {
+		t.Fatalf("identical upstreams must receive distinct namespaces, not collide:\n%s", out)
+	}
+}
+
 func TestLsIsFastOnceCached(t *testing.T) {
 	e := newEnv(t, oneServer)
 	e.run("ls")

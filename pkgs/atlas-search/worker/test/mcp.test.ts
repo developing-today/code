@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { fetchMock } from "./fetch-mock";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
 // The MCP endpoint (#8625) rides the same gated search path as
@@ -65,6 +65,29 @@ beforeAll(() => {
       body: (b) => b.includes("schema error fixture"),
     })
     .reply(() => ({ statusCode: 503, data: "fixture unavailable" }));
+  origin
+    .intercept({
+      path: "/v1/search",
+      method: "POST",
+      body: (b: string) => b.includes("above-ceiling fixture"),
+    })
+    .reply(() => {
+      counts.search++;
+      return {
+        statusCode: 200,
+        data: JSON.stringify({
+          status: "complete",
+          effective_ceiling: "local-only",
+          total_results: 1,
+          job_id: "job-above-ceiling",
+          next_cursor: null,
+          envelope: {},
+          results: [{ chunk_id: 7, text: "above the caller ceiling", score: 0.9 }],
+        }),
+        responseOptions: { headers: { "Content-Type": "application/json" } },
+      };
+    })
+    .persist();
   origin.intercept({ path: "/v1/search", method: "POST" }).reply(searchReply).persist();
 });
 
@@ -187,16 +210,17 @@ describe("atlas-search MCP endpoint", () => {
     expect(failed.result).not.toHaveProperty("structuredContent");
   });
 
-  it("tools/call search runs the shared path: context stated, cache shared with REST", async () => {
+  it("tools/call search runs the shared path and audits the authenticated caller without raw query text", async () => {
     const e0 = counts.embed;
     const s0 = counts.search;
+    const audit = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const call = await rpc({
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
       params: { name: "search", arguments: { query: "mcp context probe" } },
-    });
+    }, { ...GATE, "X-Atlas-Agent-Id": "forged-agent" });
     expect(call.status).toBe(200);
     const body = (await call.json()) as RpcResponse;
     expect(body.result?.isError).toBe(false);
@@ -209,6 +233,18 @@ describe("atlas-search MCP endpoint", () => {
     expect(mcpSearchBody).toContain('"hosted-per-user"');
     expect(counts.embed).toBe(e0 + 1);
     expect(counts.search).toBe(s0 + 1);
+    const auditEvent = audit.mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find((entry) => entry.event === "atlas_mcp_query");
+    expect(auditEvent).toMatchObject({
+      event: "atlas_mcp_query",
+      agent_id: "hosted-per-user",
+      ceiling: "personal",
+      status: 200,
+    });
+    expect(auditEvent?.query_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(auditEvent).not.toHaveProperty("query");
+    audit.mockRestore();
 
     // The same query over REST is a hit on the very same cache
     // entry — the surfaces share one execution path.
@@ -247,6 +283,30 @@ describe("atlas-search MCP endpoint", () => {
       params: { name: "search", arguments: {} },
     });
     expect(((await noQuery.json()) as RpcResponse).error?.code).toBe(-32602);
+  });
+
+  it("a result computed above the caller ceiling is refused, never served (#8625 negative)", async () => {
+    // The fixture service answers under local-only while the MCP
+    // caller searches under personal. The verification in
+    // service.ts must refuse the answer: it never enters a Durable
+    // Object, the caller gets an error envelope, and the audit
+    // records the failure with the caller's ceiling.
+    const audit = vi.spyOn(console, "log").mockImplementation(() => {});
+    const call = await rpc({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "search", arguments: { query: "above-ceiling fixture" } },
+    });
+    expect(call.status).toBe(200);
+    const body = (await call.json()) as RpcResponse;
+    expect(body.result?.isError).toBe(true);
+    expect(JSON.stringify(body.result)).not.toContain("above the caller ceiling");
+    const auditEvent = audit.mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find((entry) => entry.event === "atlas_mcp_query");
+    expect(auditEvent).toMatchObject({ agent_id: "hosted-per-user", ceiling: "personal", status: 502 });
+    audit.mockRestore();
   });
 
   it("answers a batch with one response per request", async () => {

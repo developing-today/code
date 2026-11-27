@@ -13,9 +13,15 @@ export interface BoardStorage {
 
 export class MemoryBoardStorage implements BoardStorage {
   private readonly values = new Map<string, unknown>();
-  async get<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined; }
-  async put<T>(key: string, value: T): Promise<void> { this.values.set(key, value); }
-  snapshot(): Record<string, unknown> { return Object.fromEntries(this.values); }
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+  async put<T>(key: string, value: T): Promise<void> {
+    this.values.set(key, value);
+  }
+  snapshot(): Record<string, unknown> {
+    return Object.fromEntries(this.values);
+  }
 }
 
 export interface BoardView {
@@ -37,7 +43,12 @@ export async function loadBoardView(db: AsyncSqlDb, boardId: string): Promise<Bo
   const summary = summaries.find((entry) => entry.board.id === boardId);
   if (!summary) throw new Error(`unknown board: ${boardId}`);
   const pool = await loadPoolAsync(db);
-  return { boardId, snapshot: summary.snapshot, audit: summary.audit, items: pool.filter((item) => item.boardId === boardId) };
+  return {
+    boardId,
+    snapshot: summary.snapshot,
+    audit: summary.audit,
+    items: pool.filter((item) => item.boardId === boardId),
+  };
 }
 
 export class BoardState {
@@ -66,7 +77,11 @@ export class BoardState {
     const view = await this.rebuild();
     const notice = JSON.stringify({ type: "snapshot", snapshotId, view });
     for (const socket of this.sockets()) {
-      try { socket.send(notice); } catch { socket.close(1011, "notification failed"); }
+      try {
+        socket.send(notice);
+      } catch {
+        socket.close(1011, "notification failed");
+      }
     }
     return view;
   }
@@ -89,7 +104,11 @@ export class BoardState {
   private broadcastPresence(): void {
     const message = JSON.stringify({ type: "presence", viewers: [...this.presence.values()] });
     for (const socket of this.sockets()) {
-      try { socket.send(message); } catch { socket.close(1011, "presence delivery failed"); }
+      try {
+        socket.send(message);
+      } catch {
+        socket.close(1011, "presence delivery failed");
+      }
     }
   }
 }
@@ -130,17 +149,22 @@ export class BoardDO {
       get: <T>(key: string) => state.storage.get<T>(key),
       put: <T>(key: string, value: T) => state.storage.put(key, value),
     };
-    this.board = new BoardState(boardId, storage, async () => {
-      if (!env.PM_TENANT_DB_URL) throw new Error("tenant store is not configured");
-      const { libsqlHttpDb } = await import("./tenant-store/libsql-http.ts");
-      return loadBoardView(libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN }), boardId);
-    }, () => state.getWebSockets().map((socket) => socket as unknown as BoardSocket));
+    this.board = new BoardState(
+      boardId,
+      storage,
+      async () => {
+        if (!env.PM_TENANT_DB_URL) throw new Error("tenant store is not configured");
+        const { libsqlHttpDb } = await import("./tenant-store/libsql-http.ts");
+        return loadBoardView(libsqlHttpDb({ url: env.PM_TENANT_DB_URL, token: env.PM_TENANT_DB_TOKEN }), boardId);
+      },
+      () => state.getWebSockets().map((socket) => socket as unknown as BoardSocket),
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/internal/snapshot-landed") {
-      const body = await request.json() as { snapshotId?: string };
+      const body = (await request.json()) as { snapshotId?: string };
       if (!body.snapshotId) return new Response("snapshotId required", { status: 400 });
       await this.board.snapshotLanded(body.snapshotId);
       return new Response(null, { status: 204 });
@@ -157,10 +181,18 @@ export class BoardDO {
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     if (typeof message !== "string") return;
     let data: { type?: string; viewer?: unknown };
-    try { data = JSON.parse(message) as typeof data; } catch { return; }
+    try {
+      data = JSON.parse(message) as typeof data;
+    } catch {
+      return;
+    }
     if (data.type === "presence") this.board.setPresence(socket as unknown as BoardSocket, data.viewer ?? null);
   }
 
-  webSocketClose(socket: WebSocket): void { this.board.removePresence(socket as unknown as BoardSocket); }
-  webSocketError(socket: WebSocket): void { this.board.removePresence(socket as unknown as BoardSocket); }
+  webSocketClose(socket: WebSocket): void {
+    this.board.removePresence(socket as unknown as BoardSocket);
+  }
+  webSocketError(socket: WebSocket): void {
+    this.board.removePresence(socket as unknown as BoardSocket);
+  }
 }

@@ -809,7 +809,7 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	// the predecessor's commit has detached it from their supervisors
 	// (#9962).
 	if detachAcknowledged {
-		s.reg.AdoptSupervisedAfterTakeover(context.Background())
+		s.reg.AdoptSupervisedAfterTakeover(context.Background(), in.pools)
 	}
 	// Keep the adoption so an orderly exit can wait for the background
 	// orphan terminations Attach just started (#298). Only the committed
@@ -836,6 +836,13 @@ func attachPipes(in *takeoverIn) error {
 			inst := &in.pools[pi].Instances[ii]
 			if inst.Stdio == nil {
 				if inst.HTTP != nil {
+					continue
+				}
+				if inst.Supervised {
+					// A supervised lane travels as metadata only:
+					// its child stays under its supervisor and the
+					// successor attaches per key after commit. No
+					// pipes travel with it.
 					continue
 				}
 				return fmt.Errorf("instance %s carries no child", inst.ID)

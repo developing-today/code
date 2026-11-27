@@ -6,9 +6,11 @@
 # deployed OpenCode config still routes opencode-route/* through
 # :18750. The script and its test are restored byte-identical from
 # e8b4cdc754^ (the exact source the #5610 stopgap ran) so the deploy
-# registry has a real package to name. Its sibling import
-# ./proxy-port.mjs - still on main - is carried into the package
-# alongside it, since the script resolves it relative to itself.
+# registry has a real package to name. The restored script and test
+# are the starting point; the source now adopts fd 3 for systemd
+# socket activation (#1822). Its local imports are carried into the
+# package alongside it, since the script resolves them relative to
+# itself.
 {
   runCommand,
   makeWrapper,
@@ -26,6 +28,8 @@ runCommand "opencode-route-proxy-0.1.0"
     mkdir -p $out/bin $out/libexec/opencode-route-proxy
     cp ${../../bin/opencode-route-proxy.mjs} $out/libexec/opencode-route-proxy/opencode-route-proxy.mjs
     cp ${../../bin/proxy-port.mjs} $out/libexec/opencode-route-proxy/proxy-port.mjs
+    cp ${../../bin/home-dir.mjs} $out/libexec/opencode-route-proxy/home-dir.mjs
+    cp ${../../bin/request-body.mjs} $out/libexec/opencode-route-proxy/request-body.mjs
     makeWrapper ${nodejs}/bin/node $out/bin/opencode-route-proxy \
       --add-flags $out/libexec/opencode-route-proxy/opencode-route-proxy.mjs
   ''

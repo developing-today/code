@@ -368,9 +368,7 @@ class CoverageReconcileTest(unittest.TestCase):
             if len(calls) == 1:
                 stdout = (
                     "not filed: dedupe key already belongs to completed task 7\n"
-                    + json.dumps(
-                        {"dedupe_match": {"rule": "dedupe_key_terminal"}}
-                    )
+                    + json.dumps({"dedupe_match": {"rule": "dedupe_key_terminal"}})
                 )
             else:
                 stdout = (

@@ -78,8 +78,14 @@ class TestStagingBatchAssociation(unittest.TestCase):
         db.executescript(STAGING_DDL)
         db.execute("INSERT INTO sources (name) VALUES ('drive-workbook')")
         row = (1, "batch-1", "Controls", 7, '{"cells":["x"]}')
-        db.execute("INSERT OR IGNORE INTO sheet_rows (source_id, import_batch, sheet_name, row_index, data) VALUES (?,?,?,?,?)", row)
-        db.execute("INSERT OR IGNORE INTO sheet_rows (source_id, import_batch, sheet_name, row_index, data) VALUES (?,?,?,?,?)", row)
+        db.execute(
+            "INSERT OR IGNORE INTO sheet_rows (source_id, import_batch, sheet_name, row_index, data) VALUES (?,?,?,?,?)",
+            row,
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO sheet_rows (source_id, import_batch, sheet_name, row_index, data) VALUES (?,?,?,?,?)",
+            row,
+        )
         (count,) = db.execute("SELECT COUNT(*) FROM sheet_rows").fetchone()
         self.assertEqual(count, 1)
 
@@ -136,7 +142,9 @@ class TestBatchCreationIsNotIdempotent(unittest.TestCase):
         db = isolated_db()
         db.executescript(STAGING_DDL)
         for _ in range(2):
-            exists = db.execute("SELECT id FROM ingest_batches WHERE id = 'batch-a'").fetchone()
+            exists = db.execute(
+                "SELECT id FROM ingest_batches WHERE id = 'batch-a'"
+            ).fetchone()
             if not exists:
                 db.execute("INSERT INTO ingest_batches (id) VALUES ('batch-a')")
         (count,) = db.execute("SELECT COUNT(*) FROM ingest_batches").fetchone()
@@ -150,8 +158,14 @@ class TestCuratedDedupeUpsert(unittest.TestCase):
         db = isolated_db()
         db.executescript(CURATED_EVENTS_DDL)
         row = (1, "batch-1", "Controls", 7, "automation:Controls:7:v1")
-        db.execute("INSERT OR IGNORE INTO events (source_id, import_batch, sheet_name, row_index, dedupe_key) VALUES (?,?,?,?,?)", row)
-        db.execute("INSERT OR IGNORE INTO events (source_id, import_batch, sheet_name, row_index, dedupe_key) VALUES (?,?,?,?,?)", row)
+        db.execute(
+            "INSERT OR IGNORE INTO events (source_id, import_batch, sheet_name, row_index, dedupe_key) VALUES (?,?,?,?,?)",
+            row,
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO events (source_id, import_batch, sheet_name, row_index, dedupe_key) VALUES (?,?,?,?,?)",
+            row,
+        )
         (count,) = db.execute("SELECT COUNT(*) FROM events").fetchone()
         self.assertEqual(count, 1)
 

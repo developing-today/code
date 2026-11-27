@@ -27,6 +27,7 @@
 - [World commands: administering and verifying](reference/cli-worlds-admin.md)
 - [Gallery, match-audit and walk](reference/cli-gallery-walk.md)
 - [Groups, documents, claims and keys](reference/cli-groups-identity.md)
+- [Host mode and graph navigation](reference/cli-host-nav.md)
 - [The interactive REPL](reference/repl.md)
 - [id-native-shell](reference/native-shell.md)
 - [The web UI: pages and HTTP API](reference/web-ui.md)

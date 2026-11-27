@@ -32,6 +32,7 @@ mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
 mod mode_report;
+pub(crate) mod placement_emit;
 mod support;
 mod transport;
 mod verify_disposition;
@@ -81,6 +82,7 @@ pub fn run(args: &[String]) -> i32 {
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
         "quarantine-recheck" => cmd_quarantine_recheck(rest),
+        "time-recheck" => cmd_time_recheck(rest),
         "repair" => cmd_repair(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
@@ -950,6 +952,7 @@ mod tests {
             "unblock",
             "dep-recheck",
             "quarantine-recheck",
+            "time-recheck",
             "cancel",
             "revive",
             "fail",

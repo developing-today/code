@@ -28,9 +28,7 @@
     "owner_policy_ref": "owner-priority-policy:v3",
     "reason": {
       "code": "label_band_change",
-      "evidence_refs": [
-        "github:event:555"
-      ],
+      "evidence_refs": ["github:event:555"],
       "confidence": null
     },
     "dry_run": false
@@ -68,9 +66,7 @@
         "owner_policy_ref": "owner-priority-policy:v3",
         "reason": {
           "code": "label_band_change",
-          "evidence_refs": [
-            "github:event:555"
-          ],
+          "evidence_refs": ["github:event:555"],
           "confidence": null
         },
         "dry_run": true
@@ -152,9 +148,7 @@
     },
     {
       "name": "missing_reason",
-      "remove": [
-        "reason"
-      ],
+      "remove": ["reason"],
       "expected_error": "invalid_schema"
     }
   ],

@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7745 | #7743 | `audit:complete` | Makes all six SaaS extraction caps surrogate-safe, retains exact-fit behavior, and adds boundary tests for each field. The issue completion comment confirms the fix on merged main. |
-| #7747 | #6439 | `audit:complete` | Provides the two export-mode design, format comparison, mappings/loss manifest, read-authority handling, target profiles and round-trip corpus. Live GUI runs are explicitly a pre-implementation gate; the issue's later decision comment confirms that is the intended boundary. |
-| #7749 | #2329 | `audit:complete` | Adds stable-ID summary/full projections and signed canonical-body round trips, covering the issue's projection and worked-example scope. Existing evaluator tests retain the investigation's ordering and DST behavior. |
-| #7752 | #7751 | `audit:complete` | Rejects extra arguments before reading the config, while preserving zero/one-path behavior; subprocess tests cover the failing and control paths requested. |
-| #7753 | #5082 | `audit:partial` | Bounds `/api/board.json` to the visible board and its linked items. The broader watched surface family remains partially satisfied; current cold `/program` failure is tracked by #10383, with the evidence cross-linked on the PR. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                            |
+| -------------: | -------------: | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7745 |          #7743 | `audit:complete` | Makes all six SaaS extraction caps surrogate-safe, retains exact-fit behavior, and adds boundary tests for each field. The issue completion comment confirms the fix on merged main.                                                                                               |
+|          #7747 |          #6439 | `audit:complete` | Provides the two export-mode design, format comparison, mappings/loss manifest, read-authority handling, target profiles and round-trip corpus. Live GUI runs are explicitly a pre-implementation gate; the issue's later decision comment confirms that is the intended boundary. |
+|          #7749 |          #2329 | `audit:complete` | Adds stable-ID summary/full projections and signed canonical-body round trips, covering the issue's projection and worked-example scope. Existing evaluator tests retain the investigation's ordering and DST behavior.                                                            |
+|          #7752 |          #7751 | `audit:complete` | Rejects extra arguments before reading the config, while preserving zero/one-path behavior; subprocess tests cover the failing and control paths requested.                                                                                                                        |
+|          #7753 |          #5082 | `audit:partial`  | Bounds `/api/board.json` to the visible board and its linked items. The broader watched surface family remains partially satisfied; current cold `/program` failure is tracked by #10383, with the evidence cross-linked on the PR.                                                |
 
 ## Slice state
 

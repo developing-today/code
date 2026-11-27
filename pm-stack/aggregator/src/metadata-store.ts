@@ -92,11 +92,43 @@ export function createPmMetadataStore(db: Database): void {
   for (const statement of PM_METADATA_STORE_DDL) db.exec(statement);
 }
 
+/** Parse an ISO source timestamp to epoch millis; null when absent or unparseable. */
+function sourceTimeMs(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : time;
+}
+
+/**
+ * True when the stored row for this artifact carries a newer source
+ * timestamp than the incoming snapshot. The check runs inside the
+ * caller's `BEGIN IMMEDIATE` transaction, so the read and the guarded
+ * write are atomic against concurrent ingestion paths.
+ */
+function isStaleSnapshot(db: Database, artifactId: string, incoming: string | undefined): boolean {
+  const incomingMs = sourceTimeMs(incoming);
+  if (incomingMs === null) return false;
+  const stored = db
+    .query("SELECT source_updated_at FROM pm_metadata_items WHERE artifact_id = ?")
+    .get(artifactId) as { source_updated_at: string | null } | null;
+  const storedMs = stored?.source_updated_at === null || stored?.source_updated_at === undefined
+    ? null
+    : sourceTimeMs(stored.source_updated_at);
+  return storedMs !== null && incomingMs < storedMs;
+}
+
 /**
  * Persist one parsed source row. The artifact ID is the identity boundary:
  * replaying an artifact replaces its row and rebuilds its derived link rows.
  * Oracle: one source artifact must have one current row and exactly its
  * current derived links, regardless of replay count.
+ *
+ * Monotonic source versions (issue #16012): dual ingestion delivers
+ * snapshots out of order (an older webhook event can arrive after a newer
+ * sweep). Inside this transaction, a snapshot whose `sourceUpdatedAt`
+ * predates the stored row changes neither the row nor the derived links;
+ * equal snapshots stay idempotent. Snapshots without a comparable
+ * timestamp on either side keep the old replace behavior.
  */
 export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
   if (!nonempty(record.artifactId)) throw new Error("artifactId must be non-empty");
@@ -108,6 +140,12 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
   const { parsed } = record;
   db.exec("BEGIN IMMEDIATE");
   try {
+    if (isStaleSnapshot(db, record.artifactId, record.sourceUpdatedAt)) {
+      // An older snapshot lost the race: commit the no-op so the
+      // transaction closes cleanly without touching the row or links.
+      db.exec("COMMIT");
+      return;
+    }
     db.query(`
     INSERT INTO pm_metadata_items (
       artifact_id, repo, item_number, item_kind, source_url, schema_version,
@@ -130,6 +168,21 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
       queue_id = excluded.queue_id,
       links_json = excluded.links_json,
       source_updated_at = excluded.source_updated_at
+    WHERE pm_metadata_items.repo IS NOT excluded.repo
+      OR pm_metadata_items.item_number IS NOT excluded.item_number
+      OR pm_metadata_items.item_kind IS NOT excluded.item_kind
+      OR pm_metadata_items.source_url IS NOT excluded.source_url
+      OR pm_metadata_items.schema_version IS NOT excluded.schema_version
+      OR pm_metadata_items.metadata_json IS NOT excluded.metadata_json
+      OR pm_metadata_items.extras_json IS NOT excluded.extras_json
+      OR pm_metadata_items.direct_parent_repo IS NOT excluded.direct_parent_repo
+      OR pm_metadata_items.direct_parent_number IS NOT excluded.direct_parent_number
+      OR pm_metadata_items.session_id IS NOT excluded.session_id
+      OR pm_metadata_items.lane IS NOT excluded.lane
+      OR pm_metadata_items.host IS NOT excluded.host
+      OR pm_metadata_items.queue_id IS NOT excluded.queue_id
+      OR pm_metadata_items.links_json IS NOT excluded.links_json
+      OR pm_metadata_items.source_updated_at IS NOT excluded.source_updated_at
     `).run(
       record.artifactId,
       record.repo,
@@ -149,13 +202,24 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
       record.sourceUpdatedAt ?? null,
     );
 
-    // Derived link rows are deliberately rebuilt from the version adapter so a
-    // replay cannot leave stale rows behind after a source edit.
-    db.query("DELETE FROM pm_metadata_links WHERE artifact_id = ?").run(record.artifactId);
+    // Upsert only changed derived rows. A source replay must not delete and
+    // recreate every link for an artifact; remove only trailing indexes left
+    // behind when the source has fewer links than before.
     const insertLink = db.query(`
     INSERT INTO pm_metadata_links (
       artifact_id, link_index, target_repo, target_number, relation, status, link_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(artifact_id, link_index) DO UPDATE SET
+      target_repo = excluded.target_repo,
+      target_number = excluded.target_number,
+      relation = excluded.relation,
+      status = excluded.status,
+      link_json = excluded.link_json
+    WHERE pm_metadata_links.target_repo IS NOT excluded.target_repo
+      OR pm_metadata_links.target_number IS NOT excluded.target_number
+      OR pm_metadata_links.relation IS NOT excluded.relation
+      OR pm_metadata_links.status IS NOT excluded.status
+      OR pm_metadata_links.link_json IS NOT excluded.link_json
     `);
     for (const [linkIndex, link] of parsed.indexes.links.entries()) {
       insertLink.run(
@@ -168,6 +232,10 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
         JSON.stringify(link),
       );
     }
+    db.query("DELETE FROM pm_metadata_links WHERE artifact_id = ? AND link_index >= ?").run(
+      record.artifactId,
+      parsed.indexes.links.length,
+    );
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

@@ -220,7 +220,12 @@ mod tests {
         overlay.record("amd-6", report("ssh", 1_000, Some(0.4), Some(true)));
         overlay.record(
             "amd-6",
-            report("commander-door", 1_000 + LIVE_OVERLAY_TTL_SECONDS, None, Some(true)),
+            report(
+                "commander-door",
+                1_000 + LIVE_OVERLAY_TTL_SECONDS,
+                None,
+                Some(true),
+            ),
         );
 
         // One TTL past ssh's report: ssh is absent, not healthy;

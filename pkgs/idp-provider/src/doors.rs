@@ -33,8 +33,8 @@ use crate::flow::{
 };
 use crate::registry::{now_unix, random_b64url, url_encode};
 use crate::upstream::{
-    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_upstream_jwks,
-    subject_from_claims, verify_upstream_id_token,
+    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_github_verified_email,
+    fetch_upstream_jwks, subject_from_claims, verified_oidc_email, verify_upstream_id_token,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -185,6 +185,11 @@ pub async fn door_start(
         } else {
             door.config.scopes.join(" ")
         };
+        let scope = if !scope.split_whitespace().any(|s| s == "email") {
+            format!("{scope} email")
+        } else {
+            scope
+        };
         params.push(("response_type", "code".to_string()));
         params.push(("scope", scope));
         if let Some(nonce) = &upstream_nonce {
@@ -200,6 +205,13 @@ pub async fn door_start(
             "read:user".to_string()
         } else {
             door.config.scopes.join(" ")
+        };
+        let scope = if door.config.kind == "github"
+            && !scope.split_whitespace().any(|s| s == "user:email")
+        {
+            format!("{scope} user:email")
+        } else {
+            scope
         };
         params.push(("scope", scope));
     }
@@ -324,8 +336,9 @@ pub async fn door_callback(
         }
     };
 
-    // Resolve the verified upstream identity.
-    let subject = if door.config.kind == "github" {
+    // Resolve the verified upstream identity and, when the upstream
+    // explicitly vouches for it, an email usable only for a pending claim.
+    let (subject, verified_email) = if door.config.kind == "github" {
         let access_token = token_doc["access_token"].as_str().unwrap_or("");
         if access_token.is_empty() {
             return denied(
@@ -340,7 +353,10 @@ pub async fn door_callback(
             );
         }
         match fetch_github_user(&flow.http, &door, access_token).await {
-            Ok(user) => subject_from_claims(&door, &user),
+            Ok(user) => (
+                subject_from_claims(&door, &user),
+                fetch_github_verified_email(&flow.http, &door, access_token).await,
+            ),
             Err(_) => {
                 return denied(
                     flow,
@@ -391,7 +407,10 @@ pub async fn door_callback(
             pending.upstream_nonce.as_deref(),
             now_unix(),
         ) {
-            Ok(claims) => subject_from_claims(&door, &claims),
+            Ok(claims) => (
+                subject_from_claims(&door, &claims),
+                verified_oidc_email(&claims),
+            ),
             Err(_) => {
                 return denied(
                     flow,
@@ -423,8 +442,50 @@ pub async fn door_callback(
     };
     let identity_key = format!("{}:{}", door.identity_provider(), subject);
 
+    // A verified email can propose a link to one uniquely matching
+    // account, but never grants access. This narrow path is checked
+    // only for identities the store has never seen; active, pending,
+    // and unlinked rows continue through the existing allowlist/state gates.
+    if matches!(flow.identities.status(&name, &subject), Ok(None)) {
+        if let Some(email) = verified_email.as_deref() {
+            let matched_account = match flow.identities.account_id_for_email(email) {
+                Ok(account) => account,
+                Err(_) => {
+                    return err_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "identity store unavailable",
+                    );
+                }
+            };
+            if let Some(account_id) = matched_account {
+                if flow
+                    .identities
+                    .register_pending(&name, &subject, &account_id, "email-match")
+                    .is_err()
+                {
+                    return err_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "identity registration failed",
+                    );
+                }
+                return denied(
+                    flow,
+                    &endpoint(&name),
+                    "identity_pending",
+                    &client_id,
+                    &identity_key,
+                    StatusCode::FORBIDDEN,
+                    "access_denied",
+                    "identity is registered and awaiting approval",
+                );
+            }
+        }
+    }
+
     // Deny-by-default gate, enforced in the provider, before any
-    // link or code exists.
+    // direct link or code exists. Email-match above creates pending only.
     if !flow.registry.is_allowlisted(&identity_key) {
         return denied(
             flow,
@@ -481,7 +542,12 @@ pub async fn door_callback(
                 "identity is not linked to an account",
             );
         }
-        Ok(None) => match flow.identities.enroll(&name, &subject, "door-login") {
+        Ok(None) => match flow.identities.enroll_with_email(
+            &name,
+            &subject,
+            "door-login",
+            verified_email.as_deref(),
+        ) {
             Ok((account_id, event)) => {
                 if flow
                     .audit

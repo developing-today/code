@@ -18,6 +18,7 @@
 // material.
 
 import type { RpValidationConfig } from "./jwt.ts";
+import { base64UrlToBytes } from "../../../hosted-primitives/src/encoding.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
 import type { D1DatabaseLike } from "./d1-queue-store.ts";
 import type { R2BucketLike } from "./kv-blobs.ts";
@@ -236,12 +237,7 @@ export function isValidStampKeyId(value: string): boolean {
 
 function b64urlToBytesOrNull(text: string): Uint8Array | null {
   try {
-    const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    const bin = atob(padded);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
+    return base64UrlToBytes(text);
   } catch {
     return null;
   }

@@ -291,6 +291,16 @@ impl ColdCatalog {
         matches!(self.lookup(file_id, version_seq), ColdLookup::Cold(_))
     }
 
+    /// Mark a restored version hot for explicit version resolution
+    /// (§6 step 7). The cold shard is a retained copy, not a move:
+    /// keep its row and physical version ranges available to explicitly
+    /// shard-addressed search, but stop resolving this version as cold.
+    /// Replaying the transition for an unknown or already-hot version
+    /// is a no-op, matching restore's idempotent success semantics.
+    pub fn mark_hot(&mut self, file_id: &str, version_seq: u64) {
+        self.by_version.remove(&(file_id.to_string(), version_seq));
+    }
+
     /// Shard-addressed search scoping (§5): a query that explicitly
     /// names `tier: cold` fans out to the catalog's shards —
     /// optionally narrowed to one `shard:` — as read-only search
@@ -428,6 +438,47 @@ mod tests {
         assert!(!catalog.is_cold("file-1", 3));
         assert!(catalog.is_cold("file-1", 1));
         assert!(catalog.resolve("file-1", 3).is_none());
+    }
+
+    #[test]
+    fn marking_one_version_hot_keeps_the_cold_shard_copy_searchable() {
+        // Oracle: design §6.7 + §5 — restore changes the active tier
+        // for this version, while the cold shard remains a searchable
+        // retained copy and sibling cold versions stay addressable.
+        let mut catalog = two_shard_catalog();
+        assert!(catalog.is_cold("file-1", 1));
+        assert!(catalog.is_cold("file-1", 2));
+
+        catalog.mark_hot("file-1", 1);
+
+        assert_eq!(catalog.lookup("file-1", 1), ColdLookup::NotCold);
+        assert!(!catalog.is_cold("file-1", 1));
+        assert!(catalog.is_cold("file-1", 2));
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.shard_ids(), vec!["shard-a", "shard-b"]);
+        assert_eq!(
+            catalog
+                .search_scope("cold", Some("shard-a"))
+                .expect("restored shard remains explicitly searchable")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn marking_unknown_or_already_hot_version_is_idempotent() {
+        // Oracle: restore is replay-safe; no-op transitions cannot
+        // change another version's cold resolution or remove a shard.
+        let mut catalog = two_shard_catalog();
+        catalog.mark_hot("missing-file", 9);
+        catalog.mark_hot("file-1", 1);
+        catalog.mark_hot("file-1", 1);
+
+        assert_eq!(catalog.lookup("missing-file", 9), ColdLookup::NotCold);
+        assert_eq!(catalog.lookup("file-1", 1), ColdLookup::NotCold);
+        assert!(catalog.is_cold("file-1", 2));
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.shard_ids(), vec!["shard-a", "shard-b"]);
     }
 
     #[test]

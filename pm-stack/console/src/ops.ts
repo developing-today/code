@@ -1444,10 +1444,7 @@ export class Ops {
     }
     const statements = storeLiveStatements(store);
     const body = {
-      requests: [
-        ...statements.map((st) => ({ type: "execute", stmt: { sql: st.sql, args: [] } })),
-        { type: "close" },
-      ],
+      requests: [...statements.map((st) => ({ type: "execute", stmt: { sql: st.sql, args: [] } })), { type: "close" }],
     };
     type Answer = {
       results?: { type?: string; response?: { result?: StoreLiveResult } }[];
@@ -1484,9 +1481,7 @@ export class Ops {
         answered = await ask();
       }
       if (!answered.ok) return storeNotAnswering(store, `the store answered http ${answered.status}`);
-      const results = (answered.body?.results ?? []).map((r) =>
-        r?.type === "ok" ? r.response?.result : undefined,
-      );
+      const results = (answered.body?.results ?? []).map((r) => (r?.type === "ok" ? r.response?.result : undefined));
       if (!results.some((result) => result !== undefined)) {
         return storeNotAnswering(store, "the store refused the asking");
       }

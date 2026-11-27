@@ -168,6 +168,29 @@ impl PrepareHook for TracePrepareHook {
     }
 }
 
+struct RequestFollowUpHook {
+    id: HookId,
+    operation_id: OperationId,
+    envelope: Envelope,
+}
+
+impl PrepareHook for RequestFollowUpHook {
+    fn id(&self) -> &HookId {
+        &self.id
+    }
+
+    fn namespace(&self) -> &str {
+        "ns/follow-up"
+    }
+
+    fn prepare(&self, input: &PrepareInput<'_>) -> PrepareDecision {
+        input
+            .follow_ups
+            .request(self.operation_id.clone(), self.envelope.clone());
+        PrepareDecision::Proceed
+    }
+}
+
 struct TraceOutboxHook {
     id: HookId,
     trace: Arc<Mutex<Vec<String>>>,
@@ -414,6 +437,60 @@ fn revoked_policy_blocks_commit_and_retry() {
         .unwrap();
     assert!(matches!(outcome, PipelineOutcome::Committed { .. }));
     assert_eq!(rig.commits.lock().unwrap().len(), 1);
+}
+
+/// Follow-up requests are ledgered with prepare progress: failed
+/// commits can be retried without rerunning hooks or losing the
+/// original child operation and envelope.
+#[test]
+fn follow_up_survives_commit_retry_and_is_returned_once() {
+    let mut rig = rig();
+    let child = alice_envelope(vec![42, 43]);
+    rig.pipeline.register_prepare(Arc::new(RequestFollowUpHook {
+        id: HookId::new("request-child").unwrap(),
+        operation_id: op("child-op"),
+        envelope: child.clone(),
+    }));
+    let parent = alice_envelope(vec![8; 8]);
+    let failed = rig.pipeline.run(
+        op("parent-op"),
+        &parent,
+        &context("alice", TENANT_A),
+        |_| Err("transient commit failure".to_string()),
+    );
+    assert!(failed.is_err());
+    let failed_again = rig.pipeline.run(
+        op("parent-op"),
+        &parent,
+        &context("alice", TENANT_A),
+        |_| Err("transient commit failure again".to_string()),
+    );
+    assert!(failed_again.is_err());
+
+    let outcome = rig
+        .pipeline
+        .run(
+            op("parent-op"),
+            &parent,
+            &context("alice", TENANT_A),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let PipelineOutcome::Committed { follow_ups, .. } = outcome else {
+        panic!("retry commits the parent");
+    };
+    assert_eq!(follow_ups.len(), 1, "child is delivered exactly once");
+    assert_eq!(follow_ups[0].operation_id, op("child-op"));
+    assert_eq!(follow_ups[0].envelope.payload, child.payload);
+    assert!(matches!(
+        rig.pipeline.run(
+            op("parent-op"),
+            &parent,
+            &context("alice", TENANT_A),
+            |_| Ok(()),
+        ),
+        Ok(PipelineOutcome::AlreadyCommitted { .. })
+    ));
 }
 
 /// The happy path produces exactly the design's trace, and the

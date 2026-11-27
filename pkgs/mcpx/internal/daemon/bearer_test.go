@@ -69,6 +69,40 @@ func TestRequireBearer(t *testing.T) {
 	}
 }
 
+func TestRequireBearerCarriesValidatedKeyForNestedDaemonCalls(t *testing.T) {
+	ks := OpenKeyStore(t.TempDir())
+	secret, rec, err := ks.Create(KeySpec{User: "owner", Label: "mcp-test", Ceiling: "restricted"}, fixtureRand(19), fixtureNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := settings.NewSet(sch).WithOverrides(map[string]string{AuthModeSetting: AuthModeRequired}, "test")
+	s := &Server{set: set, keys: ks}
+	passed := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := KeyIdentityFrom(r.Context())
+		if !ok || identity.KeyID != rec.ID || identity.Ceiling != "restricted" {
+			t.Errorf("key identity = %+v, %v", identity, ok)
+		}
+		credential, ok := KeyCredentialFrom(r.Context())
+		if !ok || credential != secret {
+			t.Errorf("nested-call key credential was not preserved")
+		}
+		passed = true
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	recorder := httptest.NewRecorder()
+	s.requireBearer(next).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !passed {
+		t.Fatalf("validated key request: status %d, next called %v", recorder.Code, passed)
+	}
+}
+
 func TestValidateBearerToken(t *testing.T) {
 	if err := ValidateBearerToken(bearerSet(t, "")); err != nil {
 		t.Fatalf("unset token refused: %v", err)

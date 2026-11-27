@@ -14,7 +14,10 @@
 #
 # Writer set (runbook step 1 + the 2026-11-05 ownership inventory):
 #   containers: pm-stack-kaneo-1, pm-stack-postgres-1, pm-grist, pm-pad
-#   units: docker-pm-grist.service, docker-pm-pad.service
+#   units: pm-kaneo.service, pm-kaneo.timer (user units that manage the
+#     Kaneo compose stack — deploy.sh runs `compose up`, so a live
+#     manager revives stopped containers on its next run or timer
+#     elapse), docker-pm-grist.service, docker-pm-pad.service
 #
 # Argument contract (#3352): flags only, no positionals. `--opt value`
 # and `--opt=value` behave identically. Anything else is a usage error
@@ -29,7 +32,7 @@ set -uo pipefail
 
 STORE="all"
 WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1 pm-grist pm-pad"
-WRITER_UNITS="docker-pm-grist.service docker-pm-pad.service"
+WRITER_UNITS="pm-kaneo.service pm-kaneo.timer docker-pm-grist.service docker-pm-pad.service"
 
 UNITS_DIR=""
 CONTAINERS_FILE=""
@@ -109,11 +112,11 @@ done
 case "$STORE" in
 all)
   WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1 pm-grist pm-pad"
-  WRITER_UNITS="docker-pm-grist.service docker-pm-pad.service"
+  WRITER_UNITS="pm-kaneo.service pm-kaneo.timer docker-pm-grist.service docker-pm-pad.service"
   ;;
 kaneo)
   WRITER_CONTAINERS="pm-stack-kaneo-1 pm-stack-postgres-1"
-  WRITER_UNITS=""
+  WRITER_UNITS="pm-kaneo.service pm-kaneo.timer"
   ;;
 grist)
   WRITER_CONTAINERS="pm-grist"

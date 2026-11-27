@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157315412","html_url":"https://github.com/developing-today/code/pull/7734#issuecomment-7157315412","issue_url":"https://api.github.com/repos/developing-today/code/issues/7734","id":7157315412,"node_id":"IC_kwDOJWP4788AAAABqpv3VA","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T08:39:47Z","updated_at":"2026-11-25T08:39:47Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 review: this PR's Slice C encoder is complete, but its stated issue-wide remainder was later delivered by #12926 (Slice D) and #13267 (Slices E/F). The outcome is `audit:partial` because #787 still lacks the real-terminal supported/unsupported smoke evidence identified in its comment #7101492168. The issue was closed seconds after #13267 merged even though that PR explicitly says it does not close the issue; the suspect-closure pointer is on #13871 comment 7157311605. Lane 4 did not reopen #787.","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7157315412/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157315412",
+  "html_url": "https://github.com/developing-today/code/pull/7734#issuecomment-7157315412",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/7734",
+  "id": 7157315412,
+  "node_id": "IC_kwDOJWP4788AAAABqpv3VA",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T08:39:47Z",
+  "updated_at": "2026-11-25T08:39:47Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 review: this PR's Slice C encoder is complete, but its stated issue-wide remainder was later delivered by #12926 (Slice D) and #13267 (Slices E/F). The outcome is `audit:partial` because #787 still lacks the real-terminal supported/unsupported smoke evidence identified in its comment #7101492168. The issue was closed seconds after #13267 merged even though that PR explicitly says it does not close the issue; the suspect-closure pointer is on #13871 comment 7157311605. Lane 4 did not reopen #787.",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7157315412/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}

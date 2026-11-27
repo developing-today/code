@@ -1,5 +1,8 @@
-// Canonical CBOR profile for signed ID/Atlas records
-// (slice A9114-cbor-profile, #10181; design A-9114.3).
+// Canonical CBOR profile for signed ID/Atlas records (G2 of #9085:
+// shared by both hosted Workers).
+//
+// (slice A9114-cbor-profile, #10181; design A-9114.3, component G
+// §4.2 verdict table).
 //
 // TypeScript mirror of crates/id-core/src/canonical_cbor.rs:
 // the same deterministic profile, the same closed value model,

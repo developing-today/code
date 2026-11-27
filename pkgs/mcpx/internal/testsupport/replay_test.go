@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -108,11 +109,16 @@ func replayAnswer(method string, params map[string]any) any {
 }
 
 func dialReplayClient(t *testing.T, tr mcpclient.Transport) *mcpclient.Client {
+	return dialReplayClientWithOptions(t, tr, false)
+}
+
+func dialReplayClientWithOptions(t *testing.T, tr mcpclient.Transport, capture bool) *mcpclient.Client {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := mcpclient.NewWithOptions(ctx, tr, mcpclient.Options{
 		ClientName: "mcpx", ClientVersion: "test", Preference: mcpclient.ForceModern,
+		TraceCapture: capture,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,6 +192,62 @@ func recordSession(t *testing.T) (*mcpclient.CallTrace, json.RawMessage, json.Ra
 		t.Fatal(err)
 	}
 	return trace, first, second
+}
+
+func TestClientTraceCaptureIsOptIn(t *testing.T) {
+	off := dialReplayClient(t, newReplayFakeServer())
+	if trace, err := off.RedactedTrace(); err != nil || trace != nil {
+		t.Fatalf("default-off RedactedTrace() = (%v, %v), want (nil, nil)", trace, err)
+	}
+
+	on := dialReplayClientWithOptions(t, newReplayFakeServer(), true)
+	if _, err := on.ListTools(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	trace, err := on.RedactedTrace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trace == nil || len(trace.Frames) == 0 {
+		t.Fatalf("opt-in dial recorded no handshake frames: %v", trace)
+	}
+	if trace.Format != mcpclient.CallTraceFormat {
+		t.Fatalf("trace format = %q, want %q", trace.Format, mcpclient.CallTraceFormat)
+	}
+}
+
+func TestDialCaptureRedactsPersistedTraceAndRemainsReplayable(t *testing.T) {
+	secret := "sentinel-Bearer-credential-987654"
+	c := dialReplayClientWithOptions(t, newReplayFakeServer(), true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := c.CallTool(ctx, "echo", map[string]any{"message": "API_TOKEN=" + secret}); err != nil {
+		t.Fatal(err)
+	}
+
+	trace, err := c.RedactedTrace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := trace.MarshalRedacted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(secret)) || bytes.Contains(persisted, []byte("sentinel-Bearer")) {
+		t.Fatalf("redacted persisted trace contains sentinel credential: %s", persisted)
+	}
+	loaded, err := mcpclient.UnmarshalCallTrace(persisted)
+	if err != nil {
+		t.Fatalf("redacted trace is not a valid replay input: %v", err)
+	}
+	rt := NewReplayTransport(loaded)
+	replay := dialReplayClient(t, rt)
+	if _, err := replay.CallTool(ctx, "echo", map[string]any{"message": "API_TOKEN=<elided>"}); err != nil {
+		t.Fatalf("sanitized replay call failed: %v", err)
+	}
+	if err := rt.Finish(); err != nil {
+		t.Fatalf("sanitized trace did not replay deterministically: %v", err)
+	}
 }
 
 func TestRecordReplayReproducesSession(t *testing.T) {

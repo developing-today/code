@@ -24,6 +24,21 @@
 //! nothing, so a light world's wait is about one permit turnover
 //! rather than a rotation through every heavy world.
 //!
+//! The bound on a light call's wait is one full permit turnover:
+//! every admitted call is fuel-bounded, so every in-flight permit
+//! returns after at most one fuel budget of work, and the release
+//! path re-evaluates the least-attained waiter before granting
+//! again. A heavy key that settles and immediately requeues carries
+//! its just-settled spend as attained debt, so it orders behind a
+//! waiting light key every round — sustained contention delays a
+//! light call by at most one turnover per permit, never starves it.
+//! The scheduling quantum is therefore one fuel-bounded guest call:
+//! Wasm calls run synchronously to fuel exhaustion and cannot be
+//! preempted mid-call, so fairness is enforced between calls, at
+//! admission, rather than inside them. The same rule holds per
+//! account: a heavy account that requeues orders behind a waiting
+//! light account.
+//!
 //! The per-key counters behind [`GuestBurnBudget::snapshot`] are
 //! the charge record the per-account quota criterion hangs off:
 //! when world→account ownership is decided (see the issue), keys
@@ -853,5 +868,99 @@ mod tests {
         );
         budget.set_account_bound(None);
         assert_eq!(budget.account_bound(), None);
+    }
+
+    /// Oracle (#15577 slice 1): a heavy key that requeues immediately
+    /// after every grant never passes a waiting light key. Each of
+    /// five rounds queues the heavy waiter first and the light waiter
+    /// second behind a blocker; releasing the blocker must grant
+    /// light before heavy every round, bounding the light call's wait
+    /// at one permit turnover per round despite sustained contention.
+    #[test]
+    fn a_heavy_key_that_requeues_every_round_never_passes_a_waiting_light_key() {
+        const ROUNDS: usize = 5;
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        // The heavy key carries a full-budget burn of attained debt
+        // into the contention below; the light key carries none.
+        budget.acquire("heavy", 20_000_000).settle(20_000_000);
+        let mut blocker = Some(budget.acquire("blocker", 20_000_000));
+        for round in 0..ROUNDS {
+            let grants = Arc::new(Mutex::new(Vec::new()));
+            let spawn_waiter = |key: &'static str| {
+                let budget = Arc::clone(&budget);
+                let grants = Arc::clone(&grants);
+                thread::spawn(move || {
+                    let permit = budget.acquire(key, 20_000_000);
+                    grants.lock().unwrap().push(key);
+                    permit.settle(20_000_000);
+                })
+            };
+            // The heavy waiter queues first every round; arrival
+            // order must not beat least-attained service.
+            let heavy = spawn_waiter("heavy");
+            wait_until(|| budget.waiting() == 1);
+            let light = spawn_waiter("light");
+            wait_until(|| budget.waiting() == 2);
+
+            blocker.take().expect("blocker held").settle(20_000_000);
+            heavy.join().unwrap();
+            light.join().unwrap();
+            assert_eq!(
+                *grants.lock().unwrap(),
+                ["light", "heavy"],
+                "round {round}: the waiting light key is granted before the earlier heavy requeue"
+            );
+            // Re-arm the blocker while no waiter holds a permit, so
+            // the next round starts from the same queued contention.
+            blocker = Some(budget.acquire("blocker", 20_000_000));
+        }
+        if let Some(blocker) = blocker.take() {
+            blocker.settle(20_000_000);
+        }
+        assert_eq!(budget.snapshot().in_flight, 0);
+    }
+
+    /// Oracle (#15577 slice 1): the per-account form of the same
+    /// bound — a heavy account that requeues immediately after every
+    /// grant never passes a waiting light account, over five rounds
+    /// of identically staged contention.
+    #[test]
+    fn a_heavy_account_that_requeues_every_round_never_passes_a_waiting_light_account() {
+        const ROUNDS: usize = 5;
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        budget
+            .acquire_charged("world-heavy-0", "acct-heavy", 20_000_000)
+            .settle(20_000_000);
+        let mut blocker = Some(budget.acquire_charged("world-blocker", "acct-blocker", 20_000_000));
+        for round in 0..ROUNDS {
+            let grants = Arc::new(Mutex::new(Vec::new()));
+            let spawn_waiter = |key: &'static str, account: &'static str| {
+                let budget = Arc::clone(&budget);
+                let grants = Arc::clone(&grants);
+                thread::spawn(move || {
+                    let permit = budget.acquire_charged(key, account, 20_000_000);
+                    grants.lock().unwrap().push(account);
+                    permit.settle(20_000_000);
+                })
+            };
+            let heavy = spawn_waiter("world-heavy", "acct-heavy");
+            wait_until(|| budget.waiting() == 1);
+            let light = spawn_waiter("world-light", "acct-light");
+            wait_until(|| budget.waiting() == 2);
+
+            blocker.take().expect("blocker held").settle(20_000_000);
+            heavy.join().unwrap();
+            light.join().unwrap();
+            assert_eq!(
+                *grants.lock().unwrap(),
+                ["acct-light", "acct-heavy"],
+                "round {round}: the waiting light account is granted before the earlier heavy requeue"
+            );
+            blocker = Some(budget.acquire_charged("world-blocker", "acct-blocker", 20_000_000));
+        }
+        if let Some(blocker) = blocker.take() {
+            blocker.settle(20_000_000);
+        }
+        assert_eq!(budget.snapshot().in_flight, 0);
     }
 }
