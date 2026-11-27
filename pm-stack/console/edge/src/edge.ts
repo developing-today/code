@@ -88,6 +88,11 @@ import {
 } from "./edge-shared.ts";
 import { Builds } from "./release.ts";
 import { flipRoute, healthRoutes, type RouteState, routeState } from "./route-state.ts";
+import {
+  parseWorkerCheckSet,
+  WORKER_CHECKS_KEY,
+  type WorkerCheckSet,
+} from "./worker-checks.ts";
 export { type EdgeOptions, type KV, LIVE_MS, next, SILENT_MS } from "./edge-shared.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -1784,6 +1789,24 @@ export class Edge {
     return json({ ok: true });
   }
 
+  /** The stateless part's round of Worker checks (#15793): it asks
+   * each bound Worker by its service binding and hands the set here
+   * to keep. Only a set in the shape worker-checks.ts writes is
+   * kept; anything else is refused, so the health answer never
+   * shows a shape it cannot vouch for. */
+  private async workerChecksStore(req: Request): Promise<Response> {
+    const set = parseWorkerCheckSet(await req.json().catch(() => null));
+    if (!set) return json({ error: "not a worker-check set" }, 400);
+    await this.kv.put(WORKER_CHECKS_KEY, set);
+    return json({ ok: true });
+  }
+
+  /** The last set of Worker checks kept, or null before the first
+   * round has run (or when what is stored is not a set). */
+  async lastWorkerChecks(): Promise<WorkerCheckSet | null> {
+    return parseWorkerCheckSet(await this.kv.get(WORKER_CHECKS_KEY));
+  }
+
   private async sync(req: Request): Promise<Response> {
     // The laptop cannot sign in, so this path is open to anyone, and a
     // report may be megabytes. Every report that fails a check below
@@ -2199,6 +2222,7 @@ export class Edge {
       if (path === "/internal/hold") return this.hold(req);
       if (path === "/internal/relayed") return this.relayed(req);
       if (path === "/internal/route") return this.routeFlip(req);
+      if (path === "/internal/worker-checks") return this.workerChecksStore(req);
       return json({ error: "not found" }, 404);
     }
 
@@ -2267,6 +2291,11 @@ export class Edge {
         // automatic fall — the front door's flips are visible here,
         // never a silent setting. Empty until a surface is flipped.
         routes: healthRoutes(await this.routes()),
+        // The edge's own checks of the platform's Workers (#15793):
+        // the last round it ran by service binding — each Worker it
+        // checks, answering or not, the commit it named, when it was
+        // asked. Null until the first scheduled round has run.
+        workerChecks: await this.lastWorkerChecks(),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
