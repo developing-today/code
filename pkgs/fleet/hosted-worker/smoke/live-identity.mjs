@@ -54,7 +54,8 @@ export async function verifyLiveIdentity({ baseUrl, token, fetchImpl = globalThi
     }
   }
   await check("health identity", "/health", {}, (status, body) =>
-    status === 200 && body?.status === "ok" && body.service === "fleet-hosted" && typeof body.version === "string" && body.version.length > 0);
+    status === 200 && body?.status === "ok" && body.service === "fleet-hosted" && typeof body.version === "string" && body.version.length > 0 &&
+    body.auth?.rp_configured === true && body.auth?.tenancy_configured === true);
   await check("capabilities identity", "/capabilities", {}, (status, body) =>
     status === 200 && body?.build?.name === "fleet-hosted" && body.build.invoked_as === "fleet-hosted" &&
     body.build.edition === "hosted" && body.build.profile === "hosted" && typeof body.build.version === "string" && body.build.version.length > 0);
@@ -71,6 +72,9 @@ export async function verifyLiveIdentity({ baseUrl, token, fetchImpl = globalThi
   if (!token) checks.push({ name: "valid RP accepted", result: "incomplete", error: "missing_rp_token" });
   else await check("valid RP accepted", "/v1/queue/health", protectedOptions(token),
     (status, body) => status === 200 && body?.ok === true);
+  await check("absent RP rejected", "/v1/queue/health", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }, (status, body) => status === 401 && body?.error === "missing_token");
   return { result: checks.every((c) => c.result === "passed") ? "passed" : "incomplete", checks };
 }
 
