@@ -96,24 +96,24 @@ machines:
       # validator requires the earned checks record below).
       source: watchdog
       last_seen: '2026-11-27T09:24:15Z'
-      status: degraded
+      status: unreachable
       checks:
-        reported_at: '2026-11-27T09:24:15Z'
+        reported_at: '2026-11-27T09:54:10Z'
         reachable:
-          state: ok
+          state: failed
           ssh: true
-          opencode_server_http: 200
+          opencode_server_http: null
         load_headroom:
           state: ok
-          load15: 7.16
+          load15: 7.24
           cpu_cores: 16
-          load15_per_core: 0.448
+          load15_per_core: 0.453
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 283
-          free_pct: 8.4
+          free_gb: 254
+          free_pct: 7.5
         sessions:
           state: ok
           listed: 50
