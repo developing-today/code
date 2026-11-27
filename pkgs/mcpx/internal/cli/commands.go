@@ -1439,7 +1439,7 @@ func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 func (a *App) startBackgroundRefresh(c *Client) {
 	timeout := a.Settings().Duration("daemon.refreshTimeout")
 	if timeout <= 0 {
-		timeout = 3 * time.Minute
+		timeout = defaults.RefreshTimeout
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1775,7 +1775,7 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 	// for the whole drain window; retry until it is over rather than
 	// for a fixed few attempts, or the reap gives up mid-drain and the
 	// child outlives the stop it was cut by.
-	deadline := time.Now().Add(defaults.ExecDrainTimeout + 5*time.Second)
+	deadline := time.Now().Add(defaults.ExecDrainTimeout + defaults.SupervisorReapGrace)
 	for {
 		outcomes = mcpclient.ReapSupervisors(stateDir, names, nil)
 		refused := false
