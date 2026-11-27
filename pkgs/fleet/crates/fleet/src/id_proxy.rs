@@ -1,14 +1,12 @@
 //! The `fleet id` proxy modes, build slice 2 of design #10391
 //! (pass 2, §5 slice 2; issue #15434): the §4.2 mode-selection rule,
-//! the distinct never-downgrade dial failure modes, the CONNECT
-//! request/response shape for the relay dialer in constrained
-//! egress, and the opaque splice both proxy modes byte-move with.
+//! distinct never-downgrade dial failures, CONNECT-proxied relay
+//! dialing, and opaque stream splicing.
 //!
-//! Mode 1 is live: `fleet id proxy` splices stdio to a plain TCP or
-//! Unix target without parsing the payload. The live mode-2 iroh
-//! dial is not implemented yet; mode 2 fails closed with exit 69.
-//! This module also implements §4.2 selection, distinct dial-failure
-//! types, CONNECT request/response helpers and opaque splice logic.
+//! Mode 1 splices stdio to a plain TCP or Unix target. Mode 2
+//! initiates an authenticated Iroh QUIC connection through the
+//! configured relay (and the standard HTTP CONNECT proxy when set),
+//! then byte-moves the payload without interpreting it.
 //!
 //! The §4.2 contract implemented here:
 //!
@@ -512,6 +510,93 @@ pub fn connect_target(target: &Target) -> Result<End, (i32, String)> {
     }
 }
 
+fn mode2_endpoint_builder(
+    key: &crate::id_key::SessionKey,
+    relay: &iroh::RelayUrl,
+    proxy: Option<url::Url>,
+) -> iroh::endpoint::Builder {
+    let relay_config = iroh::RelayConfig::new(relay.clone(), None);
+    let relays = iroh::RelayMap::from(relay_config);
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(key.secret_bytes()))
+        .relay_mode(iroh::RelayMode::Custom(relays))
+        // A mode-2 dial must stay on the pinned relay path. It must not
+        // escape a failed CONNECT tunnel through direct UDP.
+        .clear_ip_transports();
+    match proxy {
+        Some(proxy) => builder.proxy_url(proxy),
+        None => builder.proxy_from_env(),
+    }
+}
+
+async fn dial_mode2(
+    endpoint: &iroh::Endpoint,
+    target: iroh::EndpointId,
+    pinned: [u8; 32],
+    relay: &iroh::RelayUrl,
+    alpn: &[u8],
+) -> Result<iroh::endpoint::Connection, DialFailure> {
+    if ensure_peer_identity(&pinned, target.as_bytes()).is_err() {
+        return Err(DialFailure::IdentityMismatch);
+    }
+    let addr = iroh::EndpointAddr::new(target).with_relay_url(relay.clone());
+    let conn = endpoint
+        .connect(addr, alpn)
+        .await
+        .map_err(|_| DialFailure::RelayUnreachable)?;
+    ensure_peer_identity(&pinned, conn.remote_id().as_bytes())?;
+    Ok(conn)
+}
+
+fn run_mode2(
+    target: iroh::EndpointId,
+    pinned: [u8; 32],
+    relay: iroh::RelayUrl,
+    alpn: String,
+    key: crate::id_key::SessionKey,
+) -> Result<(), (i32, String)> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            (
+                EXIT_RELAY_UNREACHABLE,
+                format!("cannot start iroh runtime: {error}"),
+            )
+        })?;
+    runtime.block_on(async move {
+        let endpoint = mode2_endpoint_builder(&key, &relay, None)
+            .bind()
+            .await
+            .map_err(|error| {
+                (
+                    EXIT_RELAY_UNREACHABLE,
+                    format!("relay-unreachable: {error}"),
+                )
+            })?;
+        let conn = dial_mode2(&endpoint, target, pinned, &relay, alpn.as_bytes())
+            .await
+            .map_err(|failure| (failure.exit_code(), failure.to_string()))?;
+        let (send, recv) = conn.open_bi().await.map_err(|error| {
+            (
+                EXIT_RELAY_UNREACHABLE,
+                format!("relay-unreachable: {error}"),
+            )
+        })?;
+        let mut local = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+        let mut remote = tokio::io::join(recv, send);
+        tokio::io::copy_bidirectional(&mut local, &mut remote)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                (
+                    EXIT_RELAY_UNREACHABLE,
+                    format!("relay-unreachable: {error}"),
+                )
+            })
+    })
+}
+
 const PROXY_USAGE: &str = "\
 Usage: fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>]
                       [--relay <url>] [--expect-node-id <hex>] <target>
@@ -522,18 +607,17 @@ path -> mode 1 (raw proxy); --opaque or an ALPN fleet does not
 know -> mode 2 (relay-aware proxy); otherwise mode 3 (initiator,
 served by 'fleet id postcard'/'fleet id stream', not this verb).
 
-  <target>        tcp://host:port | unix:///path | host:port | /path
-  --alpn <alpn>   the target protocol (fleet knows /iroh-meta/3)
-  --relay <url>   relay for the mode-2 dial (next sub-slice)
+  <target>        mode 1: TCP/Unix endpoint; mode 2: peer NodeId (64 hex)
+  --alpn <alpn>   target protocol (required for mode 2; fleet knows /iroh-meta/3)
+  --relay <url>   HTTPS relay URL for the mode-2 dial
   --expect-node-id <hex>
                   pin the peer NodeId for the mode-2 dial; a
                   mismatch fails closed (exit 72), never downgrades
 
 Mode 1 splices this process's stdin/stdout to the target,
-byte for byte; fleet parses nothing. Mode 2's live dialer
-(CONNECT relay shim + resolver override) is the next sub-slice
-of #15434: until it lands a mode-2 selection exits 69 rather
-than silently downgrading. Exit codes: 0 ok · 2 usage ·
+byte for byte; fleet parses nothing. Mode 2 dials the pinned peer
+through the relay and the standard HTTP CONNECT proxy when configured,
+then splices opaque QUIC stream bytes. Exit codes: 0 ok · 2 usage ·
 69 mode unavailable · 71 relay unreachable · 72 identity
 mismatch · 73 target unreachable.";
 
@@ -612,51 +696,95 @@ pub fn run(args: &[String]) -> i32 {
             }
         }
     }
-    let target_arg = match target_arg {
-        Some(t) => t,
-        None => {
-            eprintln!("error: 'fleet id proxy' needs a <target>\n\n{PROXY_USAGE}");
-            return 2;
-        }
+    let target_text = target_arg.unwrap_or_default();
+    let raw_target = if target_text.is_empty() {
+        None
+    } else {
+        parse_target(&target_text).ok()
     };
-    let (target, raw_endpoint) = match parse_target(&target_arg) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 2;
-        }
-    };
-    req.raw_endpoint = raw_endpoint;
+    req.raw_endpoint = raw_target.is_some();
     let mode = select_mode(&req);
-    // The mode-2-only flags are meaningless (and refused, not
-    // ignored) for a raw splice: silently accepting a NodeId pin
-    // fleet cannot check would be a silent downgrade of the
-    // caller's stated intent.
-    if mode == Mode::Raw && (expect.is_some() || relay.is_some()) {
-        eprintln!(
-            "error: --expect-node-id/--relay belong to the mode-2 dial; mode 1 holds no iroh key and cannot honor them (refusing, not ignoring)"
-        );
-        return 2;
-    }
     match mode {
-        Mode::Raw => match connect_target(&target) {
-            Ok(end) => match splice_duplex(End::stdio(), end) {
-                Ok(_) => 0,
-                Err(e) => {
-                    eprintln!("error: splice failed: {e}");
-                    EXIT_TARGET_UNREACHABLE
-                }
-            },
-            Err((code, msg)) => {
-                eprintln!("error: {msg}");
-                code
+        Mode::Raw => {
+            if expect.is_some() || relay.is_some() {
+                eprintln!(
+                    "error: --expect-node-id/--relay belong to the mode-2 dial; mode 1 cannot honor them (refusing, not ignoring)"
+                );
+                return 2;
             }
-        },
+            let target = match raw_target {
+                Some((target, _)) => target,
+                None => {
+                    eprintln!("error: mode 1 needs a TCP or Unix <target>\n\n{PROXY_USAGE}");
+                    return 2;
+                }
+            };
+            match connect_target(&target) {
+                Ok(end) => match splice_duplex(End::stdio(), end) {
+                    Ok(_) => 0,
+                    Err(e) => {
+                        eprintln!("error: splice failed: {e}");
+                        EXIT_TARGET_UNREACHABLE
+                    }
+                },
+                Err((code, msg)) => {
+                    eprintln!("error: {msg}");
+                    code
+                }
+            }
+        }
         Mode::RelayAware => {
-            eprintln!(
-                "error: mode-unavailable: mode 2 (relay-aware) selected but its live iroh dialer has not landed yet (#15434); refusing to downgrade"
-            );
-            EXIT_MODE_UNAVAILABLE
+            let target_bytes = match parse_expect_node_id(&target_text) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "error: mode 2 <target> must be the peer NodeId in 64-digit hex: {error}"
+                    );
+                    return 2;
+                }
+            };
+            let pinned = match expect {
+                Some(pin) => pin,
+                None => {
+                    eprintln!("error: mode 2 requires --expect-node-id");
+                    return 2;
+                }
+            };
+            let relay = match relay.and_then(|value| value.parse::<iroh::RelayUrl>().ok()) {
+                Some(relay) => relay,
+                None => {
+                    eprintln!("error: mode 2 requires a valid --relay https://… URL");
+                    return 2;
+                }
+            };
+            let alpn = match req.alpn {
+                Some(alpn) if !alpn.is_empty() => alpn,
+                _ => {
+                    eprintln!("error: mode 2 requires --alpn");
+                    return 2;
+                }
+            };
+            let target = match iroh::EndpointId::from_bytes(&target_bytes) {
+                Ok(target) => target,
+                Err(error) => {
+                    eprintln!("error: invalid mode-2 peer NodeId: {error}");
+                    return 2;
+                }
+            };
+            let key = match crate::id_key::SessionKey::from_env() {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("error: cannot create ID session key: {error}");
+                    return 2;
+                }
+            };
+            match run_mode2(target, pinned, relay, alpn, key) {
+                Ok(()) => 0,
+                Err((code, error)) => {
+                    eprintln!("error: {error}");
+                    code
+                }
+            }
         }
         Mode::Initiator => {
             eprintln!(
@@ -923,22 +1051,32 @@ mod tests {
     }
 
     #[test]
-    fn proxy_mode2_without_dialer_is_fail_closed_69() {
-        // No network is touched: the mode-2 live dialer has not
-        // landed, so selection alone decides the exit.
+    fn proxy_mode2_requires_peer_pin_relay_and_alpn_before_networking() {
+        let peer = "ab".repeat(32);
+        assert_eq!(run(&proxy_args(&["proxy", "--mode", "2", &peer])), 2);
         assert_eq!(
-            run(&proxy_args(&["proxy", "--mode", "2", "127.0.0.1:9"])),
-            EXIT_MODE_UNAVAILABLE
+            run(&proxy_args(&[
+                "proxy",
+                "--mode",
+                "2",
+                "--expect-node-id",
+                &peer,
+                &peer
+            ])),
+            2
         );
         assert_eq!(
             run(&proxy_args(&[
                 "proxy",
                 "--mode",
                 "2",
-                "--opaque",
-                "tcp://127.0.0.1:9"
+                "--expect-node-id",
+                &peer,
+                "--relay",
+                "https://relay.example:443",
+                &peer,
             ])),
-            EXIT_MODE_UNAVAILABLE
+            2
         );
     }
 
@@ -1061,5 +1199,129 @@ mod tests {
         echo.join().expect("echo");
 
         assert_eq!(echoed, payload, "bytes must survive the splice identical");
+    }
+
+    /// Oracle: authenticated Iroh peer identity plus byte-identical opaque
+    /// payload. The CONNECT-only proxy records the target authority and
+    /// rejects every non-CONNECT request, proving relay traffic used the
+    /// tunnel rather than direct UDP or an HTTP proxy fallback.
+    #[tokio::test]
+    async fn mode2_dials_stock_peer_through_connect_proxy_and_preserves_tls_payload() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        const ALPN: &[u8] = b"fleet-id-proxy-test/1";
+        let (relay_map, relay_url, _relay_server) = iroh::test_utils::run_relay_server()
+            .await
+            .expect("local relay");
+        let ca = iroh::tls::CaTlsConfig::insecure_skip_verify();
+        let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Custom(relay_map))
+            .clear_ip_transports()
+            .ca_tls_config(ca.clone())
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("peer endpoint");
+        let target = server.id();
+
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy listener");
+        let proxy_addr = proxy_listener.local_addr().expect("proxy address");
+        let (authority_tx, authority_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let Ok((mut client, _)) = proxy_listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                if client.read_exact(&mut byte).await.is_err() {
+                    return;
+                }
+                request.push(byte[0]);
+                if request.len() > 8192 {
+                    return;
+                }
+            }
+            let head = String::from_utf8_lossy(&request);
+            let Some(authority) = head
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("CONNECT "))
+                .and_then(|line| line.strip_suffix(" HTTP/1.1"))
+            else {
+                let _ = client
+                    .write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                    .await;
+                return;
+            };
+            let _ = authority_tx.send(authority.to_string());
+            let Ok(mut relay) = tokio::net::TcpStream::connect(authority).await else {
+                let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                return;
+            };
+            if client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_ok()
+            {
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut relay).await;
+            }
+        });
+
+        let server_for_peer = server.clone();
+        let peer = tokio::spawn(async move {
+            let incoming = server_for_peer.accept().await.expect("incoming connection");
+            let connection = incoming.await.expect("authenticated client");
+            let (send, mut recv) = connection.accept_bi().await.expect("opaque stream");
+            let payload = recv.read_to_end(1 << 20).await.expect("read payload");
+            let mut send = send;
+            send.write_all(&payload).await.expect("echo payload");
+            send.finish().expect("finish echo");
+            payload
+        });
+
+        let relay_for_client = relay_url.clone();
+        let client_key = crate::id_key::SessionKey::from_secret_hex(&"11".repeat(32))
+            .expect("valid session key");
+        let proxy_url = url::Url::parse(&format!("http://{proxy_addr}")).expect("proxy URL");
+        let client = mode2_endpoint_builder(&client_key, &relay_for_client, Some(proxy_url))
+            .ca_tls_config(ca)
+            .bind()
+            .await
+            .expect("client endpoint");
+        let connection = dial_mode2(&client, target, *target.as_bytes(), &relay_url, ALPN)
+            .await
+            .expect("relay-aware authenticated connection");
+        assert_eq!(
+            connection.remote_id(),
+            target,
+            "TLS peer identity is pinned"
+        );
+        assert!(matches!(
+            dial_mode2(&client, target, [0x22; 32], &relay_url, ALPN).await,
+            Err(DialFailure::IdentityMismatch)
+        ));
+
+        let payload = fixture_bytes(64 * 1024, 0x15434);
+        let (mut send, mut recv) = connection.open_bi().await.expect("open opaque stream");
+        send.write_all(&payload)
+            .await
+            .expect("write opaque payload");
+        send.finish().expect("finish opaque payload");
+        let echoed = recv.read_to_end(1 << 20).await.expect("read echo");
+        assert_eq!(echoed, payload, "opaque stream bytes are unchanged");
+        assert_eq!(
+            authority_rx.await.expect("CONNECT observed"),
+            format!(
+                "{}:{}",
+                relay_url.host_str().expect("relay host"),
+                relay_url.port_or_known_default().expect("relay port")
+            )
+        );
+        assert_eq!(peer.await.expect("peer task"), payload);
+        client.close().await;
+        server.close().await;
     }
 }
