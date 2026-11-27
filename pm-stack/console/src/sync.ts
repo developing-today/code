@@ -60,6 +60,8 @@ export interface LinkOptions {
   run: (held: Held) => Promise<void>;
   /** The commit this console is running, if it could be found. */
   version?: string;
+  /** The release tree object ID from immutable .release metadata. */
+  tree?: string;
   /** What this machine is called, and the kinds of action it does. */
   machine?: () => { name: string; actions: string[] };
   /** The owner's changed settings, as the edge said them in its answer
@@ -254,6 +256,7 @@ export class EdgeLink {
           v: 1,
           at,
           ...(this.o.version ? { version: this.o.version } : {}),
+          ...(this.o.tree ? { tree: this.o.tree } : {}),
           ...(machine ? { machine } : {}),
           ...(this.o.adopt ? { settingsRev: this.settingsRev } : {}),
           ...(apk ? { apk } : {}),

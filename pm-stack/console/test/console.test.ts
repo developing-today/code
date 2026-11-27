@@ -1693,6 +1693,7 @@ describe("HTTP surface", () => {
     const commit = "0123456789abcdef0123456789abcdef01234567";
     const tree = "89abcdef0123456789abcdef0123456789abcdef";
     expect(releaseSaid(`commit=${commit}\ntree=${tree}\n`)).toEqual({ commit, tree });
+    expect(releaseSaid(`commit=${commit}\ntree=${"A".repeat(40)}\n`)).toEqual({ commit, tree: null });
     expect(releaseSaid(`commit=${commit}\n`)).toEqual({ commit, tree: null });
     for (const text of [
       "",
@@ -1713,13 +1714,17 @@ describe("HTTP surface", () => {
     expect(await links.json()).toEqual(assetLinks(CFG));
     expect(assetLinks(CFG)[0]).toMatchObject({ target: { package_name: "today.developing.pmconsole" } });
     expect(assetLinks({ androidPackage: "p", androidFingerprints: [] })).toEqual([]);
-    // The health check says which commit this console was started from,
-    // where it knows: install.sh waits for it to answer as the release
-    // it has just put into service.
-    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true, version: null });
+    // Health reports identities attached to the running release; tree is
+    // sourced from immutable .release metadata, not inferred from commit.
+    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true, version: null, tree: null });
     expect(
-      await (await handle(get("/console/health"), { ...d, self: { name: "amd", version: "0123456789ab" } })).json(),
-    ).toEqual({ ok: true, version: "0123456789ab" });
+      await (
+        await handle(get("/console/health"), {
+          ...d,
+          self: { name: "amd", version: "0123456789ab", tree: "a".repeat(40) },
+        })
+      ).json(),
+    ).toEqual({ ok: true, version: "0123456789ab", tree: "a".repeat(40) });
     for (const path of [
       "/console/",
       "/console/app.js",

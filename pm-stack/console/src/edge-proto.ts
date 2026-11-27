@@ -67,6 +67,9 @@ export interface SyncRequest {
    * health answer, so whether a merge has reached the host can be seen
    * from anywhere, without reaching the host. */
   version?: string;
+  /** The full Git tree object ID from this release's immutable .release
+   * metadata. Absent for checkout/dev runs and older hosts. */
+  tree?: string;
   /** What this machine is called and what it can do. Absent from a
    * console older than this: the edge then knows it only as a machine
    * that reports. */
@@ -165,6 +168,11 @@ export interface MachinesAnswer {
     /** It has not reported for long enough to be taken for away. */
     quiet: boolean;
     version: string | null;
+    /** Full Git tree OID from the active release's .release metadata,
+     * as last reported; null from checkouts, dev runs, older hosts, or
+     * anything that is not 40 hex. The follow-on compares this with the
+     * Worker's tree to warn in Machines; this slice only reports it. */
+    tree: string | null;
     actions: string[];
     sections: string[];
     /** The platform's settings it runs with others of, each with both

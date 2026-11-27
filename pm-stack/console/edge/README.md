@@ -93,8 +93,16 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   (`androidReleaseTrouble`).
 - **The laptop reports** to `POST /console/edge/sync`: the sections of
   state that changed, how current each unchanged one is, and what became
-  of anything held for it. The answer says whether anyone is looking, and
-  carries the actions the owner took while it was away.
+  of anything held for it. `version` is the running commit and `tree` is
+  the full 40-character Git tree object ID from the active release's
+  immutable `.release` metadata. `tree` is absent on older hosts and
+  checkout/dev runs. The edge validates the full tree ID and exposes the
+  last accepted value as `hostTree` in `/console/health` and each machine
+  row in `/console/api/machines`; it is `null` until a valid report.
+  Worker-side tree comparison and a sustained-divergence warning in the
+  Machines screen are a follow-on, not part of this reporting contract.
+  The answer says whether anyone is looking, and carries the actions the
+  owner took while it was away.
 - **The signed Android build travels in a report**, once per build, when
   the edge says it lacks it, and is kept only if it matches its
   fingerprint. It never stands in the way of the reports themselves,

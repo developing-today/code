@@ -2109,18 +2109,25 @@ describe("the interface's endpoints", () => {
 
   test("asked which machines there are, a machine serving the app by itself answers with itself: nothing is in front of it, and nothing waits", async () => {
     const { d } = deps();
-    d.self = { name: "nixos", version: "0123abcd4567" };
+    d.self = { name: "nixos", version: "0123abcd4567", tree: "a".repeat(40) };
     await handle(get("/console/api/doc/core"), d);
     const answer = (await (await handle(get("/console/api/machines"), d)).json()) as {
       served: string;
       platform: unknown;
-      machines: { name: string; quiet: boolean; version: string | null; actions: string[]; sections: string[] }[];
+      machines: {
+        name: string;
+        quiet: boolean;
+        version: string | null;
+        tree: string | null;
+        actions: string[];
+        sections: string[];
+      }[];
       held: unknown[];
     };
     expect([answer.served, answer.platform, answer.held]).toEqual(["machine", null, []]);
     expect(answer.machines).toHaveLength(1);
     const [self] = answer.machines;
-    expect([self.name, self.quiet, self.version]).toEqual(["nixos", false, "0123abcd4567"]);
+    expect([self.name, self.quiet, self.version, self.tree]).toEqual(["nixos", false, "0123abcd4567", "a".repeat(40)]);
     // What it can do is what it has: its actions by kind, and every section it reads.
     expect(self.actions).toEqual(Object.keys(d.actions ?? {}).sort());
     expect(self.actions).toContain("task.cancel");

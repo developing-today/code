@@ -160,7 +160,7 @@ export interface Deps {
   named?: Pick<Named, "begin" | "end" | "seen"> & Partial<Pick<Named, "known" | "take" | "release">>;
   /** What this machine is called and the commit it runs, for where
    * machines are listed. */
-  self?: { name: string; version?: string };
+  self?: { name: string; version?: string; tree?: string };
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -241,10 +241,11 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
 
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
-  // Which commit this console was started from, where it knows:
-  // install.sh waits for the console to answer as the release it has
-  // just put into service.
-  if (path === `${BASE}/health` && method === "GET") return json({ ok: true, version: deps.self?.version ?? null });
+  // Which release identities this console was started from, where it
+  // knows: install.sh waits for the console to answer as the release it
+  // has just put into service.
+  if (path === `${BASE}/health` && method === "GET")
+    return json({ ok: true, version: deps.self?.version ?? null, tree: deps.self?.tree ?? null });
   if (path === "/manifest.webmanifest" && method === "GET") return manifest();
   // Not behind the sign-in, and checked here instead: a linked phone.
   if (deps.phones && deps.docs) {
@@ -355,6 +356,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               seen: Date.now(),
               quiet: false,
               version: deps.self?.version ?? null,
+              tree: deps.self?.tree ?? null,
               actions: Object.keys(deps.actions ?? {}).sort(),
               sections: (deps.docs?.names() ?? []).sort(),
             },
@@ -709,6 +711,16 @@ export function releaseSaid(text: string): { commit: string; tree: string | null
  * a checkout (by hand, or in a test), the checkout is asked. The
  * service is restarted when a release is put into service, so this is
  * the code that is running. */
+async function runningTree(): Promise<string | undefined> {
+  try {
+    const said = releaseSaid(readFileSync(join(import.meta.dir, "..", ".release"), "utf8"));
+    return said?.tree ?? undefined;
+  } catch {
+    // A checkout has no immutable release tree metadata.
+    return undefined;
+  }
+}
+
 async function runningCommit(): Promise<string | undefined> {
   try {
     const said = releaseSaid(readFileSync(join(import.meta.dir, "..", ".release"), "utf8"));
@@ -765,8 +777,11 @@ if (import.meta.main) {
   deps.named = named;
   // Behind an edge: report to it, and run what it held for this host.
   const version = await runningCommit();
+  // A release's immutable metadata names the exact console tree; a
+  // checkout has no such identity and must not guess from its commit.
+  const tree = await runningTree();
   // What this machine is called: what it was told to be, or its own name.
-  const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
+  const self = { name: cfg.machineName || machineName(hostname()) || "machine", version, tree };
   deps.self = self;
   // What this machine runs with of the settings the owner may change,
   // before the owner's changes: its environment's, or main's.
@@ -775,6 +790,7 @@ if (import.meta.main) {
     ? new EdgeLink({
         url: cfg.edgeUrl,
         version,
+        tree,
         machine: () => ({ name: self.name, actions: Object.keys(deps.actions ?? {}).sort() }),
         apk: androidBuild(cfg.androidApk),
         keys: fileStore(cfg.edgeKeyFile),

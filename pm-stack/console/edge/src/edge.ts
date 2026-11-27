@@ -341,6 +341,7 @@ export class Edge {
   private sure = 0;
   private unsure = 0;
   private hostVersion: string | null = null;
+  private hostTree: string | null = null;
   /** What the machine that reports says of itself: its name and what
    * it can do. Null until one has said, or from a console older than
    * the saying. */
@@ -1215,6 +1216,7 @@ export class Edge {
                 seen,
                 quiet: this.now() - seen >= HOST_QUIET_MS,
                 version: this.hostVersion,
+                tree: this.hostTree,
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
                 ...(differs.length > 0 ? { differs } : {}),
@@ -1316,6 +1318,7 @@ export class Edge {
             seq: number;
             confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
             version?: string | null;
+            tree?: string | null;
             machine?: unknown;
             settingsRev?: number | null;
           }
@@ -1324,6 +1327,7 @@ export class Edge {
       this.hostSeq = host?.seq ?? 0;
       this.confirmed = host?.confirmed ?? {};
       this.hostVersion = host?.version ?? null;
+      this.hostTree = typeof host?.tree === "string" && /^[0-9a-f]{40}$/.test(host.tree) ? host.tree : null;
       this.machine = machineReport(host?.machine);
       this.hostSettingsRev = settingsRevSaid(host?.settingsRev);
     }
@@ -1964,6 +1968,7 @@ export class Edge {
     this.hostSeen = now;
     this.hostSeq = msg.at;
     this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
+    this.hostTree = typeof msg.tree === "string" && /^[0-9a-f]{40}$/.test(msg.tree) ? msg.tree : null;
     this.machine = machineReport(msg.machine);
     this.hostSettingsRev = settingsRevSaid(msg.settingsRev);
     await this.kv.put("host", {
@@ -1971,6 +1976,7 @@ export class Edge {
       seq: msg.at,
       confirmed: this.confirmed,
       version: this.hostVersion,
+      tree: this.hostTree,
       machine: this.machine,
       settingsRev: this.hostSettingsRev,
     });
@@ -2293,8 +2299,10 @@ export class Edge {
         // asked. Null until the first scheduled round has run.
         workerChecks: await this.lastWorkerChecks(),
         hostSeen: this.hostSeen || null,
-        // The commit the host's console is running, as it last said.
+        // The commit and full tree of the host's active console release,
+        // as last reported. The tree is validated as a full Git object ID.
         hostVersion: this.hostVersion,
+        hostTree: this.hostTree,
         // How many copies of the app are connected to be told of
         // changes as they happen.
         listening: this.listening(),

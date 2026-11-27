@@ -1253,6 +1253,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const makeLink = () =>
     new EdgeLink({
       version: "0123abcd4567",
+      tree: "a".repeat(40),
       ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
       ...(adopts.now ? { adopt: adopts.now } : {}),
       apk: async () => {
@@ -1449,6 +1450,7 @@ describe("before the host's first report", () => {
       github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
+      hostTree: null,
       listening: 0,
       machineSettingsDiffer: null,
       settingsInForce: PLATFORM_SETTING_NAMES.map((name) => ({ name, source: "repository", since: null })),
@@ -1462,6 +1464,7 @@ describe("before the host's first report", () => {
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
       routes: {},
+      workerChecks: null,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1516,10 +1519,12 @@ describe("before the host's first report", () => {
     await w.hostReads();
     await w.link.now.once();
     expect((await health()).hostVersion).toBe("0123abcd4567");
+    expect((await health()).hostTree).toBe("a".repeat(40));
     // It is remembered across the edge's own restarts.
     w.edge.now = w.makeEdge();
     expect((await health()).hostVersion).toBe("0123abcd4567");
-    // Anything that is not a commit's name is not repeated to the public.
+    expect((await health()).hostTree).toBe("a".repeat(40));
+    // Anything that is not a commit's name or a full tree OID is not repeated to the public.
     const kept = JSON.parse(w.keys.text() as string) as { privateJwk: JsonWebKey };
     w.now.t += 1_000;
     const body = new TextEncoder().encode(
@@ -1527,6 +1532,7 @@ describe("before the host's first report", () => {
         v: 1,
         at: w.now.t,
         version: "<b>not a commit</b>",
+        tree: "<b>not a tree</b>",
         config: w.edgeConfig,
         sections: [],
         have: {},
@@ -1547,6 +1553,7 @@ describe("before the host's first report", () => {
     );
     expect(res.status).toBe(200);
     expect((await health()).hostVersion).toBeNull();
+    expect((await health()).hostTree).toBeNull();
   });
 
   // The platform's own settings are the repository's (src/settings.ts),
@@ -2250,6 +2257,7 @@ describe("actions", () => {
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
+        tree: "a".repeat(40),
         // What it said it can do: the kinds of action it has, and every section it reads.
         actions: [
           "ask.send",
@@ -2345,6 +2353,7 @@ describe("actions", () => {
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
+        tree: "a".repeat(40),
         actions: [],
         sections: [],
         settingsRev: null,
