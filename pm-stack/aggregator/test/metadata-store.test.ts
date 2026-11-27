@@ -194,11 +194,13 @@ describe("PM Metadata schema v1 adapter", () => {
       `);
 
       upsertPmMetadata(db, record);
-      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual([]);
+      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual(
+        [],
+      );
 
       const changedSource = {
         ...source,
-        links: source.links.map((link, index) => index === 1 ? { ...link, status: "historical" } : link),
+        links: source.links.map((link, index) => (index === 1 ? { ...link, status: "historical" } : link)),
       };
       const changed = parsePmMetadata(changedSource);
       expect(changed.ok).toBe(true);

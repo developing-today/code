@@ -628,10 +628,7 @@ function actionsExecMapping(source: string, key: string | undefined): NeedsDrewB
   if (source !== "fleet-actions-exec" || !normalizedKey.startsWith(prefix)) return null;
   // The broker's alert key is actions-exec-ext:<handle>:<ordinal>; the
   // session handle is the middle part, so the trailing ordinal goes.
-  const handle = normalizedKey
-    .slice(prefix.length)
-    .replace(/:\d+$/, "")
-    .trim();
+  const handle = normalizedKey.slice(prefix.length).replace(/:\d+$/, "").trim();
   if (!handle) return null;
   return { source: "fleet-actions-exec", key: normalizedKey, handle };
 }

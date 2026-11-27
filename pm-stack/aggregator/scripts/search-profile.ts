@@ -343,7 +343,11 @@ async function main(): Promise<void> {
       }
     }
   }
-  const summary = summarize(opts.query, opts.mode === "base-url" ? "external" : opts.live ? "spawned-live" : "spawned-fixtures", records);
+  const summary = summarize(
+    opts.query,
+    opts.mode === "base-url" ? "external" : opts.live ? "spawned-live" : "spawned-fixtures",
+    records,
+  );
   console.log(JSON.stringify({ records, summary }, null, 2));
   console.error(humanSummary(summary));
 }

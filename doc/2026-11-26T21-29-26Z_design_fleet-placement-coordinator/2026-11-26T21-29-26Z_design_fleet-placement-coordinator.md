@@ -23,11 +23,11 @@ The coordinator addresses four defects in per-seat placement:
 
 The broker store owns three records:
 
-| Table | Role |
-| --- | --- |
-| `placement_owner_state` | Per-owner cap, GitHub running/queued counts, load provenance/time, and active claim count. |
-| `placement_claims` | Claim identity, surface, owner, seat, estimated minutes, lifecycle state, run id, and expiry. `queued` rows form the FIFO-per-owner waitlist. |
-| `placement_budgets` | Per-month, per-surface budget, reserved minutes, and settled use. |
+| Table                   | Role                                                                                                                                          |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `placement_owner_state` | Per-owner cap, GitHub running/queued counts, load provenance/time, and active claim count.                                                    |
+| `placement_claims`      | Claim identity, surface, owner, seat, estimated minutes, lifecycle state, run id, and expiry. `queued` rows form the FIFO-per-owner waitlist. |
+| `placement_budgets`     | Per-month, per-surface budget, reserved minutes, and settled use.                                                                             |
 
 The embedded surface registry is authoritative for surface owner, kind, caps and budget; clients cannot provide those values. A Blacksmith budget reservation is attempted first with a conditional update. The slot gate then uses one conditional update of the owner's active-claim counter, constrained by `gh_running + gh_queued + claims_active < cap`. The affected-row count decides the outcome: one row admits, zero rows queues. LibSQL's single-writer semantics serialize competing updates.
 

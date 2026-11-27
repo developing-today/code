@@ -134,7 +134,7 @@ export class PmEdge extends DurableObject<Env> {
         bridgeToken: env.BRIDGE_TOKEN,
         decisionEvents:
           env.DECISION_EVENTS_URL && env.DECISION_EVENTS_SECRET
-            ? { url: env.DECISION_EVENTS_URL, secret: <redacted> }
+            ? { url: env.DECISION_EVENTS_URL, secret: env.DECISION_EVENTS_SECRET }
             : undefined,
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.

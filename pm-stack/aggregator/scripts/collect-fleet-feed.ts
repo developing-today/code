@@ -1125,12 +1125,18 @@ export async function main(): Promise<void> {
       const publisher = await getDnsPublisher();
       if (publisher) {
         await publisher.publish(dns, now.toISOString());
-        console.log(`collector: published DNS snapshot to D1 (${dns.entries.length} domains, generated ${dns.generatedAt})`);
+        console.log(
+          `collector: published DNS snapshot to D1 (${dns.entries.length} domains, generated ${dns.generatedAt})`,
+        );
       } else {
-        console.log("collector: DNS snapshot publication not configured; skipping (hosted /dns keeps its last snapshot)");
+        console.log(
+          "collector: DNS snapshot publication not configured; skipping (hosted /dns keeps its last snapshot)",
+        );
       }
     } catch (err) {
-      console.error(`collector: DNS snapshot publication failed (${sanitizeCollectionError(err)}); fleet feed still written`);
+      console.error(
+        `collector: DNS snapshot publication failed (${sanitizeCollectionError(err)}); fleet feed still written`,
+      );
     }
   }
 

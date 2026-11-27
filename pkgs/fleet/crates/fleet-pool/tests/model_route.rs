@@ -12,8 +12,8 @@
 //! consumed, selections are returned, and a served failure advances
 //! only when its classifier says so.
 
-use fleet_pool::model_route::{ModelRoute, RouteLeg, RouteOutcome};
 use fleet_pool::MemberState;
+use fleet_pool::model_route::{ModelRoute, RouteLeg, RouteOutcome};
 
 fn leg(provider: &str, model: &str) -> RouteLeg {
     RouteLeg::new(provider, model)
@@ -40,7 +40,9 @@ fn rc1_a_reset_less_quota_wall_still_gates() {
         .expect("a quota outcome has an effect");
     assert!(fx.advance, "the walk advances past a quota-walled leg");
     assert_eq!(
-        route.pool().state_of(&leg("openai-plan", "gpt-x").node_id(), 0),
+        route
+            .pool()
+            .state_of(&leg("openai-plan", "gpt-x").node_id(), 0),
         MemberState::Walled
     );
     // Still gated just inside the inferred TTL (300s default).
@@ -59,7 +61,9 @@ fn rc2_a_reset_less_wall_readmits_through_expiry_and_probe() {
 
     route.tick(300, &mut |_: &fleet_pool::NodeId| true);
     assert_eq!(
-        route.pool().state_of(&leg("openai-plan", "gpt-x").node_id(), 300),
+        route
+            .pool()
+            .state_of(&leg("openai-plan", "gpt-x").node_id(), 300),
         MemberState::Demoted,
         "a passed probe re-seats the leg at demoted weight"
     );
@@ -83,7 +87,9 @@ fn rc3_a_quota_wall_binds_at_the_cap_scope_not_the_reader_shape() {
     );
     route.record(&leg("openai-plan", "gpt-x"), &quota_no_reset(), 0);
     assert_eq!(
-        route.pool().state_of(&leg("openai-free", "gpt-x").node_id(), 0),
+        route
+            .pool()
+            .state_of(&leg("openai-free", "gpt-x").node_id(), 0),
         MemberState::Walled,
         "the cap sibling is gated by the same wall"
     );

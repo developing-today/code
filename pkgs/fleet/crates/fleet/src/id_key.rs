@@ -125,6 +125,12 @@ impl SessionKey {
         self.source
     }
 
+    /// Borrow the session secret for constructing the matching iroh
+    /// endpoint. Callers must not copy it into logs or persistent state.
+    pub(crate) fn secret_bytes(&self) -> &[u8; 32] {
+        &self.secret
+    }
+
     /// The NodeId as 64 lowercase hex characters — the form the
     /// stamp and the env carry.
     pub fn node_id_hex(&self) -> String {

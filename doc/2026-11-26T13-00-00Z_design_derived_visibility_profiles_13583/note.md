@@ -14,13 +14,13 @@ the two-store fixture against that policy. The fixture lives at
 
 A reader can learn about hidden rows through five observables:
 
-| Observable | Meaning |
-|---|---|
-| IDs | Which rows appear in a result |
-| Count | How many rows a query or aggregate reports |
-| Order | The relative rank of visible rows |
-| Cursor | Whether a next page exists and where it starts |
-| Topology | Graph shape, inventory summaries, replication digests |
+| Observable | Meaning                                               |
+| ---------- | ----------------------------------------------------- |
+| IDs        | Which rows appear in a result                         |
+| Count      | How many rows a query or aggregate reports            |
+| Order      | The relative rank of visible rows                     |
+| Cursor     | Whether a next page exists and where it starts        |
+| Topology   | Graph shape, inventory summaries, replication digests |
 
 A **strict** profile means every observable is identical between two stores
 that differ only in rows above the reader's ceiling. A **looser** profile names
@@ -28,24 +28,24 @@ which observables may vary and why.
 
 ## Reader and peer classes
 
-| Class | Who | Profile |
-|---|---|---|
-| Strict reader | An Atlas caller below the `secret-bearing` ceiling; an ID reader principal | Strict on IDs and count everywhere. Order and cursor are strict only where the table below says so. |
-| `fully_trusted` peer (#9141) | Configured replication partner | May receive the full inventory summary in the native exchange greeting, including counts and topology of rows it later cannot open. |
-| `send_only` peer | Outbound only | Learns nothing inbound; receives only what the sender's own ceiling allows. |
-| `accept_signed_from` peer | Inbound gated data only | Strict reader for anything it queries; it receives no outbound inventory. |
-| `unknown` peer | Anyone else | Denied; learns nothing beyond the refusal. |
+| Class                        | Who                                                                        | Profile                                                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Strict reader                | An Atlas caller below the `secret-bearing` ceiling; an ID reader principal | Strict on IDs and count everywhere. Order and cursor are strict only where the table below says so.                                 |
+| `fully_trusted` peer (#9141) | Configured replication partner                                             | May receive the full inventory summary in the native exchange greeting, including counts and topology of rows it later cannot open. |
+| `send_only` peer             | Outbound only                                                              | Learns nothing inbound; receives only what the sender's own ceiling allows.                                                         |
+| `accept_signed_from` peer    | Inbound gated data only                                                    | Strict reader for anything it queries; it receives no outbound inventory.                                                           |
+| `unknown` peer               | Anyone else                                                                | Denied; learns nothing beyond the refusal.                                                                                          |
 
 ## Surface decisions
 
-| Surface | IDs and count | Order | Cursor | Status |
-|---|---|---|---|---|
-| Atlas FTS on a single monolithic index | Strict | **Looser**: `bm25(chunks_fts)` uses document frequencies from the whole index, hidden rows included | Looser, follows order | Pinned by the fixture |
-| Atlas FTS on a partitioned index (one index per ceiling) | Strict | Strict | Strict | Pinned by the fixture as the strict profile |
-| Atlas vector branch | Strict per tier | Strict per tier | Strict per tier | Recorded only. Tiers are physical (`shareable` → public, `personal` and `local-only` → internal, `secret-bearing` → secret), so `personal` and `local-only` share one tier and the scan applies no row-level filter inside it. That is an observation to check, not a confirmed exposure. |
-| ID graph query | Strict | Strict | Strict | Covered by #13781 |
-| Federation and export adapter | Not yet decided | | | Remaining work |
-| Cached derivatives (summaries, embeddings, digests) | Not yet decided | | | Remaining work |
+| Surface                                                  | IDs and count   | Order                                                                                               | Cursor                | Status                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Atlas FTS on a single monolithic index                   | Strict          | **Looser**: `bm25(chunks_fts)` uses document frequencies from the whole index, hidden rows included | Looser, follows order | Pinned by the fixture                                                                                                                                                                                                                                                                     |
+| Atlas FTS on a partitioned index (one index per ceiling) | Strict          | Strict                                                                                              | Strict                | Pinned by the fixture as the strict profile                                                                                                                                                                                                                                               |
+| Atlas vector branch                                      | Strict per tier | Strict per tier                                                                                     | Strict per tier       | Recorded only. Tiers are physical (`shareable` → public, `personal` and `local-only` → internal, `secret-bearing` → secret), so `personal` and `local-only` share one tier and the scan applies no row-level filter inside it. That is an observation to check, not a confirmed exposure. |
+| ID graph query                                           | Strict          | Strict                                                                                              | Strict                | Covered by #13781                                                                                                                                                                                                                                                                         |
+| Federation and export adapter                            | Not yet decided |                                                                                                     |                       | Remaining work                                                                                                                                                                                                                                                                            |
+| Cached derivatives (summaries, embeddings, digests)      | Not yet decided |                                                                                                     |                       | Remaining work                                                                                                                                                                                                                                                                            |
 
 ### The shared-statistics decision
 

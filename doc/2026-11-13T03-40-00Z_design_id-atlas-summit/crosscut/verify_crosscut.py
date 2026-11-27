@@ -269,21 +269,36 @@ for row in all_rows:
         owned_by_path.setdefault(path, []).append(sid)
 
     delivery = row.get("delivery")
-    delivered_files = {
-        entry.get("path"): entry.get("commit")
-        for entry in delivery.get("evidence", [])
-    } if isinstance(delivery, dict) else {}
+    delivered_files = (
+        {
+            entry.get("path"): entry.get("commit")
+            for entry in delivery.get("evidence", [])
+        }
+        if isinstance(delivery, dict)
+        else {}
+    )
     if delivery is not None:
         if not isinstance(delivery, dict):
             fail(f"{sid}: delivery must be an object")
         if delivery.get("state") != "delivered" or not delivery.get("evidence"):
             fail(f"{sid}: delivery must have delivered state and path/commit evidence")
         for path, commit in delivered_files.items():
-            if not path or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            if (
+                not path
+                or not isinstance(commit, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", commit)
+            ):
                 fail(f"{sid}: delivery evidence needs exact path and full commit SHA")
-            if not any(path_row(file)[0] == path and path_row(file)[1] == "delivered" for file in owned):
-                fail(f"{sid}: delivery evidence path is not a delivered owned file: {path}")
-        if {path_row(file)[0] for file in owned if path_row(file)[1] == "delivered"} != set(delivered_files):
+            if not any(
+                path_row(file)[0] == path and path_row(file)[1] == "delivered"
+                for file in owned
+            ):
+                fail(
+                    f"{sid}: delivery evidence path is not a delivered owned file: {path}"
+                )
+        if {
+            path_row(file)[0] for file in owned if path_row(file)[1] == "delivered"
+        } != set(delivered_files):
             fail(f"{sid}: every delivered owned file needs exact commit evidence")
     elif any(path_row(file)[1] == "delivered" for file in owned):
         fail(f"{sid}: delivered files require slice delivery evidence")

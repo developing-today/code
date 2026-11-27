@@ -67,7 +67,7 @@ broker's own agent token — the value in
 
 ```sh
 npm install
-npm test        # vitest + @cloudflare/vitest-pool-workers
+npm test        # vitest + @cloudflare/vitest-plugin
 npm run deploy  # wrangler deploy (fleet Cloudflare account)
 ```
 

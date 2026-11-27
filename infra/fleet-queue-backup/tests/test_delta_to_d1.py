@@ -57,7 +57,9 @@ class FakeD1:
     def import_sql(self, db_id, sql_text):
         self.imports.append(sql_text)
         body = "\n".join(
-            line for line in sql_text.splitlines() if not line.startswith("PRAGMA defer_foreign_keys")
+            line
+            for line in sql_text.splitlines()
+            if not line.startswith("PRAGMA defer_foreign_keys")
         )
         if self.per_statement:
             stmt = ""
@@ -68,14 +70,19 @@ class FakeD1:
                     stmt = ""
             return
         try:
-            self.conn.executescript("BEGIN;\nPRAGMA defer_foreign_keys = true;\n" + body + "\nCOMMIT;")
+            self.conn.executescript(
+                "BEGIN;\nPRAGMA defer_foreign_keys = true;\n" + body + "\nCOMMIT;"
+            )
         except Exception:
             if self.conn.in_transaction:
                 self.conn.execute("ROLLBACK")
             raise
 
     def counts(self, db_id, names):
-        return {n: self.query(db_id, f'SELECT count(*) AS n FROM "{n}"')[0]["n"] for n in names}
+        return {
+            n: self.query(db_id, f'SELECT count(*) AS n FROM "{n}"')[0]["n"]
+            for n in names
+        }
 
 
 BASE = """
@@ -92,7 +99,9 @@ CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT);
 def seed(conn):
     conn.executescript(BASE)
     conn.executemany("INSERT INTO parents VALUES (?, ?)", [(1, "a"), (2, "b")])
-    conn.executemany("INSERT INTO children VALUES (?, ?, ?)", [(1, "a", "x"), (2, "b", "y")])
+    conn.executemany(
+        "INSERT INTO children VALUES (?, ?, ?)", [(1, "a", "x"), (2, "b", "y")]
+    )
     conn.executemany("INSERT INTO issues VALUES (?, ?)", [(1, "one"), (2, "two")])
     conn.executemany("INSERT INTO events (kind) VALUES (?)", [("e1",), ("e2",)])
     conn.executemany("INSERT INTO history (note) VALUES (?)", [("h1",)])
@@ -143,7 +152,12 @@ class TestDelta(unittest.TestCase):
         self.assertEqual(report["history"], "=2")
         self.assertEqual(report["issues"], "=3")
         # Indexes come back after the replaced table was dropped.
-        idx = {r[0] for r in self.dst.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        idx = {
+            r[0]
+            for r in self.dst.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
         self.assertTrue({"issues_title", "parents_key"} <= idx)
         self.assertEqual(self.dst.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -186,7 +200,9 @@ class TestKeptChildOfRecreatedParent(unittest.TestCase):
         self.dst = sqlite3.connect(":memory:", isolation_level=None)
         for c in (self.src, self.dst):
             c.executescript(GUARDED)
-            c.executescript("INSERT INTO models VALUES ('m1', 'one'); INSERT INTO notes VALUES (1, 'm1', 'n1');")
+            c.executescript(
+                "INSERT INTO models VALUES ('m1', 'one'); INSERT INTO notes VALUES (1, 'm1', 'n1');"
+            )
         self.src.executescript(
             "UPDATE models SET name = 'one!' WHERE id = 'm1';"
             "INSERT INTO models VALUES ('m2', 'two'); INSERT INTO notes VALUES (2, 'm2', 'n2');"
@@ -207,8 +223,13 @@ class TestKeptChildOfRecreatedParent(unittest.TestCase):
         for t in ("models", "notes"):
             self.assertEqual(rows(self.dst, t), rows(self.src, t), t)
         sql = self.d1.imports[-1]
-        self.assertLess(sql.index('DROP TABLE IF EXISTS "notes"'), sql.index('DROP TABLE IF EXISTS "models"'))
-        self.assertLess(sql.index('INSERT INTO "models"'), sql.index('INSERT INTO "notes"'))
+        self.assertLess(
+            sql.index('DROP TABLE IF EXISTS "notes"'),
+            sql.index('DROP TABLE IF EXISTS "models"'),
+        )
+        self.assertLess(
+            sql.index('INSERT INTO "models"'), sql.index('INSERT INTO "notes"')
+        )
         self.assertEqual(self.dst.execute("PRAGMA foreign_key_check").fetchall(), [])
 
 

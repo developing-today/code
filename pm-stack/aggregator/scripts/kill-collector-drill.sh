@@ -239,8 +239,8 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
   if [ "$OUTCOME" = "passed" ]; then
     gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — kill-collector** (queue task 2667, first slice of this issue, epic #$EPIC)
 
-- Paused pm-core's in-process fleet-feed scheduler on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 10-minute `FEED_STALE_MS` (#1148, two collector cadences) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
-- Collector restored by removing the pause file; restoration was confirmed via `/api/health` after an in-process tick: feed fresh again.
+- Paused pm-core's in-process fleet-feed scheduler on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 10-minute $(FEED_STALE_MS) (#1148, two collector cadences) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
+- Collector restored by removing the pause file; restoration was confirmed via $(/api/health) after an in-process tick: feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on laptop host amd per run." >/dev/null 2>&1 &&
       log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
   else

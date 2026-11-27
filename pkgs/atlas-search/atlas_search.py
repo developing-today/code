@@ -133,6 +133,7 @@ def ceiling_name(value):
     """Map a canonical ceiling name to its legacy spelling; pass others through."""
     return SENS_CANONICAL.get(value, value)
 
+
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",
     "hosted-per-user": "personal",
@@ -680,7 +681,9 @@ class Filters:
         self.projects = split_csv(getattr(args, "project", None))
         self.clients = split_csv(getattr(args, "client", None))
         self.context = getattr(args, "context", "local-owner")
-        caller_ceiling = ceiling_name(getattr(args, "max_sensitivity", "secret-bearing"))
+        caller_ceiling = ceiling_name(
+            getattr(args, "max_sensitivity", "secret-bearing")
+        )
         if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
         self.max_sensitivity = caller_ceiling
