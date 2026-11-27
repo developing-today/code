@@ -227,21 +227,7 @@ jobs:
           url="https://pm-console-edge.${sub}.workers.dev/console/health"
           want="$GITHUB_SHA"
           for _ in $(seq 1 20); do
-            got="$(curl -fsS --max-time 10 "$url" | python3 -c '
-import json, sys, datetime
-d = json.load(sys.stdin)
-if not (d.get("ok") and d.get("edge") and d.get("version") == sys.argv[1]):
-    print("")
-else:
-    try:
-        deployed = datetime.datetime.fromisoformat(str(d.get("deployedAt")).replace("Z", "+00:00"))
-        age = int(d.get("ageSeconds"))
-        now = datetime.datetime.now(datetime.timezone.utc)
-        expected = int((now - deployed).total_seconds())
-        print(sys.argv[1] if 0 <= age and abs(age - expected) <= 5 and deployed <= now else "")
-    except (ValueError, TypeError):
-        print("")
-' "$want" 2>/dev/null || true)"
+            got="$(curl -fsS --max-time 10 "$url" | python3 pm-stack/console/edge/check-deployed-age.py "$want" 2>/dev/null || true)"
             if [ "$got" = "$want" ]; then
               echo "pm-console-edge answers as ${want} with a truthful deployed age." >> "$GITHUB_STEP_SUMMARY"
               exit 0
