@@ -1472,6 +1472,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/id_publication_conformance.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
@@ -1503,9 +1504,10 @@
       "id": "pmo.contract-conformance",
       "paths": [
         "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
-        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**",
+        ".github/scripts/test_pmo_projector_selection.py"
       ],
-      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "invocation": "python3 -I .github/scripts/test_pmo_projector_selection.py -v; cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance; python3 -I .github/scripts/pmo-contract-conformance.py run-projector pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/manifest.json, reported per family by .github/scripts/pmo-contract-conformance.py",
       "venue": {
         "workflow": ".github/workflows/pmo-contract-conformance.yml",
         "job_step": "pmo-contract-conformance / Run the conformance target",

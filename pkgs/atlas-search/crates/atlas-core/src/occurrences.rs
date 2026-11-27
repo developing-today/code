@@ -145,8 +145,9 @@ pub fn lookup_by_hash(
                 )));
             };
             // Fail-closed: unrecognized sensitivity -> SecretBearing (excluded by caller_ceiling)
+            // Published occurrence labels dual-read canonical spellings (#13506 stage 2).
             let chunk_sensitivity =
-                Sensitivity::from_name(chunk_sens).unwrap_or(Sensitivity::SecretBearing);
+                Sensitivity::from_published_name(chunk_sens).unwrap_or(Sensitivity::SecretBearing);
             if chunk_sensitivity > caller_ceiling {
                 // This occurrence references a chunk above the caller's ceiling — withhold.
                 continue;

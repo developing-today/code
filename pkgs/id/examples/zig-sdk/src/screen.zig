@@ -338,12 +338,12 @@ pub fn boxEdge(alloc: std.mem.Allocator, w: u64, title: []const u8) ![]u8 {
     for (0..@intCast(w - 2)) |_| try out.append(alloc, '-');
     try out.append(alloc, '+');
     if (w < 4 or title.len == 0) return out.toOwnedSlice(alloc);
-    const label = fit(title, w - 3).text;
-    const tail = out.items[2 + label.len ..];
+    const fitted = fit(title, w - 3);
+    const tail = out.items[2 + @as(usize, @intCast(fitted.columns)) ..];
     const kept = try alloc.dupe(u8, tail);
     defer alloc.free(kept);
     out.shrinkRetainingCapacity(2);
-    try out.appendSlice(alloc, label);
+    try out.appendSlice(alloc, fitted.text);
     try out.appendSlice(alloc, kept);
     return out.toOwnedSlice(alloc);
 }
@@ -712,6 +712,20 @@ test "screen: box_edge writes the title over the top edge" {
     try testing.expectEqualStrings("+-too+", try boxEdge(alloc, 6, "toolong"));
     try testing.expectEqualStrings("+--+", try boxEdge(alloc, 4, ""));
     try testing.expectEqualStrings("", try boxEdge(alloc, 1, "x"));
+    // A multibyte title occupies one column per scalar, not one per
+    // UTF-8 byte: width 8 with "é" keeps the 8-column border (#16076).
+    try testing.expectEqualStrings("+-é----+", try boxEdge(alloc, 8, "é"));
+    try testing.expectEqualStrings("+-é+", try boxEdge(alloc, 4, "é"));
+    // Oracle: scalar-column width and intact corners, independent of
+    // UTF-8 byte length, including titles clipped before the corner.
+    for ([_][]const u8{ "", "ascii", "é", "é界🙂", "é界🙂é界🙂" }) |title| {
+        for (2..20) |width| {
+            const edge = try boxEdge(alloc, @intCast(width), title);
+            try testing.expectEqual(width, charCount(edge));
+            try testing.expectEqual(@as(u8, '+'), edge[0]);
+            try testing.expectEqual(@as(u8, '+'), edge[edge.len - 1]);
+        }
+    }
 }
 
 test "screen: put_row and rule draw styled cells" {

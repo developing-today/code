@@ -772,6 +772,7 @@ ${
 export function sessionRecordLine(
   r: SessionRecord,
   act?: { actions?: DashAction[]; identities?: AuthorIdentity[] },
+  options?: { showActionsLink?: boolean },
 ): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
   const parent = r.parentId
@@ -789,11 +790,15 @@ export function sessionRecordLine(
   // #1156: live records carry the session action set on the merged
   // registry identity; historical records render no controls.
   const badges = actionBadgesHtml(act?.actions);
-  const controls =
-    act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
+  const live = sessionRecordIsLive(r);
+  const controls = act?.identities && live ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
+  const actionsLink =
+    options?.showActionsLink && live
+      ? ` <a class="session-actions-link" href="/sessions?id=${encodeURIComponent(r.id)}#${encodeURIComponent(r.id)}">manage →</a>`
+      : "";
   const provenance =
     r.provenance === "verified"
       ? `<span class="badge">verified identity</span>`
       : `<span class="badge">asserted-legacy — identity is a claim</span>`;
-  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}${actionsLink}</span>${controls}</div>`;
 }

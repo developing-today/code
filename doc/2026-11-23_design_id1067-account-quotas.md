@@ -202,3 +202,17 @@ in the transport adapter, sends participant input, and observes the guest
 fuel charge under that account in `GuestBurnSnapshot`; a capability-only
 session continues to charge the world bucket. The test also verifies the
 account is absent from the durable event and journal shapes.
+
+## 2026-11-27 Clarification: session account for guest rendering
+
+The same authenticated account context applies to guest `view` and
+`layout` calls made while serving a joined session, including its initial
+render, resize, and later redraws. The world actor installs the optional
+account only for each render call and restores its prior context before it
+handles another command. Direct world rendering without a session retains
+the existing caller-free behavior.
+
+**Verified when:** a sandbox-backed session test observes the initial view's
+fuel charge increasing the authenticated account's `GuestBurnSnapshot`
+bucket. The viewport path uses that same scoped context for layout and any
+layout-to-view fallback.

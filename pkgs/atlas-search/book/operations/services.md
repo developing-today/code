@@ -79,7 +79,7 @@ The Worker is the package in `pkgs/atlas-search/worker/`: name `atlas-search`, d
 
 Five public routes: `GET /health` (open, liveness only, returns `{ "status": "ok", "service": "atlas-search-worker" }`), `POST /v1/search`, `GET /v1/cache/inspect`, `POST /v1/cache/purge`, and `POST /mcp` — the one-tool MCP surface in [The Atlas MCP server](../reference/mcp.md). Everything else is a 404.
 
-Every route except `/health` is gated by one shared secret, named `GATE_TOKEN`, presented as `Authorization: Bearer &lt;token&gt;`. The same gate covers `/mcp`; there are no per-route, per-caller, or per-agent tokens, and a valid check yields a boolean and nothing else — every gated caller is the same identity to the Worker. The comparison is constant-time by construction (both tokens are SHA-256 digested and the digests XOR-folded). Missing or invalid gate: `401` with code `unauthorized`.
+Every route except `/health` is gated. REST routes use the shared `GATE_TOKEN`. `/mcp` uses the optional `AGENT_TOKENS` secret when configured: a JSON object maps stable agent ids to distinct bearer tokens, and the Worker derives `agent_id` from the matching credential (never from a request field or header). With that map configured, the shared token is not accepted on `/mcp`; without it, the legacy `GATE_TOKEN` resolves to `hosted-per-user`. Token comparisons hash both values and XOR-fold the digests. Valid MCP searches emit a structured Worker log event with the authenticated agent id, query SHA-256, k, status, and cache outcome; raw query text is not logged. Per-agent backend ceilings and corpus scoping are not implemented by this slice.
 
 ### Bindings, variables, and secrets (names only)
 
@@ -94,7 +94,8 @@ Secrets are set with `wrangler secret put` or uploaded with the new version at d
 
 | Secret name                                 | Purpose                                                                                                                                                               |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GATE_TOKEN`                                | The inbound bearer gate above                                                                                                                                         |
+| `GATE_TOKEN`                                | The inbound bearer gate for REST routes and the legacy MCP fallback                                                                                                  |
+| `AGENT_TOKENS`                              | Optional JSON secret object mapping agent ids to distinct MCP bearer tokens; when set, disables the shared-token MCP fallback                                         |
 | `SERVICE_TOKEN`                             | The service's `cf-worker` client token (service-side cap `personal`), presented as a bearer on every service call                                                     |
 | `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` | The Cloudflare Access service token for `atlas-search.security.cab`, presented as the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers on every service call |
 

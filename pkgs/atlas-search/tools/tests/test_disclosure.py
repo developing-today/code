@@ -51,7 +51,7 @@ class DisclosureClassificationTests(unittest.TestCase):
             atlas_search.effective_sensitivity_ceiling("unknown", "secret-bearing"),
             "shareable",
         )
-        for label in (None, "", "internal", "Shareable"):
+        for label in (None, "", "unknown-rung", "Shareable"):
             with self.subTest(label=label):
                 self.assertFalse(
                     atlas_search.disclosure_allows(label, "secret-bearing")
@@ -194,7 +194,24 @@ class DisclosureOutputTests(unittest.TestCase):
             context="hosted-per-user",
         )
         filters = atlas_search.Filters(args)
-        self.assertEqual(filters.allowed_sens, ["shareable", "personal"])
+        self.assertEqual(
+            filters.allowed_sens,
+            ["shareable", "public", "personal", "internal"],
+        )
+
+    def test_canonical_published_labels_are_read_at_their_own_boundary(self):
+        # Oracle: the ladder order; canonical aliases must admit exactly
+        # their own rung and every less-restricted rung.
+        for spelling, ceiling, allowed in (
+            ("public", "public", True),
+            ("internal", "internal", True),
+            ("private", "internal", False),
+            ("sensitive", "private", False),
+        ):
+            with self.subTest(spelling=spelling, ceiling=ceiling):
+                self.assertEqual(
+                    atlas_search.disclosure_allows(spelling, ceiling), allowed
+                )
 
     def test_full_message_is_returned_when_every_chunk_is_allowed(self):
         self.backend.execute("UPDATE v_chunk_sens SET sensitivity='shareable'", [])

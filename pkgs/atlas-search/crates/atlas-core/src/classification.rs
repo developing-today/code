@@ -71,11 +71,13 @@ impl ClassificationRecord {
         let sensitivity = raw_sensitivity
             .as_ref()
             .and_then(Json::as_str)
-            .and_then(Sensitivity::from_name)
+            .and_then(Sensitivity::from_published_name)
             .unwrap_or(Sensitivity::SecretBearing);
-        let invalid_sensitivity = raw_sensitivity
-            .as_ref()
-            .is_some_and(|v| v.as_str().and_then(Sensitivity::from_name).is_none());
+        let invalid_sensitivity = raw_sensitivity.as_ref().is_some_and(|v| {
+            v.as_str()
+                .and_then(Sensitivity::from_published_name)
+                .is_none()
+        });
         let disposition = match object.remove("disposition") {
             None => None,
             Some(v) => Some(match v.as_str() {
@@ -242,12 +244,16 @@ mod tests {
     }
 
     #[test]
-    fn strict_sensitivity_values_are_parsed_without_coercion() {
+    fn published_sensitivity_values_dual_read_without_coercion() {
         for (name, expected) in [
             ("shareable", Sensitivity::Shareable),
+            ("public", Sensitivity::Shareable),
             ("personal", Sensitivity::Personal),
+            ("internal", Sensitivity::Personal),
             ("local-only", Sensitivity::LocalOnly),
+            ("private", Sensitivity::LocalOnly),
             ("secret-bearing", Sensitivity::SecretBearing),
+            ("sensitive", Sensitivity::SecretBearing),
         ] {
             assert_eq!(record(name, "embed-1").sensitivity, expected, "{name}");
         }
