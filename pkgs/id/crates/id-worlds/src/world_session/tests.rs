@@ -1652,7 +1652,7 @@ mod tests {
         peer.say(serde_json::json!({"type":"chat","text": "still here"}))
             .await;
         let event = next_of_type(&mut peer, "event").await;
-        assert_eq!(event["event"]["kind"], "chat");
+        assert_eq!(event["event"]["kind"]["kind"], "chat");
         peer.close().await;
     }
 
