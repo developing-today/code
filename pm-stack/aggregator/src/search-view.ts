@@ -33,10 +33,10 @@ export interface SearchExtras {
 interface RegistrySearchIndex {
   /** Postings are appended in record order, so candidate traversal keeps
    * the registry's existing search-result order. */
-  postings: Map<string, number[]>;
-  /** Refs for the item-title enrichment stage, extracted with the same
-   * snapshot build rather than flat-mapped on every search request. */
-  refs: RefKey[];
+  postings: Map<string, Uint32Array>;
+  overflowRecords: number[];
+  postingEntries: number;
+  indexedRecords: number;
 }
 
 // Search snapshots are immutable: the live source replaces the registry
@@ -45,19 +45,29 @@ interface RegistrySearchIndex {
 // visiting every session on each request.
 const registrySearchIndexes = new WeakMap<SessionRecord[], RegistrySearchIndex>();
 const REGISTRY_SEARCH_GRAM_MAX = 3;
+export const REGISTRY_SEARCH_MAX_FIELD_CHARS = 2_048;
+export const REGISTRY_SEARCH_MAX_FIELDS_PER_RECORD = 512;
+export const REGISTRY_SEARCH_MAX_GRAMS_PER_RECORD = 4_096;
+export const REGISTRY_SEARCH_MAX_POSTING_ENTRIES = 8_000_000;
+export const REGISTRY_SEARCH_MAX_GRAM_KEYS = 150_000;
 
-function sessionSearchFields(record: SessionRecord): unknown[] {
-  return [
-    record.id,
-    record.label,
-    record.title,
-    record.agentId,
-    record.agentLabel,
-    record.status,
-    record.model,
-    record.directory,
-    ...record.taskRefs,
-  ];
+function* sessionSearchFields(record: SessionRecord): Generator<unknown> {
+  yield record.id;
+  yield record.label;
+  yield record.title;
+  yield record.agentId;
+  yield record.agentLabel;
+  yield record.status;
+  yield record.model;
+  yield record.directory;
+  yield* record.taskRefs;
+}
+
+function sessionMatchesQuery(query: string, record: SessionRecord): boolean {
+  for (const field of sessionSearchFields(record)) {
+    if (typeof field === "string" && field.toLowerCase().includes(query)) return true;
+  }
+  return false;
 }
 
 function grams(value: string, size: number): Set<string> {
@@ -66,44 +76,95 @@ function grams(value: string, size: number): Set<string> {
   return found;
 }
 
-function addGrams(value: string, size: number, found: Set<string>): void {
-  for (let start = 0; start + size <= value.length; start++) found.add(value.slice(start, start + size));
+function addGrams(value: string, size: number, found: Set<string>, limit: number): boolean {
+  for (let start = 0; start + size <= value.length; start++) {
+    found.add(value.slice(start, start + size));
+    if (found.size > limit) return false;
+  }
+  return true;
 }
 
 function registrySearchIndex(records: SessionRecord[]): RegistrySearchIndex {
   const cached = registrySearchIndexes.get(records);
   if (cached) return cached;
 
-  const postings = new Map<string, number[]>();
-  const refs = new Set<RefKey>();
+  const mutablePostings = new Map<string, number[]>();
+  const overflowRecords: number[] = [];
+  let postingEntries = 0;
+  let indexedRecords = 0;
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
     if (!record) continue;
-    for (const ref of record.taskRefs) if (isValidRef(ref)) refs.add(ref);
     const recordGrams = new Set<string>();
+    let overflow = false;
+    let fields = 0;
     for (const field of sessionSearchFields(record)) {
+      if (++fields > REGISTRY_SEARCH_MAX_FIELDS_PER_RECORD) {
+        overflow = true;
+        break;
+      }
       if (typeof field !== "string") continue;
       const value = field.toLowerCase();
-      for (let size = 1; size <= REGISTRY_SEARCH_GRAM_MAX; size++) addGrams(value, size, recordGrams);
+      if (value.length > REGISTRY_SEARCH_MAX_FIELD_CHARS) {
+        overflow = true;
+        break;
+      }
+      for (let size = 1; size <= REGISTRY_SEARCH_GRAM_MAX; size++) {
+        if (!addGrams(value, size, recordGrams, REGISTRY_SEARCH_MAX_GRAMS_PER_RECORD)) {
+          overflow = true;
+          break;
+        }
+      }
+      if (overflow) break;
+    }
+    if (overflow) {
+      overflowRecords.push(index);
+      continue;
+    }
+    let newGramKeys = 0;
+    for (const gram of recordGrams) if (!mutablePostings.has(gram)) newGramKeys++;
+    if (
+      postingEntries + recordGrams.size > REGISTRY_SEARCH_MAX_POSTING_ENTRIES ||
+      mutablePostings.size + newGramKeys > REGISTRY_SEARCH_MAX_GRAM_KEYS
+    ) {
+      // Exact search falls back to this small index list for records that
+      // exceed the memory budget; long input never creates an unbounded index.
+      overflowRecords.push(index);
+      continue;
     }
     for (const gram of recordGrams) {
-      const posting = postings.get(gram);
+      const posting = mutablePostings.get(gram);
       if (posting) posting.push(index);
-      else postings.set(gram, [index]);
+      else mutablePostings.set(gram, [index]);
     }
+    postingEntries += recordGrams.size;
+    indexedRecords++;
   }
-  const built = { postings, refs: [...refs] };
+  const postings = new Map<string, Uint32Array>();
+  for (const [gram, posting] of mutablePostings) {
+    postings.set(gram, Uint32Array.from(posting));
+    mutablePostings.delete(gram);
+  }
+  const built = { postings, overflowRecords, postingEntries, indexedRecords };
   registrySearchIndexes.set(records, built);
   return built;
 }
 
-/** Distinct, validated session refs for item-title enrichment. Cached
- * with the search index so large registries are not flat-mapped per query. */
-export function registrySearchRefs(records: SessionRecord[]): RefKey[] {
-  return registrySearchIndex(records).refs;
+/** Refs from matching registry rows only; a query no longer flat-maps
+ * taskRefs across every session just to resolve item-title enrichment. */
+export function registrySearchRefs(records: SessionRecord[], rawQuery: string): RefKey[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return [];
+  const refs = new Set<RefKey>();
+  for (const index of registryCandidateIndices(query, records)) {
+    const record = records[index];
+    if (!record || !sessionMatchesQuery(query, record)) continue;
+    for (const ref of record.taskRefs) if (isValidRef(ref)) refs.add(ref);
+  }
+  return [...refs];
 }
 
-function containsSorted(posting: number[], value: number): boolean {
+function containsSorted(posting: Uint32Array, value: number): boolean {
   let low = 0;
   let high = posting.length - 1;
   while (low <= high) {
@@ -122,11 +183,34 @@ function registryCandidateIndices(query: string, records: SessionRecord[]): numb
   const size = Math.min(REGISTRY_SEARCH_GRAM_MAX, query.length);
   const queryGrams = size === query.length ? [query] : [...grams(query, size)];
   const postings = queryGrams.map((gram) => index.postings.get(gram));
-  if (postings.some((posting) => !posting)) return [];
-  const available = postings as number[][];
-  const seed = available.reduce((smallest, posting) => (posting.length < smallest.length ? posting : smallest));
-  const remaining = available.filter((posting) => posting !== seed);
-  return remaining.length ? seed.filter((candidate) => remaining.every((posting) => containsSorted(posting, candidate))) : seed;
+  let indexed: number[] = [];
+  if (!postings.some((posting) => !posting)) {
+    const available = postings as Uint32Array[];
+    const seed = available.reduce((smallest, posting) => (posting.length < smallest.length ? posting : smallest));
+    const remaining = available.filter((posting) => posting !== seed);
+    indexed = Array.from(seed).filter((candidate) =>
+      remaining.every((posting) => containsSorted(posting, candidate)),
+    );
+  }
+  if (index.overflowRecords.length === 0) return indexed;
+  return [...new Set([...indexed, ...index.overflowRecords])].sort((a, b) => a - b);
+}
+
+export function registrySearchIndexStats(records: SessionRecord[]): {
+  indexedRecords: number;
+  overflowRecords: number;
+  postingEntries: number;
+  gramKeys: number;
+  estimatedPostingBytes: number;
+} {
+  const index = registrySearchIndex(records);
+  return {
+    indexedRecords: index.indexedRecords,
+    overflowRecords: index.overflowRecords.length,
+    postingEntries: index.postingEntries,
+    gramKeys: index.postings.size,
+    estimatedPostingBytes: index.postingEntries * Uint32Array.BYTES_PER_ELEMENT,
+  };
 }
 
 /** #14060 slice 2: search results are paginated and capped so a
@@ -271,19 +355,7 @@ export function searchWork(
     const record = registry[recordIndex];
     if (!record) continue;
     const title = record.label || record.title || record.id;
-    if (
-      includesQuery(query, [
-        record.id,
-        record.label,
-        record.title,
-        record.agentId,
-        record.agentLabel,
-        record.status,
-        record.model,
-        record.directory,
-        ...record.taskRefs,
-      ])
-    ) {
+    if (sessionMatchesQuery(query, record)) {
       results.push({
         kind: "registry",
         id: record.id,

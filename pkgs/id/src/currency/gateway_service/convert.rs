@@ -79,6 +79,22 @@
 //! 60-second lifetime; a restart drops them, and a conversion
 //! naming a dropped quote is refused as an unknown quote before
 //! any write.
+//!
+//! **Conversion receipts** (#15830, Phase G of #5536; design
+//! #2063 §3 invariants 10–11). A conversion answers with the
+//! generic signed [`Receipt`](crate::currency::gateway_poc::Receipt)
+//! like every other op — that shared wire format is unchanged.
+//! Alongside it, [`GatewayService::conversion_receipt`] builds a
+//! [`ConversionReceipt`] from the stored intent: the conversion
+//! id, the authorisation id and exact offer version it executed
+//! under, the quote id when any, every leg's transfer id with its
+//! role, both currencies and ledgers, the three amounts, and the
+//! outcome — so a posted or reversed conversion is auditable from
+//! its receipt to every ledger leg without reading the intent
+//! log's internals. A conversion executed as a **reversal** is a
+//! separate conversion whose presentation names the original
+//! conversion id ([`ConversionPresentation::reversal_of`]); the
+//! reference is carried on the record and the receipt.
 
 use std::collections::BTreeMap;
 
@@ -88,7 +104,10 @@ use id_currency_registry::{
 use serde::{Deserialize, Serialize};
 
 use super::{GatewayIntent, GatewayService, IntentState, IntentStore, ServiceError, decode_key};
-use crate::conversion::{ConversionBatchRequest, build_conversion_batch, fee_amount};
+use crate::conversion::{
+    CODE_CONVERSION_DESTINATION, CODE_CONVERSION_FEE, CODE_CONVERSION_SOURCE,
+    ConversionBatchRequest, build_conversion_batch, fee_amount,
+};
 use crate::currency::IssuerId;
 use crate::currency::conversion::{
     AccountStatus, BindingRecord, ConversionControl, ConversionQuote, ConversionSubmission, LpTier,
@@ -119,6 +138,13 @@ pub struct ConversionPresentation {
     /// A quote issued by [`GatewayService::quote_convert`]; when
     /// present the conversion executes exactly its amounts.
     pub quote_id: Option<u128>,
+    /// The conversion this one reverses, when it is executed as
+    /// a reversal (design invariant 10): a reversal is a separate
+    /// conversion, and its record and receipt name the original
+    /// conversion's id so the pair is auditable in both
+    /// directions. The reference is declared by the presenter; it
+    /// is an audit link, not an authorization input.
+    pub reversal_of: Option<u128>,
 }
 
 /// The terms of one conversion, kept on its intent so a restart
@@ -146,6 +172,178 @@ pub struct ConversionRecord {
     pub fee: u128,
     /// Destination amount, in destination raw units.
     pub amount_out: u128,
+    /// The conversion this one reverses, when it was executed as
+    /// a reversal (design invariant 10). Absent on records stored
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reversal_of: Option<u128>,
+}
+
+/// The role of one leg of a conversion chain, in chain order:
+/// the caller's principal moves to the LP on the source leg, the
+/// fee (when any) is paid on its own leg, and the LP pays the
+/// caller on the destination leg.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversionLegRole {
+    /// Caller → LP, source currency, `amount_in`.
+    Source,
+    /// Caller → the source issuer's fee account, `fee`.
+    Fee,
+    /// LP → caller, destination currency, `amount_out`.
+    Destination,
+}
+
+/// One ledger leg of a conversion, as its [`ConversionReceipt`]
+/// names it: enough to look the transfer up on its ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionLegRef {
+    /// The leg's role in the chain.
+    pub role: ConversionLegRole,
+    /// The leg's ledger transfer id.
+    pub transfer_id: u128,
+    /// The ledger the leg sits on.
+    pub ledger_id: u32,
+    /// The leg's amount, in its ledger's raw units.
+    pub amount: u128,
+}
+
+/// The outcome of a conversion, as its [`ConversionReceipt`]
+/// reports it: the intent's lifecycle state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversionOutcome {
+    /// Written ahead, not yet finalized (a lost answer recovery
+    /// has not resolved it).
+    Recorded,
+    /// Every leg is on the ledger.
+    Posted,
+    /// The cluster refused the chain; nothing posted.
+    Failed,
+}
+
+/// The conversion-specific receipt body (#15830, Phase G of
+/// #5536; design #2063 §3 invariant 11): everything a receipt
+/// holder needs to audit one conversion from the receipt to every
+/// ledger leg. It accompanies the generic signed
+/// [`Receipt`](crate::currency::gateway_poc::Receipt) a conversion
+/// answers with — that shared wire format is unchanged — and is
+/// rebuilt deterministically from the conversion's stored intent,
+/// so it reads identically on the posting path, on a replay, and
+/// after a restart.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionReceipt {
+    /// The conversion id (the intent's idempotency id, stamped
+    /// in `user_data_128` on every leg).
+    pub conversion_id: u128,
+    /// The LP's id (hex of its key).
+    pub lp: String,
+    /// The authorisation the conversion consumed.
+    pub authorisation_id: u128,
+    /// The exact offer (authorisation) version it executed under.
+    pub authorisation_version: u64,
+    /// The quote it executed under, if any.
+    pub quote_id: Option<u128>,
+    /// Every leg of the chain, in chain order, each with its
+    /// transfer id, ledger and amount.
+    pub legs: Vec<ConversionLegRef>,
+    /// The source registry `currency_id`.
+    pub source_currency_id: Option<String>,
+    /// The source graph currency key (hex).
+    pub source_currency_key: Option<String>,
+    /// The source ledger.
+    pub source_ledger_id: Option<u32>,
+    /// The destination registry `currency_id`.
+    pub dest_currency_id: String,
+    /// The destination graph currency key (hex).
+    pub dest_currency_key: String,
+    /// The destination ledger.
+    pub dest_ledger_id: u32,
+    /// Source principal, in source raw units.
+    pub amount_in: u128,
+    /// Source fee, in source raw units.
+    pub fee: u128,
+    /// Destination amount, in destination raw units.
+    pub amount_out: u128,
+    /// The conversion's outcome.
+    pub outcome: ConversionOutcome,
+    /// The conversion this one reverses, when it was executed as
+    /// a reversal (design invariant 10).
+    pub reversal_of: Option<u128>,
+}
+
+/// The response to a conversion request: the unchanged generic
+/// signed gateway receipt plus the conversion-specific audit body.
+#[derive(Clone, Debug)]
+pub struct ConversionResponse {
+    /// The generic gateway receipt, signed with the gateway key.
+    pub signed_receipt: SignedReceipt,
+    /// The conversion terms and every ledger leg, returned alongside
+    /// the signed receipt without changing the shared wire format.
+    pub conversion_receipt: ConversionReceipt,
+}
+
+/// The role a stored leg plays in its chain: the leg's transfer
+/// code names it (the batch builder stamps one code per role);
+/// the positional reading of the chain (source first, destination
+/// last, fee between) covers a leg whose code predates the codes.
+fn leg_role(code: u16, index: usize, count: usize) -> ConversionLegRole {
+    match code {
+        CODE_CONVERSION_SOURCE => ConversionLegRole::Source,
+        CODE_CONVERSION_FEE => ConversionLegRole::Fee,
+        CODE_CONVERSION_DESTINATION => ConversionLegRole::Destination,
+        _ if index == 0 => ConversionLegRole::Source,
+        _ if index + 1 == count => ConversionLegRole::Destination,
+        _ => ConversionLegRole::Fee,
+    }
+}
+
+impl GatewayIntent {
+    /// The [`ConversionReceipt`] this intent answers for, when it
+    /// records a conversion: the intent's terms and stored chain,
+    /// read as the Phase G receipt (module docs). `None` for
+    /// every other op, and for a conversion intent whose terms
+    /// were never recorded.
+    #[must_use]
+    pub fn conversion_receipt(&self) -> Option<ConversionReceipt> {
+        let record = self.conversion.as_ref()?;
+        let count = self.legs.len();
+        let legs = self
+            .legs
+            .iter()
+            .enumerate()
+            .map(|(index, leg)| ConversionLegRef {
+                role: leg_role(leg.code, index, count),
+                transfer_id: leg.id,
+                ledger_id: leg.ledger,
+                amount: leg.amount,
+            })
+            .collect();
+        let outcome = match self.state {
+            IntentState::Recorded => ConversionOutcome::Recorded,
+            IntentState::Posted => ConversionOutcome::Posted,
+            IntentState::Failed => ConversionOutcome::Failed,
+        };
+        Some(ConversionReceipt {
+            conversion_id: self.idempotency,
+            lp: record.lp.clone(),
+            authorisation_id: record.authorisation_id,
+            authorisation_version: record.authorisation_version,
+            quote_id: record.quote_id,
+            legs,
+            source_currency_id: self.currency_id.clone(),
+            source_currency_key: self.currency_key.clone(),
+            source_ledger_id: self.ledger_id,
+            dest_currency_id: record.dest_currency_id.clone(),
+            dest_currency_key: record.dest_currency_key.clone(),
+            dest_ledger_id: record.dest_ledger_id,
+            amount_in: record.amount_in,
+            fee: record.fee,
+            amount_out: record.amount_out,
+            outcome,
+            reversal_of: record.reversal_of,
+        })
+    }
 }
 
 /// The production [`ConversionControl`] binding: the seam read
@@ -266,11 +464,31 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         self.conversions.usage().used_volume(lp, authorisation_id)
     }
 
+    /// The [`ConversionReceipt`] for a recorded conversion, by
+    /// conversion id: the Phase G audit read (module docs).
+    /// `Ok(None)` when no intent carries that id, or the intent
+    /// is not a conversion.
+    ///
+    /// # Errors
+    ///
+    /// An intent-store read failure.
+    pub fn conversion_receipt(
+        &self,
+        conversion_id: u128,
+    ) -> Result<Option<ConversionReceipt>, ServiceError> {
+        Ok(self
+            .intents
+            .get(conversion_id)
+            .map_err(ServiceError::IntentStore)?
+            .and_then(|intent| intent.conversion_receipt()))
+    }
+
     /// Run one signed `convert` request through the pipeline
     /// (module docs): verify, resolve, answer from the intent
     /// store if the request already has a recorded outcome,
     /// authorize, verify the presented authorisation, then
-    /// write ahead and submit the linked chain.
+    /// write ahead and submit the linked chain. Returns the generic
+    /// signed receipt together with the conversion-specific audit body.
     ///
     /// # Errors
     ///
@@ -286,7 +504,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         body: &[u8],
         now: u64,
         presented: &ConversionPresentation,
-    ) -> Result<SignedReceipt, ServiceError> {
+    ) -> Result<ConversionResponse, ServiceError> {
         let verified = verify_envelope(&mut self.replays, signed, body, now)?;
         let CurrencyOp::Convert(op) = &verified.request.op else {
             return Err(ServiceError::Unsupported(
@@ -303,14 +521,42 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             .get(idempotency)
             .map_err(ServiceError::IntentStore)?
         {
-            return self.replay(intent, None);
+            let signed_receipt = self.replay(intent, None)?;
+            let conversion_receipt = self
+                .intents
+                .get(idempotency)
+                .map_err(ServiceError::IntentStore)?
+                .and_then(|intent| intent.conversion_receipt())
+                .ok_or_else(|| {
+                    ServiceError::IntentStore(format!(
+                        "conversion intent {idempotency:032x} has no conversion receipt"
+                    ))
+                })?;
+            return Ok(ConversionResponse {
+                signed_receipt,
+                conversion_receipt,
+            });
         }
         self.authorize_convert(&account, &verified.request.op)?;
         let authorized = Authorized {
             account,
             idempotency,
         };
-        self.convert(&authorized, op, presented, now)
+        let signed_receipt = self.convert(&authorized, op, presented, now)?;
+        let conversion_receipt = self
+            .intents
+            .get(idempotency)
+            .map_err(ServiceError::IntentStore)?
+            .and_then(|intent| intent.conversion_receipt())
+            .ok_or_else(|| {
+                ServiceError::IntentStore(format!(
+                    "posted conversion {idempotency:032x} has no conversion receipt"
+                ))
+            })?;
+        Ok(ConversionResponse {
+            signed_receipt,
+            conversion_receipt,
+        })
     }
 
     /// Issue a quote for a `convert` request (#3802): the signed
@@ -509,6 +755,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             amount_in: amounts.amount_in,
             fee: amounts.fee,
             amount_out: amounts.amount_out,
+            reversal_of: presented.reversal_of,
         };
         let mut intent = GatewayIntent {
             idempotency: authorized.idempotency,
