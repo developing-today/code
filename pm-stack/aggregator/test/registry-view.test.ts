@@ -140,6 +140,7 @@ describe("/sessions render with a view", () => {
     const html = renderSessions(page.records, fixtureSource().provenance(), undefined, { identities }, page);
     expect(html.match(/class="card session-record-line"/g)?.length).toBe(100);
     expect(html.match(/class="aform"/g)?.length ?? 0).toBe(0);
+    expect(html.match(/class="session-actions-link"/g)?.length).toBe(100);
     expect(html).toContain('href="/sessions?id=ses_live_0#ses_live_0"');
 
     const deepLink = queryRegistry(liveRecords, q("id=ses_live_119"), NOW);
