@@ -110,8 +110,7 @@ test("migration 0002 creates identity_link + identity_link_event with the sectio
     value: string;
   };
   assert.equal(version.value, "2");
-  const cols = (t: string) =>
-    (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name);
+  const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name);
   assert.deepEqual(cols("identity_link"), [
     "link_id",
     "account_id",
@@ -162,10 +161,10 @@ test("link ceremony: session + new-door proof links a door; resolve finds the ac
 
 test("link refusals: bad door, unknown account, foreign or superseded actor binding, duplicate", () => {
   const { db, sql, seq } = setup();
-  assert.deepEqual(
-    linkDoor(sql, SESSION, { door: "carrier-pigeon", providerSub: "x" }, deps(seq, T0)),
-    { ok: false, reason: "bad_door" },
-  );
+  assert.deepEqual(linkDoor(sql, SESSION, { door: "carrier-pigeon", providerSub: "x" }, deps(seq, T0)), {
+    ok: false,
+    reason: "bad_door",
+  });
   assert.deepEqual(
     linkDoor(
       sql,
@@ -177,26 +176,21 @@ test("link refusals: bad door, unknown account, foreign or superseded actor bind
   );
   // A binding of ANOTHER account performs no ceremony here.
   assert.deepEqual(
-    linkDoor(
-      sql,
-      { accountId: ACCOUNT, bindingId: BINDING2 },
-      { door: "github", providerSub: "x" },
-      deps(seq, T0),
-    ),
+    linkDoor(sql, { accountId: ACCOUNT, bindingId: BINDING2 }, { door: "github", providerSub: "x" }, deps(seq, T0)),
     { ok: false, reason: "actor_not_account_binding" },
   );
   // Nor does the account's own binding once superseded.
   db.prepare("UPDATE binding SET status = 'superseded' WHERE binding_id = ?").run(BINDING2);
-  assert.deepEqual(
-    linkDoor(sql, SESSION2, { door: "github", providerSub: "x" }, deps(seq, T0)),
-    { ok: false, reason: "actor_not_account_binding" },
-  );
+  assert.deepEqual(linkDoor(sql, SESSION2, { door: "github", providerSub: "x" }, deps(seq, T0)), {
+    ok: false,
+    reason: "actor_not_account_binding",
+  });
   const first = linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
   assert.equal(first.ok, true);
-  assert.deepEqual(
-    linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T1)),
-    { ok: false, reason: "already_linked" },
-  );
+  assert.deepEqual(linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T1)), {
+    ok: false,
+    reason: "already_linked",
+  });
   // Refusals wrote nothing: exactly one link row, one event.
   assert.equal(listIdentityLinks(sql, ACCOUNT).length, 1);
   assert.equal(events(db).length, 1);
@@ -279,10 +273,10 @@ test("a door-identity belongs to one account ever, even after unlink", () => {
   linkDoor(sql, SESSION, { door: "google", providerSub: "go-7" }, deps(seq, T0));
   linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
   unlinkDoor(sql, SESSION, "google", deps(seq, T1));
-  assert.deepEqual(
-    linkDoor(sql, SESSION2, { door: "google", providerSub: "go-7" }, deps(seq, T2)),
-    { ok: false, reason: "door_identity_claimed" },
-  );
+  assert.deepEqual(linkDoor(sql, SESSION2, { door: "google", providerSub: "go-7" }, deps(seq, T2)), {
+    ok: false,
+    reason: "door_identity_claimed",
+  });
 });
 
 test("relink after unlink reactivates the retained history row", () => {
@@ -346,10 +340,7 @@ test("DB continuity: tenant rows are untouched across a relink", () => {
 
 /** Wrap a seam so event inserts throw per a script over the
  * insert attempts seen through this wrapper (1-based). */
-function failEventInserts(
-  inner: IdentityLinkSql,
-  failOn: (attempt: number) => boolean,
-): IdentityLinkSql {
+function failEventInserts(inner: IdentityLinkSql, failOn: (attempt: number) => boolean): IdentityLinkSql {
   let attempts = 0;
   return {
     exec(query: string, ...params: (string | null)[]) {
@@ -415,10 +406,7 @@ test("atomicity: a failed audit insert on unlink leaves the door active; the ret
   const badSql = failEventInserts(sql, () => true);
   assert.throws(() => unlinkDoor(badSql, SESSION, "github", deps(seq, T1)), /injected audit/);
   assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
-  assert.equal(
-    listIdentityLinks(sql, ACCOUNT).find((l) => l.door === "github")!.unlinkedAt,
-    null,
-  );
+  assert.equal(listIdentityLinks(sql, ACCOUNT).find((l) => l.door === "github")!.unlinkedAt, null);
   assert.equal(events(db).length, 2);
   const retry = unlinkDoor(sql, SESSION, "github", deps(seq, T1));
   assert.equal(retry.ok, true);

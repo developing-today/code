@@ -112,7 +112,11 @@ test("client-encrypted blobs dedupe only per user (§5.1/§7 oracle)", async () 
   assert.ok(bucket.objects.has(`cse/${B}/${hash}`));
 
   const putA2 = await doA.fetch(routed("/v1/blobs", A, "1", { method: "PUT", body: bytes }));
-  assert.equal(((await putA2.json()) as { deduped: boolean }).deduped, true, "A's own re-upload dedupes within A's scope");
+  assert.equal(
+    ((await putA2.json()) as { deduped: boolean }).deduped,
+    true,
+    "A's own re-upload dedupes within A's scope",
+  );
   assert.equal(bucket.objects.size, 2);
 
   assert.equal((await doA.fetch(routed("/v1/blobs/" + hash, A, "1"))).status, 200);

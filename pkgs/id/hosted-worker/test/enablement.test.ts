@@ -7,11 +7,7 @@ import {
   type EnablementConfig,
   type EnablementPlan,
 } from "../src/provisioning.ts";
-import {
-  createProductionEnablement,
-  requireProductionEnablement,
-  HOSTED_PRODUCTION_MODES,
-} from "../src/enablement.ts";
+import { createProductionEnablement, requireProductionEnablement, HOSTED_PRODUCTION_MODES } from "../src/enablement.ts";
 
 // Tests for the #3403 production enablement point: the place any
 // production hosted signup or migration path must pass through. The
@@ -66,10 +62,13 @@ test("a hand-built plan that copies the gate's fields is not a validated plan", 
     bucket: { binding: "BLOBS_US", bucketName: "user-blobs-us", jurisdiction: "us" },
   };
   assert.deepEqual(validateEnablement(US_CONFIG, US_EVIDENCE), forged);
-  assert.deepEqual(refusal(() => createProductionEnablement(forged, ["signup"])), {
-    code: "unvalidated_plan",
-    status: 503,
-  });
+  assert.deepEqual(
+    refusal(() => createProductionEnablement(forged, ["signup"])),
+    {
+      code: "unvalidated_plan",
+      status: 503,
+    },
+  );
 });
 
 test("a configuration object is not a validated plan", () => {
@@ -95,18 +94,18 @@ test("enablement rejects modes other than signup and migration", () => {
 
 test("duplicate modes collapse to the canonical order", () => {
   const plan = validateEnablement(US_CONFIG, US_EVIDENCE);
-  assert.deepEqual(createProductionEnablement(plan, ["migration", "signup", "signup"]).modes, [
-    "signup",
-    "migration",
-  ]);
+  assert.deepEqual(createProductionEnablement(plan, ["migration", "signup", "signup"]).modes, ["signup", "migration"]);
 });
 
 test("with no enablement active, production signup and migration are both disabled", () => {
   for (const mode of HOSTED_PRODUCTION_MODES) {
-    assert.deepEqual(refusal(() => requireProductionEnablement(null, mode)), {
-      code: "production_disabled",
-      status: 503,
-    });
+    assert.deepEqual(
+      refusal(() => requireProductionEnablement(null, mode)),
+      {
+        code: "production_disabled",
+        status: 503,
+      },
+    );
     assert.equal(refusal(() => requireProductionEnablement(undefined, mode)).code, "production_disabled");
   }
 });
@@ -125,10 +124,13 @@ test("a mode that was not enabled is refused even when the other is", () => {
   const plan = validateEnablement(US_CONFIG, US_EVIDENCE);
   const signupOnly = createProductionEnablement(plan, ["signup"]);
   assert.equal(requireProductionEnablement(signupOnly, "signup"), signupOnly);
-  assert.deepEqual(refusal(() => requireProductionEnablement(signupOnly, "migration")), {
-    code: "mode_not_enabled",
-    status: 503,
-  });
+  assert.deepEqual(
+    refusal(() => requireProductionEnablement(signupOnly, "migration")),
+    {
+      code: "mode_not_enabled",
+      status: 503,
+    },
+  );
 });
 
 test("a gate-issued plan cannot be edited to widen what it enables", () => {

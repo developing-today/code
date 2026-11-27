@@ -178,9 +178,7 @@ const post = (ops: TenantOpsDO, path: string, actor: Actor | null, body?: Record
   call(ops, "POST", path, actor, body ?? {});
 
 function tenantRow(db: DatabaseSync, binding: string = BINDING) {
-  return db.prepare("SELECT * FROM tenant_db WHERE tenant_id = ?").get(binding) as
-    | Record<string, unknown>
-    | undefined;
+  return db.prepare("SELECT * FROM tenant_db WHERE tenant_id = ?").get(binding) as Record<string, unknown> | undefined;
 }
 
 /** Drive a tenant to `active` the §4 way; returns the provider. */
@@ -249,9 +247,9 @@ test("the §4 lifecycle, end to end, with two-phase deletion", async () => {
   assert.equal(row?.state, "deleted");
   assert.equal(row?.deleted_at, "2026-11-25T00:02:00.000Z");
 
-  const events = (
-    db.prepare("SELECT event FROM ops_journal ORDER BY seq").all() as { event: string }[]
-  ).map((r) => r.event);
+  const events = (db.prepare("SELECT event FROM ops_journal ORDER BY seq").all() as { event: string }[]).map(
+    (r) => r.event,
+  );
   assert.deepEqual(events, [
     "requested",
     "db_creating",
@@ -294,8 +292,11 @@ test("tenant operations read binding authority from the shared tenancy database"
   assert.equal(res.body.state, "requested");
   assert.equal(tenantRow(tenantStorage)?.state, "requested");
   assert.equal(
-    (centralTenancy.prepare("SELECT binding_id FROM binding WHERE binding_id = ?").get(BINDING) as { binding_id: string })
-      .binding_id,
+    (
+      centralTenancy.prepare("SELECT binding_id FROM binding WHERE binding_id = ?").get(BINDING) as {
+        binding_id: string;
+      }
+    ).binding_id,
     BINDING,
   );
 });
@@ -484,14 +485,65 @@ test("only the actors §4 names can perform each step", async () => {
     body?: Record<string, unknown>;
     lands: string;
   }[] = [
-    { path: "/v1/tenant/request", doorstep: null, forbidden: [OPERATOR, PLATFORM, ABUSE], legit: OWNER, body: { jurisdiction: "us", at: T0 }, lands: "requested" },
-    { path: "/v1/tenant/provision", doorstep: "requested", forbidden: [OWNER, OPERATOR, ABUSE], legit: PLATFORM, lands: "db_ready" },
-    { path: "/v1/tenant/bootstrap-observed", doorstep: "db_ready", forbidden: [OWNER, OPERATOR], legit: PLATFORM, body: {}, lands: "db_ready" },
-    { path: "/v1/tenant/activate", doorstep: "db_ready", forbidden: [OWNER, OPERATOR, CEILING], legit: PLATFORM, lands: "active" },
-    { path: "/v1/tenant/suspend", doorstep: "active", forbidden: [OWNER, PLATFORM], legit: OPERATOR, lands: "suspended" },
-    { path: "/v1/tenant/resume", doorstep: "suspended", forbidden: [OWNER, PLATFORM, ABUSE], legit: OPERATOR, lands: "active" },
-    { path: "/v1/tenant/export-only", doorstep: "active", forbidden: [PLATFORM, ABUSE], legit: OWNER, lands: "export_only" },
-    { path: "/v1/tenant/delete", doorstep: "export_only", forbidden: [OPERATOR, PLATFORM, CEILING], legit: OWNER, body: { at: T0 }, lands: "deleting" },
+    {
+      path: "/v1/tenant/request",
+      doorstep: null,
+      forbidden: [OPERATOR, PLATFORM, ABUSE],
+      legit: OWNER,
+      body: { jurisdiction: "us", at: T0 },
+      lands: "requested",
+    },
+    {
+      path: "/v1/tenant/provision",
+      doorstep: "requested",
+      forbidden: [OWNER, OPERATOR, ABUSE],
+      legit: PLATFORM,
+      lands: "db_ready",
+    },
+    {
+      path: "/v1/tenant/bootstrap-observed",
+      doorstep: "db_ready",
+      forbidden: [OWNER, OPERATOR],
+      legit: PLATFORM,
+      body: {},
+      lands: "db_ready",
+    },
+    {
+      path: "/v1/tenant/activate",
+      doorstep: "db_ready",
+      forbidden: [OWNER, OPERATOR, CEILING],
+      legit: PLATFORM,
+      lands: "active",
+    },
+    {
+      path: "/v1/tenant/suspend",
+      doorstep: "active",
+      forbidden: [OWNER, PLATFORM],
+      legit: OPERATOR,
+      lands: "suspended",
+    },
+    {
+      path: "/v1/tenant/resume",
+      doorstep: "suspended",
+      forbidden: [OWNER, PLATFORM, ABUSE],
+      legit: OPERATOR,
+      lands: "active",
+    },
+    {
+      path: "/v1/tenant/export-only",
+      doorstep: "active",
+      forbidden: [PLATFORM, ABUSE],
+      legit: OWNER,
+      lands: "export_only",
+    },
+    {
+      path: "/v1/tenant/delete",
+      doorstep: "export_only",
+      forbidden: [OPERATOR, PLATFORM, CEILING],
+      legit: OWNER,
+      body: { at: T0 },
+      lands: "deleting",
+    },
   ];
   for (const step of steps) {
     assert.equal(tenantRow(db)?.state ?? null, step.doorstep, `doorstep for ${step.path}`);
@@ -499,7 +551,11 @@ test("only the actors §4 names can perform each step", async () => {
       const res = await post(ops, step.path, actor, { at: T0, jurisdiction: "us" });
       assert.equal(res.status, 403, `${step.path} by ${actor.role}/${actor.id} must refuse`);
       assert.equal(res.body.error, "actor_not_permitted");
-      assert.equal(tenantRow(db)?.state ?? null, step.doorstep, `${step.path} by ${actor.role} must not move the tenant`);
+      assert.equal(
+        tenantRow(db)?.state ?? null,
+        step.doorstep,
+        `${step.path} by ${actor.role} must not move the tenant`,
+      );
     }
     const ok = await post(ops, step.path, step.legit, step.body ?? {});
     assert.equal(ok.status, 200, `${step.path} by its §4 actor`);

@@ -158,7 +158,10 @@ test("publish creates no byte copy and is idempotent", async () => {
 
 test("a content hash alone cannot be published", async () => {
   const { svc } = setup();
-  await rejects(svc.publish({ contentId: C1, publisher: STRANGER, authorizedDbs: [], now: T0 }), "publication_requires_reference");
+  await rejects(
+    svc.publish({ contentId: C1, publisher: STRANGER, authorizedDbs: [], now: T0 }),
+    "publication_requires_reference",
+  );
   const otherDb = makeStore("oth0", US_PRIVATE);
   otherDb.createReference({ contentId: C1, refClass: "standard", createdBy: STRANGER, now: T0 });
   // A reference in another partition grants nothing in the public one.
@@ -187,10 +190,7 @@ test("unpublished content is refused new capabilities immediately", async () => 
   await rejects(svc.readPublished(C1, { now: at(7) }), "not_published");
   // Already-minted capabilities run out on their own TTL (documented
   // revocation lag), then fail closed.
-  await rejects(
-    verifyReadCapability(KEY, C1, US_PUBLIC, minted, at(5 + 300)),
-    "capability_expired",
-  );
+  await rejects(verifyReadCapability(KEY, C1, US_PUBLIC, minted, at(5 + 300)), "capability_expired");
 });
 
 test("never-published content is refused capabilities", async () => {
@@ -221,7 +221,10 @@ test("CDN path verifies while published and in the current epoch", async () => {
   const path = await svc.cdnPath(C1, { now: at(1) });
   assert.match(path.url, new RegExp(`^/cdn/v1/us/${C1}\\?`));
   assert.equal(path.epoch, 0);
-  assert.deepEqual(await svc.verifyCdnPath(path.url, { now: at(2) }), { contentId: C1, publicationId: pub.publicationId });
+  assert.deepEqual(await svc.verifyCdnPath(path.url, { now: at(2) }), {
+    contentId: C1,
+    publicationId: pub.publicationId,
+  });
   // Tampering with the epoch or content breaks the signature.
   await rejects(svc.verifyCdnPath(path.url.replace("epoch=0", "epoch=1"), { now: at(2) }), "cdn_path_bad_signature");
   await rejects(svc.verifyCdnPath(path.url, { now: at(3601) }), "cdn_path_expired");
@@ -264,12 +267,19 @@ test("non-CDN-eligible adapters serve under a capability only", async () => {
 test("the service refuses a non-public database or a mismatched adapter", () => {
   const tenantDb = makeStore("ten1", US_PUBLIC);
   assert.throws(
-    () => new PublicationService(fakeSql(), { publicDb: tenantDb, adapter: new FakeAdapter(US_PUBLIC), capabilityKey: KEY }),
-    (e: unknown) => e instanceof FailClosed && (e as FailClosed & { code: string }).code === "publication_requires_public_db",
+    () =>
+      new PublicationService(fakeSql(), {
+        publicDb: tenantDb,
+        adapter: new FakeAdapter(US_PUBLIC),
+        capabilityKey: KEY,
+      }),
+    (e: unknown) =>
+      e instanceof FailClosed && (e as FailClosed & { code: string }).code === "publication_requires_public_db",
   );
   const publicDb = makeStore("pub1", US_PUBLIC, true);
   assert.throws(
     () => new PublicationService(fakeSql(), { publicDb, adapter: new FakeAdapter(EU_PUBLIC), capabilityKey: KEY }),
-    (e: unknown) => e instanceof FailClosed && (e as FailClosed & { code: string }).code === "publication_partition_mismatch",
+    (e: unknown) =>
+      e instanceof FailClosed && (e as FailClosed & { code: string }).code === "publication_partition_mismatch",
   );
 });

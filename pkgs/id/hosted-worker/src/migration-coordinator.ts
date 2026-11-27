@@ -96,7 +96,15 @@ export async function driveMigration(ports: MigrationPorts, run: MigrationRun): 
   // no-op when another coordinator has already taken the lease over
   // (owner/token no longer match), so this cannot free a live lease.
   try {
-    return await driveMigrationLoop(ports, run, target, () => lease, (next) => { lease = next; });
+    return await driveMigrationLoop(
+      ports,
+      run,
+      target,
+      () => lease,
+      (next) => {
+        lease = next;
+      },
+    );
   } catch (error) {
     await ports.directory.releaseLease(run.subjectKey, lease).catch(() => {});
     throw error;
@@ -111,7 +119,10 @@ async function driveMigrationLoop(
   setLease: (lease: MigrationLease) => void,
 ): Promise<HostedAccountRecord> {
   let lease = getLease();
-  const step = async (record: HostedAccountRecord, event: Parameters<PersistentHostedAccountDirectory["transition"]>[1]) => {
+  const step = async (
+    record: HostedAccountRecord,
+    event: Parameters<PersistentHostedAccountDirectory["transition"]>[1],
+  ) => {
     lease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
     setLease(lease);
     return ports.directory.transition(record, event, { lease, nowMs: ports.now() });
@@ -148,7 +159,13 @@ async function driveMigrationLoop(
           "source snapshot",
         )) as unknown as MigrationSnapshot;
         for (const row of snapshot.tables.blobs) {
-          await ports.copyBlob(record.bindingId, String(row.hash), snapshot.client_side_encryption, record.jurisdiction, other);
+          await ports.copyBlob(
+            record.bindingId,
+            String(row.hash),
+            snapshot.client_side_encryption,
+            record.jurisdiction,
+            other,
+          );
         }
         const imported = await ports.control(
           record,
@@ -164,14 +181,28 @@ async function driveMigrationLoop(
           // and import again.
           await expectOk(await ports.control(record, other, "POST", "/v1/migration/discard", epoch), "target discard");
           await expectOk(
-            await ports.control(record, other, "POST", "/v1/migration/import", snapshot, snapshot.client_side_encryption),
+            await ports.control(
+              record,
+              other,
+              "POST",
+              "/v1/migration/import",
+              snapshot,
+              snapshot.client_side_encryption,
+            ),
             "target import",
           );
         }
-        const status = await expectOk(await ports.control(record, other, "GET", "/v1/migration/target"), "target status");
+        const status = await expectOk(
+          await ports.control(record, other, "GET", "/v1/migration/target"),
+          "target status",
+        );
         const staged = status.staged as StagedTarget | null;
         if (staged === null || staged.migration_id !== run.migrationId || staged.digest !== snapshot.digest) {
-          throw new FailClosed(409, "migration_step_failed", "target check failed: the staged data does not match the source");
+          throw new FailClosed(
+            409,
+            "migration_step_failed",
+            "target check failed: the staged data does not match the source",
+          );
         }
         await step(record, { type: "snapshot-verified", migrationId: run.migrationId });
         break;
@@ -204,12 +235,19 @@ export async function abortMigration(
   ports: MigrationPorts,
   run: Omit<MigrationRun, "targetJurisdiction">,
 ): Promise<HostedAccountRecord> {
-  let lease: MigrationLease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
+  let lease: MigrationLease = await ports.directory.acquireLease(
+    run.subjectKey,
+    run.owner,
+    ports.now(),
+    run.leaseTtlMs,
+  );
   // #15828: like driveMigration, a refused or failed abort (e.g. the
   // after-switch refusal below) must release the lease it just took,
   // or it poisons the account for the full TTL.
   try {
-    return await abortMigrationBody(ports, run, lease, (next) => { lease = next; });
+    return await abortMigrationBody(ports, run, lease, (next) => {
+      lease = next;
+    });
   } catch (error) {
     await ports.directory.releaseLease(run.subjectKey, lease).catch(() => {});
     throw error;
@@ -225,7 +263,11 @@ async function abortMigrationBody(
   let lease: MigrationLease = initialLease;
   let record = await current(ports, run.subjectKey);
   if (record.phase === "switched") {
-    throw new FailClosed(409, "directory_transition_refused", "cannot abort after the switch; finish the migration instead");
+    throw new FailClosed(
+      409,
+      "directory_transition_refused",
+      "cannot abort after the switch; finish the migration instead",
+    );
   }
   if (record.phase !== "stable") {
     if (record.migrationId !== run.migrationId) {
@@ -293,7 +335,11 @@ export function workerMigrationPorts(
       if ((await destination.head(key)) !== null) return;
       const object = await blobsBindingFor(env, from).get(key);
       if (!object) {
-        throw new FailClosed(409, "migration_step_failed", `blob copy failed: ${hash} is missing from the source bucket`);
+        throw new FailClosed(
+          409,
+          "migration_step_failed",
+          `blob copy failed: ${hash} is missing from the source bucket`,
+        );
       }
       await destination.put(key, new Uint8Array(await new Response(object.body).arrayBuffer()));
     },
