@@ -11,7 +11,9 @@ use id_caps::agent_delegation::AgentId;
 use id_caps::agent_majority::{
     Entrant, PresenceRoster, ProfileStore, Visitors, WorldProfile, starter_visitor_role,
 };
-use id_caps::role_config::RoleRegistry;
+use id_caps::agent_quota_ledger::AgentQuotaLedger;
+use id_caps::mcp_policy::Quota;
+use id_caps::role_config::{QuotaClass, RoleRegistry};
 use id_caps::surface_host::{RetryOutcome, SurfaceHost};
 use id_caps::task_delegation::{Assignee, TaskDelegation, delegation_board};
 use id_caps::work_surfaces::{
@@ -44,7 +46,12 @@ fn registry() -> RoleRegistry {
     let mut reviewer = registry.record("participant").unwrap().definition.clone();
     reviewer.name = "reviewer".to_owned();
     assert!(registry.upsert(reviewer, OWNER, T0).decision.is_ok());
-    for (byte, role) in [(1, "participant"), (2, "reviewer"), (3, "participant")] {
+    for (byte, role) in [
+        (1, "participant"),
+        (2, "participant"),
+        (3, "participant"),
+        (4, "reviewer"),
+    ] {
         assert!(
             registry
                 .grant(role, agent(byte), OWNER, T0)
@@ -53,6 +60,23 @@ fn registry() -> RoleRegistry {
         );
     }
     registry
+}
+
+fn ledger(byte: u8, role: &str) -> AgentQuotaLedger {
+    AgentQuotaLedger::open(
+        [byte; 32],
+        WORLD,
+        role,
+        QuotaClass {
+            budget: Quota {
+                frames: 0,
+                tool_calls: 100,
+                program_invocations: 0,
+            },
+            replenishment: None,
+        },
+        T0,
+    )
 }
 
 #[test]
@@ -65,13 +89,15 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
         .unwrap();
     let grants_before: Vec<_> = registry.list_grants().into_iter().cloned().collect();
     let mut delegation = TaskDelegation::new(WORLD);
+    let mut ledger1 = ledger(1, "participant");
+    let mut ledger4 = ledger(4, "reviewer");
 
     let item = delegation
         .create(
             &mut surfaces,
             &registry,
             &actor(1, "participant"),
-            None,
+            Some(&mut ledger1),
             "work",
             ItemDraft {
                 title: "review the change".to_owned(),
@@ -90,7 +116,7 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
             &mut surfaces,
             &registry,
             &actor(1, "participant"),
-            None,
+            Some(&mut ledger1),
             "work",
             item,
             Assignee::role("reviewer"),
@@ -110,7 +136,7 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
                 &mut surfaces,
                 &registry,
                 &actor(1, "participant"),
-                None,
+                Some(&mut ledger1),
                 "work",
                 item,
                 seen,
@@ -123,8 +149,8 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
             .claim(
                 &mut surfaces,
                 &registry,
-                &actor(2, "reviewer"),
-                None,
+                &actor(4, "reviewer"),
+                Some(&mut ledger4),
                 "work",
                 item,
                 seen,
@@ -144,11 +170,11 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
             .transition(
                 &mut surfaces,
                 &registry,
-                &actor(2, "reviewer"),
-                None,
+                &actor(4, "reviewer"),
+                Some(&mut ledger4),
                 "work",
                 item,
-                "doing",
+                "in-progress",
                 seen,
                 T0 + 4,
             )
@@ -164,7 +190,7 @@ fn task_board_handoff_moves_work_not_authority_or_a_side_channel() {
     );
     let assignment = delegation.assignment("work", item).unwrap();
     assert_eq!(assignment.assignee, Assignee::role("reviewer"));
-    assert_eq!(assignment.claimant, Some(actor(2, "reviewer")));
+    assert_eq!(assignment.claimant, Some(actor(4, "reviewer")));
     assert!(
         delegation
             .events()

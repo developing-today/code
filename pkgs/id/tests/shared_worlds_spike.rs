@@ -12,7 +12,9 @@ use id_caps::agent_delegation::AgentId;
 use id_caps::agent_majority::{
     Entrant, PresenceRoster, ProfileStore, VisitorAct, Visitors, WorldProfile, starter_visitor_role,
 };
-use id_caps::role_config::RoleRegistry;
+use id_caps::agent_quota_ledger::AgentQuotaLedger;
+use id_caps::mcp_policy::Quota;
+use id_caps::role_config::{QuotaClass, RoleRegistry};
 use id_caps::task_delegation::{Assignee, TaskDelegation, delegation_board};
 use id_caps::work_surfaces::{
     ConflictModel, DocumentDefinition, DocumentPermissions, EditOp, ItemDraft, SurfaceActor,
@@ -148,12 +150,40 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
         .unwrap();
 
     let mut tasks = TaskDelegation::new(WORLD);
+    let mut ledger1 = AgentQuotaLedger::open(
+        [1; 32],
+        WORLD,
+        "participant",
+        QuotaClass {
+            budget: Quota {
+                frames: 0,
+                tool_calls: 100,
+                program_invocations: 0,
+            },
+            replenishment: None,
+        },
+        T0,
+    );
+    let mut ledger2 = AgentQuotaLedger::open(
+        [2; 32],
+        WORLD,
+        "participant",
+        QuotaClass {
+            budget: Quota {
+                frames: 0,
+                tool_calls: 100,
+                program_invocations: 0,
+            },
+            replenishment: None,
+        },
+        T0,
+    );
     let item = tasks
         .create(
             &mut surfaces,
             &registry,
             &actor(1),
-            None,
+            Some(&mut ledger1),
             "work",
             ItemDraft {
                 title: "prepare the release".to_owned(),
@@ -168,7 +198,7 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
             &mut surfaces,
             &registry,
             &actor(1),
-            None,
+            Some(&mut ledger1),
             "work",
             item,
             Assignee::role("participant"),
@@ -187,7 +217,7 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
             &mut surfaces,
             &registry,
             &actor(2),
-            None,
+            Some(&mut ledger2),
             "work",
             item,
             seen,
@@ -206,10 +236,10 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
             &mut surfaces,
             &registry,
             &actor(2),
-            None,
+            Some(&mut ledger2),
             "work",
             item,
-            "doing",
+            "in-progress",
             seen,
             T0 + 8,
         )
@@ -250,7 +280,7 @@ fn three_agents_and_a_human_complete_one_local_world_run() {
             .find(|entry| entry.id == item)
             .unwrap()
             .state,
-        "doing"
+        "in-progress"
     );
     let document = surfaces
         .document(&registry, &actor(1), "run-notes", T0 + 11)
