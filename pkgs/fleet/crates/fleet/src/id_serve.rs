@@ -1759,6 +1759,101 @@ mod tests {
     }
 
     #[test]
+    fn golden_session_event_envelope_round_trip() {
+        // Golden conformance for #14229 §6.6 / #16326: a pass-3
+        // §4.2 session event, serialized exactly as the REST side's
+        // socket carries it (`socket_event` in id-web's
+        // sessions.rs: `{"id": seq, "event": name, "data": data}`,
+        // where `data` is `RunEventData::to_json`'s object), crosses
+        // the fleet §4.5 socket path and back byte-identical.
+        //
+        // Oracle: the §4.5 framing bytes as landed in this module
+        // (`Envelope::encode`/`decode`). The four events are one
+        // whole session log in order: the opening `app` session
+        // event, a utf8 `out` chunk, a base64 `err` chunk (bytes
+        // 0xff 0x00 are not valid UTF-8), and the closing `exit`.
+        //
+        // Neither design assigns session events their own ALPN;
+        // the envelope carries the caller's ALPN opaquely, so this
+        // test pins pass-through with a representative value and
+        // assigns none.
+        const GOLDEN_ALPN: &str = "/id-session/1";
+        let golden_events: [(u64, &str); 4] = [
+            (1, r#"{"id":1,"event":"app","data":{"session":"ses_16326_golden"}}"#),
+            (
+                2,
+                r#"{"id":2,"event":"out","data":{"encoding":"utf8","data":"hello\n"}}"#,
+            ),
+            (
+                3,
+                r#"{"id":3,"event":"err","data":{"encoding":"base64","data":"/wA="}}"#,
+            ),
+            (
+                4,
+                r#"{"id":4,"event":"exit","data":{"exit_code":0,"signal":null,"timed_out":false,"stdout_truncated":false,"stderr_truncated":false}}"#,
+            ),
+        ];
+        for format in [WireFormat::Cbor, WireFormat::Msgpack] {
+            for (seq, event_json) in golden_events {
+                let payload = event_json.as_bytes().to_vec();
+                let sent = Envelope::single(SESSION_EVENT_KIND, seq, GOLDEN_ALPN, payload.clone());
+                let wire = sent.encode(format);
+
+                // The wire form is exactly the §4.5 map — the five
+                // named fields, no added/renamed/forked fields.
+                let CodecValue::Map(entries) = decode_value(&wire, format).unwrap() else {
+                    panic!("envelope wire form is not a map");
+                };
+                let field_names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+                assert_eq!(field_names, ["v", "seq", "kind", "alpn", "payload"]);
+                let fields: BTreeMap<String, CodecValue> = entries.into_iter().collect();
+                assert_eq!(fields["v"], CodecValue::U64(ENVELOPE_VERSION));
+                assert_eq!(fields["seq"], CodecValue::U64(seq));
+                assert_eq!(fields["kind"], CodecValue::Str("resp".to_string()));
+                assert_eq!(fields["payload"], CodecValue::Bytes(payload.clone()));
+
+                // Through the socket path and back: the decoded
+                // envelope is the sent one, its payload is the
+                // REST-side event bytes unchanged, and re-encoding
+                // the decoded envelope reproduces the exact wire
+                // bytes (byte-identical in both directions).
+                let received = Envelope::decode(&wire, format).unwrap();
+                assert_eq!(received, sent);
+                assert_eq!(received.kind, SESSION_EVENT_KIND);
+                assert_eq!(received.seq, seq);
+                assert_eq!(received.payload, payload);
+                assert_eq!(received.encode(format), wire);
+            }
+        }
+    }
+
+    #[test]
+    fn golden_session_event_chunked_round_trip() {
+        // The streaming leg of the same #14229 §6.6 golden check:
+        // a session `out` event larger than the conversion
+        // threshold crosses as chunk envelopes and reassembles to
+        // the exact REST-side event bytes, digests verified by the
+        // reassembler.
+        let big_data = "x".repeat(CONVERSION_THRESHOLD + 4096);
+        let event_json = format!(
+            r#"{{"id":2,"event":"out","data":{{"encoding":"utf8","data":"{big_data}"}}}}"#
+        );
+        let payload = event_json.into_bytes();
+        assert!(needs_chunking(payload.len()));
+        let envelopes = envelopes_for_payload(SESSION_EVENT_KIND, "/id-session/1", 2, &payload);
+        assert!(envelopes.len() > 1);
+        let mut reassembler = ChunkReassembler::new("/id-session/1");
+        let mut reassembled = None;
+        for env in &envelopes {
+            assert_eq!(env.kind, EnvelopeKind::Chunk);
+            if let Some(done) = reassembler.push(env).unwrap() {
+                reassembled = Some(done);
+            }
+        }
+        assert_eq!(reassembled.unwrap(), payload);
+    }
+
+    #[test]
     fn conversion_round_trip_and_variant_by_name_skew() {
         for value in [
             Probe::List,
