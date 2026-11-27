@@ -46,7 +46,7 @@
   craneLib ? null,
   doCheck ? true,
   openssl,
-  pkgconfig,
+  pkgconf,
   sourceRev ? "unknown",
   # The derived per-app version (#8566), computed by the release
   # tooling where the git history exists (the nix build source has
@@ -204,7 +204,7 @@ let
           # nixpkgs' (pkg-config discovery via the standard hooks),
           # following the pkgs/id/default.nix pattern.
           buildInputs = [ openssl ];
-          nativeBuildInputs = [ pkgconfig ];
+          nativeBuildInputs = [ pkgconf ];
           env = envAttrs;
         };
 
