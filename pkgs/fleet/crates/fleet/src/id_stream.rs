@@ -352,14 +352,8 @@ mod tests {
     fn default_caps_match_the_postcard_per_stream_bound() {
         assert_eq!(DEFAULT_STREAM_CAP, crate::id_postcard::PER_STREAM_CAP);
         assert_eq!(DEFAULT_STREAM_CAP, 64 * 1024);
-        assert_eq!(
-            StreamCaps::default().max_stream_bytes,
-            DEFAULT_STREAM_CAP
-        );
-        assert_eq!(
-            StreamCaps::with_max(16 << 20).max_stream_bytes,
-            16 << 20
-        );
+        assert_eq!(StreamCaps::default().max_stream_bytes, DEFAULT_STREAM_CAP);
+        assert_eq!(StreamCaps::with_max(16 << 20).max_stream_bytes, 16 << 20);
     }
 
     #[test]
@@ -466,10 +460,9 @@ mod tests {
     }
 
     async fn relay_fixture() -> RelayFixture {
-        let (relay_map, relay_url, relay_server) =
-            iroh::test_utils::run_relay_server()
-                .await
-                .expect("local relay");
+        let (relay_map, relay_url, relay_server) = iroh::test_utils::run_relay_server()
+            .await
+            .expect("local relay");
         RelayFixture {
             relay_url,
             relay_map,
@@ -501,7 +494,6 @@ mod tests {
         // burn the whole connect timeout (cf. id-core connectivity
         // `test_n0_endpoints_dial_by_id`: "an early lookup can miss it").
         tokio::join!(server.online(), client.online());
-        eprintln!("relay_pair: both online after {:?}", t0.elapsed());
         (fixture, server, client)
     }
 
@@ -523,18 +515,23 @@ mod tests {
     async fn relay_fixture_round_trip(size: usize, seed: u64) {
         let (fixture, server, client) = relay_pair().await;
         let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        // Accept and dial concurrently: awaiting the server accept
-        // before initiating the client connect deadlocks (each side
-        // waits for the other). `join!` polls both together.
-        let (incoming_opt, client_conn) = tokio::join!(
-            server.accept(),
-            connect_relay(&client, &server, &fixture.relay_url),
-        );
-        let conn = incoming_opt
-            .expect("incoming connection")
-            .await
-            .expect("authenticated relay connection");
-        let serving = serve_echo(conn, 1, received.clone());
+        // The server accept runs in its own task while the client
+        // dials (same shape as the loopback tests): awaiting the
+        // accept inline before dialing deadlocks, and joining the two
+        // borrows stalls the relay handshake.
+        let serving = tokio::spawn({
+            let server = server.clone();
+            let received = received.clone();
+            async move {
+                let incoming = server.accept().await.expect("incoming connection");
+                let conn = incoming.await.expect("authenticated relay connection");
+                serve_echo(conn, 1, received)
+                    .await
+                    .expect("server task")
+                    .expect("echo server served the stream");
+            }
+        });
+        let client_conn = connect_relay(&client, &server, &fixture.relay_url).await;
         let caps = StreamCaps::with_max(16 << 20);
         let payload = fixture_bytes(size, seed);
         let echoed = exchange(&client_conn, &payload, &caps)
@@ -546,10 +543,7 @@ mod tests {
             "server -> client direction must be sha-identical"
         );
         client_conn.close(0u32.into(), b"done");
-        serving
-            .await
-            .expect("server task")
-            .expect("echo server served the stream");
+        serving.await.expect("server task");
         let log = received.lock().expect("received log");
         assert_eq!(log.len(), 1, "server saw exactly one request");
         assert_eq!(
@@ -563,9 +557,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn stream_4mib_relay_sha_identical_both_directions() {
-        tokio::time::timeout(Duration::from_secs(60), relay_fixture_round_trip(4 << 20, 0x15436))
-            .await
-            .expect("4 MiB relay transfer completes within timeout");
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            relay_fixture_round_trip(4 << 20, 0x15436),
+        )
+        .await
+        .expect("4 MiB relay transfer completes within timeout");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -588,16 +585,22 @@ mod tests {
             const STREAMS: usize = 8;
             let (fixture, server, client) = relay_pair().await;
             let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-            // Accept and dial concurrently (see relay_fixture_round_trip).
-            let (incoming_opt, client_conn) = tokio::join!(
-                server.accept(),
-                connect_relay(&client, &server, &fixture.relay_url),
-            );
-            let conn = incoming_opt
-                .expect("incoming connection")
-                .await
-                .expect("authenticated relay connection");
-            let serving = serve_echo(conn, STREAMS, received.clone());
+            // Spawned accept while the client dials (see
+            // relay_fixture_round_trip): inline accept deadlocks, and
+            // joining the two borrows stalls the relay handshake.
+            let serving = tokio::spawn({
+                let server = server.clone();
+                let received = received.clone();
+                async move {
+                    let incoming = server.accept().await.expect("incoming connection");
+                    let conn = incoming.await.expect("authenticated relay connection");
+                    serve_echo(conn, STREAMS, received)
+                        .await
+                        .expect("server task")
+                        .expect("echo server served all streams");
+                }
+            });
+            let client_conn = connect_relay(&client, &server, &fixture.relay_url).await;
             let caps = StreamCaps::with_max(16 << 20);
             let payloads: Vec<Vec<u8>> = (0..STREAMS)
                 .map(|i| fixture_bytes(1 << 20, 0x15440 + i as u64))
@@ -623,16 +626,12 @@ mod tests {
                 );
             }
             client_conn.close(0u32.into(), b"done");
-            serving
-                .await
-                .expect("server task")
-                .expect("echo server served all streams");
+            serving.await.expect("server task");
             let log = received.lock().expect("received log");
             assert_eq!(log.len(), STREAMS, "server saw all {STREAMS} requests");
             let mut got: Vec<String> = log.clone();
             got.sort();
-            let mut want: Vec<String> =
-                payloads.iter().map(|p| sha256_hex(p)).collect();
+            let mut want: Vec<String> = payloads.iter().map(|p| sha256_hex(p)).collect();
             want.sort();
             assert_eq!(got, want, "every payload arrived exactly once");
             client.close().await;
@@ -760,9 +759,7 @@ mod tests {
                 .expect("send completes once the consumer drains");
             // The finished send lets the server echo; the full
             // payload must still arrive sha-identical.
-            let echoed = recv_bytes(&mut recv, 16 << 20)
-                .await
-                .expect("read echo");
+            let echoed = recv_bytes(&mut recv, 16 << 20).await.expect("read echo");
             assert_eq!(
                 sha256_hex(&echoed),
                 sha256_hex(&payload),
