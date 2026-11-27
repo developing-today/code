@@ -1115,6 +1115,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	opts.TypeCheckDefaulted = shape.checkDefaulted
 	opts.TypeCheckOnError = shape.checkOnError
 	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
+	opts.CheckJs = shape.checkJs
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -2485,6 +2486,7 @@ type scriptShape struct {
 	// checkDefaulted says the check is on only because run's
 	// per-command default switched it on (#1868 point 4).
 	checkDefaulted             bool
+	checkJs                    bool
 	imports, importsOnDynamic  string
 	importsOnMissing           string
 	importsCrossProject        string
@@ -2612,6 +2614,7 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	sh.typecheck = scriptCheckFor(f.command, a.Settings().String("script.check"), checkExplicit)
 	sh.checkOnError = a.Settings().String("script.checkOnError")
 	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
+	sh.checkJs = a.Settings().Bool("script.checkJs")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
