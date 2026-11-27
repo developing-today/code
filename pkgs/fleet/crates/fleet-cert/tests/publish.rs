@@ -223,7 +223,6 @@ fn cli_refuses_live_endpoint_target_before_filesystem_effects() {
         bundle.display().to_string(),
         "--staging-dir".to_string(),
         target.display().to_string(),
-        "--host".to_string(),
         "https://production.example.test".to_string(),
     ];
     assert_eq!(fleet_cert::run(&args), 2);

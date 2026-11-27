@@ -1544,10 +1544,14 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
         }
         "apply" => {
             let p = parse_args(rest, &["bundle", "staging-dir"], &["json"])?;
+            if !p.positionals.is_empty() {
+                return Err(CertError::usage(
+                    "publish apply accepts only --bundle <dir> and --staging-dir <local-dir>; live endpoint targets are not supported",
+                ));
+            }
             let bundle = p
                 .get("bundle")
                 .map(PathBuf::from)
-                .or_else(|| p.positional(0).map(PathBuf::from))
                 .ok_or_else(|| CertError::usage("publish apply needs --bundle <dir>"))?;
             let staging = p.get("staging-dir").map(PathBuf::from).ok_or_else(|| {
                 CertError::usage("publish apply requires --staging-dir <local-dir>")
@@ -1566,7 +1570,7 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
         "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
             Err(CertError::policy(format!(
                 "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
-                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+                 live endpoint publication remains unavailable; local staging apply has no network path"
             )))
         }
         other => Err(CertError::usage(format!(
