@@ -85,6 +85,75 @@ pub struct SelectionOrderInput {
     pub complete: bool,
 }
 
+/// Why a candidate set cannot claim full-order conformance: the
+/// producer holds one page of a paged population, a truncated
+/// fetch, or a population whose completeness it cannot state
+/// (DST-06 record §3.1). A partial population stays displayable
+/// but is never hashable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartialReason {
+    /// Only one page of a paged population is held.
+    Paginated,
+    /// The fetch was cut off before the population was complete.
+    Truncated,
+    /// The producer cannot state whether the set is complete.
+    UnknownCompleteness,
+}
+
+impl PartialReason {
+    /// Stable machine code for the reason, suitable for logs and
+    /// refusal details.
+    pub fn code(&self) -> &'static str {
+        match self {
+            PartialReason::Paginated => "paginated",
+            PartialReason::Truncated => "truncated",
+            PartialReason::UnknownCompleteness => "unknown_completeness",
+        }
+    }
+
+    /// One-line human sentence carried in the refusal error.
+    pub fn detail(&self) -> String {
+        match self {
+            PartialReason::Paginated => "population is one page of a paged fetch".to_string(),
+            PartialReason::Truncated => "population is a truncated fetch".to_string(),
+            PartialReason::UnknownCompleteness => {
+                "population completeness cannot be stated".to_string()
+            }
+        }
+    }
+}
+
+/// An order population known to be partial: a page, a truncated
+/// fetch, or a population of unknown completeness. Carries the
+/// same items for display, with the reason stated. Deliberately
+/// exposes no hash: there is no function that hashes a
+/// `PartialOrder`, so a page or truncated fetch cannot produce a
+/// conformant `order_hash` by accident (DST-06 record §3.1, §8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialOrder {
+    /// Candidates held, in display order (never hashed).
+    pub items: Vec<OrderedItem>,
+    /// Why the set cannot claim full-order conformance.
+    pub reason: PartialReason,
+}
+
+impl SelectionOrderInput {
+    /// Refuse completion of a partial population: attempting to
+    /// complete a `PartialOrder` is a typed `invalid_schema` error
+    /// naming the reason, never an order claim. Reuses the shared
+    /// `ContractError` so no `contracts.rs` change is needed (the
+    /// DST-07 record's G1 landing order leaves that file to DST-04).
+    pub fn from_partial(partial: PartialOrder) -> Result<Self, ContractError> {
+        Err(ContractError::InvalidSchema {
+            detail: format!(
+                "partial candidate set cannot claim full-order conformance: [{}] {}",
+                partial.reason.code(),
+                partial.reason.detail()
+            ),
+        })
+    }
+}
+
 /// Compare two canonical work IDs numerically when both are decimal
 /// strings (`9 < 10`), falling back to bytewise order otherwise.
 /// Integer-like IDs are never coerced through floating point.
@@ -295,5 +364,49 @@ mod tests {
         let err = selection_order_hash(&partial).unwrap_err();
         assert_eq!(err.code(), "invalid_schema");
         assert!(format!("{err:?}").contains("full-order conformance"));
+    }
+
+    /// DST-06 oracle test 2 (#9456): a producer holding only a
+    /// page, a truncated fetch, or a population of unknown
+    /// completeness builds a `PartialOrder` stating the reason.
+    /// `PartialOrder` exposes no hash function by construction, and
+    /// completing one is a typed `invalid_schema` refusal naming the
+    /// reason — never an order claim. Oracle source: the DST-06
+    /// design record §3.1 ("only one can be hashed") and §8
+    /// ("Producer has only a page: PartialOrder, no hash").
+    #[test]
+    fn pmo_distribution_partial_order_has_no_hash() {
+        // Reason codes are stable: logs and refusal details can
+        // match on them.
+        assert_eq!(PartialReason::Paginated.code(), "paginated");
+        assert_eq!(PartialReason::Truncated.code(), "truncated");
+        assert_eq!(
+            PartialReason::UnknownCompleteness.code(),
+            "unknown_completeness"
+        );
+
+        // Every stated reason refuses completion with its name in
+        // the typed error, and yields no input that could hash.
+        for reason in [
+            PartialReason::Paginated,
+            PartialReason::Truncated,
+            PartialReason::UnknownCompleteness,
+        ] {
+            let partial = PartialOrder {
+                items: fixture_items(),
+                reason,
+            };
+            let err = SelectionOrderInput::from_partial(partial).unwrap_err();
+            assert_eq!(err.code(), "invalid_schema");
+            let rendered = format!("{err:?}");
+            assert!(
+                rendered.contains(reason.code()),
+                "refusal names the reason: {rendered}"
+            );
+            assert!(
+                rendered.contains("full-order conformance"),
+                "refusal states the rule: {rendered}"
+            );
+        }
     }
 }
