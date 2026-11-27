@@ -1277,6 +1277,40 @@ mod tests {
         }
 
         #[test]
+        fn journal_roles_export_as_definitions_without_member_identity() {
+            let role_entry: JournalEntry = serde_json::from_value(serde_json::json!({
+                "entry": "role_definitions_set",
+                "roles": [
+                    { "name": "editor", "description": "Can edit shared notes" },
+                    { "name": "reader", "description": "Can read shared notes" }
+                ]
+            }))
+            .unwrap();
+            let entries = vec![created(), issued(1), issued(2), role_entry];
+
+            let source = template_source_from_journal(&entries, &[]).unwrap();
+            let bundle = export_template(&source).unwrap();
+
+            assert_eq!(
+                bundle.manifest.roles,
+                vec![
+                    RoleDefinition {
+                        name: "editor".to_owned(),
+                        description: "Can edit shared notes".to_owned(),
+                    },
+                    RoleDefinition {
+                        name: "reader".to_owned(),
+                        description: "Can read shared notes".to_owned(),
+                    },
+                ]
+            );
+            let exported = serde_json::to_string(&bundle).unwrap();
+            for identity in ["player1", "player2", "account1", "account2"] {
+                assert!(!exported.contains(identity), "{identity} leaked into {exported}");
+            }
+        }
+
+        #[test]
         fn a_bundle_world_exports_without_identity_material() {
             let hash = "11".repeat(32);
             let author_key = "ef".repeat(32);
