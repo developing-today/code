@@ -219,6 +219,25 @@ impl FunctionHost {
         outcome
     }
 
+    /// Invoke the active per-user function and return its rendered output.
+    ///
+    /// The event is delivered as participant 0, then the active instance is
+    /// rendered. Pending candidates are never callable. A guest trap is
+    /// returned as an error by the sandbox and does not alter the registry's
+    /// published/active version bookkeeping.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deterministic error if the binding has no active instance,
+    /// or propagates an update/view trap from the guest.
+    pub fn call(&mut self, user: &str, name: &str, input: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let instance = self
+            .active_instance_mut(user, name)
+            .ok_or_else(|| anyhow::anyhow!("function {name:?} for user {user:?} is not active"))?;
+        instance.update(0, input)?;
+        instance.view()
+    }
+
     /// The active version's instance of (user, name), if any.
     #[must_use]
     pub fn active_instance(&self, user: &str, name: &str) -> Option<&WorldInstance> {
@@ -320,6 +339,7 @@ mod tests {
         Healthy,
         InitTraps,
         RestoreTraps,
+        UpdateTraps,
     }
 
     /// A counter guest built without the Roc compiler: the model is a
@@ -332,6 +352,11 @@ mod tests {
             ""
         };
         let restore_fault = if matches!(fault, Fault::RestoreTraps) {
+            "unreachable"
+        } else {
+            ""
+        };
+        let update_fault = if matches!(fault, Fault::UpdateTraps) {
             "unreachable"
         } else {
             ""
@@ -353,6 +378,7 @@ mod tests {
                 (i32.store (i32.const 16) (i32.wrap_i64 (local.get $seed)))
                 (i32.const 16))
               (func (export "plaza_update") (param $m i32) (param i32 i32 i32) (result i32)
+                {update_fault}
                 (i32.store (local.get $m)
                   (i32.add (i32.load (local.get $m)) (i32.const {step})))
                 (local.get $m))
@@ -602,6 +628,61 @@ mod tests {
             .unwrap_err();
         assert!(matches!(reason, RejectionReason::NoExpectation { .. }));
         assert!(empty.pending_instance(USER, NAME).is_none());
+    }
+
+    #[test]
+    fn call_resolves_only_the_active_user_binding_and_returns_output() {
+        // Oracle: slice 6 — calls use the active per-user binding, not a
+        // pending candidate, and return the active guest's rendered bytes.
+        let v1 = interface("counter-u32");
+        let mut host = host_expecting(&v1);
+        assert!(
+            host.call(USER, NAME, b"before")
+                .unwrap_err()
+                .to_string()
+                .contains("not active")
+        );
+        host.publish(USER, NAME, &artifact(v1, counter(1, Fault::Healthy)), 7)
+            .unwrap();
+        assert!(
+            host.call(USER, NAME, b"pending")
+                .unwrap_err()
+                .to_string()
+                .contains("not active")
+        );
+        host.tick_boundary(USER, NAME);
+        let output = host.call(USER, NAME, b"tick").unwrap();
+        assert_eq!(u32::from_le_bytes(output.try_into().unwrap()), 8);
+        assert_eq!(host.registry().resolve(USER, NAME).unwrap().version, 1);
+        assert!(
+            host.call("bob", NAME, b"tick")
+                .unwrap_err()
+                .to_string()
+                .contains("not active")
+        );
+    }
+
+    #[test]
+    fn trapped_call_returns_error_without_replacing_published_version() {
+        // Oracle: slice 6 — a guest trap is returned to the caller and
+        // cannot take down the host or silently change the active version.
+        let v1 = interface("counter-u32");
+        let mut host = host_expecting(&v1);
+        host.publish(USER, NAME, &artifact(v1, counter(1, Fault::UpdateTraps)), 0)
+            .unwrap();
+        host.tick_boundary(USER, NAME);
+        assert!(host.call(USER, NAME, b"trap").is_err());
+        assert_eq!(host.registry().resolve(USER, NAME).unwrap().version, 1);
+        assert_eq!(host.registry().published(USER, NAME).len(), 1);
+        // A poisoned guest reports a second deterministic error; the host
+        // remains usable for other users/bindings.
+        assert!(host.call(USER, NAME, b"again").is_err());
+        assert!(
+            host.call("bob", NAME, b"other")
+                .unwrap_err()
+                .to_string()
+                .contains("not active")
+        );
     }
 
     #[test]
