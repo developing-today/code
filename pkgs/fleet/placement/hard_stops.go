@@ -1,12 +1,15 @@
 package placement
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -73,17 +76,36 @@ func WriteHardStop(path, pool, note string, stopped bool, issuedAt time.Time) er
 		return fmt.Errorf("hard-stops: issued-at timestamp is required")
 	}
 
+	// A persistent sidecar lock serializes the whole read-modify-rename,
+	// not the replaced inode. Never remove the lock file: doing so would
+	// allow contenders to lock different inodes and lose another pool's stop.
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("hard-stops: open writer lock: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("hard-stops: lock registry: %w", err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
 	doc := hardStopsDoc{Version: 1, Stops: make(map[string]hardStopEntry)}
 	raw, err := os.ReadFile(path)
 	if err == nil {
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		doc = hardStopsDoc{}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&doc); err != nil {
 			return fmt.Errorf("hard-stops: parse %s: %w", path, err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return fmt.Errorf("hard-stops: %s: unexpected trailing JSON", path)
 		}
 		if doc.Version != 1 {
 			return fmt.Errorf("hard-stops: %s: unsupported version %d, want 1", path, doc.Version)
 		}
 		if doc.Stops == nil {
-			doc.Stops = make(map[string]hardStopEntry)
+			return fmt.Errorf("hard-stops: %s: stops must be an object", path)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("hard-stops: read %s: %w", path, err)

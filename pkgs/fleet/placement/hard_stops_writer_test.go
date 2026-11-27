@@ -2,9 +2,12 @@ package placement
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"testing/quick"
 	"time"
 )
 
@@ -96,20 +99,79 @@ func TestWriteHardStopPreservesOtherPoolsAndRejectsInvalidState(t *testing.T) {
 	}
 }
 
+// Oracle: invalid/unknown registry data must remain byte-for-byte unchanged.
 func TestWriteHardStopRejectsMalformedExistingRegistryWithoutReplacingIt(t *testing.T) {
+	for _, before := range []string{
+		`{"version":2,"stops":{}}`, `{}`, `null`, `{"stops":{}}`,
+		`{"version":1}`, `{"version":1,"stops":null}`,
+		`{"version":1,"stops":{},"futureField":true}`,
+		`{"version":1,"stops":{}} {}`, `{`,
+	} {
+		t.Run(before, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hard-stops.json")
+			if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteHardStop(path, "pool-a", "reason", true, time.Now()); err == nil {
+				t.Fatal("WriteHardStop accepted invalid registry")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != before {
+				t.Fatalf("invalid registry was modified: %s", after)
+			}
+		})
+	}
+}
+
+// Oracle: a simple last-write-per-pool map models arbitrary set/clear sequences.
+func TestWriteHardStopMatchesLifecycleModel(t *testing.T) {
+	property := func(actions []uint8) bool {
+		path := filepath.Join(t.TempDir(), "hard-stops.json")
+		model := make(map[string]bool)
+		at := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+		for _, action := range actions {
+			pool := fmt.Sprintf("pool-%d", action%4)
+			stopped := action&4 != 0
+			if err := WriteHardStop(path, pool, "model action", stopped, at); err != nil {
+				return false
+			}
+			model[pool] = stopped
+			for key, want := range model {
+				got, err := ReadHardStops(path, key)
+				if err != nil || got != want {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	if err := quick.Check(property, &quick.Config{MaxCount: 30}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Oracle: independent concurrent pool updates must all survive the registry commit.
+func TestWriteHardStopSerializesConcurrentWriters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hard-stops.json")
-	before := []byte(`{"version":2,"stops":{}}`)
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := WriteHardStop(path, fmt.Sprintf("pool-%d", i), "concurrent stop", true, time.Now()); err != nil {
+				t.Error(err)
+			}
+		}(i)
 	}
-	if err := WriteHardStop(path, "pool-a", "reason", true, time.Now()); err == nil {
-		t.Fatal("WriteHardStop accepted unsupported registry version")
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatalf("invalid registry was modified: %s", after)
+	wg.Wait()
+	for i := 0; i < 24; i++ {
+		pool := fmt.Sprintf("pool-%d", i)
+		got, err := ReadHardStops(path, pool)
+		if err != nil || !got {
+			t.Errorf("lost stop for %s: (%v, %v)", pool, got, err)
+		}
 	}
 }

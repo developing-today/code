@@ -89,9 +89,12 @@ placement-hard-stop --action clear --file hard-stops.json --pool chatgpt-plan \
 ```
 
 `--issued-at <RFC3339>` can supply a fixed timestamp for a steward action;
-otherwise the command records the current UTC time. This writer completes
-the registry lifecycle. The production trailing-pace input still has no
-live producer.
+otherwise the command records the current UTC time. Each pool retains its
+latest action, reason, and timestamp (not an append-only history). A persistent
+`hard-stops.json.lock` sidecar serializes cooperating writers across the
+read-modify-rename transaction; do not delete it while writers may run. Invalid
+or unknown registry data is rejected without replacing it. This supplies the
+steward writer; the production trailing-pace input still has no live producer.
 
 ## Tests
 

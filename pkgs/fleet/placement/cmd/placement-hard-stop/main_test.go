@@ -54,6 +54,8 @@ func TestRunRejectsMalformedCommandBeforeTouchingRegistry(t *testing.T) {
 		name string
 		args []string
 	}{
+		{name: "help with unknown trailing flag", args: []string{"--help", "--typo"}},
+		{name: "help mixed with action", args: []string{"--action", "set", "--help"}},
 		{name: "unknown flag", args: []string{"--action", "set", "--file", path, "--pool", "pool-a", "--note", "reason", "--typo"}},
 		{name: "stray positional", args: []string{"--action", "set", "--file", path, "--pool", "pool-a", "--note", "reason", "extra"}},
 		{name: "empty pool", args: []string{"--action", "set", "--file", path, "--pool=", "--note", "reason"}},

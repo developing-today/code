@@ -19,8 +19,14 @@ import (
 	"github.com/developing-today/code/pkgs/fleet/placement"
 )
 
+const usage = "usage: placement-hard-stop --action set|clear --file <hard-stops.json> --pool <serviceId> --note <reason> [--issued-at <RFC3339>]"
+
 func main() {
 	if err := run(os.Args[1:], time.Now()); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Println(usage)
+			return
+		}
 		fmt.Fprintln(os.Stderr, "placement-hard-stop:", err)
 		var usage *usageError
 		if errors.As(err, &usage) {
@@ -42,6 +48,9 @@ func invalidUsage(format string, args ...any) error {
 }
 
 func run(args []string, now time.Time) error {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		return flag.ErrHelp
+	}
 	flags := flag.NewFlagSet("placement-hard-stop", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	action := flags.String("action", "", "set or clear the pool hard-stop")
@@ -51,7 +60,7 @@ func run(args []string, now time.Time) error {
 	issuedAt := flags.String("issued-at", "", "RFC3339 timestamp (defaults to current UTC time)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil
+			return invalidUsage("--help/-h must be the only argument; %s", usage)
 		}
 		return invalidUsage("%w\nusage: placement-hard-stop --action set|clear --file <hard-stops.json> --pool <serviceId> --note <reason> [--issued-at <RFC3339>]", err)
 	}
