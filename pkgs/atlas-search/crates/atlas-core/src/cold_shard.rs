@@ -241,7 +241,9 @@ fn validate_packing(req: &PackRequest) -> ColdResult<()> {
     // Target/ceiling: compute approximate size.
     let span_bytes: usize = req.spans.iter().map(|s| s.bytes.len()).sum();
     let vec_bytes: usize = req.vectors.iter().map(|(_, v)| v.len() * 4).sum();
-    let manifest_est = serde_json::to_vec(&build_manifest(req, &[], &[])).unwrap_or_default().len();
+    let manifest_est = serde_json::to_vec(&build_manifest(req, &[], &[]))
+        .unwrap_or_default()
+        .len();
     let total = 14 + manifest_est + span_bytes + vec_bytes + FOOTER_SIZE;
     if total > CEILING_BYTES {
         return Err(ColdShardError::Packing(format!(
@@ -285,6 +287,10 @@ fn build_manifest(
         .shard_id
         .clone()
         .unwrap_or_else(|| format!("shard-{}", req.versions.len()));
+    let mut versions = req.versions.clone();
+    // §4 packing rule 3: keep each file's lineage together in the
+    // manifest, with that file's immutable versions in sequence order.
+    versions.sort_by_key(|version| (version.file_id, version.version_seq));
     Manifest {
         format_version: FORMAT_VERSION,
         shard_id,
@@ -293,7 +299,7 @@ fn build_manifest(
         created_at: req.created_at.clone(),
         created_by: req.created_by.clone(),
         source_marks: req.source_marks.clone(),
-        versions: req.versions.clone(),
+        versions,
         span_table: span_table.to_vec(),
         vector_model: req.vector_model.clone(),
         vector_dimensions: req.vector_dimensions,
@@ -387,10 +393,7 @@ pub fn pack(req: &PackRequest) -> ColdResult<Vec<u8>> {
     let vector_offset = span_offset + stored_span_section.len();
 
     let mut out: Vec<u8> = Vec::with_capacity(
-        14 + manifest_bytes.len()
-            + stored_span_section.len()
-            + vector_section.len()
-            + FOOTER_SIZE,
+        14 + manifest_bytes.len() + stored_span_section.len() + vector_section.len() + FOOTER_SIZE,
     );
     out.extend_from_slice(MAGIC_HEADER);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -477,10 +480,14 @@ pub fn unpack(bytes: &[u8]) -> ColdResult<UnpackedShard> {
     let vector_section = bytes[vector_offset..vector_offset + vector_len].to_vec();
 
     if sha256(&stored_span_section) != span_sha {
-        return Err(ColdShardError::ChecksumMismatch { what: "span section" });
+        return Err(ColdShardError::ChecksumMismatch {
+            what: "span section",
+        });
     }
     if sha256(&vector_section) != vector_sha {
-        return Err(ColdShardError::ChecksumMismatch { what: "vector section" });
+        return Err(ColdShardError::ChecksumMismatch {
+            what: "vector section",
+        });
     }
 
     // offsets consistency check (span section must follow manifest)
@@ -536,7 +543,9 @@ pub fn reconstruct_version(
         let (off, span_len) = span_loc
             .get(span_ref)
             .copied()
-            .ok_or(ColdShardError::Packing("unknown span_ref in occurrence".into()))?;
+            .ok_or(ColdShardError::Packing(
+                "unknown span_ref in occurrence".into(),
+            ))?;
         if *start != expected_start {
             // allow non-contiguous? require contiguous for byte-identical
             // reconstruction; mismatch is a packing defect.
@@ -595,12 +604,13 @@ pub fn read_vector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn make_request() -> PackRequest {
         let span_a = b"hello span A".to_vec();
         let span_b = b"span B content here".to_vec();
-        let v1_bytes_len = span_a.len() + span_b.len();
-        let _ = v1_bytes_len;
+        let span_a_ref = hex(Sha256::digest(&span_a));
+        let span_b_ref = hex(Sha256::digest(&span_b));
         let content_hash_v1 = {
             let mut h = Sha256::new();
             h.update(&span_a);
@@ -628,15 +638,21 @@ mod tests {
                     edge_kind: None,
                 },
                 occurrences: vec![
-                    ("span-a".into(), 0, span_a.len()),
-                    ("span-b".into(), span_a.len(), span_b.len()),
+                    (span_a_ref.clone(), 0, span_a.len()),
+                    (span_b_ref.clone(), span_a.len(), span_b.len()),
                 ],
             }],
             spans: vec![
-                SpanInput { span_ref: "span-a".into(), bytes: span_a.clone() },
-                SpanInput { span_ref: "span-b".into(), bytes: span_b.clone() },
+                SpanInput {
+                    span_ref: span_a_ref.clone(),
+                    bytes: span_a.clone(),
+                },
+                SpanInput {
+                    span_ref: span_b_ref,
+                    bytes: span_b.clone(),
+                },
             ],
-            vectors: vec![("span-a".into(), vec![0.1, 0.2, 0.3])],
+            vectors: vec![(span_a_ref, vec![0.1, 0.2, 0.3])],
             span_codec: "none".into(),
             vector_model: "m".into(),
             vector_dimensions: 3,
@@ -645,6 +661,37 @@ mod tests {
             retention_trigger: serde_json::json!({}),
             provenance_hot_shard_id: "hot-1".into(),
             provenance_export_run_id: "run-1".into(),
+        }
+    }
+
+    proptest! {
+        // Oracle: design §4 packing rule 3 groups versions by file
+        // lineage; within a file, immutable versions are ordered by
+        // sequence. The writer must emit that order regardless of input.
+        #[test]
+        fn pack_groups_versions_by_lineage(keys in prop::collection::vec((any::<u16>(), any::<u16>()), 0..64)) {
+            let mut req = make_request();
+            req.versions = keys
+                .into_iter()
+                .enumerate()
+                .map(|(index, (file_id, version_seq))| VersionEntry {
+                    file_id: u64::from(file_id),
+                    version_seq: u64::from(version_seq),
+                    path_at_version: format!("file-{file_id}-{version_seq}-{index}"),
+                    content_hash: "fixture-hash".into(),
+                    ingested_at: "2026-11-22T00:00:00Z".into(),
+                    source_id: None,
+                    source_native_id: None,
+                    lineage: LineageSummary::default(),
+                    occurrences: vec![],
+                })
+                .collect();
+            let mut expected = req.versions.clone();
+            expected.sort_by_key(|version| (version.file_id, version.version_seq));
+
+            let shard = pack(&req).expect("fixture versions pack");
+            let restored = unpack(&shard).expect("packed shard unpacks");
+            prop_assert_eq!(restored.manifest.versions, expected);
         }
     }
 
@@ -667,15 +714,40 @@ mod tests {
         let mut expected = b"hello span A".to_vec();
         expected.extend_from_slice(b"span B content here");
         assert_eq!(recon, expected);
-        // content hash matches
+        // §7 oracle: restored spans match their hot fixture bytes and
+        // content hashes, and the version aggregate hash is unchanged.
+        for original in &req.spans {
+            let entry = unpacked
+                .manifest
+                .span_table
+                .iter()
+                .find(|entry| entry.span_ref == original.span_ref)
+                .expect("restored span entry");
+            let restored = &unpacked.span_section[entry.offset..entry.offset + entry.length];
+            assert_eq!(restored, original.bytes);
+            assert_eq!(hex(Sha256::digest(restored)), original.span_ref);
+        }
         let mut h = Sha256::new();
         h.update(&recon);
         assert_eq!(hex(h.finalize()), v.content_hash);
+        assert_eq!(
+            unpacked.manifest.retention,
+            build_manifest(&req, &[], &[]).retention
+        );
+        assert_eq!(
+            unpacked.manifest.provenance,
+            build_manifest(&req, &[], &[]).provenance
+        );
         // vector roundtrip
-        let vec = read_vector(&unpacked, "span-a", 3).unwrap();
-        assert!((vec[0] - 0.1).abs() < 1e-6);
-        assert!((vec[1] - 0.2).abs() < 1e-6);
-        assert!((vec[2] - 0.3).abs() < 1e-6);
+        let vec = read_vector(&unpacked, &req.vectors[0].0, 3).unwrap();
+        let original = &req.vectors[0].1;
+        assert_eq!(
+            vec.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            original
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+        );
     }
 
     #[test]
@@ -724,5 +796,4 @@ mod tests {
         req.spans[0].bytes = vec![0u8; CEILING_BYTES];
         assert!(pack(&req).is_err());
     }
-
 }
