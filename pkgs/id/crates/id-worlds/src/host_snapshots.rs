@@ -19,7 +19,9 @@
 //!   listing is the whole record.
 //! - Pruning removes whole set files and nothing else. A journal is never
 //!   opened for writing here: the append-only invariant holds by
-//!   construction.
+//!   construction. (Compaction can still rewrite a journal between
+//!   snapshots, so "unchanged" is judged by the export manifest's
+//!   journal digest, not the entry count alone — #16134.)
 //! - [`usage`]: per-world set counts and bytes, which the host census adds
 //!   to each lifecycle state's capacity.
 //!
@@ -214,6 +216,32 @@ pub fn usage(snapshot_root: &Path, world: &str) -> SnapshotUsage {
             total.bytes = total.bytes.saturating_add(set.bytes);
             total
         })
+}
+
+/// Whether a fresh export is the same journal as the newest existing
+/// set, so the fresh set replaces it instead of adding a second copy.
+///
+/// Entry count alone does not prove this (#16134): checkpoint
+/// compaction rewrites the journal, so two different journals can have
+/// the same number of entries, and deleting the older set would discard
+/// a distinct restore point. The journal digest from each set's export
+/// manifest is the content evidence. A previous set whose manifest
+/// carries no digest (written before digests existed) falls back to the
+/// entry count, the only evidence it has.
+#[must_use]
+pub fn replaces_previous(
+    previous_entries: u64,
+    previous_digest: Option<&str>,
+    new_entries: u64,
+    new_digest: &str,
+) -> bool {
+    if previous_entries != new_entries {
+        return false;
+    }
+    match previous_digest {
+        Some(digest) if !digest.is_empty() && !new_digest.is_empty() => digest == new_digest,
+        _ => true,
+    }
 }
 
 /// Whether a world whose newest set is `newest` is due a new one at
@@ -424,6 +452,20 @@ mod tests {
         remove_sets(&sets[..1]).unwrap();
         remove_sets(&sets[..1]).unwrap();
         assert_eq!(usage(root.path(), "alpha").sets, 1);
+    }
+
+    #[test]
+    fn replacement_needs_the_same_journal_not_just_the_same_entry_count() {
+        // Oracle (#16134): distinct restorable world states must remain
+        // distinct retained restore points — a compacted journal with
+        // the same entry count as its predecessor is not a duplicate.
+        assert!(replaces_previous(5, Some("aaa"), 5, "aaa"));
+        assert!(!replaces_previous(5, Some("aaa"), 5, "bbb"));
+        assert!(!replaces_previous(5, Some("aaa"), 6, "aaa"));
+        // A legacy set with no recorded digest falls back to the count.
+        assert!(replaces_previous(5, Some(""), 5, "bbb"));
+        assert!(replaces_previous(5, None, 5, "bbb"));
+        assert!(!replaces_previous(5, None, 6, "bbb"));
     }
 
     #[test]

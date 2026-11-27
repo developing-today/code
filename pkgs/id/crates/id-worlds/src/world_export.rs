@@ -83,6 +83,15 @@ pub struct ExportManifest {
     /// count for a snapshot, `base_ordinal` plus the new entries for an
     /// incremental. The next set in a chain starts here.
     pub entries: u64,
+    /// Lowercase hex of the blake3 hash of the exact journal bytes this
+    /// export was taken from. Unlike the entry count, this binds the
+    /// manifest to the journal's content: two different journals (for
+    /// example after checkpoint compaction) can share an entry count but
+    /// never this digest. Unlike the export envelope, it is stable
+    /// across exports of the same journal — the per-export nonce is not
+    /// part of it. Absent in exports written before this field existed.
+    #[serde(default)]
+    pub journal_digest: String,
     /// Lowercase hex of the session nonce every frame is bound to.
     pub nonce: String,
     /// Which set of the custody chain this file holds. Absent — a P3
@@ -132,6 +141,7 @@ pub async fn export_world<W: AsyncWrite + Unpin + Send>(
         source: encode_hex(&source),
         header_version: snapshot.header_version,
         entries: u64::try_from(entries).unwrap_or(u64::MAX),
+        journal_digest: encode_hex(blake3::hash(&snapshot.bytes).as_bytes()),
         nonce: encode_hex(&nonce),
         set_kind: ExportSetKind::Snapshot,
         base_ordinal: 0,
@@ -267,6 +277,7 @@ pub async fn export_incremental_set<W: AsyncWrite + Unpin + Send>(
         source: encode_hex(&source),
         header_version: snapshot.header_version,
         entries: u64::try_from(total).unwrap_or(u64::MAX),
+        journal_digest: encode_hex(blake3::hash(&snapshot.bytes).as_bytes()),
         nonce: encode_hex(&nonce),
         set_kind: ExportSetKind::Incremental,
         base_ordinal,
@@ -852,6 +863,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn journal_digest_binds_the_exact_journal_not_the_envelope() {
+        // Oracle: the digest names journal content, so re-exporting an
+        // unchanged journal (fresh nonce, new envelope) keeps it, and
+        // any state change changes it — even though a later compaction
+        // could bring the entry count back to the same value.
+        let root = TempDir::new().unwrap();
+        let service = busy_world(&root.path().join("w")).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let mut first = Vec::new();
+        let one = export_world(&service, &key, &mut first).await.unwrap();
+        let mut second = Vec::new();
+        let two = export_world(&service, &key, &mut second).await.unwrap();
+        assert_ne!(one.nonce, two.nonce);
+        assert_eq!(one.journal_digest, two.journal_digest);
+        assert_eq!(one.entries, two.entries);
+        assert!(!one.journal_digest.is_empty());
+
+        let (_, ann) = service
+            .world()
+            .issue("ann2", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(ann, "changed").await.unwrap();
+        let mut third = Vec::new();
+        let three = export_world(&service, &key, &mut third).await.unwrap();
+        assert_ne!(one.journal_digest, three.journal_digest);
+        service.world().shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_wrong_key_a_flipped_byte_or_a_cut_file_restores_nothing() {
         let root = TempDir::new().unwrap();
         let service = busy_world(&root.path().join("w")).await;
@@ -1016,6 +1057,7 @@ mod tests {
             source: "9".repeat(64),
             header_version: 1,
             entries,
+            journal_digest: "0".repeat(64),
             nonce: "0".repeat(32),
             set_kind,
             base_ordinal,
