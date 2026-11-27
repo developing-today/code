@@ -136,6 +136,7 @@
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_content_ledger;
 use crate::gh_guard;
 use crate::gh_metadata;
 use crate::gh_sync;
@@ -152,6 +153,11 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
+/// The shared content-creation ledger refused the reservation, so
+/// the create did not run (code#2227). Mirrors gh-post's exit 5:
+/// an unledgered filing is the failure mode the ledger exists to
+/// kill, so the refusal is loud and counted, never silent.
+const EXIT_LEDGER: i32 = 5;
 
 fn usage_error(message: &str) -> i32 {
     eprintln!("error: {message}");
@@ -1624,6 +1630,20 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(prepared) => prepared.args.clone(),
         None => call_args,
     };
+    // Content-creation ledger (code#2227): a classified create
+    // reserves its shared-ledger row BEFORE any GitHub write. The
+    // ledger owns the failure mode — a reservation failure refuses
+    // the create (exit 5), never an unledgered filing.
+    let ledger_pending = match gh_content_ledger::start(&call_args) {
+        Ok(pending) => pending,
+        Err(e) => {
+            eprintln!(
+                "fleet gh: content-ledger reserve failed ({e}); \
+                 refusing to post unledgered (code#2227)"
+            );
+            return EXIT_LEDGER;
+        }
+    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
@@ -1634,8 +1654,25 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         &call_args,
         &sources,
         trace,
-        prepared_create.is_some(),
+        // The ledger's verify step reads the created item's URL
+        // from stdout (code#2227); capture changes nothing
+        // user-visible — emit() still streams every byte.
+        prepared_create.is_some() || ledger_pending.is_some(),
     );
+    // Content-creation ledger (code#2227): finalise the reservation
+    // with what actually happened, on every path below. The row
+    // records the truth; gh's exit code stands either way (the
+    // metadata create path's posture).
+    if let Some(pending) = &ledger_pending {
+        match gh_content_ledger::finish(pending, code, final_stdout.as_deref()) {
+            Ok(Some(notice)) => eprintln!("fleet gh: {notice}"),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "fleet gh: content-ledger finalize failed ({e}); \
+                 the create stands, the ledger is short one outcome"
+            ),
+        }
+    }
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -2523,6 +2560,48 @@ mod tests {
             dir.to_string_lossy().to_string(),
             script.to_string_lossy().to_string(),
         )
+    }
+
+    // oracle: the shared-ledger contract in gh_content_ledger — a
+    // reservation must be committed before the external create starts;
+    // empty stdout on exit 0 is finalized failed without rewriting gh's
+    // exit code. CONTENT_LEDGER_PATH points into this test's isolated dir.
+    #[test]
+    fn create_reserves_before_gh_and_empty_output_records_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-gh-ledger-e2e-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("ledger.sqlite");
+        let probe = dir.join("probe");
+        let script = format!(
+            "#!/bin/sh\n\
+             python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
+             touch \"{}\"\n\
+             exit 0\n",
+            ledger.display(), probe.display()
+        );
+        let script_path = place_script(&dir, "ledger-gh", &script);
+        let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
+            .iter().map(|s| s.to_string()).collect();
+        let pending = gh_content_ledger::start_at(&args, &ledger)
+            .expect("reserve succeeds")
+            .unwrap();
+        let attempt = run_gh_once(&script_path, &[], "test-token").expect("fake gh runs");
+        assert_eq!(attempt.code, 0, "gh's exit code is preserved");
+        assert!(probe.exists(), "fake gh ran after observing reservation");
+        gh_content_ledger::finish(&pending, attempt.code, Some(&attempt.stdout))
+            .expect("finalize reservation");
+        let conn = rusqlite::Connection::open(&ledger).unwrap();
+        let (outcome, detail): (String, String) = conn
+            .query_row("SELECT outcome, detail FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(outcome, "failed", "empty successful output is not a created item");
+        assert_eq!(detail, "gh exited 0 with empty output");
     }
 
     /// Place an executable script the way fake_gh does: the text

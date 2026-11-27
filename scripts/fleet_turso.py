@@ -37,7 +37,7 @@ class Turso:
         self.url = (
             os.environ.get(
                 "FLEET_TURSO_URL",
-                "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
+                "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
             )
             .replace("libsql://", "https://")
             .rstrip("/")
@@ -45,11 +45,11 @@ class Turso:
         parsed = urlsplit(self.url)
         if (
             parsed.scheme != "https"
-            or parsed.hostname != "fleet-platform-dezren39.aws-us-east-1.turso.io"
+            or parsed.hostname != "d1-gateway.developing-today.workers.dev"
             or parsed.username
             or parsed.password
             or parsed.port not in (None, 443)
-            or parsed.path
+            or parsed.path != "/db/fleet-platform"
             or parsed.query
             or parsed.fragment
         ):
@@ -114,6 +114,8 @@ class Turso:
             headers={
                 "Authorization": "Bearer " + self.token,
                 "Content-Type": "application/json",
+                # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+                "User-Agent": "fleet-d1-client/1",
             },
         )
         try:

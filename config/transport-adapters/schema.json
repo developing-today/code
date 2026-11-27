@@ -22,8 +22,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "name", "version", "shape", "addressing", "levels", "delivery",
-        "identity_binding", "capability_gating", "metering"
+        "name",
+        "version",
+        "shape",
+        "addressing",
+        "levels",
+        "delivery",
+        "identity_binding",
+        "capability_gating",
+        "metering"
       ],
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
@@ -97,7 +104,12 @@
           "else": { "not": { "required": ["custody"] } }
         },
         {
-          "if": { "properties": { "levels": { "properties": { "send": { "const": "write-capable" } }, "required": ["send"] } }, "required": ["levels"] },
+          "if": {
+            "properties": {
+              "levels": { "properties": { "send": { "const": "write-capable" } }, "required": ["send"] }
+            },
+            "required": ["levels"]
+          },
           "then": { "properties": { "capability_gating": { "properties": { "send": { "minLength": 1 } } } } }
         }
       ]

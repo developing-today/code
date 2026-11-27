@@ -150,11 +150,7 @@ export async function computeEditionDrift(
     deployedCommitAt = await commitTimeIso(run, repoDir, deployed);
     mainHeadAt = await commitTimeIso(run, repoDir, "origin/main");
   } catch (err) {
-    return unknown(
-      `drift measurement failed: ${err instanceof Error ? err.message : String(err)}`,
-      deployed,
-      mainHead,
-    );
+    return unknown(`drift measurement failed: ${err instanceof Error ? err.message : String(err)}`, deployed, mainHead);
   }
   if (behindBy === 0) {
     return {

@@ -37,6 +37,16 @@ export async function platformRead(
         return ops.releases();
       case "platform":
         return ops.platform();
+      // The Cloudflare configuration's last successful apply (#13495):
+      // the apply workflow's runs are GitHub's record, so this is
+      // answered wherever the app is served from, like the rest here.
+      case "cloudflare-apply":
+        return ops.cloudflareApply();
+      // The stores, asked live (#14254). Where a store's token
+      // cannot be fetched (the edge holds none by name), that store
+      // answers as not answering; the others still show.
+      case "stores":
+        return ops.platformStores();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":

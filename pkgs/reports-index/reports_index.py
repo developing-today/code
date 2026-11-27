@@ -132,8 +132,15 @@ class ReportEntry:
         return "fresh" if age <= FRESHNESS_BUDGET_SECONDS else "stale"
 
     def searchable_text(self):
-        parts = [self.id, self.title, self.summary, self.body_text,
-                 self.project, self.kind, self.status]
+        parts = [
+            self.id,
+            self.title,
+            self.summary,
+            self.body_text,
+            self.project,
+            self.kind,
+            self.status,
+        ]
         parts.extend(self.tags)
         parts.extend(self.linked_ids())
         return "\n".join(str(p) for p in parts if p)
@@ -216,9 +223,20 @@ class ReportsIndex:
 
     # -- search ----------------------------------------------------------
 
-    def search(self, query="", kind=None, project=None, status=None,
-               tag=None, date_from=None, date_to=None, page=1, page_size=20,
-               sort="updated", now=None):
+    def search(
+        self,
+        query="",
+        kind=None,
+        project=None,
+        status=None,
+        tag=None,
+        date_from=None,
+        date_to=None,
+        page=1,
+        page_size=20,
+        sort="updated",
+        now=None,
+    ):
         if page < 1:
             raise ValueError("page must be >= 1")
         if page_size < 1:
@@ -257,14 +275,25 @@ class ReportsIndex:
         total = len(matched)
         pages = (total + page_size - 1) // page_size if total else 0
         start = (page - 1) * page_size
-        items = matched[start:start + page_size]
+        items = matched[start : start + page_size]
         state = self.freshness_state(now) if now is not None else self.state
         return SearchResult(
-            items=items, total=total, page=page, page_size=page_size,
-            pages=pages, state=state,
-            filters={"query": query or "", "kind": kind, "project": project,
-                     "status": status, "tag": tag, "date_from": date_from,
-                     "date_to": date_to, "sort": sort},
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+            pages=pages,
+            state=state,
+            filters={
+                "query": query or "",
+                "kind": kind,
+                "project": project,
+                "status": status,
+                "tag": tag,
+                "date_from": date_from,
+                "date_to": date_to,
+                "sort": sort,
+            },
         )
 
     def get(self, report_id):
@@ -297,9 +326,9 @@ def render_index_html(result, now, last_refresh_at=None):
     state_note = {
         "fresh": "Index is fresh (refreshed within the 15-minute budget).",
         "stale": "Index may be stale: the last refresh is outside the "
-                 "15-minute budget or failed; showing last-good results.",
+        "15-minute budget or failed; showing last-good results.",
         "unavailable": "Index unavailable: no successful refresh yet; "
-                       "showing last-good results if any.",
+        "showing last-good results if any.",
     }[result.state]
     rows = []
     for e in result.items:
@@ -307,40 +336,49 @@ def render_index_html(result, now, last_refresh_at=None):
         freshness = e.freshness(now, last_refresh_at)
         src_links = " · ".join(
             f'<a href="{esc(str(v))}">{esc(str(v))}</a>'
-            for values in (e.links or {}).values() for v in values)
+            for values in (e.links or {}).values()
+            for v in values
+        )
         rows.append(
             f'<article class="card"><h2><a href="{esc(links["canonical"])}">'
-            f'{esc(e.title)}</a></h2><p>{esc(e.summary)}</p>'
+            f"{esc(e.title)}</a></h2><p>{esc(e.summary)}</p>"
             f'<p class="meta">{esc(e.kind)} · {esc(e.project)} · '
-            f'{esc(e.status)} · updated {esc(e.updated_at)} · '
-            f'freshness: {esc(freshness)}</p>'
+            f"{esc(e.status)} · updated {esc(e.updated_at)} · "
+            f"freshness: {esc(freshness)}</p>"
             f'<p class="meta">tags: {esc(", ".join(e.tags))}</p>'
             f'<p class="meta">source: {src_links}</p>'
             f'<p class="meta"><a href="{esc(links["timeline"])}">timeline</a>'
-            f'</p></article>')
+            f"</p></article>"
+        )
     if not rows:
-        rows.append('<p class="card">No reports match. Your search and '
-                    'filters are kept above — clear or widen them to see '
-                    'more.</p>')
+        rows.append(
+            '<p class="card">No reports match. Your search and '
+            "filters are kept above — clear or widen them to see "
+            "more.</p>"
+        )
     filter_inputs = "".join(
-        f'<label>{esc(k)} <input name="{esc(k)}" '
-        f'value="{esc(str(v or ""))}"></label>'
-        for k, v in (("q", f["query"]), ("kind", f["kind"]),
-                     ("project", f["project"]), ("status", f["status"]),
-                     ("tag", f["tag"]), ("date_from", f["date_from"]),
-                     ("date_to", f["date_to"])))
+        f'<label>{esc(k)} <input name="{esc(k)}" value="{esc(str(v or ""))}"></label>'
+        for k, v in (
+            ("q", f["query"]),
+            ("kind", f["kind"]),
+            ("project", f["project"]),
+            ("status", f["status"]),
+            ("tag", f["tag"]),
+            ("date_from", f["date_from"]),
+            ("date_to", f["date_to"]),
+        )
+    )
     return (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<title>Reports index</title><style>{_PAGE_CSS}</style></head>'
-        f'<body><main><h1>Reports</h1>'
+        f"<title>Reports index</title><style>{_PAGE_CSS}</style></head>"
+        f"<body><main><h1>Reports</h1>"
         f'<p class="{esc(result.state)}">{esc(state_note)}</p>'
         f'<form method="get" action="/reports">{filter_inputs}'
         f'<button type="submit">Search</button></form>'
         f'<p class="meta">{result.total} report(s) · page {result.page} '
-        f'of {result.pages}</p>'
-        + "".join(rows) +
-        '</main></body></html>')
+        f"of {result.pages}</p>" + "".join(rows) + "</main></body></html>"
+    )
 
 
 def entry_to_dict(entry):
@@ -353,10 +391,16 @@ def index_snapshot_json(index, now):
         "state": index.freshness_state(now),
         "last_refresh_at": index.last_refresh_at,
         "reports": [
-            {"id": e.id, "title": e.title,
-             **{"links": e.metadata_links()},
-             "tags": e.tags, "status": e.status, "kind": e.kind,
-             "project": e.project, "updated_at": e.updated_at}
+            {
+                "id": e.id,
+                "title": e.title,
+                **{"links": e.metadata_links()},
+                "tags": e.tags,
+                "status": e.status,
+                "kind": e.kind,
+                "project": e.project,
+                "updated_at": e.updated_at,
+            }
             for e in sorted(index._entries.values(), key=lambda x: x.id)
         ],
     }

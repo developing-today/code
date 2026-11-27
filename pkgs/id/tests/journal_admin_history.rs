@@ -71,7 +71,7 @@ fn external_code_can_build_a_current_form_checkpoint_admin_history() {
 #[test]
 fn incomplete_admin_history_round_trips_as_incomplete() {
     let history = JournalAdminHistory::new(Vec::new(), false);
-    assert!(history.events().is_empty());
+    assert_eq!(history.events(), [] as [WorldEvent; 0]);
     assert!(!history.is_complete());
     let line = serde_json::to_string(&history).unwrap();
     let decoded: JournalAdminHistory = serde_json::from_str(&line).unwrap();

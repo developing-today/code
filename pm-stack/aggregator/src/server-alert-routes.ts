@@ -7,13 +7,26 @@ import { getDecisionSet, raiseDecisionSet, validateDecisionSet } from "./decisio
 import { setStackHealth, validateStackHealth } from "./stack-health.ts";
 import { validateHealthHook, type HealthHookRecord } from "./health-hook.ts";
 import { timingSafeEqual } from "node:crypto";
-import { getAlertsStore, requestAlertTick, sendClassTestPush, sendTestPush, toPublicSubscription, validateNewIncident, validateNewSubscription } from "./alerts.ts";
+import {
+  getAlertsStore,
+  requestAlertTick,
+  sendClassTestPush,
+  sendTestPush,
+  toPublicSubscription,
+  validateNewIncident,
+  validateNewSubscription,
+} from "./alerts.ts";
 import { requestNotifyRelaySubscriptionSync } from "./notify-relay.ts";
 import { onQuestionRaised } from "./needs-user.ts";
 import { VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications } from "./render.ts";
-import { isNotificationTestClass, NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES, rollupNotificationSends } from "./notifications.ts";
+import {
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+} from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import type { Source } from "./source.ts";
 import { cfg, eventsStore, source } from "./server-wiring.ts";
@@ -298,7 +311,10 @@ export async function handleAlertsList(path: string, prov: () => ReturnType<Sour
   }
 }
 
-export async function handleAlertPreferences(path: string, prov: () => ReturnType<Source["provenance"]>): Promise<Response> {
+export async function handleAlertPreferences(
+  path: string,
+  prov: () => ReturnType<Source["provenance"]>,
+): Promise<Response> {
   // #3318: subscription preferences — per-class toggles, quiet
   // hours, this-browser state, per-class test sends. Writes go
   // through the existing /api/push/subscriptions upsert; this
@@ -326,7 +342,10 @@ export async function handleAlertPreferences(path: string, prov: () => ReturnTyp
   }
 }
 
-export async function handleNotificationsPage(path: string, prov: () => ReturnType<Source["provenance"]>): Promise<Response> {
+export async function handleNotificationsPage(
+  path: string,
+  prov: () => ReturnType<Source["provenance"]>,
+): Promise<Response> {
   // #3319: the weekly sent-vs-acted roll-up over the send ledger.
   // Same reachability as every dashboard page (the tailnet origin);
   // the only alerts write surface stays the bearer-gated intake.

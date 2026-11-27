@@ -679,7 +679,7 @@ fn gate_and_shape_refusals_store_nothing() {
         store.ingest(IngressPath::Local, &foreign, "self", NOW),
         Err(IngestError::ForeignParent(event(6)))
     );
-    assert!(store.heads(&doc).is_empty());
+    assert_eq!(store.heads(&doc), [] as [EventId; 0]);
 }
 
 #[test]
