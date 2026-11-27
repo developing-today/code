@@ -52,6 +52,30 @@ describe("dual-ingestion block plumbing", () => {
     expect(payload).toEqual({ found: true, json: JSON.stringify({ pm_meta: 1, links: [] }, null, 2) });
   });
 
+  test("a title containing triple backticks round-trips through render/parse (#16013)", () => {
+    // Oracle: the payload extract returns is byte-identical to the JSON
+    // renderMetadataBlock emitted, and the parsed title is complete.
+    const metadata = { pm_meta: 1, title: "Document ```json examples", links: [] as unknown[] };
+    const payload = extractMetadataPayload(renderMetadataBlock(metadata));
+    expect(payload).toEqual({ found: true, json: JSON.stringify(metadata, null, 2) });
+    if (!payload.found) return;
+    expect(JSON.parse(payload.json).title).toBe("Document ```json examples");
+  });
+
+  test("a block whose title contains backticks is current on the next check, not replaced (#16013)", () => {
+    const block = renderMetadataBlock({
+      pm_meta: 1,
+      title: "Notes on ```json fences ```",
+      direct_parent: { repo: "developing-today/code", number: 9060, kind: "epic" },
+      links: [],
+      provenance: { actor: "fleet" },
+    });
+    const outcome = runMetadataCheck(item({ body: `description\n\n${block}\n` }), CONTEXT);
+    expect(outcome.kind).toBe("current");
+    if (outcome.kind !== "current") return;
+    expect(outcome.record.parsed.metadata.title).toBe("Notes on ```json fences ```");
+  });
+
   test("markers without a JSON fence are malformed, not silently absent", () => {
     expect(extractMetadataPayload("<!-- pm-metadata:start -->oops<!-- pm-metadata:end -->")).toEqual({
       found: false,
