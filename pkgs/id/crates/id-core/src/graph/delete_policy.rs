@@ -24,6 +24,8 @@ pub enum ClearAuthority {
 /// The policy-relevant facts for one role-aware clear marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClearMarker {
+    /// Identity of the verified `tag.clear` event.
+    pub event_id: [u8; 32],
     /// Authority resolved from the verified, role-aware event-store view.
     /// Raw `tag.clear` events must not be mapped to this type before their
     /// author and target claim have been validated.
@@ -77,7 +79,19 @@ pub(crate) fn apply_clear_policy(
         return Ok(TransitionOutcome::Deferred);
     };
 
-    state.apply_policy_delete_on_clear(actor, &policy.id, key)
+    let authority = match marker.authority {
+        ClearAuthority::ClaimAuthor => "claim-author",
+        ClearAuthority::GroupAdmin => "group-admin",
+        ClearAuthority::ServerOwner => "server-owner",
+    };
+    state.apply_policy_delete_on_clear(
+        actor,
+        &policy.id,
+        &marker.event_id,
+        authority,
+        marker.created_at,
+        key,
+    )
 }
 
 #[cfg(test)]
@@ -100,6 +114,7 @@ mod tests {
             grace_period_seconds: 60,
         };
         let marker = ClearMarker {
+            event_id: [1; 32],
             authority: ClearAuthority::ClaimAuthor,
             created_at: 100,
         };
@@ -115,6 +130,7 @@ mod tests {
             grace_period_seconds: 60,
         };
         let marker = ClearMarker {
+            event_id: [2; 32],
             authority: ClearAuthority::ClaimAuthor,
             created_at: 100,
         };
@@ -139,6 +155,8 @@ mod tests {
         let evidence = state.evidence().last().expect("signed deletion evidence");
         assert_eq!(evidence.action, "policy_deleted_on_clear");
         assert!(evidence.rationale.contains("policy=server-policy-1"));
+        assert!(evidence.rationale.contains("clear_marker=02020202"));
+        assert!(evidence.rationale.contains("authority=claim-author"));
         evidence.verify().expect("evidence signature verifies");
     }
 
@@ -157,6 +175,7 @@ mod tests {
             (ClearAuthority::ClaimAuthor, 200, 100),
         ] {
             let marker = ClearMarker {
+                event_id: [3; 32],
                 authority,
                 created_at,
             };
@@ -188,8 +207,9 @@ mod tests {
                 Just(ClearAuthority::GroupAdmin),
                 Just(ClearAuthority::ServerOwner),
             ],
+            event_id in any::<[u8; 32]>(),
         ) {
-            let marker = ClearMarker { authority, created_at: marker_time };
+            let marker = ClearMarker { event_id, authority, created_at: marker_time };
             prop_assert!(!authorizes_clear_delete(None, &marker, now));
             let mut state = DeletionStateMachine::new([5; 32]);
             let key = SigningKey::from_bytes(&[7; 32]);

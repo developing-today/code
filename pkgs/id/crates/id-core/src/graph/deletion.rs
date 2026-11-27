@@ -519,6 +519,9 @@ impl DeletionStateMachine {
         &mut self,
         actor: &str,
         policy_id: &str,
+        marker_event_id: &[u8; 32],
+        clear_authority: &str,
+        marker_created_at: u64,
         key: &SigningKey,
     ) -> Result<TransitionOutcome, DeletionError> {
         self.validate_actor(actor)?;
@@ -533,7 +536,10 @@ impl DeletionStateMachine {
             "policy_deleted_on_clear",
             actor,
             0,
-            &format!("policy={policy_id}"),
+            &format!(
+                "policy={policy_id};clear_marker={};authority={clear_authority};marker_created_at={marker_created_at}",
+                crate::hex::hex_encode(marker_event_id),
+            ),
             key,
         )?;
         Ok(TransitionOutcome::Applied)
