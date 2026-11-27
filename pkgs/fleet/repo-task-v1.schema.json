@@ -44,7 +44,10 @@
   },
   "additionalProperties": true,
   "anyOf": [
-    { "required": ["prompt"] },
+    {
+      "properties": { "kind": { "const": "prompt" } },
+      "required": ["kind", "prompt"]
+    },
     { "required": ["issue"] },
     { "properties": { "prs": { "minItems": 1 } }, "required": ["prs"] },
     { "required": ["set"] },

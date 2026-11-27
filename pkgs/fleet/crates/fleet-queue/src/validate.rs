@@ -1973,6 +1973,56 @@ mod tests {
             "schema repo enum drifted from FLEET_REPOS"
         );
     }
+    /// Schema parity oracle (#16005 review): the prompt-identity anyOf
+    /// branch accepts prompt-only identity only for `kind: prompt`, matching
+    /// the Rust/hosted-worker manual validators. A non-prompt packet carrying
+    /// only a prompt object must not satisfy the schema's identity anyOf.
+    #[test]
+    fn schema_prompt_identity_requires_kind_prompt() {
+        let schema_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../repo-task-v1.schema.json"
+        );
+        let raw = std::fs::read_to_string(schema_path)
+            .expect("repo-task-v1.schema.json must exist beside pkgs/fleet");
+        let schema: Value = serde_json::from_str(&raw).expect("schema must parse");
+        let branches = schema["anyOf"]
+            .as_array()
+            .expect("schema anyOf must be an array");
+        for branch in branches {
+            let requires = branch
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|reqs| {
+                    reqs.iter().filter_map(Value::as_str).collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if requires.contains(&"prompt") {
+                assert!(
+                    requires.contains(&"kind"),
+                    "prompt-identity anyOf branch must also require kind: {branch:?}"
+                );
+                assert_eq!(
+                    branch["properties"]["kind"]["const"],
+                    json!("prompt"),
+                    "prompt-identity anyOf branch must pin kind to prompt: {branch:?}"
+                );
+            }
+        }
+        assert!(
+            branches.iter().any(|branch| {
+                branch
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|reqs| {
+                        reqs.iter().any(|r| r == "prompt")
+                            && reqs.iter().any(|r| r == "kind")
+                    })
+                    && branch["properties"]["kind"]["const"] == json!("prompt")
+            }),
+            "schema anyOf must carry a kind: prompt + prompt identity branch"
+        );
+    }
     use super::*;
     use proptest::prelude::*;
 
@@ -2720,6 +2770,27 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("prompt.id")),
             "missing ID must name prompt.id: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn non_prompt_kind_with_only_prompt_identity_is_rejected() {
+        // #16005 review parity: prompt-only identity is valid only for
+        // kind: prompt. A triage packet carrying a canonical prompt.id
+        // but no issue/prs/set/source must fail the identity rule.
+        let mut packet = valid_packet();
+        packet["payload"]["kind"] = json!("triage");
+        packet["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("issue");
+        packet["payload"]["prompt"] = json!({
+            "id": "prompt:00000000-0000-4000-8000-000000000001",
+        });
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("payload identity")),
+            "triage with prompt-only identity must fail identity: {errors:?}"
         );
     }
 

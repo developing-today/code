@@ -160,6 +160,15 @@ test("prompt validator accepts canonical IDs and rejects missing, malformed, or 
     else ((invalid["payload"] as JsonObject)["prompt"] as JsonObject)["id"] = badId;
     assert.ok(validatePacket(invalid, T0)[0].some((error) => error.includes("prompt.id")));
   }
+
+  // #16005 review parity: prompt-only identity is valid only for kind: prompt.
+  const nonPrompt = structuredClone(packet);
+  (nonPrompt["payload"] as JsonObject)["kind"] = "triage";
+  delete (nonPrompt["payload"] as JsonObject)["issue"];
+  assert.ok(
+    validatePacket(nonPrompt, T0)[0].some((error) => error.includes("payload identity")),
+    "triage with prompt-only identity must fail identity",
+  );
 });
 
 test("validator enforces dedupe-key family, repo and identity agreement", async () => {
