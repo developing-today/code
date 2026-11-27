@@ -398,6 +398,18 @@ func scriptSettings() []Setting {
 			Long:  "skip omits the check, warn reports that it could not run, and switch uses Deno only for checking while the configured runtime still runs the script.",
 		},
 		{
+			Path: "script.checkJs", Commands: runCommands, Kind: KindBool, Default: "true",
+			Scope: ScopeClient,
+			Name:  "Check JavaScript",
+			Short: "validate JavaScript scripts with // @ts-check and their .d.ts declarations",
+			Long: "On, a JavaScript entry checked in types or strict mode reports " +
+				"the type errors Deno finds in its // @ts-check regions, resolving " +
+				"adjacent .d.ts declarations through the JSDoc imports that name " +
+				"them. Off, JavaScript entries skip the check while TypeScript " +
+				"checking is unchanged. JavaScript without // @ts-check is " +
+				"unchecked either way: Deno only checks the regions that opt in.",
+		},
+		{
 			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
 			Scope: ScopeClient,
 			Enum:  []string{"off", "report", "prepare"},

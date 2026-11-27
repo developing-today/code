@@ -171,6 +171,10 @@ type Options struct {
 	// zero value is deliberate -- a caller that names a mode in
 	// Options asked for the check.
 	TypeCheckDefaulted bool
+	// CheckJs suppresses the type check for JavaScript entries when
+	// false (#1911 slice 2). True (the default) checks // @ts-check
+	// regions and their .d.ts declarations in types/strict mode.
+	CheckJs bool
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -812,7 +816,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
 	// also means a broken import is found before a single server starts.
-	if mode := opts.TypeCheck; mode != "" && mode != string(preflight.TypeCheckOff) {
+	// script.checkJs=false suppresses JavaScript checking without
+	// changing TypeScript checking (#1911 slice 2). Key on the user
+	// script, not the generated launcher, which is always TypeScript.
+	checkEntry := opts.File
+	if checkEntry == "" {
+		checkEntry = scriptPath
+	}
+	if mode := opts.TypeCheck; mode != "" && mode != string(preflight.TypeCheckOff) &&
+		!preflight.ShouldSkipJSCheck(checkEntry, opts.CheckJs) {
 		timeout := opts.TypeCheckTimeout
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
