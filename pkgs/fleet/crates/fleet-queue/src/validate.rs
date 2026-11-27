@@ -141,13 +141,14 @@ pub const NEXT_UP_PRIORITY: i64 = 25;
 pub const DEDUPE_STAMP_ERROR: &str =
     "payload.dedupe: must have checked_at and basis as non-empty strings";
 
-pub const KINDS: [&str; 6] = [
+pub const KINDS: [&str; 7] = [
     "pr_shepherd",
     "triage",
     "small_fix",
     "ci_investigation",
     "second_pass",
     "feature_slice",
+    "prompt",
 ];
 
 /// Structured terminal verdicts for queue tasks (#14170 Q2). Keep the
@@ -459,7 +460,27 @@ pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n\
 second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>\n\
-slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>";
+slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>\nprompt:      repo-health:v1:prompt:<repo>:submission:<UUIDv4>";
+
+fn valid_prompt_id(id: &str) -> bool {
+    let Some(uuid) = id.strip_prefix("prompt:") else {
+        return false;
+    };
+    let b = uuid.as_bytes();
+    b.len() == 36
+        && [8, 13, 18, 23].iter().all(|&i| b[i] == b'-')
+        && b.iter().enumerate().all(|(i, byte)| {
+            if [8, 13, 18, 23].contains(&i) {
+                true
+            } else if i == 14 {
+                *byte == b'4'
+            } else if i == 19 {
+                matches!(*byte, b'8' | b'9' | b'a' | b'b')
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
+            }
+        })
+}
 
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
@@ -476,6 +497,12 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         let mut sorted = KINDS;
         sorted.sort();
         errs.push(format!("payload.kind: must be one of {sorted:?}"));
+    }
+    if get("kind").and_then(Value::as_str) == Some("prompt") {
+        let id = p.pointer("/prompt/id").and_then(Value::as_str);
+        if !id.is_some_and(valid_prompt_id) {
+            errs.push("payload.prompt.id: must be a canonical prompt:<UUIDv4>".to_string());
+        }
     }
     let repo_ok =
         matches!(get("repo"), Some(Value::String(r)) if FLEET_REPOS.contains(&r.as_str()));
@@ -633,9 +660,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
                 );
             }
         }
-        Some(_) => errs.push(
-            "payload.route: must be an object {platform, reason}".to_string(),
-        ),
+        Some(_) => errs.push("payload.route: must be an object {platform, reason}".to_string()),
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
@@ -676,7 +701,11 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     let has_source = matches!(get("source"), Some(Value::Object(s))
         if matches!(s.get("pr"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1))
             && matches!(s.get("finding"), Some(Value::String(f)) if !f.is_empty()));
-    if !(has_issue || has_prs || has_set || has_source) {
+    let has_prompt_identity = get("kind").and_then(Value::as_str) == Some("prompt")
+        && p.pointer("/prompt/id")
+            .and_then(Value::as_str)
+            .is_some_and(valid_prompt_id);
+    if !(has_issue || has_prs || has_set || has_source || has_prompt_identity) {
         errs.push(
             "payload identity: need issue.number, a non-empty prs list, a set object, \
              or a pre-filing source {pr, finding}"
@@ -926,6 +955,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         "maintenance",
         "second-pass",
         "slice",
+        "prompt",
     ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
@@ -1025,6 +1055,22 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                         });
                     }
                 }
+                "prompt" => {
+                    let Some(id) = tail.strip_prefix("submission:") else {
+                        continue;
+                    };
+                    let id = format!("prompt:{id}");
+                    if valid_prompt_id(&id) {
+                        return Some(DedupeMatch {
+                            family: fam.into(),
+                            repo: repo.to_string(),
+                            num: None,
+                            nums: None,
+                            origin: None,
+                            pass: None,
+                        });
+                    }
+                }
                 "maintenance" => {
                     // <slug>:<YYYY-Www>; slug [a-z0-9][a-z0-9_-]*
                     if let Some((slug, week)) = tail.rsplit_once(':') {
@@ -1088,6 +1134,7 @@ fn kind_families(kind: &str) -> Option<&'static [&'static str]> {
         "ci_investigation" => Some(&["fix", "triage", "pr"]),
         "second_pass" => Some(&["second-pass"]),
         "feature_slice" => Some(&["slice"]),
+        "prompt" => Some(&["prompt"]),
         _ => None,
     }
 }
@@ -1156,6 +1203,19 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
         .is_some_and(|o| !o.is_empty());
     let source_only =
         source_pr.is_some() && issue_no.is_none() && pr_numbers.is_empty() && !has_set;
+    if m.family == "prompt" {
+        let id = payload.pointer("/prompt/id").and_then(Value::as_str);
+        let expected = id.and_then(|id| id.strip_prefix("prompt:"));
+        let canonical_key =
+            expected.map(|id| format!("repo-health:v1:prompt:{}:submission:{}", m.repo, id));
+        if canonical_key.as_deref() != Some(key.as_str()) {
+            errors.push(
+                "payload.prompt.id: must match packet.dedupe_key canonical submission identity"
+                    .to_string(),
+            );
+        }
+        return errors;
+    }
     match m.family.as_str() {
         "fix" | "triage" => {
             let n = m.num.unwrap_or(0);
@@ -2460,7 +2520,10 @@ mod tests {
         );
         assert_eq!(
             route_declaration(&payload),
-            Some(("muse".to_string(), "needs the muse seat's checkout".to_string()))
+            Some((
+                "muse".to_string(),
+                "needs the muse seat's checkout".to_string()
+            ))
         );
         for bad in [
             json!({"route": {"platform": "laptop", "reason": "r"}}),
@@ -2647,6 +2710,16 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("prompt.id")),
             "malformed ID must name prompt.id: {errors:?}"
+        );
+
+        packet["payload"]["prompt"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        let (errors, _) = validate_packet(&packet);
+        assert!(
+            errors.iter().any(|e| e.contains("prompt.id")),
+            "missing ID must name prompt.id: {errors:?}"
         );
     }
 
