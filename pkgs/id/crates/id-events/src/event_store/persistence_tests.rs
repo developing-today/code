@@ -105,6 +105,7 @@ fn event(kind: &str, group: Option<Hash>) -> Event {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         },
     )
     .unwrap()
