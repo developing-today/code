@@ -22,8 +22,14 @@ const STRESS_INSTALL_BYTES: u64 = 262_144;
 
 /// The stress event mix, as counts per 1,000 events in the same
 /// discipline as the loadgen core's mix tables: the shape at stream
-/// position `i` is a pure function of `i % 1000`, never sampled, so
-/// the same (seed, tier) always produces the same stream.
+/// position `i` is a pure function of `i % 10` (7 chat / 2 doc edit /
+/// 1 program install per 10), never sampled, so the same (seed,
+/// tier) always produces the same stream. The shapes interleave at
+/// the 10-event grain rather than blocking per 1,000 (#16044): the
+/// per-1,000 counts are unchanged, but every window of 10 events —
+/// including a whole quick-tier active world — contains every
+/// declared shape, so no fixture silently lacks doc edits or
+/// program installs.
 const STRESS_MIX_CHAT: u64 = 700;
 const STRESS_MIX_DOC_EDIT: u64 = 200;
 const STRESS_MIX_PROGRAM_INSTALL: u64 = 100;
@@ -46,13 +52,12 @@ impl StressShape {
 }
 
 fn stress_shape_at(index: u64) -> StressShape {
-    let at = index % 1_000;
-    if at < STRESS_MIX_CHAT {
-        StressShape::Chat
-    } else if at < STRESS_MIX_CHAT + STRESS_MIX_DOC_EDIT {
-        StressShape::DocEdit
-    } else {
-        StressShape::ProgramInstall
+    // One 10-event grain of the per-1,000 mix (700 / 200 / 100):
+    // positions 0..7 chat, 7..9 doc edit, 9 program install.
+    match index % 10 {
+        0..=6 => StressShape::Chat,
+        7..=8 => StressShape::DocEdit,
+        _ => StressShape::ProgramInstall,
     }
 }
 
@@ -231,19 +236,37 @@ fn stress_event(
             );
             let files = 1 + rng.next_u64() % STRESS_INSTALL_FILES;
             let total_bytes = files * 4_096 + rng.next_u64() % (STRESS_INSTALL_BYTES / 4);
-            WorldEventKind::Input(
-                format!(
-                    "program-install files={files} total_bytes={total_bytes} bundle={}",
-                    corpus.text(world_index, sequence, 96)
-                )
-                .into_bytes(),
-            )
+            // A real install (#16044), not a descriptive input: the
+            // artifact is a deterministic pseudo-module of exactly
+            // the stated size (the corpus block cycled), its hash is
+            // the service's own artifact hash, and the install seed
+            // is the next draw of the same stream that sized it.
+            // Restore loads this record as the world's active
+            // program; the doc-edit inputs after it are its replay.
+            let block = corpus.text(world_index, sequence, 96).into_bytes();
+            let mut artifact = Vec::with_capacity(total_bytes as usize);
+            while (artifact.len() as u64) < total_bytes {
+                let take = ((total_bytes - artifact.len() as u64) as usize).min(block.len());
+                artifact.extend_from_slice(&block[..take]);
+            }
+            WorldEventKind::ProgramInstalled {
+                module_hash: module_hash(&artifact),
+                seed: rng.next_u64(),
+                provenance: Some(ModuleProvenance::Artifact),
+                trust: None,
+            }
         }
     };
     (
         WorldEvent {
             sequence,
-            participant_id,
+            // An install is host-authored: participant zero, like
+            // every real `ProgramInstalled` event.
+            participant_id: if shape == StressShape::ProgramInstall {
+                0
+            } else {
+                participant_id
+            },
             kind,
         },
         shape,
@@ -301,13 +324,49 @@ fn stress_world_entries(
     Ok((entries, chat, doc_edits, program_installs))
 }
 
+/// The manifest's expected state hash: FNV-1a over a canonical
+/// serialization of the *restored semantic state* (#16044) — the
+/// restored sequence, the installed program (module hash, install
+/// seed, snapshot), the replay events in order (each as its JSON
+/// line), and the reconstructed presence map. The journal bytes are
+/// deliberately NOT an input: two journals that restore to the same
+/// state hash alike, and a replay that changes state while
+/// preserving the sequence (a different installed module, different
+/// replayed inputs) changes the hash.
+fn stress_state_hash(restored: &RestoredWorld) -> String {
+    let mut hash = Fnv1a::new();
+    hash.write(&restored.core.current_sequence().to_le_bytes());
+    match &restored.program {
+        Some(program) => {
+            hash.write(&[1]);
+            hash.write(program.module_hash.as_bytes());
+            hash.write(&program.seed.to_le_bytes());
+            match &program.snapshot {
+                Some(snapshot) => hash.write(snapshot.as_bytes()),
+                None => hash.write(&[0]),
+            }
+        }
+        None => hash.write(&[0]),
+    }
+    for event in &restored.replay {
+        if let Ok(line) = serde_json::to_vec(event) {
+            hash.write(&line);
+        }
+    }
+    for (participant, sessions) in &restored.presence {
+        hash.write(&participant.to_le_bytes());
+        hash.write(&sessions.to_le_bytes());
+    }
+    hash.finish()
+}
+
 /// Generate one measured world directory (`<out>/<name>/journal.jsonl`)
 /// and verify it by restoring the written journal through the real
-/// restore path. The expected state hash is FNV-1a over the journal
-/// file's exact bytes followed by the restored core's current
-/// sequence (u64 little-endian): the journal determines the state,
-/// and the restore proves the journal is one the store accepts, at
-/// the sequence the manifest claims.
+/// restore path. The expected state hash is [`stress_state_hash`]
+/// over the restored world: the restore proves the journal is one
+/// the store accepts, at the sequence the manifest claims, with the
+/// last installed program active and exactly the inputs committed
+/// after that install as its replay.
 fn generate_stress_world(
     out: &Path,
     name: &str,
@@ -352,16 +411,52 @@ fn generate_stress_world(
         "{name}: restored at sequence {}, generated {events} events",
         restored.core.current_sequence()
     );
+    // The replay the installed program runs: exactly the doc-edit
+    // inputs committed after the last install (an install replaces
+    // the program and clears the replay slate). The expected count
+    // is folded from the generated entries themselves, so this
+    // checks restore's install semantics against the journal, not
+    // against the generator's own shape tally.
+    let mut expected_replay = 0_u64;
+    let mut last_install: Option<(String, u64)> = None;
+    for entry in &entries {
+        if let JournalEntry::Committed { event } = entry {
+            match &event.kind {
+                WorldEventKind::ProgramInstalled {
+                    module_hash, seed, ..
+                } => {
+                    expected_replay = 0;
+                    last_install = Some((module_hash.clone(), *seed));
+                }
+                WorldEventKind::Input(_) => expected_replay += 1,
+                _ => {}
+            }
+        }
+    }
     ensure!(
-        restored.replay.len() as u64 == doc_edits + program_installs,
-        "{name}: restored replay holds {} inputs, generated {}",
+        restored.replay.len() as u64 == expected_replay,
+        "{name}: restored replay holds {} inputs, journal implies {} after the last install",
         restored.replay.len(),
-        doc_edits + program_installs
+        expected_replay
     );
-
-    let mut hash = Fnv1a::new();
-    hash.write(&bytes);
-    hash.write(&restored.core.current_sequence().to_le_bytes());
+    // The installed program the manifest claims is the one restore
+    // loaded: the last install's module and seed, or none.
+    match (&restored.program, &last_install) {
+        (Some(program), Some((module_hash, seed))) => ensure!(
+            program.module_hash == *module_hash && program.seed == *seed,
+            "{name}: restored program {}/{}, last install is {}/{}",
+            program.module_hash,
+            program.seed,
+            module_hash,
+            seed
+        ),
+        (None, None) => {}
+        (program, install) => anyhow::bail!(
+            "{name}: restored program presence {} disagrees with generated installs {}",
+            program.is_some(),
+            install.is_some()
+        ),
+    }
     Ok(StressWorldRecord {
         name: name.to_owned(),
         role,
@@ -370,7 +465,7 @@ fn generate_stress_world(
         chat,
         doc_edits,
         program_installs,
-        expected_state_hash: hash.finish(),
+        expected_state_hash: stress_state_hash(&restored),
     })
 }
 
@@ -503,7 +598,7 @@ pub fn bench_stress_gen(quick: bool) -> Result<()> {
         },
         "hash": {
             "algorithm": "fnv1a64",
-            "input": "journal.jsonl bytes in order, then the restored current_sequence as u64 little-endian",
+            "input": "canonical restored semantic state: current_sequence (u64 LE), installed program (module hash, install seed, snapshot), replay events in order as JSON lines, presence map",
             "format": "16 lowercase hex digits",
         },
         "idle_worlds": {"count": tier.idle_worlds, "events_per_world": 0},
@@ -877,7 +972,12 @@ impl JoinProgram {
 
 impl WorldProgram for JoinProgram {
     fn update(&mut self, event: &WorldEvent) -> Result<()> {
-        if is_input_event(event) {
+        // An install replaces the program: the new program starts
+        // from its install seed with no inputs applied (#16044),
+        // mirroring restore's replay slate wipe.
+        if matches!(event.kind, WorldEventKind::ProgramInstalled { .. }) {
+            self.inputs = 0;
+        } else if is_input_event(event) {
             self.inputs += 1;
         }
         Ok(())
@@ -994,11 +1094,19 @@ fn join_checkpoint_journal(
     );
     let retained = WorldLimits::default().retained_events;
     let window: Vec<WorldEvent> = events[at.saturating_sub(retained)..at].to_vec();
-    let snapshot = events[..at]
-        .iter()
-        .filter(|event| is_input_event(event))
-        .count()
-        .to_string();
+    // The bench program's state at the checkpoint is its input
+    // count since the last program install at or before it: an
+    // install replaces the program and clears its slate (#16044),
+    // exactly as restore's replay does.
+    let mut snapshot_inputs = 0_u64;
+    for event in &events[..at] {
+        if matches!(event.kind, WorldEventKind::ProgramInstalled { .. }) {
+            snapshot_inputs = 0;
+        } else if is_input_event(event) {
+            snapshot_inputs += 1;
+        }
+    }
+    let snapshot = snapshot_inputs.to_string();
     let mut entries = Vec::with_capacity(issued.len() + 2 + (events.len() - at));
     // The header version is the maximum the entries require: the
     // checkpoint's `open_presence` is the binding requirement
@@ -1131,16 +1239,12 @@ fn build_join_world(
         restored.core.current_sequence()
     );
     // The manifest verification the generator itself defines:
-    // FNV-1a over the journal file's bytes, then the restored
-    // sequence as u64 little-endian.
-    let bytes = std::fs::read(&reference_path)?;
-    let mut hash = Fnv1a::new();
-    hash.write(&bytes);
-    hash.write(&restored.core.current_sequence().to_le_bytes());
+    // FNV-1a over the canonical restored semantic state (see
+    // `stress_state_hash`), not over the journal bytes.
     ensure!(
-        hash.finish() == expected_hash,
-        "{name}: journal hash {} does not match the manifest's {expected_hash}",
-        hash.finish()
+        stress_state_hash(&restored) == expected_hash,
+        "{name}: restored state hash {} does not match the manifest's {expected_hash}",
+        stress_state_hash(&restored)
     );
     ensure!(
         restored
