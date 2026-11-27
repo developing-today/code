@@ -187,24 +187,51 @@ func TestPrepareSetRefusesUnpinnedAndConflictingSets(t *testing.T) {
 	}
 }
 
-func TestPrepareSetCountsSubsetsWithoutMaterialisingThem(t *testing.T) {
+func TestPrepareSetMaterialisesEachProjectSetSeparately(t *testing.T) {
+	// Oracle: the resolved entry set and each isolated foreign subset
+	// must become separate prepared environments in the mcpx cache. The
+	// injected installer reports exactly the pins it receives; neither
+	// project's pins may leak into the other's environment, and no write
+	// may land beside the source manifests.
+	root := t.TempDir()
+	entryDir := filepath.Join(root, "entry")
+	foreignDir := filepath.Join(root, "foreign")
+	for _, dir := range []string{entryDir, foreignDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	inst := &fakeInstaller{}
 	set := preflight.ResolvedSet{
 		Packages: []preflight.ResolvedPackage{{Name: "alpha", Version: "1.2.3"}},
 		Subsets: []preflight.DependencySubset{{
-			Manifest: preflight.PackageManifest{Path: "/foreign/package.json", Dir: "/foreign"},
-			Packages: []preflight.ResolvedPackage{{Name: "foreign-only", Version: "2"}},
+			Manifest: preflight.PackageManifest{Path: filepath.Join(foreignDir, "package.json"), Dir: foreignDir},
+			Packages: []preflight.ResolvedPackage{{Name: "foreign-only", Version: "2.0.0"}},
 		}},
 	}
-	prepared, err := preflight.PrepareSet(context.Background(), t.TempDir(), set, inst)
+	prepared, err := preflight.PrepareSet(context.Background(), filepath.Join(root, "cache"), set, inst)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prepared.Subsets != 1 {
-		t.Errorf("the subset is counted for the report: %+v", prepared)
+		t.Errorf("the report retains one cross-project subset: %+v", prepared)
 	}
-	if len(inst.pins) != 1 || len(inst.pins[0]) != 1 || inst.pins[0][0].Name != "alpha" {
-		t.Errorf("only the entry project's set is installed: %+v", inst.pins)
+	if len(inst.pins) != 2 {
+		t.Fatalf("entry and foreign project are installed separately; got %d installer calls with pins %+v", len(inst.pins), inst.pins)
+	}
+	if len(inst.pins[0]) != 1 || inst.pins[0][0].Name != "alpha" {
+		t.Errorf("first cache entry contains only the entry project's pin: %+v", inst.pins[0])
+	}
+	if len(inst.pins[1]) != 1 || inst.pins[1][0].Name != "foreign-only" {
+		t.Errorf("second cache entry contains only the foreign project's pin: %+v", inst.pins[1])
+	}
+	if inst.dirs[0] == inst.dirs[1] {
+		t.Errorf("different project sets get distinct cache entries: %q", inst.dirs[0])
+	}
+	for _, dir := range []string{entryDir, foreignDir} {
+		if _, err := os.Lstat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
+			t.Errorf("prepare must not write into project directory %s; Lstat error = %v", dir, err)
+		}
 	}
 }
 
