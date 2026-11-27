@@ -29,10 +29,12 @@
 //!     circuit breaker, no verify-by-search. Those are the warn-mode
 //!     throttle (hatch#13) and later slices; this slice makes the
 //!     bypass visible in the ledger first.
-//!   - Scope is issues/PRs/comments. `release create`, `gist
-//!     create`, POST-class `api` calls and `pr review --comment`
-//!     pass through unledgered as today; routing them is the named
-//!     follow-up slice (see the PR body).
+//!   - Scope is issues/PRs/comments, plus `pr review --comment`
+//!     (kind `review`, already in the reference vocabulary).
+//!     `release create`, `gist create`, POST-class `api` calls and
+//!     the non-comment `pr review` shapes (`--approve`,
+//!     `--request-changes`) pass through unledgered as today;
+//!     routing them is the named follow-up slice (see the PR body).
 //!
 //! Oracle: the hatch spec's shared-ledger invariant — every
 //! content-creating call has a reservation row written before the
@@ -79,6 +81,7 @@ pub enum CreateKind {
     Pr,
     IssueComment,
     PrComment,
+    PrReview,
 }
 
 impl CreateKind {
@@ -89,6 +92,7 @@ impl CreateKind {
             CreateKind::Pr => "pr",
             CreateKind::IssueComment => "issue_comment",
             CreateKind::PrComment => "pr_comment",
+            CreateKind::PrReview => "review",
         }
     }
 }
@@ -118,6 +122,10 @@ pub fn classify(args: &[String]) -> Option<Classified> {
         ("pr", "create") => CreateKind::Pr,
         ("issue", "comment") => CreateKind::IssueComment,
         ("pr", "comment") => CreateKind::PrComment,
+        // Only the comment-bearing review shape is ledgered: it is
+        // the one that files new content with a body. `--approve`
+        // and `--request-changes` stay unledgered in this slice.
+        ("pr", "review") if args.iter().any(|a| a == "--comment") => CreateKind::PrReview,
         _ => return None,
     };
     Some(Classified {
@@ -236,7 +244,7 @@ fn reserve(
     repo: &str,
     kind: &str,
 ) -> Result<(i64, String), String> {
-    if !matches!(kind, "issue" | "issue_comment" | "pr" | "pr_comment") {
+    if !matches!(kind, "issue" | "issue_comment" | "pr" | "pr_comment" | "review") {
         return Err(format!("unknown ledger kind {kind:?}"));
     }
     let conn = open_ledger(path)?;
@@ -446,7 +454,7 @@ mod tests {
             .unwrap()
     }
 
-    // oracle: the four ledgered shapes classify with the reference
+    // oracle: the five ledgered shapes classify with the reference
     // kind strings; everything else (reads, merges, deferred
     // shapes) is None and passes through untouched.
     #[test]
@@ -460,8 +468,21 @@ mod tests {
         assert_eq!(c.kind.as_ledger_kind(), "issue_comment");
         let c = classify(&args(&["pr", "comment", "12", "--body", "x"])).unwrap();
         assert_eq!(c.kind.as_ledger_kind(), "pr_comment");
+        let c = classify(&args(&[
+            "pr", "review", "12", "--comment", "--body", "x",
+        ]))
+        .unwrap();
+        assert_eq!(c.kind, CreateKind::PrReview);
+        assert_eq!(c.kind.as_ledger_kind(), "review");
 
         assert!(classify(&args(&["issue", "list"])).is_none());
+        // Non-comment review shapes stay unledgered in this slice.
+        assert!(classify(&args(&["pr", "review", "12", "--approve"])).is_none());
+        assert!(classify(&args(&[
+            "pr", "review", "12", "--request-changes", "--body", "x"
+        ]))
+        .is_none());
+        assert!(classify(&args(&["pr", "review", "12"])).is_none());
         assert!(classify(&args(&["issue", "view", "12"])).is_none());
         assert!(classify(&args(&["pr", "merge", "12"])).is_none());
         assert!(classify(&args(&["pr", "status"])).is_none());
@@ -523,6 +544,9 @@ mod tests {
         let path = temp_ledger("vocab");
         let err = reserve(&path, "a", "j", "o/r", "release").unwrap_err();
         assert!(err.contains("unknown ledger kind"), "{err}");
+        // `review` is in the reference vocabulary and reserves.
+        let (review_row, _) = reserve(&path, "a", "j", "o/r", "review").unwrap();
+        assert_eq!(row_outcome(&path, review_row).0, "reserved");
         let (row, _) = reserve(&path, "a", "j", "o/r", "pr").unwrap();
         let err = finalize(&path, row, "maybe", None, None).unwrap_err();
         assert!(err.contains("unknown ledger outcome"), "{err}");
