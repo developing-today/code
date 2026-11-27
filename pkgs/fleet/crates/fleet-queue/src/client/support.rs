@@ -221,6 +221,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
+  placement-load [--worker <id>] [--json]\n\
   signal [--queue <name>] [--reason <text>]\n\
   fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
@@ -353,6 +354,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
         }
         "health" => "usage: repo-queue health [--queue <name>] [--worker <id>]\n\nBroker health.",
+        "placement-load" => {
+            "usage: repo-queue placement-load [--worker <id>] [--json]\n\nThe placement coordinator's true load view (broker /placement-load): per owner, the GitHub running/queued counts the sweep last read, active coordinator claims, occupancy against cap, and the read's time and source. Read-only; a down or disabled coordinator exits 3 naming the unavailability instead of printing an empty view."
+        }
         "signal" => {
             "usage: repo-queue signal [--queue <name>] [--reason <text>]\n\nSends a queue signal."
         }
