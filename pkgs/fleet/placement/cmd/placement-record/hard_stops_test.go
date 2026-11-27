@@ -24,6 +24,31 @@ func writeHardStopsFixture(t *testing.T, contents string) string {
 // pool sets pool_hard_stop in the answers, so evaluation refuses with
 // the hard-stop line the weekly audit counts — even when the monthly
 // read is far below the 97% threshold.
+// Oracle: each writer action is reflected by the existing seating-path reader,
+// while a stop already carried in answers remains sticky after a registry clear.
+func TestApplyHardStopConsumesWriterLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hard-stops.json")
+	for _, stopped := range []bool{true, true, false, true, false} {
+		if err := placement.WriteHardStop(path, "pool-a", "steward lifecycle action", stopped, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		answers := placement.Answers{PoolID: "pool-a"}
+		if err := applyHardStop(&answers, path); err != nil {
+			t.Fatal(err)
+		}
+		if answers.PoolHardStop != stopped {
+			t.Fatalf("seating reader got %v, want %v", answers.PoolHardStop, stopped)
+		}
+		sticky := placement.Answers{PoolID: "pool-a", PoolHardStop: true}
+		if err := applyHardStop(&sticky, path); err != nil {
+			t.Fatal(err)
+		}
+		if !sticky.PoolHardStop {
+			t.Fatal("writer cleared a stop already recorded in answers")
+		}
+	}
+}
+
 func TestApplyHardStopStopsAStoppedPool(t *testing.T) {
 	path := writeHardStopsFixture(t, `{"version":1,"stops":{"chatgpt-plan":{"stopped":true,"note":"steward hard stop after the 93%->97% jump","issuedAt":"2026-10-29T13:22:00Z"}}}`)
 	fresh := time.Date(2026, 11, 23, 15, 50, 0, 0, time.UTC)

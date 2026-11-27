@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7955 | #6181 (salvage of #7370) | `audit:completed-later` | Removes credential material from SSH and web auth logs. The shared auth-helper logs remained until later PR #9981, which completed the issue. PR note: #7160698928. |
-| #7958 | #5908 | `audit:complete` | Settles the ordered decompose-versus-attach procedure, ten grey cases, payload references through IDs, one-way lossless promotion, alternatives and open questions; the design issue closes with the record. |
-| #7961 | #5801 | `audit:complete` | Settles readable/sealed share modes, key ownership and delivery, event-driven rotation, forward-only revocation limits, recipient proofs and narrowing composition; the design issue closes with the record. |
-| #7962 | #5876 | `audit:complete` | Defines residency/citizenship declarations, assurance levels, provenance, expiry, visibility and rejected alternatives; the design issue closes with the record. |
-| #7963 | #4071 (salvage of #7550) | `audit:completed-later` | Adds a probe for invalid currency authorisations folding live. Later PR #5181 validates malformed bounds, windows, fees, ledgers, rates, caps and allowlists and prevents invalid higher versions shadowing a valid one. PR note: #7160699527. |
+| Payload number |           Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                        |
+| -------------: | -----------------------: | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7955 | #6181 (salvage of #7370) | `audit:completed-later` | Removes credential material from SSH and web auth logs. The shared auth-helper logs remained until later PR #9981, which completed the issue. PR note: #7160698928.                                                                            |
+|          #7958 |                    #5908 | `audit:complete`        | Settles the ordered decompose-versus-attach procedure, ten grey cases, payload references through IDs, one-way lossless promotion, alternatives and open questions; the design issue closes with the record.                                   |
+|          #7961 |                    #5801 | `audit:complete`        | Settles readable/sealed share modes, key ownership and delivery, event-driven rotation, forward-only revocation limits, recipient proofs and narrowing composition; the design issue closes with the record.                                   |
+|          #7962 |                    #5876 | `audit:complete`        | Defines residency/citizenship declarations, assurance levels, provenance, expiry, visibility and rejected alternatives; the design issue closes with the record.                                                                               |
+|          #7963 | #4071 (salvage of #7550) | `audit:completed-later` | Adds a probe for invalid currency authorisations folding live. Later PR #5181 validates malformed bounds, windows, fees, ledgers, rates, caps and allowlists and prevents invalid higher versions shadowing a valid one. PR note: #7160699527. |
 
 ## Slice state
 

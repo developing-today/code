@@ -621,6 +621,20 @@ afterAll(() => {
 });
 
 describe("health page + extended /api/health (fixtures boot)", () => {
+  test("needs-user census route works and keeps the legacy route available", async () => {
+    const current = await fetch(`http://127.0.0.1:${port}/api/needs-user.json`);
+    const legacy = await fetch(`http://127.0.0.1:${port}/api/needs-drew.json`);
+    expect(current.status).toBe(legacy.status);
+    expect([200, 503]).toContain(current.status);
+    const body = (await current.json()) as { fetchedAt?: string; items?: unknown[]; error?: string };
+    if (current.status === 200) {
+      expect(typeof body.fetchedAt).toBe("string");
+      expect(Array.isArray(body.items)).toBe(true);
+    } else {
+      expect(body.error).toContain("needs-user census unavailable");
+    }
+  });
+
   test("/health renders the topology table with honest fixture states", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     expect(res.status).toBe(200);
@@ -862,6 +876,46 @@ describe("quota-gatherer rows (#14062)", () => {
     ]);
     expect(out).toHaveLength(8);
     expect(out.every((r) => r.aliasProviderIds === undefined)).toBe(true);
+  });
+
+  // Oracle: only documented split meters share identity; punctuation and
+  // an unknown credential label cannot establish a common account.
+  test("unknown dotted services retain separate credentials", () => {
+    expect(dedupeGathererProviders([
+      row("custom", "custom.pool", "first account"),
+      row("custom", "custom.pool", "second account"),
+    ])).toHaveLength(2);
+  });
+
+  // Oracle: equal-state readings select newest sync without mutating input.
+  test("the newest equal-state reading wins and preserves all aliases", () => {
+    const older = row("_openai", "_openai.main", "default");
+    const newer = row("_openai.main", "_openai.main", "main", "ok", "2026-11-26T23:01:00.000Z");
+    const out = dedupeGathererProviders([older, newer]);
+    expect(out).toEqual([{ ...newer, aliasProviderIds: ["_openai"] }]);
+    expect(older.aliasProviderIds).toBeUndefined();
+    expect(newer.aliasProviderIds).toBeUndefined();
+  });
+
+  // Oracle: the public renderHealth barrel renders one row per known pool,
+  // naming absorbed doors and retaining/escaping the worst reading's error.
+  test("Health HTML renders escaped aliases and the winning error once", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    view.quotaGatherer = {
+      generatedAt: new Date(NOW).toISOString(),
+      tickAt: new Date(NOW).toISOString(),
+      ok: false,
+      providers: [
+        row("alias<script>", "_openai.main", "default"),
+        { ...row("_openai.main", "_openai.main", "main", "error", null), error: "failed <upstream>" },
+      ],
+    };
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("(also <code>alias&lt;script&gt;</code>)");
+    expect(html).not.toContain("alias<script>");
+    expect(html).toContain("failed &lt;upstream&gt;");
+    expect(html.match(/<td>_openai\.main<\/td>/g)).toHaveLength(1);
   });
 
   test("an exact repeat of a row is still one row with no alias", () => {

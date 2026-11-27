@@ -1026,6 +1026,7 @@ def enqueue_packet(
     file is unique per enqueue: an ad-hoc run overlapping the scheduled
     one must never overwrite or delete the other's packet.
     """
+
     def run_once(candidate: dict) -> subprocess.CompletedProcess:
         payload = candidate["payload"]
         repo_slug = payload["repo"].replace("/", "-")
@@ -1073,7 +1074,18 @@ def enqueue_packet(
             "terminal dedupe hit, but packet has no safe dispatch suffix: "
             f"{out.stdout.strip()[:240]}"
         )
-    retry_packet = {**packet, "dedupe_key": retry_key}
+    retry_payload = {
+        **packet["payload"],
+        "dedupe_override": (
+            "Coverage reconciliation retried this still-open item after its previous "
+            "queue task reached a terminal state."
+        ),
+    }
+    retry_packet = {
+        **packet,
+        "dedupe_key": retry_key,
+        "payload": retry_payload,
+    }
     try:
         retry = run_once(retry_packet)
     except (OSError, subprocess.TimeoutExpired) as exc:

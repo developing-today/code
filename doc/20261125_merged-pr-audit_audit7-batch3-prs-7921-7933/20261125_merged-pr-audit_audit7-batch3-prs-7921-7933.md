@@ -16,13 +16,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7921 | #5855 | `audit:complete` | Settles the rendering pipeline's compile/runtime split, target-specific conformance corpus, and author tooling/linting; the design issue closes by this record. |
-| #7923 | #5849 | `audit:complete` | Defines the v1 closed semantic-markup registry and authoring syntax, raw HTML boundary, and target-neutral semantics; the design issue closes by this record. |
-| #7925 | none (fallout from #2894) | `audit:no-issue` | Fixes the scheduling_actor test fixture to journal its issued participant after #2894's production validation was completed by PR #4518. No separate source issue or remaining gap was found. PR note: #7160277156. |
-| #7932 | #5759 | `audit:partial` | Delivers the client half of fleet proxy get/put. The daemon routes later landed in #11323, but a live laptop round-trip remains open under task 20716, gated on darwin-nix#2003 and a deployment window. PR note: #7160277946. |
-| #7933 | #6005 | `audit:complete` | Records a data-only, signed moderation-pack format with a static rule/feed core and separate per-world parameters; the design issue closes with the record. |
+| Payload number |            Spawning issue | Verdict          | Finding                                                                                                                                                                                                                        |
+| -------------: | ------------------------: | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7921 |                     #5855 | `audit:complete` | Settles the rendering pipeline's compile/runtime split, target-specific conformance corpus, and author tooling/linting; the design issue closes by this record.                                                                |
+|          #7923 |                     #5849 | `audit:complete` | Defines the v1 closed semantic-markup registry and authoring syntax, raw HTML boundary, and target-neutral semantics; the design issue closes by this record.                                                                  |
+|          #7925 | none (fallout from #2894) | `audit:no-issue` | Fixes the scheduling_actor test fixture to journal its issued participant after #2894's production validation was completed by PR #4518. No separate source issue or remaining gap was found. PR note: #7160277156.            |
+|          #7932 |                     #5759 | `audit:partial`  | Delivers the client half of fleet proxy get/put. The daemon routes later landed in #11323, but a live laptop round-trip remains open under task 20716, gated on darwin-nix#2003 and a deployment window. PR note: #7160277946. |
+|          #7933 |                     #6005 | `audit:complete` | Records a data-only, signed moderation-pack format with a static rule/feed core and separate per-world parameters; the design issue closes with the record.                                                                    |
 
 ## Slice state
 

@@ -32,32 +32,58 @@ def cf_fixture(workers, main_rev="aaa111"):
 
 class ClassifyTests(unittest.TestCase):
     def test_equal_pin_and_running_is_converged(self):
-        row = census.classify(pinned="a1", running="a1", lag_s=0, window_s=WINDOW,
-                              overrides=[], held=[])
+        row = census.classify(
+            pinned="a1", running="a1", lag_s=0, window_s=WINDOW, overrides=[], held=[]
+        )
         self.assertEqual(row.state, "converged")
 
     def test_behind_inside_window_is_pending(self):
-        row = census.classify(pinned="a2", running="a1", lag_s=60, window_s=WINDOW,
-                              overrides=[], held=[])
+        row = census.classify(
+            pinned="a2", running="a1", lag_s=60, window_s=WINDOW, overrides=[], held=[]
+        )
         self.assertEqual(row.state, "pending")
 
     def test_behind_beyond_window_is_drifted_with_reason(self):
-        row = census.classify(pinned="a2", running="a1", lag_s=WINDOW + 1,
-                              window_s=WINDOW, overrides=[], held=[])
+        row = census.classify(
+            pinned="a2",
+            running="a1",
+            lag_s=WINDOW + 1,
+            window_s=WINDOW,
+            overrides=[],
+            held=[],
+        )
         self.assertEqual(row.state, "drifted")
         self.assertIn("beyond", row.reason)
 
     def test_override_or_held_update_is_held_not_drift(self):
-        row = census.classify(pinned="a2", running="a1", lag_s=WINDOW * 9,
-                              window_s=WINDOW, overrides=["pin until fix"], held=[])
+        row = census.classify(
+            pinned="a2",
+            running="a1",
+            lag_s=WINDOW * 9,
+            window_s=WINDOW,
+            overrides=["pin until fix"],
+            held=[],
+        )
         self.assertEqual(row.state, "held")
-        row = census.classify(pinned="a2", running="a1", lag_s=None, window_s=WINDOW,
-                              overrides=[], held=["update 42"])
+        row = census.classify(
+            pinned="a2",
+            running="a1",
+            lag_s=None,
+            window_s=WINDOW,
+            overrides=[],
+            held=["update 42"],
+        )
         self.assertEqual(row.state, "held")
 
     def test_unreadable_running_is_never_assumed_converged(self):
-        row = census.classify(pinned="a2", running="unreadable", lag_s=None,
-                              window_s=WINDOW, overrides=[], held=[])
+        row = census.classify(
+            pinned="a2",
+            running="unreadable",
+            lag_s=None,
+            window_s=WINDOW,
+            overrides=[],
+            held=[],
+        )
         self.assertEqual(row.state, "drifted")
         self.assertIn("unreadable", row.reason)
 
@@ -72,7 +98,9 @@ class SummaryTests(unittest.TestCase):
     def test_held_or_drifted_row_produces_a_needs_you_entry(self):
         rows = [
             census.evaluate("cloudflare", "w1", "a1", "a1", 0, WINDOW, [], []),
-            census.evaluate("sandbox", "restic", "0.20.0", "0.19.0", None, WINDOW, [], []),
+            census.evaluate(
+                "sandbox", "restic", "0.20.0", "0.19.0", None, WINDOW, [], []
+            ),
         ]
         report = census.summary(rows)
         self.assertFalse(report["silent"])
@@ -85,9 +113,12 @@ class BuildTests(unittest.TestCase):
         behind = cf_fixture({"pm-aggregator": "old111"})
         report = census.build(["cloudflare"], root, behind, NOW, WINDOW)
         row = report["rows"][0]
-        self.assertEqual(row["state"], "drifted", "pin not resolvable in this checkout: lag unknown")
-        report = census.build(["cloudflare"], root, cf_fixture({"pm-aggregator": "aaa111"}),
-                              NOW, WINDOW)
+        self.assertEqual(
+            row["state"], "drifted", "pin not resolvable in this checkout: lag unknown"
+        )
+        report = census.build(
+            ["cloudflare"], root, cf_fixture({"pm-aggregator": "aaa111"}), NOW, WINDOW
+        )
         self.assertEqual(report["rows"][0]["state"], "converged")
         self.assertTrue(report["silent"])
 
@@ -97,8 +128,9 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(report["silent"])
 
     def test_text_render_names_each_row_and_the_verdict(self):
-        report = census.build(["cloudflare"], HERE.parent,
-                              cf_fixture({"w": "aaa111"}), NOW, WINDOW)
+        report = census.build(
+            ["cloudflare"], HERE.parent, cf_fixture({"w": "aaa111"}), NOW, WINDOW
+        )
         text = census.render_text(report)
         self.assertIn("cloudflare/w: converged", text)
         self.assertIn("converged — nothing needs you", text)
@@ -108,10 +140,17 @@ class ReadOnlyTests(unittest.TestCase):
     """§4: the census never fixes. The module has no write path."""
 
     FORBIDDEN = (
-        r"\bwrite_text\b", r"\bwrite_bytes\b", r"open\([^)]*['\"][wa]",
-        r"\bos\.system\b", r"shell\s*=\s*True", r"\bunlink\b", r"\brename\(",
-        r"\bshutil\.rmtree\b", r"systemctl\b(?!.*\bshow\b)",
-        r"\bnixos-rebuild\b", r"\bwrangler\s+(deploy|publish)\b",
+        r"\bwrite_text\b",
+        r"\bwrite_bytes\b",
+        r"open\([^)]*['\"][wa]",
+        r"\bos\.system\b",
+        r"shell\s*=\s*True",
+        r"\bunlink\b",
+        r"\brename\(",
+        r"\bshutil\.rmtree\b",
+        r"systemctl\b(?!.*\bshow\b)",
+        r"\bnixos-rebuild\b",
+        r"\bwrangler\s+(deploy|publish)\b",
         r"\bgit\s+(push|reset|checkout|commit|fetch)\b",
     )
 
@@ -130,10 +169,14 @@ class ArgumentContractTests(unittest.TestCase):
         # argparse accepts --pla as --plane unless allow_abbrev is disabled.
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
-                census.main([
-                    "--pla", "laptop", "--fixture",
-                    str(HERE / "fixture-that-does-not-exist.json"),
-                ])
+                census.main(
+                    [
+                        "--pla",
+                        "laptop",
+                        "--fixture",
+                        str(HERE / "fixture-that-does-not-exist.json"),
+                    ]
+                )
         self.assertEqual(raised.exception.code, 2)
 
 

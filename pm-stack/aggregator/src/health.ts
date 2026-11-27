@@ -176,19 +176,27 @@ const GATHERER_STATE_RANK: Record<QuotaGathererProviderHealth["state"], number> 
   ok: 0,
 };
 
-/** The dedupe key for one gatherer row (#14062).
- *
- *  A split pool id (one with a dot: `_openai.main`, `opencode-go.popesdrew`)
- *  is one account's meter by construction: serviceIdFor and the
- *  goPoolServiceId / openaiPoolServiceId attribution in quota-gather-map.ts
- *  file a row there only when it reads that account. So every door that
- *  reaches it (the OpenCode Go and Zen doors, the combined row's split copy,
- *  the dedicated `_openai` door beside the `_openai.main` instance) is the
- *  same meter, and the pool is the key whatever provider or label carried
- *  it. Any other service (the combined `opencode-go` row, one per workspace;
- *  `meta`) keeps provider, service and credential apart. */
+/** Account/model split pools emitted by quota-gather-map.ts. A dot alone
+ *  is not identity evidence: serviceIdFor also passes unknown ids through. */
+const GATHERER_SPLIT_POOLS = new Set([
+  "_openai.main",
+  "_openai.alt",
+  "opencode-go.drewrypope",
+  "opencode-go.popesdrew",
+  "opencode-go.developing-today-0",
+  "opencode-go.0x111dev",
+  "_antigravity.gemini",
+  "_antigravity.claude-gpt",
+  "antigravity-direct.gemini",
+  "antigravity-direct.claude-gpt",
+]);
+
+/** One row for each known split meter (#14062), including its Go/Zen and
+ *  folded/dedicated OpenAI doors. This follows the gatherer's attribution;
+ *  it does not infer account identity for unknown services or credentials.
+ *  Other services keep provider, service and credential apart. */
 function gathererRowKey(provider: QuotaGathererProviderHealth): string {
-  if (provider.serviceId.includes(".")) return JSON.stringify(["pool", provider.serviceId]);
+  if (GATHERER_SPLIT_POOLS.has(provider.serviceId)) return JSON.stringify(["pool", provider.serviceId]);
   return JSON.stringify([provider.providerId, provider.serviceId, provider.credentialLabel ?? null]);
 }
 

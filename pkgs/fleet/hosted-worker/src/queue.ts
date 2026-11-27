@@ -3453,6 +3453,75 @@ async function verbBind(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
   const task = await store.getTask(taskId);
   if (task === null) fail(4, `bind_repo_task_lane_session: task ${taskId} does not exist`);
   const now = nowIso(env);
+  // Recovery branch (migration-0026/0027 contract): the claimant
+  // uses these reserved launched_by values only after the old
+  // session is verified deleted-while-zero-message, verified
+  // absent, or verified error-stopped, and only after the task
+  // lease has expired. Matching the prior session id in BOTH
+  // stores before changing either makes recovery an atomic
+  // compare-and-clear: it clears the binding, consumes one
+  // attempt, and records stage 'launch_failed' so the task is
+  // retryable through the handoff shape. The error-stopped mode
+  // (#16066) was previously unrecognized here and in
+  // migration-0026, so error-stopped recovery deleted the session
+  // but never cleared the binding.
+  const recoveryReasons: Record<string, string> = {
+    "opencode-claimant-recovery:zero-message-deleted":
+      "verified zero-message session deleted before recovery",
+    "opencode-claimant-recovery:gone-session":
+      "bound session verified absent before recovery",
+    "opencode-claimant-recovery:error-stopped":
+      "verified error-stopped session deleted before recovery",
+  };
+  const recoveryReason = recoveryReasons[launchedBy];
+  if (recoveryReason !== undefined) {
+    if (worker !== "opencode-claimant") {
+      fail(4, `bind_repo_task_lane_session: recovery must be performed by opencode-claimant`);
+    }
+    const ledger = await store.getLedger(taskId);
+    if (ledger === null) {
+      fail(4, `bind_repo_task_lane_session: no lane ledger row for task ${taskId}`);
+    }
+    if (task.lease_until !== null && task.lease_until > now) {
+      fail(
+        4,
+        `bind_repo_task_lane_session: recovery for task ${taskId} requires an expired lease (lease_until ${task.lease_until})`,
+      );
+    }
+    const progress = progressOf(task);
+    if (
+      task.status !== "claimed" ||
+      progress["lane"] !== "opencode" ||
+      progress["session_id"] !== sid ||
+      ledger.assigned_lane !== "opencode" ||
+      ledger.session_id !== sid
+    ) {
+      fail(4, `bind_repo_task_lane_session: recovery binding mismatch for task ${taskId}`);
+    }
+    if (task.attempts >= task.max_attempts) {
+      fail(4, `bind_repo_task_lane_session: recovery attempts exhausted for task ${taskId}`);
+    }
+    await store.updateLedger(taskId, { session_id: null, updated_at: now });
+    await store.updateTask(taskId, {
+      attempts: task.attempts + 1,
+      progress: mergeObj(progress, {
+        session_id: null,
+        launched_by: null,
+        stage: "launch_failed",
+        launch_failed_session_id: sid,
+        launch_failed_at: now,
+        launch_failed_reason: recoveryReason,
+      }),
+      updated_at: now,
+    });
+    await emit(store, env, worker, taskId, "lane_session_recovered", {
+      session_id: sid,
+      reason: recoveryReason,
+      stage: "launch_failed",
+      via: "bind_repo_task_lane_session",
+    });
+    return ok({ row: await store.getLedger(taskId) });
+  }
   if (!(task.status === "claimed" && task.lease_until !== null && task.lease_until > now)) {
     fail(
       4,

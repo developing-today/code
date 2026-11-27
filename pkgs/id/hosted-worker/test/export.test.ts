@@ -13,11 +13,11 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync } from "node:fs";
 import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, UserDO } from "../src/user-do.ts";
 import { authTranscript, bodyHashHex, type AuthContext } from "../src/bridge-auth.ts";
-import { blake3 } from "../src/blake3.ts";
+import { blake3 } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
 import { encodeBatch } from "../src/bridge-session.ts";
-import type { CborValue } from "../src/canonical-cbor.ts";
+import type { CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 
 const BINDING = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FIXTURE_PATH = new URL("./fixtures/hosted-export-sets.json", import.meta.url);

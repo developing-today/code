@@ -46,9 +46,7 @@ let
   };
 in
 {
-  options.services.queue-coverage-reconcile.enable = lib.mkEnableOption (
-    "the hourly queue coverage reconciliation"
-  );
+  options.services.queue-coverage-reconcile.enable = lib.mkEnableOption "the hourly queue coverage reconciliation";
 
   config = lib.mkIf cfg.enable {
     systemd.user.services.queue-coverage-reconcile = {

@@ -1,11 +1,14 @@
 # id-graph-poc: PoC 1 (Rummager-like organising)
 
-Slice 1 of #14037, built on the D3 record
+Slices 1–2 of #14037. Slice 1 is built on the D3 record
 (`doc/2026-11-24_design_id-graph-layer-typed-links-verbs/D3-graph-layer.md`).
+Slice 2 is a fixture-backed live-transclusion host renderer using the D2
+record (`doc/2026-11-25T01-40-00Z_design_id-apps_d2_transclusion/`).
 
-Run the done check from the repo root:
+Run the done checks from the repo root:
 
     python3 -I apps/id-graph-poc/check.py
+    python3 -I apps/id-graph-poc/check_transclusion.py
 
 ## What it shows
 

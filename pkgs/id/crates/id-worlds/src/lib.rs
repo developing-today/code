@@ -77,7 +77,9 @@ pub mod guest_burn;
 pub mod host;
 #[cfg(unix)]
 pub mod host_control;
+pub mod host_drill;
 pub mod host_opener;
+pub mod host_snapshots;
 pub mod input_framing;
 pub mod kitty_graphics;
 pub mod kitty_still;

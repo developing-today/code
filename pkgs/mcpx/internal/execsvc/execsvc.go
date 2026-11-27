@@ -175,6 +175,8 @@ type Options struct {
 	// TypeCheckOnError and TypeCheckOnUnsupported carry the caller's preflight policies.
 	TypeCheckOnError       string `json:"checkOnError,omitempty"`
 	TypeCheckOnUnsupported string `json:"checkOnUnsupported,omitempty"`
+	// CheckJs false suppresses JavaScript checking; absent takes the default.
+	CheckJs *bool `json:"checkJs,omitempty"`
 	// TypeCheckDefaulted says TypeCheck is on only because the
 	// caller's per-command default switched it on (#1868 point 4):
 	// the Deno-only notice is suppressed for a defaulted check.
@@ -734,6 +736,7 @@ type Limits struct {
 	Typecheck              string
 	TypeCheckOnError       string
 	TypeCheckOnUnsupported string
+	CheckJs                bool
 	Imports                string
 	ImportsOnDynamic       string
 	ImportsOnMissing       string
@@ -828,6 +831,13 @@ type Service struct {
 	// (daemon policy, CLI settings) stamps it here, the same way
 	// ModelMaxTokens is stamped.
 	ModelDefault string
+	// PromptAsk is the elicitation broker an ask prompt hook's
+	// question is raised through (#15809): it returns true only when
+	// the question was answered with approval. Nil means no broker
+	// is configured, and an ask question then goes unanswered —
+	// which refuses the run, fail-closed, the
+	// elicit.confirmDestructive precedent (unanswered refuses).
+	PromptAsk func(ctx context.Context, question string) (bool, error)
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -986,6 +996,10 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	if opts.CaptureConsole != nil {
 		capture = *opts.CaptureConsole
 	}
+	checkJs := s.Limits.CheckJs
+	if opts.CheckJs != nil {
+		checkJs = *opts.CheckJs
+	}
 	ropts := runner.Options{
 		Source:                 req.Source,
 		File:                   req.File,
@@ -1008,6 +1022,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		TypeCheck:              firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
 		TypeCheckOnError:       firstNonEmpty(opts.TypeCheckOnError, s.Limits.TypeCheckOnError),
 		TypeCheckOnUnsupported: firstNonEmpty(opts.TypeCheckOnUnsupported, s.Limits.TypeCheckOnUnsupported),
+		CheckJs:                checkJs,
 		TypeCheckDefaulted:     opts.TypeCheck != "" && opts.TypeCheckDefaulted,
 		Imports:                firstNonEmpty(opts.Imports, s.Limits.Imports),
 		ImportsOnDynamic:       firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
@@ -1303,9 +1318,14 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	}
 	// `before` hooks run once the run's own writers are in place, so a hook
 	// that logs or emits reaches the same stream the script would.
+	var beforeRefusal string
 	if before := phaseHooks(hooks, HookBefore); len(before) > 0 {
 		hookCtx.Phase = HookBefore
-		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
+		for _, run := range s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame) {
+			if run.Refusal != "" && beforeRefusal == "" {
+				beforeRefusal = run.Refusal
+			}
+		}
 	}
 	// A before hook is a snippet too, and the runner rewrote its
 	// final expression like any other: its capture must not become
@@ -1356,6 +1376,27 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			_ = s.Release(relCtx, session)
 			relCancel()
 		}
+	}
+	if beforeRefusal != "" {
+		// An ask prompt hook refused this run (#15809): the script
+		// never starts, so there is no result frame and no calls —
+		// the refusal reason is the run's error. Suffix hooks still
+		// run, as on the never-started path below.
+		res.Error = beforeRefusal
+		res.ErrorKind = FailureNotStarted
+		res.ExitCode = 1
+		emitFrame(Frame{Type: FrameError, Error: beforeRefusal})
+		if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
+			hookCtx.Phase = HookSuffix
+			hookCtx.Error = res.Error
+			hookCtx.Diagnostic = hookDiagnostic(res.Error)
+			hookCtx.ExitCode = res.ExitCode
+			s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
+		}
+		release()
+		code := res.ExitCode
+		emitFrame(Frame{Type: FrameEnd, ExitCode: &code})
+		return res, errors.New(beforeRefusal)
 	}
 	rres, rerr := runner.Run(runCtx, ropts)
 	// Close call-frame delivery before the terminal frames below:

@@ -152,4 +152,127 @@ describe("PM Metadata schema v1 adapter", () => {
       db.close();
     }
   });
+
+  test("unchanged artifact replays issue no row writes and one changed link updates only its row", () => {
+    const db = new Database(":memory:");
+    try {
+      createPmMetadataStore(db);
+      const source = {
+        pm_meta: 1,
+        links: [
+          { target: { repo: "developing-today/code", number: 123 }, relation: "parent", status: "active" },
+          { target: { repo: "developing-today/code", number: 456 }, relation: "blocks", status: "active" },
+        ],
+      };
+      const parsed = parsePmMetadata(source);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      const record = {
+        artifactId: "sha256:metadata-write-audit",
+        repo: "developing-today/code",
+        itemNumber: 14865,
+        itemKind: "issue",
+        sourceUrl: "https://github.com/developing-today/code/issues/14865",
+        parsed: parsed.value,
+        sourceUpdatedAt: "2026-11-24T00:00:00Z",
+      };
+      upsertPmMetadata(db, record);
+
+      // Oracle: SQL triggers record each persisted row mutation. An exact
+      // replay must mutate zero rows; changing one derived link may update
+      // only its source row and that one indexed link row.
+      db.exec(`
+        CREATE TABLE write_audit (table_name TEXT, operation TEXT);
+        CREATE TRIGGER audit_item_update AFTER UPDATE ON pm_metadata_items
+          BEGIN INSERT INTO write_audit VALUES ('items', 'UPDATE'); END;
+        CREATE TRIGGER audit_link_update AFTER UPDATE ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'UPDATE'); END;
+        CREATE TRIGGER audit_link_delete AFTER DELETE ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'DELETE'); END;
+        CREATE TRIGGER audit_link_insert AFTER INSERT ON pm_metadata_links
+          BEGIN INSERT INTO write_audit VALUES ('links', 'INSERT'); END;
+      `);
+
+      upsertPmMetadata(db, record);
+      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual(
+        [],
+      );
+
+      const changedSource = {
+        ...source,
+        links: source.links.map((link, index) => (index === 1 ? { ...link, status: "historical" } : link)),
+      };
+      const changed = parsePmMetadata(changedSource);
+      expect(changed.ok).toBe(true);
+      if (!changed.ok) return;
+      upsertPmMetadata(db, { ...record, parsed: changed.value, sourceUpdatedAt: "2026-11-24T01:00:00Z" });
+      expect(db.query("SELECT table_name, operation FROM write_audit ORDER BY table_name, operation").all()).toEqual([
+        { table_name: "items", operation: "UPDATE" },
+        { table_name: "links", operation: "UPDATE" },
+      ]);
+      expect(getPmMetadata(db, record.artifactId)?.indexes.links).toEqual(changed.value.indexes.links);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("an older source snapshot changes neither the row nor derived links", () => {
+    const db = new Database(":memory:");
+    try {
+      createPmMetadataStore(db);
+      const newerSource = {
+        pm_meta: 1,
+        direct_parent: { repo: "developing-today/code", number: 3447, kind: "epic" },
+        links: [{ target: { repo: "developing-today/code", number: 123 }, relation: "parent", status: "active" }],
+      };
+      const newer = parsePmMetadata(newerSource);
+      expect(newer.ok).toBe(true);
+      if (!newer.ok) return;
+      const newerRecord = {
+        artifactId: "sha256:metadata-monotonic",
+        repo: "developing-today/code",
+        itemNumber: 16012,
+        itemKind: "issue",
+        sourceUrl: "https://github.com/developing-today/code/issues/16012",
+        parsed: newer.value,
+        sourceUpdatedAt: "2026-11-25T10:00:00Z",
+      };
+      upsertPmMetadata(db, newerRecord);
+
+      // A delayed older snapshot (stale dual-ingestion delivery) carries
+      // different content but must not roll the stored row or links back.
+      const olderSource = {
+        pm_meta: 1,
+        direct_parent: { repo: "developing-today/code", number: 9999, kind: "epic" },
+        links: [{ target: { repo: "developing-today/code", number: 456 }, relation: "blocks", status: "active" }],
+      };
+      const older = parsePmMetadata(olderSource);
+      expect(older.ok).toBe(true);
+      if (!older.ok) return;
+      upsertPmMetadata(db, { ...newerRecord, parsed: older.value, sourceUpdatedAt: "2026-11-25T09:00:00Z" });
+
+      // Oracle (#16012): inside the transaction, an incoming snapshot older
+      // than the stored source_updated_at changes neither the item row nor
+      // its derived links; equal snapshots remain idempotent.
+      const stored = getPmMetadata(db, newerRecord.artifactId);
+      expect(stored?.sourceUpdatedAt).toBe("2026-11-25T10:00:00Z");
+      expect(stored?.indexes.directParentNumber).toBe(3447);
+      expect(stored?.indexes.links).toEqual(newer.value.indexes.links);
+      expect(db.query("SELECT COUNT(*) AS count FROM pm_metadata_links").get()).toEqual({ count: 1 });
+
+      // Replaying the newer snapshot verbatim stays idempotent.
+      upsertPmMetadata(db, newerRecord);
+      expect(getPmMetadata(db, newerRecord.artifactId)?.indexes.directParentNumber).toBe(3447);
+      expect(db.query("SELECT COUNT(*) AS count FROM pm_metadata_links").get()).toEqual({ count: 1 });
+
+      // A snapshot without a comparable timestamp keeps replace behavior.
+      const timeless = parsePmMetadata(newerSource);
+      expect(timeless.ok).toBe(true);
+      if (!timeless.ok) return;
+      upsertPmMetadata(db, { ...newerRecord, parsed: timeless.value, sourceUpdatedAt: undefined });
+      expect(db.query("SELECT COUNT(*) AS count FROM pm_metadata_items").get()).toEqual({ count: 1 });
+    } finally {
+      db.close();
+    }
+  });
 });

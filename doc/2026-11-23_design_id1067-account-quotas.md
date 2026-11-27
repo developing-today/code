@@ -176,3 +176,43 @@ order; per-account settle-by-actual-fuel), and the instance wiring
 creator-mode guest with no creator fails its call visibly and
 charges nothing) — with the pre-existing guest_burn / sandbox /
 id-caps suites still green. No new dependencies.
+
+---
+
+## 2026-11-27T07-09-16Z Clarification: session account context
+
+The session layer currently authorizes a world join with a
+`JoinCapability`; it does not resolve that capability to an ID account.
+The account identity used for charging therefore has to arrive from a
+server-side transport adapter that has already authenticated it. It is
+optional for capability-only sessions and is never accepted from a client
+frame. This identity is billing context only: it does not grant world
+authority and is not added to `WorldEvent` or the journal.
+
+The first vertical slice carries this optional account context through the
+session's participant-input path and uses it only while the actor runs the
+resulting guest update. Actor-local context is reset between commands so
+two connections to one world cannot inherit each other's charge identity.
+The next slice is to carry the same context through other session-triggered
+guest calls; world-count enforcement at hub create/open remains subsequent
+work.
+
+**Verified when:** a sandbox-backed session test authenticates an account
+in the transport adapter, sends participant input, and observes the guest
+fuel charge under that account in `GuestBurnSnapshot`; a capability-only
+session continues to charge the world bucket. The test also verifies the
+account is absent from the durable event and journal shapes.
+
+## 2026-11-27 Clarification: session account for guest rendering
+
+The same authenticated account context applies to guest `view` and
+`layout` calls made while serving a joined session, including its initial
+render, resize, and later redraws. The world actor installs the optional
+account only for each render call and restores its prior context before it
+handles another command. Direct world rendering without a session retains
+the existing caller-free behavior.
+
+**Verified when:** a sandbox-backed session test observes the initial view's
+fuel charge increasing the authenticated account's `GuestBurnSnapshot`
+bucket. The viewport path uses that same scoped context for layout and any
+layout-to-view fallback.

@@ -17,6 +17,9 @@
 //   --live             single-leaf bounded live probe (requires --leaf,
 //                      refuses multi-leaf sweeps; one attempt, strict
 //                      timeout, sanitized metadata only, no secrets logged).
+//                      Keyless for kilo/kilo-auto/free; credentialed direct
+//                      adapters (groq/nvidia/openrouter, slice 4) fail
+//                      closed before any network call when unsupported.
 //
 // Safety: recommendation-only, no routing configuration changes. Live
 // probes resolve credentials on the authorized host from the environment
@@ -191,6 +194,24 @@ export function tagContextSource({ empiricallyTested }) {
   return empiricallyTested === true ? 'empirically-tested' : 'provider-published';
 }
 
+// Bound response memory and retain the timeout while reading the body.
+export async function readBoundedBody(response, { maxBytes = 65536 } = {}) {
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    length += value.length;
+    if (length > maxBytes) {
+      await reader.cancel();
+      throw new Error('response-too-large');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 // Deliberately no OpenCode process: agent prompts, tools and fallback routes
 // would invalidate a one-request budget. This first live slice is keyless
 // Kilo only, at a fixed endpoint with an explicit free model and no paid tail.
@@ -207,21 +228,7 @@ export async function runKiloProbe({ prompt, timeoutMs, fetchImpl = fetch }) {
       stream: false,
     }),
   });
-  // Bound response memory and retain the timeout while reading the body.
-  const reader = response.body.getReader();
-  const chunks = [];
-  let length = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    length += value.length;
-    if (length > 65536) {
-      await reader.cancel();
-      throw new Error('response-too-large');
-    }
-    chunks.push(value);
-  }
-  const text = Buffer.concat(chunks).toString('utf8');
+  const text = await readBoundedBody(response);
   let data;
   try { data = JSON.parse(text); } catch { data = {}; }
   const usage = data.usage;
@@ -236,6 +243,165 @@ export async function runKiloProbe({ prompt, timeoutMs, fetchImpl = fetch }) {
     },
     sentinelReturned: data.choices?.[0]?.message?.content?.trim() === PROBE_SENTINEL,
     finishReason: data.choices?.[0]?.finish_reason ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Credentialed direct adapters (slice 4, task 26036): one bounded live call
+// to an exact non-Kilo leaf over the provider's public OpenAI-compatible
+// endpoint. Every check fails closed BEFORE any network call: unsupported
+// provider, exact leaf absent from the wired inventory, output cap above
+// the hard cap, named credential env var absent, or run call budget
+// exhausted. Credentials are read from the environment by name only and
+// are never returned, logged, or written to a record (records carry the
+// env var NAME as credentialSource). Recommendation-only: these adapters
+// measure direct provider APIs; they change no routing configuration.
+// ---------------------------------------------------------------------------
+export const DIRECT_PROBE_MAX_CALLS = 5;
+export const DIRECT_PROBE_MAX_OUTPUT_TOKENS = 64;
+
+export class ProbeError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export const DIRECT_ADAPTERS = {
+  groq: {
+    provider: 'groq',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    credentialEnv: 'GROQ_API_KEY',
+    source: 'Groq OpenAI-compatibility docs (console.groq.com/docs): OpenAI-compatible chat completions; Free Plan key via GROQ_API_KEY',
+  },
+  nvidia: {
+    provider: 'nvidia',
+    endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    credentialEnv: 'NVIDIA_API_KEY',
+    source: 'NVIDIA API Catalog getting started (build.nvidia.com): base https://integrate.api.nvidia.com/v1, Authorization Bearer $NVIDIA_API_KEY, free trial tier',
+  },
+  openrouter: {
+    provider: 'openrouter',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    credentialEnv: 'OPENROUTER_API_KEY',
+    source: 'OpenRouter docs (openrouter.ai/docs): OpenAI-compatible chat completions, Authorization Bearer key via OPENROUTER_API_KEY',
+  },
+};
+
+export function createProbeBudget({ maxCalls = 1 } = {}) {
+  if (!Number.isInteger(maxCalls) || maxCalls < 1 || maxCalls > DIRECT_PROBE_MAX_CALLS) {
+    throw new ProbeError(
+      'call-budget-violation',
+      `probe budget maxCalls must be an integer in [1, ${DIRECT_PROBE_MAX_CALLS}], got ${maxCalls}`,
+    );
+  }
+  let used = 0;
+  return {
+    maxCalls,
+    get used() {
+      return used;
+    },
+    consume() {
+      if (used >= maxCalls) {
+        throw new ProbeError('call-budget-exceeded', `probe call budget exhausted (${used}/${maxCalls}); no further live calls in this run`);
+      }
+      used += 1;
+    },
+  };
+}
+
+export function resolveDirectAdapter({ leaf, leaves, env = process.env, maxOutputTokens = DIRECT_PROBE_MAX_OUTPUT_TOKENS }) {
+  const adapter = leaf ? DIRECT_ADAPTERS[leaf.provider] : undefined;
+  if (!adapter) {
+    throw new ProbeError(
+      'unsupported-provider',
+      `no direct adapter for provider ${leaf?.provider ?? '(none)'}; supported: ${Object.keys(DIRECT_ADAPTERS).join(', ')} (kilo stays on its keyless path)`,
+    );
+  }
+  const inInventory = Array.isArray(leaves) && leaves.some((l) => l.provider === leaf.provider && l.model === leaf.model);
+  if (!inInventory) {
+    throw new ProbeError(
+      'unsupported-model',
+      `exact leaf ${leaf.provider}/${leaf.model} is not in the wired free inventory; refusing to probe an unwired model`,
+    );
+  }
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > DIRECT_PROBE_MAX_OUTPUT_TOKENS) {
+    throw new ProbeError(
+      'output-cap-violation',
+      `maxOutputTokens must be an integer in [1, ${DIRECT_PROBE_MAX_OUTPUT_TOKENS}], got ${maxOutputTokens}`,
+    );
+  }
+  const credential = env?.[adapter.credentialEnv];
+  if (typeof credential !== 'string' || credential.length === 0) {
+    throw new ProbeError(
+      'missing-credentials',
+      `credential env ${adapter.credentialEnv} is not set for provider ${adapter.provider}; failing closed with no network call`,
+    );
+  }
+  return { adapter, credentialSource: `env:${adapter.credentialEnv}` };
+}
+
+export async function runDirectProbe({
+  leaf,
+  leaves,
+  prompt,
+  timeoutMs,
+  maxOutputTokens = DIRECT_PROBE_MAX_OUTPUT_TOKENS,
+  env = process.env,
+  fetchImpl = fetch,
+  budget,
+}) {
+  const { adapter, credentialSource } = resolveDirectAdapter({ leaf, leaves, env, maxOutputTokens });
+  if (!budget || typeof budget.consume !== 'function') {
+    throw new ProbeError('call-budget-violation', 'runDirectProbe requires an explicit probe budget from createProbeBudget()');
+  }
+  budget.consume();
+  const response = await fetchImpl(adapter.endpoint, {
+    method: 'POST',
+    redirect: 'error',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${env[adapter.credentialEnv]}` },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: JSON.stringify({
+      model: leaf.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxOutputTokens,
+      stream: false,
+    }),
+  });
+  const text = await readBoundedBody(response);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {};
+  }
+  const usage = data.usage;
+  const outputTokens = Number.isFinite(usage?.completion_tokens) ? usage.completion_tokens : null;
+  const classified = classifyResult({ httpStatus: response.status, bodyText: text });
+  let { outcome, reason } = classified;
+  // Fail closed on a provider that reports output beyond the requested cap:
+  // the measurement is invalid, never a pass.
+  if (outcome === 'pass' && outputTokens !== null && outputTokens > maxOutputTokens) {
+    outcome = 'fail-cap';
+    reason = 'output-cap-violation';
+  }
+  const responseModel = typeof data.model === 'string' ? data.model : null;
+  return {
+    outcome,
+    reason,
+    httpStatus: response.status,
+    adapter: adapter.provider,
+    credentialSource,
+    responseModel,
+    reportedUpstream: typeof data.provider === 'string' ? data.provider : null,
+    usage: {
+      input: Number.isFinite(usage?.prompt_tokens) ? usage.prompt_tokens : null,
+      output: outputTokens,
+    },
+    sentinelReturned: data.choices?.[0]?.message?.content?.trim() === PROBE_SENTINEL,
+    finishReason: data.choices?.[0]?.finish_reason ?? null,
+    servingProvider: adapter.provider,
+    servingLeaf: responseModel ? `${adapter.provider}/${responseModel}` : null,
   };
 }
 
@@ -289,10 +455,11 @@ async function main(argv) {
   if (!Number.isInteger(maxInputTokens) || maxInputTokens < 256) throw new UsageError(`--max-input-tokens must be an integer >= 256\n${USAGE}`);
 
   if (flags.has('--live')) {
-    // Cost control: this first live adapter is one keyless Kilo call only.
-    if (options['--leaf'] !== 'kilo/kilo-auto/free') {
-      throw new UsageError('--live currently supports only --leaf kilo/kilo-auto/free; all other providers remain dry-run\n' + USAGE);
-    }
+    // Cost control: live mode is exactly one call to one exact leaf — the
+    // keyless Kilo adapter, or one credentialed direct adapter (slice 4)
+    // that fails closed before any network call when its provider, model,
+    // credential, output cap, or call budget check fails.
+    if (!options['--leaf']) throw new UsageError(`--live requires an exact --leaf\n${USAGE}`);
     if (filtered.length !== 1) throw new UsageError(`--live matched ${filtered.length} leaves; give an exact --leaf\n${USAGE}`);
     if (options['--max-probes'] !== undefined && Number(options['--max-probes']) !== 1) {
       throw new UsageError(`--live requires --max-probes 1\n${USAGE}`);
@@ -308,11 +475,31 @@ async function main(argv) {
       throw new UsageError(`live probe payload exceeds --max-input-tokens ${maxInputTokens}\n${USAGE}`);
     }
     const started = Date.now();
+    const isKilo = leaf.provider === 'kilo';
     let liveResult;
-    try {
-      liveResult = await runKiloProbe({ prompt, timeoutMs });
-    } catch {
-      liveResult = { outcome: 'fail-transient', reason: 'request-error', httpStatus: null, responseModel: null, reportedUpstream: null, usage: { input: null, output: null }, sentinelReturned: false };
+    if (isKilo) {
+      try {
+        liveResult = await runKiloProbe({ prompt, timeoutMs });
+      } catch {
+        liveResult = { outcome: 'fail-transient', reason: 'request-error', httpStatus: null, responseModel: null, reportedUpstream: null, usage: { input: null, output: null }, sentinelReturned: false };
+      }
+    } else {
+      try {
+        liveResult = await runDirectProbe({
+          leaf,
+          leaves,
+          prompt,
+          timeoutMs,
+          budget: createProbeBudget({ maxCalls: 1 }),
+        });
+      } catch (err) {
+        if (err instanceof ProbeError) {
+          // Fail closed: no record is written for a probe that never ran.
+          console.error(`[free-context-probe] live direct probe failed closed (${err.code}): ${err.message}`);
+          return 4;
+        }
+        liveResult = { outcome: 'fail-transient', reason: 'request-error', httpStatus: null, responseModel: null, reportedUpstream: null, usage: { input: null, output: null }, sentinelReturned: false };
+      }
     }
     const pass = liveResult.outcome === 'pass' && liveResult.sentinelReturned;
     const record = {
@@ -333,8 +520,11 @@ async function main(argv) {
       httpStatus: liveResult.httpStatus,
       responseModel: liveResult.responseModel,
       reportedUpstream: liveResult.reportedUpstream,
-      servingProvider: 'kilo',
-      servingLeaf: liveResult.responseModel ? `kilo/${liveResult.responseModel}` : null,
+      servingProvider: isKilo ? 'kilo' : liveResult.servingProvider,
+      servingLeaf: liveResult.servingLeaf ?? (liveResult.responseModel ? `${leaf.provider}/${liveResult.responseModel}` : null),
+      adapter: isKilo ? 'kilo-keyless' : liveResult.adapter,
+      credentialSource: isKilo ? 'none-keyless' : liveResult.credentialSource,
+      sentinelReturned: liveResult.sentinelReturned,
       usage: liveResult.usage,
       contextSource: 'provider-published',
       note: 'Single small sentinel smoke probe only; request has a 64-token output cap. Timeout is not proof of zero provider cost. This is not a context-ceiling test.',

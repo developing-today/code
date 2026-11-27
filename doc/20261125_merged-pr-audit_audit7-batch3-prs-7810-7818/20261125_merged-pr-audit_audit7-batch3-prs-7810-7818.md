@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7810 | #5597 | `audit:complete` | Honors proxy environment variables in the atlas-search via-service client and adds a stub CONNECT proxy test; the source issue is closed by this fix. |
-| #7815 | #7812 | `audit:complete` | Validates `/api/images` payloads before touching the grid, provides clean errors for malformed responses, and adds wrong-shape regression cases. |
-| #7816 | #7758 | `audit:complete` | Sets `FLEET_REPOS` to the intended nine entries and includes Atlas SQL schemas in the fleet source fileset; the source issue's feature-gated build acceptance passes. |
-| #7817 | — | `audit:no-issue` | No originating issue/task was linked at merge. The PR's stated Sunshine-only on-screen keyboard intent is implemented and post-merge live checks are recorded; retrospective record #10082 was created later. |
-| #7818 | #1917 | `audit:complete` | Adds explicit `script.language` configuration, CLI language selection and API `ExecOptions.language` across the Python runner path; prior PRs #2591/#4991 delivered the backend and runner, completing the full issue. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                |
+| -------------: | -------------: | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7810 |          #5597 | `audit:complete` | Honors proxy environment variables in the atlas-search via-service client and adds a stub CONNECT proxy test; the source issue is closed by this fix.                                                                  |
+|          #7815 |          #7812 | `audit:complete` | Validates `/api/images` payloads before touching the grid, provides clean errors for malformed responses, and adds wrong-shape regression cases.                                                                       |
+|          #7816 |          #7758 | `audit:complete` | Sets `FLEET_REPOS` to the intended nine entries and includes Atlas SQL schemas in the fleet source fileset; the source issue's feature-gated build acceptance passes.                                                  |
+|          #7817 |              — | `audit:no-issue` | No originating issue/task was linked at merge. The PR's stated Sunshine-only on-screen keyboard intent is implemented and post-merge live checks are recorded; retrospective record #10082 was created later.          |
+|          #7818 |          #1917 | `audit:complete` | Adds explicit `script.language` configuration, CLI language selection and API `ExecOptions.language` across the Python runner path; prior PRs #2591/#4991 delivered the backend and runner, completing the full issue. |
 
 ## Slice state
 

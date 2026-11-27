@@ -80,7 +80,7 @@ in
 
     dbPath = lib.mkOption {
       type = lib.types.str;
-      default = "${home (alignmentCfg.user)}/workspace/archer-slack/puller/state/archer-slack.db";
+      default = "${home alignmentCfg.user}/workspace/archer-slack/puller/state/archer-slack.db";
       description = "The same SQLite event store written by the Archer Socket Mode collector.";
     };
 
@@ -129,8 +129,14 @@ in
       home-manager.users.${alignmentCfg.user}.systemd.user.services.alignment-handler = {
         Unit = {
           Description = "Fleet #alignment request handler (code#6651)";
-          After = [ "network-online.target" "archer-slack-collector.service" ];
-          Wants = [ "network-online.target" "archer-slack-collector.service" ];
+          After = [
+            "network-online.target"
+            "archer-slack-collector.service"
+          ];
+          Wants = [
+            "network-online.target"
+            "archer-slack-collector.service"
+          ];
         };
         Service = {
           Type = "simple";

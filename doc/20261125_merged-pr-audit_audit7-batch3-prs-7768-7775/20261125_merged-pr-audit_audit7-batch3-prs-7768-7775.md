@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7768 | #5963 | `audit:complete` | Delivers the source-level library/platform context design, least-authority per-library records, typed `platform.requires` checker contract, pinned versioning and user-function boundary. The issue is closed by this record. |
-| #7769 | #7766 | `audit:complete` | Replaces unchecked `Period::Custom` arithmetic with checked operations and `OutOfRange`, with extreme-anchor regression coverage matching the issue. |
-| #7773 | #7771 | `audit:complete` | Hardens the `Period::Week` branch and DST-gap shift against calendar-boundary overflow, returning `OutOfRange` rather than panicking; regression tests match the issue's boundary behavior. |
-| #7774 | #5869 | `audit:complete` | Records PITR, open-format export, provider exit, restore verification/drill cadence and implementation invariants while respecting the separate backend/storage-contract decisions. This is the decision record requested by the design issue. |
-| #7775 | #5670 | `audit:partial` | Vendors the Python reference and golden-311 corpus into the repo and records provenance. The wider migration is still open: #14128, #14129, #14131 and #14132 track remaining absorption, backup cutover/nightly verification, corpus parity and archive work; #14133 explicitly calls this phase 1. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                                              |
+| -------------: | -------------: | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7768 |          #5963 | `audit:complete` | Delivers the source-level library/platform context design, least-authority per-library records, typed `platform.requires` checker contract, pinned versioning and user-function boundary. The issue is closed by this record.                                                                        |
+|          #7769 |          #7766 | `audit:complete` | Replaces unchecked `Period::Custom` arithmetic with checked operations and `OutOfRange`, with extreme-anchor regression coverage matching the issue.                                                                                                                                                 |
+|          #7773 |          #7771 | `audit:complete` | Hardens the `Period::Week` branch and DST-gap shift against calendar-boundary overflow, returning `OutOfRange` rather than panicking; regression tests match the issue's boundary behavior.                                                                                                          |
+|          #7774 |          #5869 | `audit:complete` | Records PITR, open-format export, provider exit, restore verification/drill cadence and implementation invariants while respecting the separate backend/storage-contract decisions. This is the decision record requested by the design issue.                                                       |
+|          #7775 |          #5670 | `audit:partial`  | Vendors the Python reference and golden-311 corpus into the repo and records provenance. The wider migration is still open: #14128, #14129, #14131 and #14132 track remaining absorption, backup cutover/nightly verification, corpus parity and archive work; #14133 explicitly calls this phase 1. |
 
 ## Slice state
 

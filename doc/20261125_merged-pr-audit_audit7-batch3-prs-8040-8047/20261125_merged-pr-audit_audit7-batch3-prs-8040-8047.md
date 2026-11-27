@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #8040 | #7760 | `audit:complete` | Reads the correct singular `/message` endpoint and treats unknown/error responses as unknown rather than confirming zero; resolves the fail-open gate. |
-| #8041 | #5871 | `audit:complete` | Settles lazy talk-page creation, narrowing-only permissions, lifecycle/orphan behavior, owner moderation and scoped ordering; the design issue closes with this decision record. |
-| #8045 | #7349 | `audit:complete` | Adds `--worker` to `health` with attribution-only behavior while retaining strict rejection of unknown arguments; the issue closes with the fix. |
-| #8046 | #5119 | `audit:completed-later` | Implements the pull-policy gate (slice 2). Later PRs #8356/#8413 complete provisioning and world-directory seeding; PR #8529 completes freshness admission and closes #5119. PR note: #7162746566. |
-| #8047 | none (salvage of #7529) | `audit:no-issue` | Re-applies a test-only probe for malformed `policy` and `manifest_state` replies. No separate spawning issue or unhandled defect remains. PR note: #7162748314. |
+| Payload number |          Spawning issue | Verdict                 | Finding                                                                                                                                                                                            |
+| -------------: | ----------------------: | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #8040 |                   #7760 | `audit:complete`        | Reads the correct singular `/message` endpoint and treats unknown/error responses as unknown rather than confirming zero; resolves the fail-open gate.                                             |
+|          #8041 |                   #5871 | `audit:complete`        | Settles lazy talk-page creation, narrowing-only permissions, lifecycle/orphan behavior, owner moderation and scoped ordering; the design issue closes with this decision record.                   |
+|          #8045 |                   #7349 | `audit:complete`        | Adds `--worker` to `health` with attribution-only behavior while retaining strict rejection of unknown arguments; the issue closes with the fix.                                                   |
+|          #8046 |                   #5119 | `audit:completed-later` | Implements the pull-policy gate (slice 2). Later PRs #8356/#8413 complete provisioning and world-directory seeding; PR #8529 completes freshness admission and closes #5119. PR note: #7162746566. |
+|          #8047 | none (salvage of #7529) | `audit:no-issue`        | Re-applies a test-only probe for malformed `policy` and `manifest_state` replies. No separate spawning issue or unhandled defect remains. PR note: #7162748314.                                    |
 
 ## Slice state
 

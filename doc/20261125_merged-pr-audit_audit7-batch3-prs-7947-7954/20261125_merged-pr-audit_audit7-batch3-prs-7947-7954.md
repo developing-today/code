@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7947 | #1388 (salvage of #7442) | `audit:complete` | Restores hard-break normalization for headings and the requested parser/serializer regression cases; #1388 closes with the fix. |
-| #7951 | #5788 | `audit:complete` | Settles the four build-variant levels, composition boundaries, capability matrix, budgets and conformance approach; the design issue closes with the record. |
-| #7952 | #5225 (salvage of #7528) | `audit:completed-later` | Adds the replay probe for invalid Petnames records. Later PR #9007 validates journal replay and adds rejection tests; #5225 then closes. PR note: #7160549199. |
-| #7953 | #7587 | `audit:partial` | Implements reference-backed board posts and the embeds edge (slice 1). Later #12206 and #13233 cover local views/anchors and graph/backlinks, but the cross-server slice remains. Existing Lane 2 closure pointer: #13871 comment 7120005251. PR note: #7160550888. |
-| #7954 | #6665 | `audit:complete` | Routes filtered sharded vector queries through the monolith while preserving the sensitivity ceiling and surfacing the fallback diagnostic; the issue closes by this PR. |
+| Payload number |           Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                                             |
+| -------------: | -----------------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7947 | #1388 (salvage of #7442) | `audit:complete`        | Restores hard-break normalization for headings and the requested parser/serializer regression cases; #1388 closes with the fix.                                                                                                                                     |
+|          #7951 |                    #5788 | `audit:complete`        | Settles the four build-variant levels, composition boundaries, capability matrix, budgets and conformance approach; the design issue closes with the record.                                                                                                        |
+|          #7952 | #5225 (salvage of #7528) | `audit:completed-later` | Adds the replay probe for invalid Petnames records. Later PR #9007 validates journal replay and adds rejection tests; #5225 then closes. PR note: #7160549199.                                                                                                      |
+|          #7953 |                    #7587 | `audit:partial`         | Implements reference-backed board posts and the embeds edge (slice 1). Later #12206 and #13233 cover local views/anchors and graph/backlinks, but the cross-server slice remains. Existing Lane 2 closure pointer: #13871 comment 7120005251. PR note: #7160550888. |
+|          #7954 |                    #6665 | `audit:complete`        | Routes filtered sharded vector queries through the monolith while preserving the sensitivity ceiling and surfacing the fallback diagnostic; the issue closes by this PR.                                                                                            |
 
 ## Slice state
 

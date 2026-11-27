@@ -1,0 +1,27 @@
+{
+  "at": "2026-11-27T00:33:43.167Z",
+  "mode": "live",
+  "requestedLeaf": "kilo/kilo-auto/free",
+  "plan": "kilo-free-plan",
+  "inputChars": 579,
+  "approxInputTokens": 164,
+  "inputTokenEstimate": "rough chars/4; not a provider tokenizer; live adapter also bounds this payload to 8 fixed blocks",
+  "timeoutMs": 30000,
+  "maxInputTokens": 8000,
+  "maxOutputTokens": 64,
+  "attempts": 1,
+  "latencyMs": 1634,
+  "outcome": "pass",
+  "reason": "http-200",
+  "httpStatus": 200,
+  "responseModel": "nvidia/nemotron-3.5-super-vl:free",
+  "reportedUpstream": "Nvidia",
+  "servingProvider": "kilo",
+  "servingLeaf": "kilo/nvidia/nemotron-3.5-super-vl:free",
+  "usage": {
+    "input": 245,
+    "output": 64
+  },
+  "contextSource": "provider-published",
+  "note": "Single small sentinel smoke probe only; request has a 64-token output cap. Timeout is not proof of zero provider cost. This is not a context-ceiling test."
+}

@@ -2106,8 +2106,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         None => router_builder,
     };
     // Relay authorization uses the same signed-graph store as LocalEvents.
-    // Serve has no neighbour-discovery view at this layer yet, so this slice
-    // serves the gated ALPN with an empty fan-out set.
+    // Fan-out targets are the live peer-discovery view; RelayGate still
+    // decides what is accepted before anything reaches the sink, and the
+    // sink filters the discovered targets against the same frontier so
+    // group payloads fan out only to the envelope group's members
+    // (#15912).
     #[cfg(feature = "web")]
     let router_builder = match &event_events {
         Some(events) => {
@@ -2124,8 +2127,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     ),
                 ) as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>
             });
-            let sink =
-                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let sink = ForwardingSink::fanning_out(
+                node_id.to_string(),
+                endpoint.clone(),
+                DiscoveredRelayPeers(peer_discovery.clone()),
+            )
+            .with_group_frontier(
+                Arc::new(frontier.clone()) as Arc<dyn id_sync::relay_gate::MembershipFrontier>
+            );
             let sink = match boundary_gate.as_ref() {
                 Some(gate) => sink.with_boundary_gate(Arc::clone(gate)),
                 None => sink,
@@ -2771,6 +2780,25 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     Ok(())
 }
 
+/// Relay fan-out targets read from serve's live peer-discovery table.
+#[cfg(feature = "web")]
+#[derive(Clone)]
+struct DiscoveredRelayPeers(PeerDiscovery);
+
+#[cfg(feature = "web")]
+impl id_sync::forwarding_sink::NextPeers for DiscoveredRelayPeers {
+    fn next_peers(&self) -> Vec<(String, iroh::EndpointAddr)> {
+        self.0
+            .peers()
+            .into_iter()
+            .map(|peer| {
+                let node_id = peer.announcement.node_id;
+                (node_id.to_string(), iroh::EndpointAddr::from(node_id))
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -2992,6 +3020,33 @@ mod tests {
         publish_serve_lock_reclaiming_stale_locked(&path, current).unwrap();
 
         assert_eq!(fs::read_to_string(path).unwrap(), current);
+    }
+
+    // The discovery view itself is unfiltered: it reports every
+    // discovered peer. Group authorization is applied later, by the
+    // sink's group frontier (#15912) — this test pins the provider
+    // half only.
+    #[cfg(feature = "web")]
+    #[test]
+    fn relay_peer_discovery_reads_every_discovered_peer() {
+        use id_sync::forwarding_sink::NextPeers;
+        let peers = PeerDiscovery::new();
+        assert!(DiscoveredRelayPeers(peers.clone()).next_peers().is_empty());
+
+        let first = stale_test_peer(1).announcement;
+        let second = stale_test_peer(2).announcement;
+        peers.update(first.clone());
+        peers.update(second.clone());
+
+        let mut targets: Vec<String> = DiscoveredRelayPeers(peers)
+            .next_peers()
+            .into_iter()
+            .map(|(relay, _)| relay)
+            .collect();
+        targets.sort();
+        let mut expected = vec![first.node_id.to_string(), second.node_id.to_string()];
+        expected.sort();
+        assert_eq!(targets, expected);
     }
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {

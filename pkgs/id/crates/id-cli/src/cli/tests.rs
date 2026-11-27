@@ -135,6 +135,33 @@ fn test_cli_parse_no_args() {
     assert!(cli.log_level.is_none());
 }
 
+/// Oracle: the CLI contract maps retention and store flags without accepting
+/// values outside the store's unsigned 32-bit retention window.
+#[test]
+fn test_cli_parse_compact_retention() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let cli = Cli::try_parse_from(["id", "compact"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Compact { json: false, retain_recent })
+                    if retain_recent == crate::commands::compact::DEFAULT_RETAIN_RECENT
+            ));
+            let cli = Cli::try_parse_from([
+                "id", "--event-store", "events", "compact", "--retain-recent", "0", "--json",
+            ]).unwrap();
+            assert_eq!(cli.event_store, Some(std::path::PathBuf::from("events")));
+            assert!(matches!(cli.command, Some(Command::Compact { json: true, retain_recent: 0 })));
+            for invalid in ["-1", "not-a-number", "4294967296"] {
+                assert!(Cli::try_parse_from(["id", "compact", "--retain-recent", invalid]).is_err());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// Parse via `normalize_args` on a big-stack thread: building this
 /// CLI's clap tree is deep enough to overflow the default test
 /// thread stack (the #3059 parse tests below spawn a thread for the
@@ -3534,6 +3561,70 @@ fn test_cli_parse_host_pin_and_wake_mode() {
         _ => panic!("Expected host wake-mode"),
     }
     assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_host_snapshots() {
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--every",
+        "6h",
+        "--keep",
+        "7",
+        "--max-age",
+        "30d",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Snapshots {
+            world,
+            every,
+            keep,
+            max_age,
+            off,
+            inherit,
+            ..
+        })) => {
+            assert_eq!(world, None);
+            assert_eq!(every.as_deref(), Some("6h"));
+            assert_eq!(keep, Some(7));
+            assert_eq!(max_age.as_deref(), Some("30d"));
+            assert!(!off && !inherit);
+        }
+        _ => panic!("Expected host snapshots"),
+    }
+    let cli = Cli::parse_from([
+        "id",
+        "host",
+        "snapshots",
+        "/data",
+        "--world",
+        "w",
+        "--inherit",
+    ]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Snapshots { inherit: true, .. }))
+    ));
+    // A cadence needs a keep count, and inherit needs a world.
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--every", "6h"]).is_err());
+    assert!(Cli::try_parse_from(["id", "host", "snapshots", "/data", "--inherit"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "host",
+            "snapshots",
+            "/data",
+            "--off",
+            "--every",
+            "6h",
+            "--keep",
+            "1"
+        ])
+        .is_err()
+    );
 }
 
 #[test]

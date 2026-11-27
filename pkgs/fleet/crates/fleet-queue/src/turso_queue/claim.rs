@@ -7,6 +7,52 @@
 
 use super::*;
 
+/// #16007: whether this triage filing is the recovery filing for a
+/// completed triage whose fix follow-on failed or was cancelled.
+/// The follow-on's statuses come from the work-identity match (any
+/// queue), falling back to the exact follow-on dedupe key in this
+/// queue when no identity-matched follow-on exists (a follow-on
+/// whose payload carries no work identity). Only a triage filing
+/// can be a recovery filing; every other kind returns false and
+/// keeps the #13091 completed-work absorption.
+pub(crate) fn triage_recovery_filing(
+    t: &TursoBackend,
+    queue: &str,
+    kind: &str,
+    dedupe_key: Option<&str>,
+    identity: Option<&WorkIdentity>,
+) -> Result<bool, TErr> {
+    if kind != "triage" {
+        return Ok(false);
+    }
+    let mut statuses: Vec<String> = match identity {
+        Some(ident) => triage_follow_on_statuses(t, ident)?,
+        None => Vec::new(),
+    };
+    if statuses.is_empty() {
+        if let Some(fix_key) = dedupe_key.and_then(follow_on_key) {
+            let rows = t.query_objs(
+                &format!(
+                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
+                     ORDER BY id ASC"
+                ),
+                &[Arg::Text(queue.to_string()), Arg::Text(fix_key)],
+                &TASK_JSON_COLS,
+            )?;
+            statuses = rows
+                .iter()
+                .filter_map(|r| {
+                    r.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .collect();
+        }
+    }
+    let refs: Vec<&str> = statuses.iter().map(String::as_str).collect();
+    Ok(triage_recovery_needed(&refs))
+}
+
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
     let metadata = req.get("metadata").cloned().unwrap_or_else(|| json!({}));
@@ -77,9 +123,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     // this is the broker-side recheck (the broker is the trust
     // boundary) in the platform limitation's own terms, so a routed
     // packet can never land without its limitation.
-    let route = packet
-        .get("payload")
-        .and_then(route_declaration);
+    let route = packet.get("payload").and_then(route_declaration);
     if let Some((route_platform, route_reason)) = &route {
         if let Some(e) = platform_limit_error(Some(route_platform), Some(route_reason)) {
             return fail(2, format!("enqueue: route: {e}"));
@@ -140,14 +184,35 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    // #10627: the absorption itself is #13091's
-                    // standing rule; what was missing is the report.
-                    // Name the terminal match in the envelope so a
-                    // caller can suffix the key and re-file in the
-                    // same pass instead of mistaking the completed
-                    // row for the task it asked for.
-                    let report = dedupe_match_detail(row, true);
-                    return Ok((row.clone(), None, None, Some(report)));
+                    // #16007: a COMPLETED triage predecessor is not
+                    // completed issue work when its fix follow-on
+                    // failed or was cancelled and no live or
+                    // completed follow-on covers the issue — the
+                    // reconciliation re-filing IS the recovery path,
+                    // so it falls through and files a fresh claimable
+                    // triage task (revive bookkeeping below links it
+                    // to this predecessor) instead of being absorbed.
+                    let kind = task
+                        .get("payload")
+                        .and_then(|p| p.get("kind"))
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("");
+                    if !triage_recovery_filing(
+                        t,
+                        &queue,
+                        kind,
+                        Some(dk.as_str()),
+                        identity.as_ref(),
+                    )? {
+                        // #10627: the absorption itself is #13091's
+                        // standing rule; what was missing is the report.
+                        // Name the terminal match in the envelope so a
+                        // caller can suffix the key and re-file in the
+                        // same pass instead of mistaking the completed
+                        // row for the task it asked for.
+                        let report = dedupe_match_detail(row, true);
+                        return Ok((row.clone(), None, None, Some(report)));
+                    }
                 }
             }
             predecessor = terminal;
@@ -176,7 +241,18 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             // broker knows its own completions locally; no probe
             // is involved. Failed and cancelled holders still
             // never block a filing.
-            if let Some(holder) = done_identity_holder(t, ident, kind)? {
+            // #16007: the same triage recovery exception as the
+            // dedupe-key check above — a completed triage holder
+            // whose fix follow-on failed or was cancelled (and no
+            // live or completed follow-on covers the issue) does not
+            // absorb a same-work-identity re-filing either; the
+            // filing falls through and creates the fresh claimable
+            // triage task reconciliation needs.
+            let triage_recovery =
+                triage_recovery_filing(t, &queue, kind, dedupe.as_deref(), Some(ident))?;
+            if let Some(holder) = done_identity_holder(t, ident, kind)?
+                .filter(|_| !triage_recovery)
+            {
                 let mut detail = collision_detail(&holder, ident);
                 detail["rule"] = json!("done_work_identity");
                 detail["hint"] = json!(
@@ -188,9 +264,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         let ins = t.exec(
-            "INSERT INTO tasks (queue, manual_only, title, body, payload, metadata, dedupe_key, priority, \
+            "INSERT INTO tasks (queue, manual_only, resume_session_id, title, body, payload, metadata, dedupe_key, priority, \
                status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 Arg::Int(if task.get("manual_only").and_then(Value::as_bool).unwrap_or(false) {
@@ -198,6 +274,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 } else {
                     0
                 }),
+                arg_str(task.get("resume_session_id").and_then(|v| v.as_str())),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
                 arg_str(task.get("body").and_then(|v| v.as_str())),
                 Arg::Text(
@@ -277,7 +354,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             Some("enqueue_repo_task"),
             Some(id),
             "enqueued",
-            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false), "resume_session_id": task.get("resume_session_id").cloned().unwrap_or(Value::Null)}),
         )?;
         seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
@@ -979,19 +1056,18 @@ pub(crate) fn by_id_claimable(row: &Value, now: &str) -> bool {
     }
 }
 
-/// #9178 §2 slice 1: a manual by-ID override admits only a genuine
-/// parked row below its attempt cap. Attempt-capped, blocked, live,
-/// and terminal rows remain excluded; other sections own those cases.
+/// #9178 §2: manual by-ID override admits a genuine parked row below
+/// its cap (the original slice), or a queued/parked row at its cap.
+/// Blocked, live, and terminal rows remain excluded.
 pub(crate) fn by_id_manual_claimable(row: &Value) -> bool {
-    if row.get("status").and_then(|v| v.as_str()) != Some("parked") {
+    let status = row.get("status").and_then(Value::as_str).unwrap_or("");
+    let attempts = row.get("attempts").and_then(Value::as_i64).unwrap_or(0);
+    let max_attempts = row.get("max_attempts").and_then(Value::as_i64).unwrap_or(0);
+    if attempts < 0 || max_attempts <= 0 {
         return false;
     }
-    let attempts = row.get("attempts").and_then(Value::as_i64).unwrap_or(0);
-    let max_attempts = row
-        .get("max_attempts")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    attempts >= 0 && max_attempts > 0 && attempts < max_attempts
+    (status == "parked" && attempts < max_attempts)
+        || (matches!(status, "queued" | "parked") && attempts >= max_attempts)
 }
 
 /// Session-to-session transfer (#8210): claim task_id DIRECTLY
@@ -1284,7 +1360,32 @@ pub(crate) fn claim_by_id(
         .to_string();
     let now_unix = now_unix();
     let now = iso(now_unix);
-    let manual_reason = manual_override.map(str::trim).filter(|reason| !reason.is_empty());
+    let manual_reason = manual_override
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty());
+    if let Some(reason) = manual_reason {
+        let prior = row
+            .get("result")
+            .and_then(|result| result.get("manual_override"));
+        let current_session = row
+            .get("progress")
+            .and_then(|progress| progress.get("session_id"))
+            .and_then(Value::as_str);
+        let live_holder = live_claim_holder(&row, &now);
+        let same_owner = live_holder
+            .as_ref()
+            .is_some_and(|(holder_worker, holder_lane, _)| {
+                holder_worker == worker && holder_lane == lane
+            })
+            && current_session == claim_session
+            && prior
+                .and_then(|audit| audit.get("reason"))
+                .and_then(Value::as_str)
+                == Some(reason);
+        if same_owner {
+            return Ok(Some(row));
+        }
+    }
     let manual = manual_reason.is_some() && by_id_manual_claimable(&row);
     if (manual_reason.is_some() && !manual) || (!manual && !by_id_claimable(&row, &now)) {
         // #6985: a by-id claim refused because a live claim stands
@@ -1353,7 +1454,7 @@ pub(crate) fn claim_by_id(
     let upd = t.exec(
         "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
            lease_until = ?, \
-           attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
+           attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') OR ? IS NOT NULL THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
            ready_condition = CASE WHEN ? IS NULL THEN ready_condition ELSE NULL END, \
@@ -1368,6 +1469,7 @@ pub(crate) fn claim_by_id(
             Arg::Text(worker.to_string()),
             Arg::Text(now.clone()),
             Arg::Text(lease_until.clone()),
+            manual_audit.as_ref().map(|_| Arg::Int(1)).unwrap_or(Arg::Null),
             arg_str(lane.as_deref()),
             arg_str(family),
             manual_audit.as_ref().map(|_| Arg::Int(1)).unwrap_or(Arg::Null),

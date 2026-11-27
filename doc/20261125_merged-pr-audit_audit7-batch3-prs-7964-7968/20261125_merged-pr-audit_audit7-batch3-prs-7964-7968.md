@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7964 | #7322 | `audit:complete` | Adds pull-request CI for deploy-list and malformed deploy-list checks, with policy and suite-registry entries; the check appears on the PR and closes the gap. |
-| #7965 | #1116 item 5 | `audit:completed-later` | Adds the rendered stale-feed warning and page evidence to the scheduled drill. The issue stayed open for stewardship item 4, later verified complete in comment 7094970860 before #1116 closed. PR note: #7160814336. |
-| #7966 | #5851 | `audit:complete` | Settles the semantic-element/Tailwind mappings, generated-class behavior, raw CSS/HTML rules, cascade and assumptions; the design issue closes with the record. |
-| #7967 | #6051 | `audit:complete` | Defines cadence triggers and scope by layer, sampled-audit miss-rate thresholds, and allowlist expiry; the design issue closes with the record. |
-| #7968 | #6019 | `audit:complete` | Provides the integrated source, usefulness, disk/I/O, plan-headroom and recurring-runbook design; files the missing sweep-runner gap as #7969 and closes the design issue. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                               |
+| -------------: | -------------: | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7964 |          #7322 | `audit:complete`        | Adds pull-request CI for deploy-list and malformed deploy-list checks, with policy and suite-registry entries; the check appears on the PR and closes the gap.                                                        |
+|          #7965 |   #1116 item 5 | `audit:completed-later` | Adds the rendered stale-feed warning and page evidence to the scheduled drill. The issue stayed open for stewardship item 4, later verified complete in comment 7094970860 before #1116 closed. PR note: #7160814336. |
+|          #7966 |          #5851 | `audit:complete`        | Settles the semantic-element/Tailwind mappings, generated-class behavior, raw CSS/HTML rules, cascade and assumptions; the design issue closes with the record.                                                       |
+|          #7967 |          #6051 | `audit:complete`        | Defines cadence triggers and scope by layer, sampled-audit miss-rate thresholds, and allowlist expiry; the design issue closes with the record.                                                                       |
+|          #7968 |          #6019 | `audit:complete`        | Provides the integrated source, usefulness, disk/I/O, plan-headroom and recurring-runbook design; files the missing sweep-runner gap as #7969 and closes the design issue.                                            |
 
 ## Slice state
 

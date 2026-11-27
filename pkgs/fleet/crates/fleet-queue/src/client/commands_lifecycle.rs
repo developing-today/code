@@ -333,6 +333,14 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             code
         }
         GuardOutcome::Serve => {
+            // #4986: the claim is the placement for queue work (#8187).
+            // Best-effort placement-record emission: it logs to stderr
+            // (and FLEET_PLACEMENT_LOG) and never alters the claim.
+            placement_emit::emit_placement_record(
+                &out,
+                &worker,
+                body.get("lane").and_then(|v| v.as_str()).unwrap_or(""),
+            );
             attach_mode_line(&mut out, "claim", legs_served(true, true));
             print_json(&out);
             code
@@ -1400,6 +1408,29 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
     print_json(&served_row(
         require_row(&resp, "quarantine_recheck"),
         "quarantine-recheck",
+    ));
+    0
+}
+
+/// time-recheck (#14212): run the broker's time recheck pass
+/// now, or force one blocked task's recheck with --task. The
+/// pass requeues blocked rows whose {"kind": "time"} ready
+/// condition has lapsed. Production cadence is the sweep's;
+/// this is the manual trigger.
+pub(super) fn cmd_time_recheck(rest: &[String]) -> i32 {
+    let args = parse_verb_args("time-recheck", rest, &["task", "limit"], &[]);
+    reject_extra_pos("time-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/time-recheck", &body));
+    print_json(&served_row(
+        require_row(&resp, "time_recheck"),
+        "time-recheck",
     ));
     0
 }

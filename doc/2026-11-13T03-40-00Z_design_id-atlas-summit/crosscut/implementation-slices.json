@@ -19,7 +19,7 @@
         },
         {
           "path": "pkgs/id/tests/store_port_boundary.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-01"
         }
       ],
@@ -43,7 +43,16 @@
         "pkgs/id/crates/id-events/src/event_store/mod.rs",
         "pkgs/id/crates/id-worlds/src/world_store.rs",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/seam-map.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/tests/store_port_boundary.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-02",
@@ -108,47 +117,47 @@
         },
         {
           "path": "pkgs/id/crates/id-core/src/port.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/test-vectors/schema.json",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/tests/port_contract.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/tests/kafka_like_stream_contract.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         },
         {
           "path": "pkgs/id/tests/support/kafka_like_ordered_stream.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-02"
         }
       ],
@@ -177,7 +186,48 @@
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/implementation-slices.json",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/implementation-slices.json",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/inventory-live/live-issues.json"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-core/src/port.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
+            "commit": "cfee3d4858c149b2f4832f113a69933f8ea04130"
+          },
+          {
+            "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/test-vectors/schema.json",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/port_contract.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/kafka_like_stream_contract.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/support/kafka_like_ordered_stream.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-03",
@@ -192,12 +242,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/port_adapter.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-03"
         },
         {
           "path": "pkgs/id/tests/store_adapter_profiles.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-03"
         }
       ],
@@ -230,7 +280,20 @@
         "https://docs.turso.tech/sdk/ts/reference",
         "https://docs.turso.tech/sdk/http/reference",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-store/src/port_adapter.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/store_adapter_profiles.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-04",
@@ -245,12 +308,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/tests/conformance.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-04"
         },
         {
           "path": "pkgs/id/tests/fixtures/port-v1.json",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-04"
         }
       ],
@@ -281,7 +344,20 @@
       "research_evidence": [
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/tests/conformance.rs",
+            "commit": "08d124f990fe49198a2636947cc871e462f4dc17"
+          },
+          {
+            "path": "pkgs/id/tests/fixtures/port-v1.json",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-05",
@@ -296,12 +372,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/browser/src/indexeddb_store.ts",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-05"
         },
         {
           "path": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-05"
         }
       ],
@@ -337,7 +413,20 @@
         "https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction",
         "https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction/durability",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/inventory-live/live-issues.json"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/browser/src/indexeddb_store.ts",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-06",
@@ -352,7 +441,7 @@
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/admission.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-06"
         },
         {
@@ -362,12 +451,12 @@
         },
         {
           "path": "pkgs/id/crates/id-sync/src/admission.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-06"
         },
         {
           "path": "pkgs/id/tests/admission_hooks.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-06"
         }
       ],
@@ -407,7 +496,24 @@
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/main.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-store/src/admission.rs",
+            "commit": "f000d4f569c658be69c6d48cd62920f450a93bd5"
+          },
+          {
+            "path": "pkgs/id/crates/id-sync/src/admission.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/admission_hooks.rs",
+            "commit": "08d124f990fe49198a2636947cc871e462f4dc17"
+          }
+        ]
+      }
     },
     {
       "id": "9110-07",
@@ -560,22 +666,22 @@
         },
         {
           "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-09"
         },
         {
           "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-09"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-09"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-09"
         }
       ],
@@ -746,7 +852,28 @@
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/implementation-slices.json",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/implementation-slices.json",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/implementation-slices.json"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
+            "commit": "cfee3d4858c149b2f4832f113a69933f8ea04130"
+          },
+          {
+            "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-10",
@@ -809,22 +936,22 @@
       "owned_files": [
         {
           "path": "pkgs/id/config/id-config-v1.schema.json",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-01"
         },
         {
           "path": "pkgs/id/crates/id-config/src/lib.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-01"
         },
         {
           "path": "pkgs/id/crates/id-config/Cargo.toml",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-01"
         },
         {
           "path": "pkgs/id/tests/config_invariants.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-01"
         }
       ],
@@ -855,7 +982,28 @@
       "research_evidence": [
         "doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/config/id-config-v1.schema.json",
+            "commit": "8e98a1807f982af0ebc0e39878d8cd2bbf9ce1d0"
+          },
+          {
+            "path": "pkgs/id/crates/id-config/src/lib.rs",
+            "commit": "8e98a1807f982af0ebc0e39878d8cd2bbf9ce1d0"
+          },
+          {
+            "path": "pkgs/id/crates/id-config/Cargo.toml",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/config_invariants.rs",
+            "commit": "08d124f990fe49198a2636947cc871e462f4dc17"
+          }
+        ]
+      }
     },
     {
       "id": "9111-02",
@@ -870,12 +1018,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/resolve.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-02"
         },
         {
           "path": "pkgs/id/tests/config_precedence.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-02"
         }
       ],
@@ -906,7 +1054,20 @@
       "research_evidence": [
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-config/src/resolve.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/config_precedence.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9111-03",
@@ -980,12 +1141,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/negotiation.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-04"
         },
         {
           "path": "pkgs/id/tests/config_downgrade.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-04"
         }
       ],
@@ -1020,7 +1181,20 @@
       "research_evidence": [
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-config/src/negotiation.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/config_downgrade.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9111-05",
@@ -1035,12 +1209,12 @@
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/rollout.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-05"
         },
         {
           "path": "pkgs/id/tests/config_rollout.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9111-05"
         }
       ],
@@ -1072,7 +1246,20 @@
       "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
       "design_section": "Failure, recovery, and version rules",
       "owner": "9111-05",
-      "research_evidence": ["doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"]
+      "research_evidence": ["doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/crates/id-config/src/rollout.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/tests/config_rollout.rs",
+            "commit": "df63490c4583c3a80943059d4e80c67eae1d0924"
+          }
+        ]
+      }
     },
     {
       "id": "9110-11",
@@ -1092,7 +1279,7 @@
         },
         {
           "path": "pkgs/id/tests/artifact_profile_compat.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-11"
         }
       ],
@@ -1128,7 +1315,16 @@
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-slices.json"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/tests/artifact_profile_compat.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-13",
@@ -1148,7 +1344,7 @@
         },
         {
           "path": "pkgs/id/tests/admission_path_coverage.rs",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-13"
         }
       ],
@@ -1175,7 +1371,16 @@
       "research_evidence": [
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/main.md"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "pkgs/id/tests/admission_path_coverage.rs",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     }
   ],
   "file_collisions": [

@@ -53,7 +53,7 @@ use bevy::window::{PrimaryWindow, Window};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
     DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
-    DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
+    DirectoryInputSystems, DirectoryMarks, DirectoryPanelLayout, DirectoryPlugin,
 };
 use id_native_shell::events::{
     KeyModifiers, NativeEvent, ResizeTracker, is_paste_chord, key_input_bytes, native_event_frame,
@@ -179,18 +179,24 @@ fn sync_session_size(
     }
 }
 
-/// Directory mode: every live world session shares the one window,
-/// so each is kept at the window's grid — a newly entered world gets
-/// it at once, and a background world already has the right size
+/// Directory mode: every live world session shares the right-hand
+/// panel, so each is kept at that panel's grid — a newly entered world
+/// gets it at once, and a background world already has the right size
 /// when it is brought back to the foreground.
 #[allow(clippy::needless_pass_by_value)]
 fn sync_world_sizes(
     windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
     mut sessions: ResMut<'_, WorldSessions>,
 ) {
-    let Some(grid) = window_grid(&windows) else {
+    let Some(window) = windows.single().ok() else {
         return;
     };
+    let grid = resize_dimensions_logical(
+        window.width() * (100.0 - id_native_shell::directory::DIRECTORY_PANEL_PERCENT) / 100.0,
+        window.height(),
+        CELL_WIDTH_PX,
+        CELL_HEIGHT_PX,
+    );
     for session in sessions.0.values_mut() {
         sync_size(&mut session.bridge, grid);
     }
@@ -742,6 +748,7 @@ fn main() {
         match spawn_directory_probe(&args) {
             Ok(probe) => {
                 app.insert_resource(DirectoryApp::with_marks(load_marks()))
+                    .insert_resource(DirectoryPanelLayout)
                     .insert_resource(probe)
                     .insert_resource(WorldSessions::default())
                     .insert_resource(args)

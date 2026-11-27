@@ -68,12 +68,13 @@ pub use id_sync::protocol::META_ALPN;
 
 pub use crate::cli::{Cli, Command, KeyCommand, KeysetCommand, TagCommand};
 pub use crate::commands::{
-    PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
-    ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
-    cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
-    cmd_peers, cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
-    cmd_put_one_remote, cmd_search, cmd_serve, cmd_show, cmd_tag, create_local_client_endpoint,
-    create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
+    CompactOptions, PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions,
+    ServeInfo, ServeOptions, cmd_compact, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi,
+    cmd_get_one, cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote,
+    cmd_migrate_tags, cmd_peek, cmd_peers, cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin,
+    cmd_put_multi, cmd_put_one, cmd_put_one_remote, cmd_search, cmd_serve, cmd_show, cmd_tag,
+    create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
+    remove_serve_lock,
 };
 pub use crate::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,

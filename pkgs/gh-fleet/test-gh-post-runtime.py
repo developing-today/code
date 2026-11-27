@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent
 
 class RuntimeDependencyTests(unittest.TestCase):
     def test_repository_relative_runtime_imports(self):
-        probe = r'''
+        probe = r"""
 import importlib.machinery
 import importlib.util
 import json
@@ -34,19 +34,25 @@ print(json.dumps({name: {
     ("content_ledger", "_LEDGER_IMPORT_ERROR"),
     ("content_throttle", "_THROTTLE_IMPORT_ERROR"),
 )}))
-'''
+"""
         result = subprocess.run(
             [sys.executable, "-I", "-c", probe, str(ROOT / "gh-post")],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         modules = json.loads(result.stdout)
-        for name, directory in (("content_ledger", "content-ledger"),
-                                ("content_throttle", "content-throttle")):
+        for name, directory in (
+            ("content_ledger", "content-ledger"),
+            ("content_throttle", "content-throttle"),
+        ):
             with self.subTest(module=name):
                 self.assertEqual(modules[name]["error"], "None")
                 self.assertIsNotNone(modules[name]["path"])
-                self.assertEqual(Path(modules[name]["path"]).resolve(),
-                                 ROOT / directory / f"{name}.py")
+                self.assertEqual(
+                    Path(modules[name]["path"]).resolve(),
+                    ROOT / directory / f"{name}.py",
+                )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,12 @@ landed and passing, landed and failing, or gated.
       the target: a filter that matches nothing is a failure, never a
       silent pass.
 
+  run-projector MANIFEST
+      Installs locked projector dependencies and runs exactly the unique
+      projector test files declared by landed families. Gated files are
+      excluded. Paths must be explicit projector test files, never options
+      or directory selectors. Returns Bun's failing exit status unchanged.
+
   summary MANIFEST RUST_LOG RUST_RC PROJECTOR_RC
       RUST_LOG is the `cargo test` output of the target; the two exit
       codes come from the Rust and projector steps. Writes a markdown
@@ -20,9 +26,12 @@ landed and passing, landed and failing, or gated.
       test failed, or either step exited non-zero. Gated families are
       reported with their issue and never counted as passing or failing.
 """
+
 import json
 import os
+from pathlib import Path, PurePosixPath
 import re
+import subprocess
 import sys
 
 RESULT = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$")
@@ -61,6 +70,39 @@ def check_list(manifest_path, list_path):
     return 0
 
 
+def run_projector(manifest_path):
+    # Validate the entire selection before installing anything. The manifest
+    # is the single selection authority; a future landed file cannot be
+    # reported passing while the workflow still runs an older hardcoded set.
+    files = []
+    projector = Path(__file__).resolve().parents[2] / "pm-stack/projector"
+    for family in manifest(manifest_path)["families"]:
+        if family["status"] != "landed":
+            continue
+        for name in family.get("projector_tests", []):
+            path = PurePosixPath(name)
+            if (not name.startswith("pm-stack/projector/test/")
+                    or not name.endswith(".test.ts")
+                    or ".." in path.parts or path.is_absolute()
+                    or "\\" in name):
+                print(f"FAIL: invalid projector test file: {name}", file=sys.stderr)
+                return 2
+            selected = "./" + str(path.relative_to("pm-stack/projector"))
+            source = (projector / selected).resolve()
+            if not source.is_relative_to((projector / "test").resolve()) or not source.is_file():
+                print(f"FAIL: not an explicit projector test file: {name}", file=sys.stderr)
+                return 2
+            if selected not in files:
+                files.append(selected)
+    if not files:
+        print("FAIL: no landed projector tests selected", file=sys.stderr)
+        return 2
+    installed = subprocess.run(["bun", "install", "--frozen-lockfile"], cwd=projector)
+    if installed.returncode:
+        return installed.returncode
+    return subprocess.run(["bun", "test", *files], cwd=projector).returncode
+
+
 def summary(manifest_path, log_path, rust_rc, projector_rc):
     m = manifest(manifest_path)
     results = {}
@@ -94,7 +136,9 @@ def summary(manifest_path, log_path, rust_rc, projector_rc):
             rows.append((fid, "landed, failing", "; ".join(problems)))
         else:
             count = len(family["tests"])
-            rows.append((fid, "landed, passing", f"{count} test{'' if count == 1 else 's'}"))
+            rows.append(
+                (fid, "landed, passing", f"{count} test{'' if count == 1 else 's'}")
+            )
 
     harness = [t for t in m.get("harness_tests", []) if results.get(t) != "ok"]
     notes = []
@@ -108,8 +152,12 @@ def summary(manifest_path, log_path, rust_rc, projector_rc):
         failed = True
         notes.append(f"The projector step exited {projector_rc}.")
 
-    out = ["## PM orchestration contract conformance", "",
-           "| Family | State | Detail |", "| --- | --- | --- |"]
+    out = [
+        "## PM orchestration contract conformance",
+        "",
+        "| Family | State | Detail |",
+        "| --- | --- | --- |",
+    ]
     out += [f"| `{fid}` | {state} | {detail} |" for fid, state, detail in rows]
     out.append("")
     if failed:
@@ -129,6 +177,8 @@ def summary(manifest_path, log_path, rust_rc, projector_rc):
 def main(argv):
     if len(argv) == 3 and argv[0] == "check-list":
         return check_list(argv[1], argv[2])
+    if len(argv) == 2 and argv[0] == "run-projector":
+        return run_projector(argv[1])
     if len(argv) == 5 and argv[0] == "summary":
         return summary(argv[1], argv[2], int(argv[3]), int(argv[4]))
     print(__doc__, file=sys.stderr)

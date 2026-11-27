@@ -109,7 +109,8 @@ export function questionFromEvent(event: MirroredQuestionEvent): AnswerableQuest
     typeof ledgerId !== "string" ||
     !ledgerId ||
     ![needsDrewObjectRef(ledgerId), needsUserObjectRef(ledgerId)].includes(event.objectRef)
-  ) return null;
+  )
+    return null;
   if (typeof question !== "string" || !question) return null;
   if (typeof tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(tokenHash)) return null;
   if (!Array.isArray(options) || options.length < 1 || options.length > MAX_OPTIONS) return null;

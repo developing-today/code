@@ -37,6 +37,86 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
+type toolCeilingDenied struct {
+	ceiling string
+	tool    string
+	reason  string
+}
+
+func (e toolCeilingDenied) Error() string {
+	return fmt.Sprintf("tool %q refused by capability ceiling %q: %s", e.tool, e.ceiling, e.reason)
+}
+
+type configuredToolCeiling struct {
+	Name  string   `json:"name"`
+	Tools []string `json:"tools"`
+}
+
+// authorizeToolCall applies the authenticated key's configured upstream
+// tool allowlist. Anonymous callers retain the pre-ceiling behavior; keyed
+// callers fail closed when their ceiling or its policy cannot be resolved.
+func (r *Registry) authorizeToolCall(ctx context.Context, namespace, tool string) error {
+	identity, keyed := KeyIdentityFrom(ctx)
+	if !keyed {
+		return nil
+	}
+	toolRef := namespace + ":" + tool
+	deny := func(reason string) error {
+		return toolCeilingDenied{ceiling: identity.Ceiling, tool: toolRef, reason: reason}
+	}
+	if r == nil || r.set == nil {
+		return deny("configured tool policy is unavailable")
+	}
+	if identity.Ceiling == "" {
+		return deny("the key has no ceiling name")
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(r.set.String("auth.capabilityCeilings")))
+	decoder.DisallowUnknownFields()
+	var ceilings []configuredToolCeiling
+	if err := decoder.Decode(&ceilings); err != nil {
+		return deny("configured tool policy is malformed")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return deny("configured tool policy has trailing data")
+	}
+
+	found := false
+	allowed := false
+	seen := make(map[string]struct{}, len(ceilings))
+	for _, ceiling := range ceilings {
+		name := strings.TrimSpace(ceiling.Name)
+		if name == "" {
+			return deny("configured tool policy contains an unnamed ceiling")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return deny("configured tool policy contains duplicate ceiling names")
+		}
+		seen[name] = struct{}{}
+		if name != identity.Ceiling {
+			continue
+		}
+		found = true
+		for _, candidate := range ceiling.Tools {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				return deny("configured tool policy contains an empty tool name")
+			}
+			if candidate == "*" || candidate == toolRef {
+				allowed = true
+			}
+		}
+	}
+	if !found {
+		return deny("the key references an unknown ceiling")
+	}
+	if !allowed {
+		return deny("the tool is not in the configured allowlist")
+	}
+	return nil
+}
+
 // Server is the local HTTP API.
 //
 // It listens on a unix socket (for the CLI, no port to collide with) and on a
@@ -1248,6 +1328,10 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.reg.authorizeToolCall(r.Context(), req.Server, req.Tool); err != nil {
+		writeErr(w, failureStatus(err), err)
+		return
+	}
 
 	// A caller that asked for a task gets a handle immediately and collects
 	// from /v1/tasks, rather than holding this request open for however long
@@ -1420,6 +1504,16 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 				"error":   "server and tool are required",
 				"isError": true,
 			}, errors.New("server and tool are required")
+		}
+		if err := s.reg.authorizeToolCall(ctx, server, tool); err != nil {
+			return map[string]any{
+				"index":   i,
+				"server":  server,
+				"tool":    tool,
+				"status":  "error",
+				"error":   err.Error(),
+				"isError": true,
+			}, err
 		}
 
 		rawArgs := item.Args
@@ -2036,6 +2130,20 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSessio
 		}
 		if callerSession != "" {
 			attrs["caller_session"] = callerSession
+		}
+		if identity, ok := KeyIdentityFrom(ctx); ok {
+			if identity.KeyID != "" {
+				attrs["key_id"] = identity.KeyID
+			}
+			if identity.User != "" {
+				attrs["user"] = identity.User
+			}
+			if identity.Label != "" {
+				attrs["key_label"] = identity.Label
+			}
+			if identity.CapabilityRef != "" {
+				attrs["capability_ref"] = identity.CapabilityRef
+			}
 		}
 		// Fleet attribution (build 4/5, #14190): the originating queue
 		// task id rides the ledger frame, resolved ctx-first with the

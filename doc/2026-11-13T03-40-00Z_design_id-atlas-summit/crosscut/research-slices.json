@@ -14,17 +14,17 @@
       "owned_files": [
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/legacy-artifact-profile.md",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R1"
         },
         {
           "path": "pkgs/id/test-vectors/legacy-artifact-signatures.json",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R1"
         },
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_legacy_artifact_research.py",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R1"
         }
       ],
@@ -50,7 +50,24 @@
         "https://github.com/developing-today/code/issues/6277",
         "https://github.com/developing-today/code/issues/6287",
         "https://github.com/developing-today/code/issues/6290"
-      ]
+      ],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/legacy-artifact-profile.md",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/id/test-vectors/legacy-artifact-signatures.json",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_legacy_artifact_research.py",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     },
     {
       "id": "9110-R2",
@@ -65,17 +82,17 @@
       "owned_files": [
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R2"
         },
         {
           "path": "pkgs/atlas-search/test-vectors/content-hash-v1.json",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R2"
         },
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_atlas_content_hash_research.py",
-          "status": "new",
+          "status": "delivered",
           "owner": "9110-R2"
         }
       ],
@@ -102,7 +119,24 @@
         "pkgs/atlas-search/atlas_search.py",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md"
       ],
-      "statements": ["S0.7", "S0.13", "S1.118"]
+      "statements": ["S0.7", "S0.13", "S1.118"],
+      "delivery": {
+        "state": "delivered",
+        "evidence": [
+          {
+            "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "pkgs/atlas-search/test-vectors/content-hash-v1.json",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          },
+          {
+            "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_atlas_content_hash_research.py",
+            "commit": "8a51613d985270916f6c4823bac9fd95f2f046de"
+          }
+        ]
+      }
     }
   ]
 }

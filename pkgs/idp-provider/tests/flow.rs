@@ -68,6 +68,7 @@ fn harness() -> Harness {
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
+            email: None,
             roles: ROLES.iter().map(|s| s.to_string()).collect(),
             identities: vec![Identity {
                 provider: "devtoday-local".to_string(),

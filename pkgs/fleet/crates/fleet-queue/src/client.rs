@@ -32,6 +32,7 @@ mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
 mod mode_report;
+pub(crate) mod placement_emit;
 mod support;
 mod transport;
 mod verify_disposition;
@@ -81,6 +82,7 @@ pub fn run(args: &[String]) -> i32 {
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
         "quarantine-recheck" => cmd_quarantine_recheck(rest),
+        "time-recheck" => cmd_time_recheck(rest),
         "repair" => cmd_repair(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
@@ -100,6 +102,7 @@ pub fn run(args: &[String]) -> i32 {
         "dispatch" => crate::placement::cmd_dispatch(rest),
         "session" => crate::placement::cmd_session(rest),
         "surfaces" => crate::placement::cmd_surfaces(rest),
+        "placement-load" => cmd_placement_load(rest),
         "outbox" => cmd_outbox(rest),
         "stack" => cmd_stack(rest),
         _ => {
@@ -382,6 +385,7 @@ mod tests {
                     "pool",
                     "launched-by",
                     "remaining-budget-minutes",
+                    "manual-override",
                 ],
                 &["handoff", "bind"],
             )
@@ -950,6 +954,7 @@ mod tests {
             "unblock",
             "dep-recheck",
             "quarantine-recheck",
+            "time-recheck",
             "cancel",
             "revive",
             "fail",

@@ -13,13 +13,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7734 | #787 | `audit:partial` | Delivers Slice C's additive rich/kitty browser encoder. Later PRs #12926 and #13267 supply Slices D, E and F, but the issue's real-terminal smoke and unsupported-terminal fallback evidence remains unrecorded. The closed issue is with Lane 2 for correction; pointer #13871 comment 7157311605. |
-| #7737 | #7736 | `audit:complete` | Adds pair-safe capping for the roadmap-annotation body and regression cases for straddle, exact-fit and under-cap inputs, satisfying the issue's acceptance criteria. |
-| #7738 | #5892 | `audit:complete` | Provides the interface-specific DoS catalogue, fixed load profiles, measurable pass/fail and recovery assertions, alternatives, and implementation invariants requested by the design issue. |
-| #7739 | #5803 | `audit:complete` | Records the shared foreign-store adapter contract for addressing, type mapping, live/materialized reads and credential handling, while preserving parent grant/privacy decisions and reconciling related adapter designs. |
-| #7744 | #7741 | `audit:complete` | Makes all three diagnostic text caps surrogate-safe without changing redaction order or exact-fit behavior; adds straddle and control regression tests. The issue completion comment confirms the merged fix. |
+| Payload number | Spawning issue | Verdict          | Finding                                                                                                                                                                                                                                                                                             |
+| -------------: | -------------: | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|          #7734 |           #787 | `audit:partial`  | Delivers Slice C's additive rich/kitty browser encoder. Later PRs #12926 and #13267 supply Slices D, E and F, but the issue's real-terminal smoke and unsupported-terminal fallback evidence remains unrecorded. The closed issue is with Lane 2 for correction; pointer #13871 comment 7157311605. |
+|          #7737 |          #7736 | `audit:complete` | Adds pair-safe capping for the roadmap-annotation body and regression cases for straddle, exact-fit and under-cap inputs, satisfying the issue's acceptance criteria.                                                                                                                               |
+|          #7738 |          #5892 | `audit:complete` | Provides the interface-specific DoS catalogue, fixed load profiles, measurable pass/fail and recovery assertions, alternatives, and implementation invariants requested by the design issue.                                                                                                        |
+|          #7739 |          #5803 | `audit:complete` | Records the shared foreign-store adapter contract for addressing, type mapping, live/materialized reads and credential handling, while preserving parent grant/privacy decisions and reconciling related adapter designs.                                                                           |
+|          #7744 |          #7741 | `audit:complete` | Makes all three diagnostic text caps surrogate-safe without changing redaction order or exact-fit behavior; adds straddle and control regression tests. The issue completion comment confirms the merged fix.                                                                                       |
 
 ## Slice state
 
