@@ -763,6 +763,37 @@ func TestAuthModeRequiredGatesTCPButNotTheSocket(t *testing.T) {
 	}
 }
 
+// auth.capabilityCeilings names the upstream tools each daemon key
+// may call (#13659). A discovery key -- the default ceiling for a
+// created key -- grants no upstream tool call, so its first call is
+// refused 403; widening the discovery ceiling to name demo:echo lets
+// the same key through. The first call proves the default; the
+// settings-set proves the value governs, live (the setting is hot).
+func TestAuthCapabilityCeilingsDenyAToolOutsideTheCeiling(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_AUTH_MODE=permissive")
+	out := e.run("--json", "auth", "key", "create", "--user", "probe", "--label", "probe")
+	var created struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil || created.Secret == "" {
+		t.Fatalf("key create should return a secret: %v\n%s", err, out)
+	}
+	e.run("ls")
+	ep := endpointOf(t, e)
+	call := func() (int, string) {
+		return postWith(t, ep+"/v1/call", `{"server":"demo","tool":"echo","args":{"message":"hi"}}`,
+			map[string]string{"Authorization": "Bearer " + created.Secret, "Content-Type": "application/json"})
+	}
+	if code, body := call(); code != http.StatusForbidden {
+		t.Fatalf("a discovery key should be refused its upstream call 403, got %d: %s", code, body)
+	}
+	e.run("settings", "set", "auth.capabilityCeilings", `[{"name":"discovery","tools":["demo:echo"]}]`)
+	if code, body := call(); code != http.StatusOK || !strings.Contains(body, "hi") {
+		t.Fatalf("naming demo:echo in the discovery ceiling should serve the call, got %d: %s", code, body)
+	}
+}
+
 // transport.allowedOrigins is the list of browser origins, beyond
 // loopback, that may reach the daemon. The with/without is the
 // setting itself: the same origin is refused 403 against a daemon

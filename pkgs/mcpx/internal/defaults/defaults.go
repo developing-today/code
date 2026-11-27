@@ -67,6 +67,7 @@ type Defaults struct {
 		DaemonPollInterval   string `json:"daemonPollInterval"`
 		DaemonRestartSettle  string `json:"daemonRestartSettle"`
 		SupervisorReapRetry  string `json:"supervisorReapRetry"`
+		SupervisorReapGrace  string `json:"supervisorReapGrace"`
 		HTTPIdleTimeout      string `json:"httpIdleTimeout"`
 		HTTPRequestTimeout   string `json:"httpRequestTimeout"`
 		FollowPollInterval   string `json:"followPollInterval"`
@@ -604,14 +605,20 @@ var (
 	DaemonPollInterval   = mustDur(builtin.Plumbing.DaemonPollInterval, "plumbing.daemonPollInterval")
 	DaemonRestartSettle  = mustDur(builtin.Plumbing.DaemonRestartSettle, "plumbing.daemonRestartSettle")
 	SupervisorReapRetry  = mustDur(builtin.Plumbing.SupervisorReapRetry, "plumbing.supervisorReapRetry")
-	HTTPIdleTimeout      = mustDur(builtin.Plumbing.HTTPIdleTimeout, "plumbing.httpIdleTimeout")
-	HTTPRequestTimeout   = mustDur(builtin.Plumbing.HTTPRequestTimeout, "plumbing.httpRequestTimeout")
-	FollowPollInterval   = mustDur(builtin.Plumbing.FollowPollInterval, "plumbing.followPollInterval")
-	LogQueryLimit        = builtin.Plumbing.LogQueryLimit
-	RestartBackoffStep   = mustDur(builtin.Plumbing.RestartBackoffStep, "plumbing.restartBackoffStep")
-	RestartBackoffMax    = mustDur(builtin.Plumbing.RestartBackoffMax, "plumbing.restartBackoffMax")
-	RegistryTimeout      = mustDur(builtin.Plumbing.RegistryTimeout, "plumbing.registryTimeout")
-	EventHistory         = builtin.Plumbing.EventHistory
+	// SupervisorReapGrace is the headroom past the pool drain window
+	// during which a refusing supervisor is retried before the reap
+	// gives up and leaves it in place (cli.reapStoppedSupervisors):
+	// a refusal can persist for the whole drain, so the deadline must
+	// outlast it rather than end with it.
+	SupervisorReapGrace = mustDur(builtin.Plumbing.SupervisorReapGrace, "plumbing.supervisorReapGrace")
+	HTTPIdleTimeout     = mustDur(builtin.Plumbing.HTTPIdleTimeout, "plumbing.httpIdleTimeout")
+	HTTPRequestTimeout  = mustDur(builtin.Plumbing.HTTPRequestTimeout, "plumbing.httpRequestTimeout")
+	FollowPollInterval  = mustDur(builtin.Plumbing.FollowPollInterval, "plumbing.followPollInterval")
+	LogQueryLimit       = builtin.Plumbing.LogQueryLimit
+	RestartBackoffStep  = mustDur(builtin.Plumbing.RestartBackoffStep, "plumbing.restartBackoffStep")
+	RestartBackoffMax   = mustDur(builtin.Plumbing.RestartBackoffMax, "plumbing.restartBackoffMax")
+	RegistryTimeout     = mustDur(builtin.Plumbing.RegistryTimeout, "plumbing.registryTimeout")
+	EventHistory        = builtin.Plumbing.EventHistory
 	// EventSubscriberBuf is how many events one subscriber may fall behind
 	// before it is dropped as slow.
 	EventSubscriberBuf = builtin.Plumbing.EventSubscriberBuf

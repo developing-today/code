@@ -88,6 +88,7 @@
     "daemonPollInterval": "50ms",
     "daemonRestartSettle": "100ms",
     "supervisorReapRetry": "250ms",
+    "supervisorReapGrace": "5s",
     "httpIdleTimeout": "30s",
     "httpRequestTimeout": "10m",
     "followPollInterval": "500ms",

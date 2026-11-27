@@ -275,6 +275,7 @@ var EffectProbes = map[string]string{
 	"http.idleConnTimeout":               "TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection",
 	"transport.bearerToken":              "TestTransportBearerTokenGatesTheDaemon",
 	"auth.mode":                          "TestAuthModeRequiredGatesTCPButNotTheSocket",
+	"auth.capabilityCeilings":            "TestAuthCapabilityCeilingsDenyAToolOutsideTheCeiling",
 	"transport.allowedOrigins":           "TestTransportAllowedOriginsAreServed",
 	"transport.sessionMetaKeys":          "TestTransportSessionMetaKeysNameTheSession",
 	"transport.sseKeepAlive":             "TestTransportSSEKeepAliveCommentsOnAQuietStream",
