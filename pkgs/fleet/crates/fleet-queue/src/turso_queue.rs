@@ -105,6 +105,7 @@ mod tests {
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue/closed_bound.rs"),
+            include_str!("turso_queue/admin_time.rs"),
             include_str!("turso_queue.rs"),
         ]
         .iter()

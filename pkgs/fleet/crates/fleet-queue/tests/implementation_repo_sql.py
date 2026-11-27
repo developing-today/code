@@ -10,9 +10,10 @@ import re
 import sqlite3
 import unittest
 
-SRC = (
-    pathlib.Path(__file__).resolve().parents[1] / "src/turso_queue/claim.rs"
-).read_text()
+_SRC_DIR = pathlib.Path(__file__).resolve().parents[1] / "src/turso_queue"
+# Production expressions live across the claim module split: the budget
+# gate in claim.rs, IMPLEMENTATION_REPO_SQL in claim_filter.rs.
+SRC = (_SRC_DIR / "claim.rs").read_text() + (_SRC_DIR / "claim_filter.rs").read_text()
 
 
 def constant(name):
