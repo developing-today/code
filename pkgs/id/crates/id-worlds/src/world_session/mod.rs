@@ -162,12 +162,21 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
 
 const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A per-session outbound deadline. Once a frame stalls or the peer
+/// Per-session deadlines. Once an outbound frame stalls or the peer
 /// disappears, the wrapper treats the connection as closed so later
-/// handlers cannot keep the world lease alive by sending again.
+/// handlers cannot keep the world lease alive by sending again. A
+/// joined session that stays silent for the whole idle window is
+/// treated as closed too: transports with keepalives (iroh sends QUIC
+/// PINGs by design) never surface an idle peer as a transport close,
+/// so without this a silent peer would hold its hub permit and
+/// presence forever. The idle deadline is re-armed on every `recv`
+/// call, and the session loop calls `recv` again after any activity
+/// (an inbound frame, a world event, a view send), so only a fully
+/// silent window ends the session.
 struct SendDeadlineIo<'a, I> {
     inner: &'a mut I,
     timeout: Duration,
+    idle_timeout: Duration,
     closed: bool,
 }
 
@@ -175,9 +184,14 @@ impl<I: SessionIo> SessionIo for SendDeadlineIo<'_, I> {
     fn recv(&mut self) -> impl std::future::Future<Output = Inbound> + Send {
         async move {
             if self.closed {
-                Inbound::Closed
-            } else {
-                self.inner.recv().await
+                return Inbound::Closed;
+            }
+            match tokio::time::timeout(self.idle_timeout, self.inner.recv()).await {
+                Ok(inbound) => inbound,
+                Err(_) => {
+                    self.closed = true;
+                    Inbound::Closed
+                }
             }
         }
     }
@@ -262,6 +276,7 @@ async fn run_session_with_send_deadline<I: SessionIo>(
     let mut io = SendDeadlineIo {
         inner: io,
         timeout: send_timeout,
+        idle_timeout: config.idle_timeout,
         closed: false,
     };
     run_session_inner(hub, &mut io, config).await;
