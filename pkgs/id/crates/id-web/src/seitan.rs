@@ -51,6 +51,7 @@ use id_directory::seitan::{Invite, Proof, Reject, Token};
 use id_worlds::world_hub::ResolveError;
 
 use super::AppState;
+use super::world_ws::lease_failure_response;
 
 /// One registered invite: the world it joins, bound at registration
 /// and never taken from the proof, plus the invite itself.
@@ -211,10 +212,7 @@ pub(crate) async fn seitan_invite_handler(
     // itself.
     match hub.lease(Some(&request.world), supplied).await {
         Ok(_lease) => {}
-        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return lease_failure_response(&error),
     }
     if !supplied.is_some_and(|token| hub.admin_ok(token)) {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
@@ -327,6 +325,9 @@ pub(crate) async fn seitan_admit_handler(
         Some(hub) => match hub.lease(Some(&world), None).await {
             Ok(lease) => Some(lease),
             Err(ResolveError::UnknownWorld) => None,
+            Err(ResolveError::StorageQuota) => {
+                return lease_failure_response(&ResolveError::StorageQuota);
+            }
             Err(ResolveError::Busy | ResolveError::TooManyWorlds | ResolveError::Unavailable) => {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
