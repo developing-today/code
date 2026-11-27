@@ -4,7 +4,11 @@ import { renderSearch } from "../src/render.ts";
 import {
   paginateSearchResults,
   parseSearchPagination,
+  registrySearchIndexStats,
   registrySearchRefs,
+  REGISTRY_SEARCH_MAX_FIELD_CHARS,
+  REGISTRY_SEARCH_MAX_GRAM_KEYS,
+  REGISTRY_SEARCH_MAX_POSTING_ENTRIES,
   searchWork,
   SEARCH_DEFAULT_LIMIT,
   SEARCH_MAX_LIMIT,
@@ -97,26 +101,51 @@ describe("search registry candidate bound (#15785)", () => {
       directory: `/workspace/session-${i}`,
       taskRefs: [],
     }));
-    // The first call builds any snapshot-level search data. The next
-    // query must use that data instead of walking all 28,479 records.
-    const expected = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
-    expect(expected.map((result) => result.id)).toEqual(matchingIds.map((i) => `needle-session-${i}`));
-
     let visited = 0;
-    const originalIterator = registry[Symbol.iterator].bind(registry);
-    Object.defineProperty(registry, Symbol.iterator, {
-      configurable: true,
-      value: function* () {
-        for (const record of originalIterator()) {
-          visited++;
-          yield record;
-        }
+    const indexedRegistry = new Proxy(registry, {
+      get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property)) visited++;
+        return Reflect.get(target, property, receiver);
       },
     });
+    // The first call builds any snapshot-level search data. The next
+    // query must use that data instead of walking all 28,479 records.
+    const expected = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry: indexedRegistry });
+    expect(expected.map((result) => result.id)).toEqual(matchingIds.map((i) => `needle-session-${i}`));
 
-    const actual = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry });
+    const stats = registrySearchIndexStats(indexedRegistry);
+    expect(stats.postingEntries).toBeLessThanOrEqual(REGISTRY_SEARCH_MAX_POSTING_ENTRIES);
+    expect(stats.gramKeys).toBeLessThanOrEqual(REGISTRY_SEARCH_MAX_GRAM_KEYS);
+    expect(stats.estimatedPostingBytes).toBeLessThanOrEqual(
+      REGISTRY_SEARCH_MAX_POSTING_ENTRIES * Uint32Array.BYTES_PER_ELEMENT,
+    );
+    expect(stats.overflowRecords).toBe(0);
+    visited = 0;
+    const actual = searchWork([], [], new Map<RefKey, GhItem>(), "needle", { registry: indexedRegistry });
     expect(actual).toEqual(expected);
     expect(visited).toBeLessThanOrEqual(64);
+  });
+
+  test("overlong fields use exact overflow fallback within the index budget", () => {
+    const registry: SessionRecord[] = [
+      {
+        id: "long-session",
+        source: "opencode-sandbox",
+        label: `session ${"x".repeat(REGISTRY_SEARCH_MAX_FIELD_CHARS + 1)} unique-marker`,
+        agentId: "opencode:main",
+        agentLabel: "OpenCode",
+        parentId: null,
+        status: "complete",
+        taskRefs: [],
+      },
+    ];
+    const stats = registrySearchIndexStats(registry);
+    expect(stats.overflowRecords).toBe(1);
+    expect(stats.estimatedPostingBytes).toBeLessThanOrEqual(
+      REGISTRY_SEARCH_MAX_POSTING_ENTRIES * Uint32Array.BYTES_PER_ELEMENT,
+    );
+    const results = searchWork([], [], new Map<RefKey, GhItem>(), "unique-marker", { registry });
+    expect(results.map((result) => result.id)).toEqual(["long-session"]);
   });
 
   test("indexed results equal the full-scan oracle across generated field values", () => {
@@ -134,7 +163,30 @@ describe("search registry candidate bound (#15785)", () => {
       directory: `/workspace/${terms[(i + 2) % terms.length]}/${i}`,
       taskRefs: i % 7 === 0 ? [`developing-today/code#${i}`] : [],
     }));
-    const queries = ["fleet", "opencode:sub", "code#", "🛰", "in-progress", "missing"];
+    registry.push(
+      {
+        id: "split-grams",
+        source: "opencode-sandbox",
+        label: "abc",
+        title: "bcd",
+        agentId: "cde",
+        agentLabel: "def",
+        parentId: null,
+        status: "complete",
+        taskRefs: [],
+      },
+      {
+        id: "repeat-gram-only",
+        source: "opencode-sandbox",
+        label: "aaa",
+        agentId: "opencode:main",
+        agentLabel: "OpenCode",
+        parentId: null,
+        status: "complete",
+        taskRefs: [],
+      },
+    );
+    const queries = ["f", "fleet", "fle", "opencode:sub", "code#", "🛰", "in-progress", "abcdef", "aaaa", "missing"];
     expect(registrySearchRefs(registry)).toEqual([...new Set(registry.flatMap((record) => record.taskRefs))]);
     const reference = (query: string) =>
       registry
