@@ -282,6 +282,61 @@ pub fn replay_run_from_pins(
     })
 }
 
+/// On-demand historical backfill request over a stated batch range
+/// (§8 item 3 pull default, §6.4 ordering): the consumer names the
+/// batches it needs in chain order; the projector publishes exactly
+/// those claims. Late or backfilled rows publish when observed — the
+/// batch chain makes ordering reconstructible regardless of arrival
+/// order, so the stated range order (not history storage order) is
+/// the publication order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackfillRequest {
+    /// Stable identifier for this backfill run, assigned by the caller.
+    pub run_id: String,
+    /// The stated historical range: batch ids in chain order. An empty
+    /// range backfills nothing and yields an empty log.
+    pub batch_ids: Vec<String>,
+}
+
+/// Projects a stated historical range on demand (§8.3): looks each
+/// requested batch id up in `history`, then projects the ordered
+/// statements as one run under `pins`.
+///
+/// Fails closed: an unknown batch id, a range that does not continue
+/// the pinned batch-chain head, or a broken link inside the range
+/// refuses the whole backfill, never a prefix. Each backfilled claim
+/// is one atomic publication unit — it recomputes from its statement
+/// rows alone (§6.4), and the returned log is the unit manifest the
+/// caller persists with the publication.
+///
+/// # Errors
+///
+/// [`Error::Fatal`] when the run id is empty, any requested batch id
+/// is absent from `history`, or the ordered range breaks the batch
+/// chain.
+pub fn backfill_range(
+    request: BackfillRequest,
+    history: &BTreeMap<String, BatchStatement>,
+    pins: ProjectionRunPins,
+) -> Result<ProjectionRunLog> {
+    if request.run_id.trim().is_empty() {
+        return Err(refuse("id_projection: backfill run id must not be empty"));
+    }
+    let mut statements = Vec::with_capacity(request.batch_ids.len());
+    for batch_id in &request.batch_ids {
+        match history.get(batch_id) {
+            Some(statement) => statements.push(statement.clone()),
+            None => {
+                return Err(refuse(format!(
+                    "id_projection: backfill of run {:?} refuses unknown batch {batch_id:?}",
+                    request.run_id,
+                )));
+            }
+        }
+    }
+    project_run_with_pins(request.run_id, &statements, pins)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -652,6 +707,169 @@ mod tests {
         // The second statement alone names a prior head the pins do
         // not pin, so replay refuses without comparing claims.
         assert!(replay_run_from_pins(&log, std::slice::from_ref(&second)).is_err());
+    }
+
+    fn backfill_history(statements: &[BatchStatement]) -> BTreeMap<String, BatchStatement> {
+        statements
+            .iter()
+            .map(|statement| {
+                (
+                    statement.predicate.batch.batch_id.clone(),
+                    statement.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn backfill_pins(head: Option<String>) -> ProjectionRunPins {
+        ProjectionRunPins {
+            atlas_snapshot_marker: BTreeMap::from([("file-1".to_owned(), 7)]),
+            batch_chain_head: head,
+            publisher_key_id: "publisher-key-1".to_owned(),
+            projection_version: PROJECTION_VERSION.to_owned(),
+        }
+    }
+
+    /// Oracle §8.3 + §6.4 ordering: a backfill over a stated historical
+    /// range publishes exactly the requested claims in chain order —
+    /// byte-identical to projecting the same statements as a live run.
+    #[test]
+    fn backfill_over_stated_range_reproduces_live_run_claims() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second.clone()];
+        let history = backfill_history(&statements);
+
+        let live = project_run_with_pins("live-1", &statements, backfill_pins(None)).unwrap();
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-1".to_owned(),
+                batch_ids: vec![
+                    first.predicate.batch.batch_id.clone(),
+                    second.predicate.batch.batch_id.clone(),
+                ],
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+
+        assert_eq!(backfilled.run_id, "backfill-1");
+        assert_eq!(backfilled.claims, live.claims);
+        assert_eq!(backfilled.batch_chain_head, live.batch_chain_head);
+        // Ordering is reconstructible from the chain, not arrival
+        // order: history storage order does not matter, the stated
+        // range order governs publication.
+        assert_eq!(backfilled.claims[0].batch_id, first.predicate.batch.batch_id);
+        assert_eq!(
+            backfilled.claims[1]
+                .prior_attestation
+                .as_deref(),
+            Some(backfilled.claims[0].subject.as_str())
+        );
+    }
+
+    /// Oracle §6.4 atomicity: every backfilled claim is one complete
+    /// publication unit — it recomputes from its statement rows alone —
+    /// and the backfill log persists as one serializable manifest.
+    #[test]
+    fn backfilled_claims_are_atomic_units_under_one_manifest() {
+        let (first, second) = two_chained();
+        let statements = vec![first.clone(), second.clone()];
+        let history = backfill_history(&statements);
+
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-atomic".to_owned(),
+                batch_ids: vec![
+                    first.predicate.batch.batch_id.clone(),
+                    second.predicate.batch.batch_id.clone(),
+                ],
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+
+        for (claim, statement) in backfilled.claims.iter().zip(statements.iter()) {
+            assert_recomputes(claim, statement);
+        }
+        let encoded = serde_json::to_vec(&backfilled).unwrap();
+        let decoded: ProjectionRunLog = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, backfilled);
+        assert_eq!(
+            decoded.batch_chain_head,
+            decoded.claims.last().map(|claim| claim.subject.clone())
+        );
+    }
+
+    /// Fails closed: a backfill naming a batch outside the stated
+    /// history refuses the whole range, never a prefix.
+    #[test]
+    fn backfill_refuses_unknown_batch_id() {
+        let (first, second) = two_chained();
+        let history = backfill_history(&[first.clone(), second]);
+        assert!(
+            backfill_range(
+                BackfillRequest {
+                    run_id: "backfill-unknown".to_owned(),
+                    batch_ids: vec![
+                        first.predicate.batch.batch_id.clone(),
+                        "batch-never-ingested".to_owned(),
+                    ],
+                },
+                &history,
+                backfill_pins(None),
+            )
+            .is_err()
+        );
+    }
+
+    /// Fails closed: a stated range that skips a chain link refuses —
+    /// ordering gaps are never silently published as contiguous.
+    #[test]
+    fn backfill_refuses_range_with_skipped_link() {
+        let (first, second) = two_chained();
+        let third = chained(
+            BatchStatement::new(
+                vec![subject("shard-0:chunk-3", 0x44)],
+                vec![material("repo@abc:path", 0x22)],
+                predicate("batch-3", BatchOutcome::Published),
+            ),
+            &second.envelope_digest().unwrap(),
+        );
+        let history = backfill_history(&[first.clone(), second, third.clone()]);
+        // Requesting first + third skips the middle link.
+        assert!(
+            backfill_range(
+                BackfillRequest {
+                    run_id: "backfill-gap".to_owned(),
+                    batch_ids: vec![
+                        first.predicate.batch.batch_id.clone(),
+                        third.predicate.batch.batch_id.clone(),
+                    ],
+                },
+                &history,
+                backfill_pins(None),
+            )
+            .is_err()
+        );
+    }
+
+    /// An empty stated range backfills nothing: no claims, no head.
+    #[test]
+    fn empty_backfill_range_yields_empty_log() {
+        let history = BTreeMap::new();
+        let backfilled = backfill_range(
+            BackfillRequest {
+                run_id: "backfill-empty".to_owned(),
+                batch_ids: Vec::new(),
+            },
+            &history,
+            backfill_pins(None),
+        )
+        .unwrap();
+        assert!(backfilled.claims.is_empty());
+        assert_eq!(backfilled.batch_chain_head, None);
     }
 
     proptest! {
