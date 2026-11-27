@@ -2412,6 +2412,10 @@ impl Explorer {
                 ResolveError::Busy | ResolveError::TooManyWorlds => {
                     anyhow::anyhow!("the server is busy; try again")
                 }
+                // #1067 F12.10: surface the quota refusal verbatim so a
+                // caller at their storage limit is not told "no such
+                // world" for a world that exists.
+                ResolveError::StorageQuota => anyhow::anyhow!(error.message()),
                 _ => anyhow::anyhow!("no such world"),
             })?;
         lease.service().directory(self.caller.clone(), action).await
