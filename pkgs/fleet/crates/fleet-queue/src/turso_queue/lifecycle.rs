@@ -629,23 +629,30 @@ pub(crate) fn claim_pick_once(
     if let Some(old) = &cleared {
         on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
     }
+    let mut claim_detail = json!({
+        "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+        "cleared_session_id": cleared, "lane_id": lane,
+        "platform": family, "session_id": claim_session,
+        "model_provider": model.as_ref().map(|m| m.provider.clone()),
+        "model_id": model.as_ref().and_then(|m| m.model.clone()),
+        "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+        "pick": if handoff_pick { "handed_off" } else { "default" },
+    });
+    // #9178 §1 (FDR-0001), claim-wire slice: same requested/actual
+    // pair as the by-id path; unhinted picks stay byte-identical.
+    if let Some(requested) = row.get("resume_session_id").and_then(|v| v.as_str()) {
+        claim_detail["resume_requested_session_id"] = json!(requested);
+        claim_detail["resume_actual_session_id"] = claim_session
+            .as_deref()
+            .map(|s| json!(s))
+            .unwrap_or(Value::Null);
+    }
     event(
         t,
         Some(&worker),
         Some(id),
         "claimed",
-        &with_marks(
-            &json!({
-                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-                "cleared_session_id": cleared, "lane_id": lane,
-                "platform": family, "session_id": claim_session,
-                "model_provider": model.as_ref().map(|m| m.provider.clone()),
-                "model_id": model.as_ref().and_then(|m| m.model.clone()),
-                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-                "pick": if handoff_pick { "handed_off" } else { "default" },
-            }),
-            &row,
-        ),
+        &with_marks(&claim_detail, &row),
     )?;
     Ok(Some(row))
 }
@@ -4297,6 +4304,141 @@ mod resume_session_storage_tests {
         );
         let plain_row = get_task(&t, plain_id).unwrap().expect("claimed row");
         assert!(plain_row["resume_session_id"].is_null(), "{plain_row}");
+    }
+}
+
+#[cfg(test)]
+mod claim_resume_event_tests {
+    // #9178 §1 (FDR-0001), claim-wire slice: a hinted claim's
+    // `claimed` event carries both the requested session and the
+    // session actually used (explicit null when the claim names
+    // none); an unhinted claim's event is byte-identical to before
+    // (neither key present). Oracle: the claimed event detail.
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("resume event oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "resume event test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn packet_with_hint(number: i64, hint: &str) -> Value {
+        let mut p = packet(number);
+        p["resume_session_id"] = json!(hint);
+        p
+    }
+
+    fn enqueue(number: i64, hint: Option<&str>) -> (crate::turso_queue::TursoBackend, i64) {
+        let (t, _) = fake_backend();
+        let p = match hint {
+            Some(h) => packet_with_hint(number, h),
+            None => packet(number),
+        };
+        let out = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": p}));
+        assert_eq!(out["ok"], true, "{out}");
+        let id = out["row"]["id"].as_i64().expect("task id");
+        (t, id)
+    }
+
+    fn claimed_detail(t: &crate::turso_queue::TursoBackend, id: i64) -> Value {
+        let events = events_for(t, id, "claimed");
+        assert_eq!(events.len(), 1, "{events:?}");
+        serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn hinted_by_id_without_session_records_requested_and_null_actual_9178() {
+        let (t, id) = enqueue(91901, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert!(detail.get("resume_actual_session_id").is_some(), "{detail}");
+        assert!(detail["resume_actual_session_id"].is_null(), "{detail}");
+    }
+
+    #[test]
+    fn hinted_by_id_with_session_records_both_9178() {
+        let (t, id) = enqueue(91902, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert_eq!(
+            detail["resume_actual_session_id"],
+            json!("ses_actual"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn unhinted_by_id_carries_neither_key_9178() {
+        let (t, id) = enqueue(91903, None);
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(
+            detail.get("resume_requested_session_id").is_none(),
+            "{detail}"
+        );
+        assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
+    }
+
+    #[test]
+    fn hinted_pick_records_requested_and_null_actual_9178() {
+        let (t, id) = enqueue(91904, Some("ses_pick_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_pick_requested"),
+            "{detail}"
+        );
+        assert!(detail["resume_actual_session_id"].is_null(), "{detail}");
     }
 }
 
