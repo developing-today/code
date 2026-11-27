@@ -183,6 +183,12 @@ def error_stopped_sessions(record):
     }
 
 
+def _intervention_attempts(prior):
+    """Fairness turns, separate from successfully delivered nudge budget."""
+    value = prior.get("intervention_attempts")
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
 def plan_actions(record, prior_sessions):
     """The round's planned actions, pure: retries and stall actions.
 
@@ -203,6 +209,7 @@ def plan_actions(record, prior_sessions):
                 "task_id": entry["task_id"],
                 "outcome": entry.get("outcome"),
                 "binding": entry.get("binding") or {},
+                "intervention_attempts": _intervention_attempts(prior),
             }
         )
     for sid, entry in sorted(confirmed_stalls(record).items()):
@@ -222,6 +229,7 @@ def plan_actions(record, prior_sessions):
                     "kind": "nudge",
                     "task_id": task_id,
                     "nudges_sent": sent,
+                    "intervention_attempts": _intervention_attempts(prior),
                 }
             )
         else:
@@ -231,6 +239,7 @@ def plan_actions(record, prior_sessions):
                     "kind": "escalate",
                     "task_id": task_id,
                     "nudges_sent": sent,
+                    "intervention_attempts": _intervention_attempts(prior),
                 }
             )
     return actions
@@ -282,17 +291,25 @@ def split_plan(planned):
     Queue interventions past MAX_QUEUE_INTERVENTIONS_PER_ROUND
     are overflow: the caller reports them in the round record
     and defers them - their episode state carries untouched, so
-    they re-plan next round instead of being dropped. The cap
-    considers executable stall work before recovery retries, and then
-    least-served first (lowest nudges_sent, then session id): a session deferred by one
-    burst is served before the sessions that consumed budget
-    ahead of it, so overflow defers but never starves."""
+    they re-plan next round instead of being dropped. With cap >= 2,
+    reserve one retry slot when both classes are present, leaving at
+    least one stall slot; unused slots go to the other class. Within
+    each class, least-attempted episodes go first (then session id).
+    Failed effects consume a fairness turn but not delivery budget.
+    At cap 1, least-attempted selection across classes rotates turns.
+    """
     queue = [a for a in planned if a["kind"] in ("retry", "nudge", "escalate")]
-    # Retries may be non-actionable (a live lease, unreadable activity,
-    # or a failed backend recovery). Never let them displace executable
-    # stall work on every round simply because their nudge count is zero.
-    queue.sort(key=lambda a: (a["kind"] == "retry", a.get("nudges_sent") or 0, a["session_id"]))
-    overflow_ids = {id(a) for a in queue[MAX_QUEUE_INTERVENTIONS_PER_ROUND:]}
+    queue.sort(key=lambda a: (_intervention_attempts(a), a["session_id"]))
+    cap = MAX_QUEUE_INTERVENTIONS_PER_ROUND
+    retries = [a for a in queue if a["kind"] == "retry"]
+    stalls = [a for a in queue if a["kind"] != "retry"]
+    if cap >= 2 and retries and stalls:
+        selected = stalls[:cap - 1]
+        selected += retries[:cap - len(selected)]
+    else:
+        selected = queue[:cap]
+    selected_ids = {id(a) for a in selected}
+    overflow_ids = {id(a) for a in queue if id(a) not in selected_ids}
     to_apply = [a for a in planned if id(a) not in overflow_ids]
     overflow = [a for a in planned if id(a) in overflow_ids]
     return to_apply, overflow
@@ -373,6 +390,7 @@ def nudge_step(
             "escalated": bool(prior.get("escalated")),
             "first_round": prior.get("first_round", round_no),
             "last_round": round_no,
+            "intervention_attempts": _intervention_attempts(prior) + 1,
         }
         if kind == "observed":
             outcomes.append(dict(action, applied=False, detail="observed_only"))
@@ -450,6 +468,7 @@ def nudge_step(
             new_sessions[sid] = {
                 "task_id": action["task_id"],
                 "error_retried": False,
+                "intervention_attempts": _intervention_attempts(prior),
                 "first_round": prior.get("first_round", round_no),
                 "last_round": round_no,
             }
@@ -458,6 +477,7 @@ def nudge_step(
         new_sessions[sid] = {
             "task_id": action["task_id"],
             "nudges_sent": sent if isinstance(sent, int) else 0,
+            "intervention_attempts": _intervention_attempts(prior),
             "escalated": bool(prior.get("escalated")),
             "first_round": prior.get("first_round", round_no),
             "last_round": round_no,

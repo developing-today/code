@@ -146,6 +146,7 @@ class TestPlan(unittest.TestCase):
                     "kind": "nudge",
                     "task_id": 101,
                     "nudges_sent": 0,
+                    "intervention_attempts": 0,
                 }
             ],
         )
@@ -535,6 +536,85 @@ class TestInterventionAccounting(unittest.TestCase):
         self.assertIn("ses_zz_real_stall", [a["session_id"] for a in to_apply])
         self.assertEqual(len(overflow), 1)
         self.assertEqual(overflow[0]["kind"], "retry")
+
+    def test_failed_effects_rotate_within_both_classes_across_rounds(self):
+        # Oracle: at cap=2 each class gets a slot; failures consume fairness
+        # turns, not delivery budget. Overflow keeps its unspent turn.
+        verdicts = {
+            "ses_stall_a": stalled(1), "ses_stall_b": stalled(2),
+            "ses_retry_a": error_stopped(3), "ses_retry_b": error_stopped(4),
+        }
+        sent, retried = [], []
+
+        def send(sid, text):
+            sent.append(sid)
+            return False
+
+        def recover(sid, task_id, binding):
+            retried.append(sid)
+            return sid == "ses_retry_b"
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            nudges, "MAX_QUEUE_INTERVENTIONS_PER_ROUND", 2
+        ):
+            state_dir = Path(tmp)
+            for round_no in (1, 2):
+                out = nudges.nudge_step(
+                    "live", record(round_no, verdicts), send_prompt=send,
+                    recover_error=recover, bindings={}, state_dir=state_dir,
+                )
+                self.assertEqual(len(out["actions"]), 2)
+                self.assertEqual({a["kind"] for a in out["actions"]}, {"nudge", "retry"})
+                if round_no == 1:
+                    state = json.loads((state_dir / nudges.STATE_FILE_NAME).read_text())["sessions"]
+                    self.assertEqual(state["ses_stall_a"]["intervention_attempts"], 1)
+                    self.assertEqual(state["ses_stall_b"]["intervention_attempts"], 0)
+                    self.assertEqual(state["ses_retry_a"]["intervention_attempts"], 1)
+                    self.assertEqual(state["ses_retry_b"]["intervention_attempts"], 0)
+            self.assertTrue(any(a["kind"] == "retry" and a["applied"] for a in out["actions"]))
+            state = json.loads((state_dir / nudges.STATE_FILE_NAME).read_text())["sessions"]
+            self.assertEqual(state["ses_stall_a"]["nudges_sent"], 0)
+        self.assertEqual(sent, ["ses_stall_a", "ses_stall_b"])
+        self.assertEqual(retried, ["ses_retry_a", "ses_retry_b"])
+
+    def test_split_plan_reserves_classes_and_fills_unused_capacity(self):
+        # Oracle: cap is hard, each class is served, and failures' attempt
+        # counts outrank delivery budget (including failed escalations).
+        planned = [
+            {"session_id": "stall_a", "kind": "nudge", "intervention_attempts": 2},
+            {"session_id": "stall_b", "kind": "escalate", "intervention_attempts": 0, "nudges_sent": 2},
+            {"session_id": "retry_a", "kind": "retry", "intervention_attempts": 2},
+            {"session_id": "retry_b", "kind": "retry", "intervention_attempts": 0},
+        ]
+        for cap, expected in (
+            (1, {"retry_b"}), (2, {"stall_b", "retry_b"}),
+            (3, {"stall_a", "stall_b", "retry_b"}),
+            (5, {a["session_id"] for a in planned}),
+        ):
+            with self.subTest(cap=cap), patch.object(nudges, "MAX_QUEUE_INTERVENTIONS_PER_ROUND", cap):
+                selected, overflow = nudges.split_plan(planned)
+                self.assertEqual({a["session_id"] for a in selected}, expected)
+                self.assertEqual(len(selected) + len(overflow), len(planned))
+                self.assertLessEqual(len(selected), cap)
+        with patch.object(nudges, "MAX_QUEUE_INTERVENTIONS_PER_ROUND", 3):
+            selected, _ = nudges.split_plan(planned[1:])
+            self.assertEqual(len(selected), 3)  # Spare stall slot goes to retries.
+
+    def test_single_slot_rotates_between_failed_classes(self):
+        # Oracle: when two reservations cannot fit, attempted turns rotate
+        # even though neither effect succeeds.
+        attempted = []
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            nudges, "MAX_QUEUE_INTERVENTIONS_PER_ROUND", 1
+        ):
+            for round_no in (1, 2):
+                out = nudges.nudge_step(
+                    "live", record(round_no, {"a_retry": error_stopped(), "b_stall": stalled()}),
+                    send_prompt=lambda *args: False, recover_error=lambda *args: False,
+                    bindings={}, state_dir=Path(tmp),
+                )
+                attempted.extend(a["kind"] for a in out["actions"])
+        self.assertEqual(attempted, ["retry", "nudge"])
 
     def test_queue_burst_overflows_and_defers_not_drops(self):
         fx = FakeEffects()
