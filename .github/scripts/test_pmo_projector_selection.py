@@ -18,7 +18,7 @@ MANIFEST = "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/manifes
 
 
 class ProjectorSelection(unittest.TestCase):
-    def run_workflow_step(self, install_rc=0):
+    def run_workflow_step(self, install_rc=0, test_rc=0, extra_file="pm-stack/projector/test/config.test.ts"):
         workflow = (ROOT / ".github/workflows/pmo-contract-conformance.yml").read_text()
         block = workflow.split("- name: Run the projector's forwarding tests by exact file", 1)[1]
         command = re.search(r"        run: \|\n(.*?)(?=\n      - name:)", block, re.S)[1]
@@ -36,23 +36,24 @@ class ProjectorSelection(unittest.TestCase):
                 {"status": "landed", "projector_tests": [
                     "pm-stack/projector/test/webhook-delivery-id.test.ts",
                     "pm-stack/projector/test/webhook-operation-forwarding.test.ts",
-                    "pm-stack/projector/test/config.test.ts"]},
+                    extra_file]},
                 {"status": "gated", "projector_tests": ["pm-stack/projector/test/gated.test.ts"]},
                 {"status": "landed", "projector_tests": ["pm-stack/projector/test/config.test.ts"]}
             ]}))
             binary = root / "bun"
             binary.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
                               "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-                              "sys.exit(int(os.environ['INSTALL_RC']) if sys.argv[1] == 'install' else 0)\n")
+                              "sys.exit(int(os.environ['INSTALL_RC']) if sys.argv[1] == 'install' else int(os.environ['TEST_RC']))\n")
             binary.chmod(0o755)
             calls = root / "calls"
             output = root / "output"
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                        GITHUB_WORKSPACE=str(root), MANIFEST=MANIFEST,
-                       GITHUB_OUTPUT=str(output), CALLS=str(calls), INSTALL_RC=str(install_rc))
+                       GITHUB_OUTPUT=str(output), CALLS=str(calls), INSTALL_RC=str(install_rc), TEST_RC=str(test_rc))
             subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command],
                            cwd=projector, env=env, check=True)
-            return [json.loads(line) for line in calls.read_text().splitlines()], output.read_text()
+            return ([json.loads(line) for line in calls.read_text().splitlines()]
+                    if calls.exists() else []), output.read_text()
 
     def test_workflow_executes_all_and_only_landed_manifest_files(self):
         calls, output = self.run_workflow_step()
@@ -65,6 +66,19 @@ class ProjectorSelection(unittest.TestCase):
         calls, output = self.run_workflow_step(17)
         self.assertEqual(calls, [["install", "--frozen-lockfile"]])
         self.assertEqual(output, "rc=17\n")
+
+    def test_test_failure_is_not_reported_successful(self):
+        _, output = self.run_workflow_step(test_rc=23)
+        self.assertEqual(output, "rc=23\n")
+
+    def test_invalid_selection_is_rejected_before_install(self):
+        # Invariant oracle: none of these selectors may launch any subprocess.
+        for path in ["--help", "pm-stack/projector/test/../src/config.test.ts",
+                     "pm-stack/projector/test", "/tmp/example.test.ts"]:
+            with self.subTest(path=path):
+                calls, output = self.run_workflow_step(extra_file=path)
+                self.assertEqual(calls, [])
+                self.assertEqual(output, "rc=2\n")
 
 
 if __name__ == "__main__":
