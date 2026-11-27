@@ -127,10 +127,11 @@ func TestAuthKeyCLIRejectsUnexpectedArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
+		want string
 	}{
-		{name: "create positional", args: []string{"auth", "key", "create", "--user", "owner", "--label", "x", "stray"}},
-		{name: "revoke extra", args: []string{"auth", "key", "revoke", "one", "two"}},
-		{name: "unknown option", args: []string{"auth", "key", "create", "--user", "owner", "--label", "x", "--unknown"}},
+		{name: "create positional", args: []string{"auth", "key", "create", "--user", "owner", "--label", "x", "stray"}, want: "usage: mcpx auth key create"},
+		{name: "revoke extra", args: []string{"auth", "key", "revoke", "one", "two"}, want: "usage: mcpx auth key revoke"},
+		{name: "unknown option", args: []string{"auth", "key", "create", "--user", "owner", "--label", "x", "--unknown"}, want: "flag provided but not defined: -unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, _, stderr := runAuthKeyCLI(t, tc.args...)
@@ -139,6 +140,9 @@ func TestAuthKeyCLIRejectsUnexpectedArguments(t *testing.T) {
 			}
 			if strings.TrimSpace(stderr) == "" {
 				t.Fatalf("unexpected arguments failed without a usage/error message: %v", tc.args)
+			}
+			if strings.Contains(stderr, "unknown command") || !strings.Contains(stderr, tc.want) {
+				t.Fatalf("error = %q, want command-level error containing %q", stderr, tc.want)
 			}
 		})
 	}
