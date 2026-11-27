@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@tailwindcss/typography": ">=0.5.10",
-    "tailwindcss": ">=3.4.1",
+    "tailwindcss": ">=4.3.5",
     "daisyui": ">=4.7.2",
     "hyperscript.org": ">=0.9.12",
     "htmx.org": ">=1.9.10"
