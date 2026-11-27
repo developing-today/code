@@ -25,7 +25,7 @@
 //! [`crate::world_limits::RuntimeLimits`]: an admin-maintained JSON
 //! mapping, installed once by the serve path, never journaled.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -162,6 +162,130 @@ impl WorldAccountRegistry {
 struct RegistrySlot {
     registry: Arc<WorldAccountRegistry>,
     installed: bool,
+}
+
+/// A refused world hold against an account's world-count quota
+/// (#1067, F12.10).
+///
+/// Typed and recoverable, like [`FuelRateRefusal`]: the account is
+/// unharmed, nothing was created, and the same creation can succeed
+/// after the account frees a world or the quota is raised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountWorldRefusal {
+    /// The account that asked for one world too many.
+    pub account: String,
+    /// The account's world-count limit.
+    pub limit: u32,
+    /// Worlds the account already holds.
+    pub held: u32,
+}
+
+impl std::fmt::Display for AccountWorldRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "account {} holds {} worlds, at its {}-world quota",
+            self.account, self.held, self.limit
+        )
+    }
+}
+
+impl std::error::Error for AccountWorldRefusal {}
+
+/// Per-account world-count ledger (#1067, F12.10).
+///
+/// Deterministic accounting, no I/O: `try_acquire` records one
+/// world's hold under an account, refusing a hold past the limit
+/// whole — nothing is recorded and `held_by` does not move — so a
+/// refused creation leaves the ledger exactly as it was. Recording
+/// a world the account already holds is idempotent (a reopen, not
+/// a new hold) and never refused. A `max_worlds` of `0` means no
+/// bound, mirroring the per-account burn bound's `0`, so an
+/// unconfigured hub runs exactly as before.
+///
+/// The ledger counts holds the hub attributed, in hub lifetime:
+/// worlds that predate the attribution (created before a restart,
+/// or through a path that carries no account) are not counted
+/// against any account. Persisting ownership across restarts is a
+/// later slice; storage-byte accounting stays out of this one.
+#[derive(Debug, Clone, Default)]
+pub struct AccountWorldQuota {
+    max_worlds: u32,
+    held: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl AccountWorldQuota {
+    /// A fresh ledger enforcing `max_worlds` worlds per account.
+    #[must_use]
+    pub const fn new(max_worlds: u32) -> Self {
+        Self {
+            max_worlds,
+            held: BTreeMap::new(),
+        }
+    }
+
+    /// The per-account world limit this ledger enforces (`0` = unbounded).
+    #[must_use]
+    pub const fn max_worlds(&self) -> u32 {
+        self.max_worlds
+    }
+
+    /// Worlds currently held by `account`.
+    #[must_use]
+    pub fn held_by(&self, account: &str) -> u32 {
+        self.held
+            .get(account)
+            .map_or(0, |worlds| worlds.len() as u32)
+    }
+
+    /// Whether `account` already holds `world`.
+    #[must_use]
+    pub fn contains(&self, account: &str, world: &str) -> bool {
+        self.held
+            .get(account)
+            .is_some_and(|worlds| worlds.contains(world))
+    }
+
+    /// Record `world` under `account`.
+    ///
+    /// Returns whether the world is newly held: `true` for a new
+    /// hold, `false` when the account already held it (a reopen).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountWorldRefusal`] — recording nothing — when
+    /// the account is already at its limit and does not hold this
+    /// world.
+    pub fn try_acquire(&mut self, account: &str, world: &str) -> Result<bool, AccountWorldRefusal> {
+        if self.contains(account, world) {
+            return Ok(false);
+        }
+        let held = self.held_by(account);
+        if self.max_worlds > 0 && held >= self.max_worlds {
+            return Err(AccountWorldRefusal {
+                account: account.to_owned(),
+                limit: self.max_worlds,
+                held,
+            });
+        }
+        self.held
+            .entry(account.to_owned())
+            .or_default()
+            .insert(world.to_owned());
+        Ok(true)
+    }
+
+    /// Forget `world` under `account`, dropping empty accounts.
+    /// Saturates: releasing a world the account does not hold
+    /// changes nothing.
+    pub fn release(&mut self, account: &str, world: &str) {
+        if let Some(worlds) = self.held.get_mut(account) {
+            worlds.remove(world);
+            if worlds.is_empty() {
+                self.held.remove(account);
+            }
+        }
+    }
 }
 
 /// Why a charge could not be resolved to an account.
@@ -328,5 +452,21 @@ mod tests {
             WorldAccountRegistry::from_json_str(r#"{ "worlds": { "w": { "mode": "bogus" } } }"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn an_account_at_its_world_limit_refuses_a_new_world_but_not_a_reopen() {
+        // Oracle (#1067 F12.10 world-count slice): an account holding
+        // `max_worlds` worlds is refused a further new world, while
+        // reopening a world it already holds is idempotent and never
+        // refused, and another account is unaffected.
+        let mut quota = AccountWorldQuota::new(1);
+        assert!(quota.try_acquire("acct-a", "w1").is_ok());
+        let refusal = quota.try_acquire("acct-a", "w2").unwrap_err();
+        assert_eq!(refusal.account, "acct-a");
+        assert_eq!(refusal.limit, 1);
+        assert!(quota.try_acquire("acct-a", "w1").is_ok());
+        assert!(quota.try_acquire("acct-b", "w2").is_ok());
+        assert_eq!(quota.held_by("acct-a"), 1);
     }
 }

@@ -154,7 +154,6 @@ class ImportFlowTest(unittest.TestCase):
         actions = [c[2]["action"] for c in self.calls]
         self.assertEqual(actions, ["init", "init", "ingest", "poll", "poll"])
 
-
     def _lost_response_resume(self, resume):
         """Oracle: Wrangler's init shortcut is already server-validated/ingested."""
         calls = []
@@ -166,10 +165,13 @@ class ImportFlowTest(unittest.TestCase):
             if action == "init":
                 self.assertEqual(payload["etag"], self.digest)
                 if len(calls) == 1:
-                    return {"success": True, "result": {
-                        "upload_url": "https://upload.example/put",
-                        "filename": "import.sql",
-                    }}
+                    return {
+                        "success": True,
+                        "result": {
+                            "upload_url": "https://upload.example/put",
+                            "filename": "import.sql",
+                        },
+                    }
                 return {"success": True, "result": resume}
             self.assertEqual(action, "poll", "resume must not ingest again")
             self.assertEqual(payload["current_bookmark"], "bm-resume")
@@ -179,8 +181,9 @@ class ImportFlowTest(unittest.TestCase):
             put_bytes.append(req.data)
             raise fq_common.urllib.error.URLError("accepted PUT response lost")
 
-        with mock.patch.object(fq_common, "http_json", api), mock.patch.object(
-            fq_common.urllib.request, "urlopen", accepted_put
+        with (
+            mock.patch.object(fq_common, "http_json", api),
+            mock.patch.object(fq_common.urllib.request, "urlopen", accepted_put),
         ):
             try:
                 return fq_common.D1Client("token", "acct").import_sql("db-id", self.sql)
@@ -193,9 +196,12 @@ class ImportFlowTest(unittest.TestCase):
         self.assertEqual(self._lost_response_resume(complete), complete)
 
     def test_lost_put_response_resume_pending_polls_without_ingest(self):
-        result = self._lost_response_resume({
-            "status": "active", "at_bookmark": "bm-resume",
-        })
+        result = self._lost_response_resume(
+            {
+                "status": "active",
+                "at_bookmark": "bm-resume",
+            }
+        )
         self.assertEqual(result["status"], "complete")
 
     def test_resume_errors_and_unrecognized_results_are_retryable(self):
@@ -210,7 +216,9 @@ class ImportFlowTest(unittest.TestCase):
             {"status": "active"},
             {"status": "mystery", "at_bookmark": "bm-resume"},
             {"filename": "import.sql"},
-            {}, None, [],
+            {},
+            None,
+            [],
         ):
             with self.subTest(resume=resume):
                 with self.assertRaisesRegex(RuntimeError, "retryable"):
@@ -220,21 +228,33 @@ class ImportFlowTest(unittest.TestCase):
         for result in (
             {"status": "error", "errors": ["import failed"]},
             {"status": "complete", "success": False},
-            {"status": "mystery"}, None,
+            {"status": "mystery"},
+            None,
         ):
-            with self.subTest(result=result), mock.patch.object(
-                fq_common.D1Client, "_call", side_effect=[
-                    {"status": "active", "at_bookmark": "bm-resume"}, result,
-                ],
-            ), self.assertRaisesRegex(RuntimeError, "retryable"):
+            with (
+                self.subTest(result=result),
+                mock.patch.object(
+                    fq_common.D1Client,
+                    "_call",
+                    side_effect=[
+                        {"status": "active", "at_bookmark": "bm-resume"},
+                        result,
+                    ],
+                ),
+                self.assertRaisesRegex(RuntimeError, "retryable"),
+            ):
                 fq_common.D1Client("token", "acct").import_sql("db-id", self.sql)
 
     def test_normal_ingest_can_complete_immediately(self):
         complete = {"status": "complete"}
-        with mock.patch.object(fq_common.D1Client, "_call", side_effect=[
-            {"upload_url": "https://upload.example/put", "filename": "import.sql"},
-            complete,
-        ]) as api:
+        with mock.patch.object(
+            fq_common.D1Client,
+            "_call",
+            side_effect=[
+                {"upload_url": "https://upload.example/put", "filename": "import.sql"},
+                complete,
+            ],
+        ) as api:
             self.assertEqual(
                 fq_common.D1Client("token", "acct").import_sql("db-id", self.sql),
                 complete,
@@ -243,7 +263,8 @@ class ImportFlowTest(unittest.TestCase):
 
     def test_upload_etag_mismatch_retries_then_rejects(self):
         with mock.patch.object(
-            fq_common.urllib.request, "urlopen",
+            fq_common.urllib.request,
+            "urlopen",
             return_value=FakeUploadResponse("wrong-etag"),
         ) as put:
             with self.assertRaisesRegex(RuntimeError, "etag mismatch"):

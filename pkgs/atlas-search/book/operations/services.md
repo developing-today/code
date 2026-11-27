@@ -94,7 +94,7 @@ Secrets are set with `wrangler secret put` or uploaded with the new version at d
 
 | Secret name                                 | Purpose                                                                                                                                                               |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GATE_TOKEN`                                | The inbound bearer gate for REST routes and the legacy MCP fallback                                                                                                  |
+| `GATE_TOKEN`                                | The inbound bearer gate for REST routes and the legacy MCP fallback                                                                                                   |
 | `AGENT_TOKENS`                              | Optional JSON secret object mapping agent ids to distinct MCP bearer tokens; when set, disables the shared-token MCP fallback                                         |
 | `SERVICE_TOKEN`                             | The service's `cf-worker` client token (service-side cap `personal`), presented as a bearer on every service call                                                     |
 | `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` | The Cloudflare Access service token for `atlas-search.security.cab`, presented as the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers on every service call |

@@ -79,6 +79,7 @@ Release verification (use the deploy identity that can access this D1 database):
    Verify `record_json.metadata` equals the complete pm-metadata JSON in that
    item's GitHub body, including provenance/signature and unknown fields.
    Merely finding a table or a row count is not an exact-JSON readback.
+
 3. If there is no row, use an isolated, restricted canary Worker/version bound
    to this D1 database and the real App/stamp configuration. Create one canary
    item using a narrowly scoped test credential; do not enable the public

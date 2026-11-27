@@ -22,12 +22,12 @@ That is the whole public surface: **9 public routes**, plus a catch-all 404 for 
 
 Every route except `GET /health` is gated. REST/admin routes use the shared `GATE_TOKEN`; `/mcp` uses it only when the optional per-agent map is absent:
 
-| Aspect       | Rule                                                                                                                                                                                                                                      |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Secret name  | `GATE_TOKEN` for REST/admin and legacy MCP; optional `AGENT_TOKENS` JSON secret for per-agent MCP authentication.                                                                                                                        |
-| Presentation | Header `Authorization: Bearer &lt;token&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails.                                                                       |
-| Comparison   | Both presented and configured tokens are SHA-256 digested and the 32 digest bytes XOR-folded; equal iff the fold is 0.                                                                                                                     |
-| Failure      | Missing/invalid credentials → 401 before route execution.                                                                                                                                                                                 |
+| Aspect       | Rule                                                                                                                                                           |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secret name  | `GATE_TOKEN` for REST/admin and legacy MCP; optional `AGENT_TOKENS` JSON secret for per-agent MCP authentication.                                              |
+| Presentation | Header `Authorization: Bearer &lt;token&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails. |
+| Comparison   | Both presented and configured tokens are SHA-256 digested and the 32 digest bytes XOR-folded; equal iff the fold is 0.                                         |
+| Failure      | Missing/invalid credentials → 401 before route execution.                                                                                                      |
 
 MCP `AGENT_TOKENS` maps stable agent ids to distinct tokens; if configured, only a mapped credential can access `/mcp`, and the id is used for query audit logs. No request field or header can claim an identity. The REST/admin routes remain shared-gate routes. This audit identity does not change the outbound disclosure context (`hosted-per-user`) or ceiling (`personal`); per-agent backend policy remains open work on #8625.
 

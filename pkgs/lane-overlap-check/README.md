@@ -34,11 +34,11 @@ lane_overlap_check.py <lane> [--dir /home/user/git/code]
 
 It prints one JSON verdict:
 
-| Verdict   | Exit | Meaning                                            | Lane action |
-|-----------|------|----------------------------------------------------|-------------|
-| `clear`   | 0    | No earlier occurrence of this lane is running      | Claim       |
-| `overlap` | 3    | An earlier occurrence is busy, retrying, or of unknown status | Stop   |
-| `unknown` | 4    | The check could not be completed (`error` says why) | Stop and report |
+| Verdict   | Exit | Meaning                                                       | Lane action     |
+| --------- | ---- | ------------------------------------------------------------- | --------------- |
+| `clear`   | 0    | No earlier occurrence of this lane is running                 | Claim           |
+| `overlap` | 3    | An earlier occurrence is busy, retrying, or of unknown status | Stop            |
+| `unknown` | 4    | The check could not be completed (`error` says why)           | Stop and report |
 
 ## Decision: the overlap check is fail-closed
 

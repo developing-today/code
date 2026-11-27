@@ -54,6 +54,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use serde::Deserialize;
+use serde::de;
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 
@@ -122,7 +123,12 @@ pub struct ColdVersion {
     /// carried as written; shape is the source's own (§3.1).
     #[serde(default)]
     pub source: Json,
-    #[serde(default)]
+    /// The lineage summary (§3.1). An all-empty summary — the
+    /// writer's spelling of "no predecessor" (`#8227` always emits
+    /// the three keys, null when absent) — normalises to `None`,
+    /// so a version with no predecessor restores with no lineage
+    /// edge rather than an empty one.
+    #[serde(default, deserialize_with = "de_optional_lineage")]
     pub lineage: Option<LineageSummary>,
     #[serde(default)]
     pub occurrences: Vec<Occurrence>,
@@ -131,12 +137,99 @@ pub struct ColdVersion {
 /// The version's predecessor and the edge kind that produced it,
 /// from the #6026 §2.2 vocabulary (`edit`, `rename`, `split`,
 /// `merge`, `tombstone`) (§3.1).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+///
+/// Two spellings are accepted: the design-text object form
+/// (`predecessor: {file_id, version_seq}`, `edge`) and the landed
+/// writer's flat form (#8227, `cold_shard`:
+/// `predecessor_file_id`, `predecessor_version_seq`, `edge_kind`),
+/// normalised into this shape. A writer-spelling numeric
+/// `predecessor_file_id` normalises to a string, like the
+/// version-level `file_id` (`de_file_id`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineageSummary {
-    #[serde(default)]
     pub predecessor: Option<VersionRef>,
-    #[serde(default)]
     pub edge: Option<String>,
+}
+
+/// A JSON string-or-number normalised to a string, for the
+/// writer-spelling lineage fields.
+fn json_id_string(v: &Json) -> Option<String> {
+    match v {
+        Json::String(s) => Some(s.clone()),
+        Json::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn lineage_from_value(v: &Json) -> std::result::Result<LineageSummary, String> {
+    let map = v
+        .as_object()
+        .ok_or_else(|| "lineage summary must be a JSON object".to_string())?;
+    let predecessor = match map.get("predecessor") {
+        None | Some(Json::Null) => match (
+            map.get("predecessor_file_id"),
+            map.get("predecessor_version_seq"),
+        ) {
+            (None, None)
+            | (None, Some(Json::Null))
+            | (Some(Json::Null), None)
+            | (Some(Json::Null), Some(Json::Null)) => None,
+            (Some(fid), Some(seq)) => Some(VersionRef {
+                file_id: json_id_string(fid)
+                    .ok_or_else(|| "predecessor_file_id is not a string or a number".to_string())?,
+                version_seq: seq
+                    .as_u64()
+                    .ok_or_else(|| "predecessor_version_seq is not a u64".to_string())?,
+            }),
+            _ => {
+                return Err("lineage names only half of a writer-spelling predecessor".to_string());
+            }
+        },
+        Some(nested) => Some(
+            serde_json::from_value::<VersionRef>(nested.clone())
+                .map_err(|e| format!("predecessor does not parse: {e}"))?,
+        ),
+    };
+    let edge = match map.get("edge") {
+        None | Some(Json::Null) => match map.get("edge_kind") {
+            None | Some(Json::Null) => None,
+            Some(kind) => Some(
+                kind.as_str()
+                    .ok_or_else(|| "edge_kind is not a string".to_string())?
+                    .to_string(),
+            ),
+        },
+        Some(edge) => Some(
+            edge.as_str()
+                .ok_or_else(|| "edge is not a string".to_string())?
+                .to_string(),
+        ),
+    };
+    Ok(LineageSummary { predecessor, edge })
+}
+
+impl<'de> Deserialize<'de> for LineageSummary {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = Json::deserialize(deserializer)?;
+        lineage_from_value(&v).map_err(de::Error::custom)
+    }
+}
+
+/// The `lineage` field's deserializer: absent or JSON null is no
+/// lineage; a present object parses as a [`LineageSummary`], and an
+/// all-empty one (no predecessor, no edge — the writer's spelling
+/// of "no predecessor") folds to no lineage as well.
+fn de_optional_lineage<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<LineageSummary>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<LineageSummary>::deserialize(deserializer)?;
+    Ok(opt.filter(|l| l.predecessor.is_some() || l.edge.is_some()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -148,11 +241,77 @@ pub struct VersionRef {
 
 /// One occurrence (§3.1): the span-table entry `span_ref` occupies
 /// bytes `[span_start, span_start + span_len)` of the version.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// Two spellings of the same triple are accepted: the object form
+/// (`{"span_ref", "span_start", "span_len"}`) written from the
+/// design text, and the three-element array form
+/// (`["span_ref", span_start, span_len]`) the landed writer (#8227,
+/// `cold_shard`) emits for its `(String, usize, usize)` tuples.
+/// The reader does not depend on one hot store's id encoding
+/// (`de_file_id` below); likewise it does not depend on one
+/// manifest spelling of this triple.
+#[derive(Debug, Clone)]
 pub struct Occurrence {
     pub span_ref: String,
     pub span_start: u64,
     pub span_len: u64,
+}
+
+fn occurrence_from_value(v: &Json) -> std::result::Result<Occurrence, String> {
+    if let Some(arr) = v.as_array() {
+        if arr.len() != 3 {
+            return Err(format!(
+                "occurrence array has {} elements, expected 3 (span_ref, span_start, span_len)",
+                arr.len()
+            ));
+        }
+        let span_ref = arr[0]
+            .as_str()
+            .ok_or_else(|| "occurrence array element 0 (span_ref) is not a string".to_string())?
+            .to_string();
+        let span_start = arr[1]
+            .as_u64()
+            .ok_or_else(|| "occurrence array element 1 (span_start) is not a u64".to_string())?;
+        let span_len = arr[2]
+            .as_u64()
+            .ok_or_else(|| "occurrence array element 2 (span_len) is not a u64".to_string())?;
+        return Ok(Occurrence {
+            span_ref,
+            span_start,
+            span_len,
+        });
+    }
+    let map = v
+        .as_object()
+        .ok_or_else(|| "occurrence must be a JSON object or a 3-element array".to_string())?;
+    let span_ref = map
+        .get("span_ref")
+        .and_then(Json::as_str)
+        .ok_or_else(|| "occurrence object has no string span_ref".to_string())?
+        .to_string();
+    let span_start = map
+        .get("span_start")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "occurrence object has no u64 span_start".to_string())?;
+    let span_len = map
+        .get("span_len")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| "occurrence object has no u64 span_len".to_string())?;
+    Ok(Occurrence {
+        span_ref,
+        span_start,
+        span_len,
+    })
+}
+
+impl<'de> Deserialize<'de> for Occurrence {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = Json::deserialize(deserializer)?;
+        occurrence_from_value(&v).map_err(de::Error::custom)
+    }
 }
 
 /// One distinct chunk in the span section (§3.2). `span_ref` is the
@@ -179,7 +338,10 @@ pub struct VectorEntry {
 /// time; never updated in place.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ColdRetention {
-    #[serde(rename = "class", default)]
+    /// The corpus class (§3.3, §9): the design text names this field
+    /// `class`; the landed writer (#8227, `cold_shard`) serialises
+    /// it as `corpus_class`. Both spellings are accepted.
+    #[serde(rename = "class", alias = "corpus_class", default)]
     pub corpus_class: String,
     #[serde(default)]
     pub state: String,
@@ -1352,5 +1514,299 @@ mod tests {
                 hot_content_hash: "different".to_string()
             }
         );
+    }
+
+    /// Ground truth for the writer-packed roundtrip tests: two
+    /// versions of one file sharing one chunk, vectors for two of
+    /// the three chunks, dimensions 2 — the same shape as
+    /// `standard_manifest`, but packed by the real #8227 writer
+    /// (`cold_shard::pack`) instead of assembled from the design
+    /// text. Span refs are the chunks' SHA-256 hex, so §7's
+    /// per-span content-hash comparison has its oracle.
+    struct WriterPacked {
+        bytes: Vec<u8>,
+        ref_a: String,
+        ref_b: String,
+        ref_c: String,
+        v1_bytes: Vec<u8>,
+        v2_bytes: Vec<u8>,
+        v1_hash: String,
+        v2_hash: String,
+    }
+
+    fn writer_packed_shard(span_codec: &str) -> WriterPacked {
+        use crate::cold_shard::{
+            LineageSummary as WriterLineage, PackRequest, SourceMark, SpanInput, VersionEntry,
+        };
+
+        let span_a = b"hello ".to_vec();
+        let span_b = b"world".to_vec();
+        let span_c = b"!".to_vec();
+        let ref_a = crate::classify::sha256_hex(&span_a);
+        let ref_b = crate::classify::sha256_hex(&span_b);
+        let ref_c = crate::classify::sha256_hex(&span_c);
+        let v1_bytes = [span_a.clone(), span_b.clone()].concat();
+        let v2_bytes = [span_a.clone(), span_c.clone()].concat();
+        let v1_hash = crate::classify::sha256_hex(&v1_bytes);
+        let v2_hash = crate::classify::sha256_hex(&v2_bytes);
+
+        let req = PackRequest {
+            corpus: "code".to_string(),
+            corpus_class: "code".to_string(),
+            created_at: "2026-11-27T12:20:00Z".to_string(),
+            created_by: "atlas-test-export".to_string(),
+            shard_id: Some("shard-writer-1".to_string()),
+            source_marks: vec![SourceMark {
+                source_id: "git".to_string(),
+                coords: json!({"repo": "developing-today/code"}),
+            }],
+            versions: vec![
+                VersionEntry {
+                    file_id: 7,
+                    version_seq: 1,
+                    path_at_version: "a.txt".to_string(),
+                    content_hash: v1_hash.clone(),
+                    ingested_at: "2026-11-01T00:00:00Z".to_string(),
+                    source_id: Some("git".to_string()),
+                    source_native_id: Some("aaa".to_string()),
+                    lineage: WriterLineage::default(),
+                    occurrences: vec![(ref_a.clone(), 0, 6), (ref_b.clone(), 6, 5)],
+                },
+                VersionEntry {
+                    file_id: 7,
+                    version_seq: 2,
+                    path_at_version: "a.txt".to_string(),
+                    content_hash: v2_hash.clone(),
+                    ingested_at: "2026-11-02T00:00:00Z".to_string(),
+                    source_id: Some("git".to_string()),
+                    source_native_id: Some("bbb".to_string()),
+                    lineage: WriterLineage {
+                        predecessor_file_id: Some(7),
+                        predecessor_version_seq: Some(1),
+                        edge_kind: Some("edit".to_string()),
+                    },
+                    occurrences: vec![(ref_a.clone(), 0, 6), (ref_c.clone(), 6, 1)],
+                },
+            ],
+            spans: vec![
+                SpanInput {
+                    span_ref: ref_a.clone(),
+                    bytes: span_a.clone(),
+                },
+                SpanInput {
+                    span_ref: ref_b.clone(),
+                    bytes: span_b.clone(),
+                },
+                SpanInput {
+                    span_ref: ref_c.clone(),
+                    bytes: span_c.clone(),
+                },
+            ],
+            vectors: vec![
+                (ref_a.clone(), vec![1.0, -2.5]),
+                (ref_b.clone(), vec![0.5, 3.25]),
+            ],
+            span_codec: span_codec.to_string(),
+            vector_model: "embed-v1".to_string(),
+            vector_dimensions: 2,
+            retention_cold_since: "2026-11-20T00:00:00Z".to_string(),
+            retention_retire_not_before: "2027-02-20T00:00:00Z".to_string(),
+            retention_trigger: json!({"by_age_days": 90}),
+            provenance_hot_shard_id: "hot-1".to_string(),
+            provenance_export_run_id: "run-7".to_string(),
+        };
+        let bytes = crate::cold_shard::pack(&req).expect("writer packs the roundtrip fixture");
+        WriterPacked {
+            bytes,
+            ref_a,
+            ref_b,
+            ref_c,
+            v1_bytes,
+            v2_bytes,
+            v1_hash,
+            v2_hash,
+        }
+    }
+
+    #[test]
+    fn writer_packed_versions_restore_and_pass_section7_roundtrip() {
+        // §7 acceptance, run directly: the #8230 standalone
+        // verifier is not landed, so this test IS the §7 procedure
+        // (export hot -> cold with the #8227 writer, restore cold ->
+        // hot with the §6 importer, compare copies against copies).
+        let packed = writer_packed_shard("none");
+        let shard = ColdShard::open(&packed.bytes).expect("writer-packed shard opens");
+        assert_eq!(shard.manifest().shard_id, "shard-writer-1");
+        // §6 step 1 resolves against the landed shard.
+        let shard_ref = resolve_version(std::slice::from_ref(&shard), "7", 1).expect("v1 resolves");
+        assert_eq!(shard_ref.manifest().shard_id, "shard-writer-1");
+
+        let mut store = FakeHotStore::default();
+        for seq in [1u64, 2] {
+            let outcome = shard
+                .restore_version(
+                    &mut store,
+                    "7",
+                    seq,
+                    "embed-v2",
+                    "restore-run-7",
+                    "2026-11-27T00:00:00Z",
+                )
+                .expect("restore proceeds");
+            assert_eq!(outcome, RestoreOutcome::Restored);
+        }
+        assert_eq!(store.inserted.len(), 2);
+        assert_eq!(
+            store.marked_hot,
+            vec![("7".to_string(), 1), ("7".to_string(), 2)]
+        );
+
+        // §7 per version: reconstructed bytes byte-identical to the
+        // hot originals — in aggregate by content_hash ...
+        assert_eq!(store.inserted[0].bytes, packed.v1_bytes);
+        assert_eq!(store.inserted[1].bytes, packed.v2_bytes);
+        assert_eq!(store.inserted[0].content_hash, packed.v1_hash);
+        assert_eq!(store.inserted[1].content_hash, packed.v2_hash);
+        // ... and per span by content hash: each span's bytes hash
+        // to the span_ref that names it.
+        assert_eq!(
+            crate::classify::sha256_hex(&store.inserted[0].bytes[0..6]),
+            packed.ref_a
+        );
+        assert_eq!(
+            crate::classify::sha256_hex(&store.inserted[0].bytes[6..11]),
+            packed.ref_b
+        );
+        assert_eq!(
+            crate::classify::sha256_hex(&store.inserted[1].bytes[0..6]),
+            packed.ref_a
+        );
+        assert_eq!(
+            crate::classify::sha256_hex(&store.inserted[1].bytes[6..7]),
+            packed.ref_c
+        );
+        // §7 vectors bit-identical; the chunk with no embedding
+        // (span-c) restores with no vector — absence is data.
+        assert_eq!(store.inserted[0].vectors.len(), 2);
+        for restored in &store.inserted {
+            for rv in &restored.vectors {
+                let expected: Vec<f32> = if rv.span_ref == packed.ref_a {
+                    vec![1.0, -2.5]
+                } else {
+                    assert_eq!(rv.span_ref, packed.ref_b);
+                    vec![0.5, 3.25]
+                };
+                assert_eq!(
+                    rv.vector.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
+        assert_eq!(store.inserted[1].vectors.len(), 1);
+        assert_eq!(store.inserted[1].vectors[0].span_ref, packed.ref_a);
+        // §6 step 6: the shard's model is embed-v1, the hot tier's
+        // is embed-v2 — flagged, not silently mixed.
+        assert!(store.inserted[0].vector_model_mismatch);
+        assert!(store.inserted[1].vector_model_mismatch);
+        // §7 identity: restored under the original (file_id,
+        // version_seq); the writer's u64 file_id normalises to the
+        // reader's string form.
+        assert_eq!(store.inserted[0].file_id, "7");
+        assert_eq!(store.inserted[1].version_seq, 2);
+        assert_eq!(store.inserted[1].path_at_version, "a.txt");
+        // §7 lineage summary survives the writer spelling.
+        assert!(store.inserted[0].lineage.is_none());
+        let lineage = store.inserted[1]
+            .lineage
+            .as_ref()
+            .expect("v2 lineage survives the round trip");
+        assert_eq!(lineage.edge.as_deref(), Some("edit"));
+        assert_eq!(
+            lineage.predecessor.as_ref().map(|p| p.file_id.as_str()),
+            Some("7")
+        );
+        assert_eq!(lineage.predecessor.as_ref().map(|p| p.version_seq), Some(1));
+        // §7 provenance: the §3 export facts preserved, the §6
+        // restore facts added.
+        assert_eq!(
+            store.inserted[1].provenance.source_shard_id,
+            "shard-writer-1"
+        );
+        assert_eq!(store.inserted[1].provenance.export_run_id, "run-7");
+        assert_eq!(store.inserted[1].provenance.restore_run_id, "restore-run-7");
+        assert_eq!(
+            store.inserted[1].provenance.restored_at,
+            "2026-11-27T00:00:00Z"
+        );
+        // §7 retention state survives, read off the writer's
+        // `corpus_class` key.
+        assert_eq!(shard.manifest().retention.corpus_class, "code");
+        assert_eq!(shard.manifest().retention.state, "cold");
+        assert_eq!(
+            shard.manifest().retention.cold_since,
+            "2026-11-20T00:00:00Z"
+        );
+        assert_eq!(
+            shard.manifest().retention.retire_not_before,
+            "2027-02-20T00:00:00Z"
+        );
+        // §6 idempotence on writer-packed bytes: a same-hash
+        // re-restore is a no-op success that writes nothing.
+        let outcome = shard
+            .restore_version(&mut store, "7", 1, "embed-v2", "r2", "t")
+            .expect("re-restore is a success");
+        assert_eq!(outcome, RestoreOutcome::NoopSuccess);
+        assert_eq!(store.inserted.len(), 2, "no-op writes nothing");
+        assert_eq!(store.marked_hot.len(), 2, "no-op marks nothing");
+    }
+
+    #[test]
+    fn writer_packed_zstd_shard_restores_byte_identically() {
+        // The writer's whole-section zstd spelling round-trips
+        // through the reader's decompress-then-apply-offsets path.
+        let packed = writer_packed_shard("zstd");
+        let shard = ColdShard::open(&packed.bytes).expect("writer-packed zstd shard opens");
+        assert_eq!(shard.manifest().span_codec, "zstd");
+        let mut store = FakeHotStore::default();
+        for seq in [1u64, 2] {
+            let outcome = shard
+                .restore_version(&mut store, "7", seq, "embed-v1", "r", "t")
+                .expect("restore proceeds");
+            assert_eq!(outcome, RestoreOutcome::Restored);
+        }
+        assert_eq!(store.inserted[0].bytes, packed.v1_bytes);
+        assert_eq!(store.inserted[1].bytes, packed.v2_bytes);
+        // Same model both sides: no mismatch flag.
+        assert!(!store.inserted[0].vector_model_mismatch);
+        let a_bits: Vec<u32> = store.inserted[0]
+            .vectors
+            .iter()
+            .find(|rv| rv.span_ref == packed.ref_a)
+            .expect("span-a vector")
+            .vector
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(a_bits, vec![1.0f32.to_bits(), (-2.5f32).to_bits()]);
+    }
+
+    #[test]
+    fn corrupt_writer_packed_shard_is_reported_and_never_partially_imported() {
+        // Flip a byte inside the span section (offset read off the
+        // header's manifest length, so the test does not depend on
+        // fixture internals): the footer's SHA-256 must catch it.
+        let packed = writer_packed_shard("none");
+        let mut bytes = packed.bytes.clone();
+        let manifest_len =
+            u32::from_le_bytes(bytes[10..14].try_into().expect("header length")) as usize;
+        let span_at = 14 + manifest_len;
+        bytes[span_at] ^= 0xFF;
+        let err = ColdShard::open(&bytes).expect_err("corrupt writer-packed shard must abort");
+        assert!(
+            err.to_string().contains("span section"),
+            "error names the divergent section: {err}"
+        );
+        // No `ColdShard` exists for these bytes, so no API on this
+        // module can yield payload from them: nothing is imported.
     }
 }

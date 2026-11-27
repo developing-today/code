@@ -143,14 +143,16 @@ fn apply_stages_exact_public_bytes_idempotently_and_verifies() {
             std::fs::read(bundle.join(&file.path)).unwrap()
         );
     }
-    assert!(manifest
-        .manifest
-        .files
-        .iter()
-        .filter(|f| f.visibility != "public")
-        .all(|f| !staging
-            .join(f.path.strip_prefix("public/").unwrap_or(&f.path))
-            .exists()));
+    assert!(
+        manifest
+            .manifest
+            .files
+            .iter()
+            .filter(|f| f.visibility != "public")
+            .all(|f| !staging
+                .join(f.path.strip_prefix("public/").unwrap_or(&f.path))
+                .exists())
+    );
     let again = fleet_cert::publish::apply_staging(&bundle, &staging).unwrap();
     let second_bytes: Vec<_> = again
         .written

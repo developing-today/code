@@ -238,8 +238,11 @@ describe("github-ci worker", () => {
     const queueMock = fetchMock.get(QUEUE);
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
     // + mirror column probe (1) + stored-row read for the Q7
-    // history diff (1) + mirror writes batch (1)
-    for (let i = 0; i < 6; i++) {
+    // history diff (1) + mirror writes batch (1) + C2-S1 derived
+    // issue_new row (1) + drain count-leg reads — cursor (1) +
+    // depth (1); the depth read answers no rows (0), below the
+    // count threshold, so no drain-due write follows.
+    for (let i = 0; i < 9; i++) {
       queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
         seen.push(String(opts.body));
         return tursoOk();

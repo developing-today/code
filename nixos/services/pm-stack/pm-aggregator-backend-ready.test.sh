@@ -31,7 +31,7 @@ expect_present "$module" 'pm-aggregator-backend-ready.sh} ${toString cfg.aggrega
 expect_present "$module" 'Requires = [ "pm-aggregator.service" ];' \
   "proxy remains ordered after the backend service"
 
-if [[ -f "$helper" ]]; then
+if [[ -f $helper ]]; then
   if python3 - "$helper" <<'PY'
 import socket
 import subprocess
@@ -91,7 +91,7 @@ else
   failures=$((failures + 1))
 fi
 
-if [[ "$failures" -gt 0 ]]; then
+if [[ $failures -gt 0 ]]; then
   echo "pm-aggregator-backend-ready.test.sh: $failures check(s) failed" >&2
   exit 1
 fi

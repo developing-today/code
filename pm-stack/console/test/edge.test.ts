@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, ownerSettingsRecord, SILENT_MS } from "../edge/src/edge.ts";
-import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
+import { AUDIT_KEPT, HOST_QUIET_MS } from "../edge/src/edge-shared.ts";
 import { ACT_MS, forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
@@ -30,9 +30,11 @@ import {
   edgeConfig as parseEdgeConfig,
   keyId,
   type MachinesAnswer,
+  machineCanDo,
   machineName,
   machineReport,
   newKeyPair,
+  selectMachine,
   sign,
   STALE_ACT_ERROR,
 } from "../src/edge-proto.ts";
@@ -1241,6 +1243,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     act: async (r) => (!net.hostUp && !net.silent ? "unreached" : askHost(r)),
     publicHost: HOST,
     version: "test",
+    deployedAt: null,
     later: (work) => later.push(work),
     now: clock,
   };
@@ -1251,8 +1254,53 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   /** How the machine takes the owner's changed settings, when it does:
    * a console older than that has none. */
   const adopts: { now: ((said: unknown) => number | null) | null } = { now: null };
+  /** What a real machine says it can do: the kinds of the console's
+   * own action table (src/actions.ts), which is what server.ts builds
+   * a report from. The stand-in host above runs only the ten kinds a
+   * test needs to count, but a machine's saying is the whole table —
+   * since #13492 slice 2 the edge routes by it, and a saying cut down
+   * to the stand-in's kinds would have it refuse real kinds. */
+  const MACHINE_KINDS = [
+    "agent.mint-credential",
+    "agent.mint-enroll",
+    "agent.revoke",
+    "agent.revoke-enroll",
+    "agent.wake-hook-remove",
+    "agent.wake-hook-set",
+    "ask.close",
+    "ask.reply",
+    "ask.send",
+    "deploy.start",
+    "device.approve",
+    "device.remove",
+    "edge.direct",
+    "hands.done",
+    "intake.send",
+    "issue.comment",
+    "issue.rank",
+    "message.broaden",
+    "message.offer",
+    "message.send",
+    "need.comment",
+    "pr.merge",
+    "prompt.enqueue",
+    "push.class",
+    "push.off",
+    "push.on",
+    "push.test",
+    "question.answer",
+    "question.defer",
+    "questions.accept",
+    "sso.google",
+    "store.admin",
+    "task.cancel",
+    "task.move",
+    "task.unblock",
+    "triage.enqueue",
+    "unit.act",
+  ];
   const machineSays: { now: { name: string; actions: string[] } | null } = {
-    now: { name: "nixos", actions: Object.keys(table).sort() },
+    now: { name: "nixos", actions: [...MACHINE_KINDS] },
   };
   const makeLink = () =>
     new EdgeLink({
@@ -1446,6 +1494,7 @@ describe("before the host's first report", () => {
       directEnabled: false,
       githubTokenConfigured: false,
       queueTokenConfigured: false,
+      queueTransport: null,
       primary: false,
       directReady: false,
       refused: [],
@@ -1462,11 +1511,13 @@ describe("before the host's first report", () => {
       answered: 0,
       deferred: 0,
       version: "test",
+      deployedAt: null,
+      ageSeconds: null,
       woke: w.now.t,
+      workerChecks: null,
       clock: { wanted: false, next: null },
       held: { either: 0, machine: 0, asked: 0 },
       routes: {},
-      workerChecks: null,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1476,6 +1527,23 @@ describe("before the host's first report", () => {
     // And the host still refuses a stranger itself.
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
+  });
+
+  test("health says when this Worker was deployed, and how long ago that was", async () => {
+    const w = await setup();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    // Nothing stamped this test Worker: no age to report.
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
+    // Stamped twelve seconds ago: the age is said in seconds.
+    w.io.deployedAt = new Date(w.now.t - 12_000).toISOString();
+    expect(await health()).toMatchObject({ deployedAt: w.io.deployedAt, ageSeconds: 12 });
+    // A stamp from the future, or one that is not a time, says nothing.
+    w.now.t += 1_000;
+    w.io.deployedAt = new Date(w.now.t + 60_000).toISOString();
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
+    w.io.deployedAt = "not a time";
+    expect(await health()).toMatchObject({ deployedAt: null, ageSeconds: null });
   });
 
   test("route state: a flip on the internal channel is what health says, and it is kept (#14944)", async () => {
@@ -2057,9 +2125,9 @@ describe("actions", () => {
     const done = { [ids[1]]: "started" };
     w.link.now = new EdgeLink({
       url: `https://${HOST}`,
-      keys: memoryStore(
-        JSON.stringify(await (async () => ({ publicJwk: await w.link.now.publicKey(), privateJwk: null }))()),
-      ),
+      // A restart retains the signing key. Regenerating it here would
+      // impersonate a different machine, which must not take bound work.
+      keys: w.keys,
       done: memoryStore(JSON.stringify(done)),
       docs: w.hostDocs,
       phones: w.hostDeps.phones!.devices,
@@ -2278,21 +2346,49 @@ describe("actions", () => {
     expect(first.machines).toEqual([
       {
         name: "nixos",
+        kid: expect.any(String),
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
         // What it said it can do: the kinds of action it has, and every section it reads.
         actions: [
+          "agent.mint-credential",
+          "agent.mint-enroll",
+          "agent.revoke",
+          "agent.revoke-enroll",
+          "agent.wake-hook-remove",
+          "agent.wake-hook-set",
+          "ask.close",
+          "ask.reply",
           "ask.send",
+          "deploy.start",
+          "device.approve",
+          "device.remove",
+          "edge.direct",
           "hands.done",
+          "intake.send",
           "issue.comment",
+          "issue.rank",
+          "message.broaden",
+          "message.offer",
           "message.send",
           "need.comment",
           "pr.merge",
           "prompt.enqueue",
+          "push.class",
+          "push.off",
+          "push.on",
+          "push.test",
           "question.answer",
+          "question.defer",
+          "questions.accept",
+          "sso.google",
+          "store.admin",
+          "task.cancel",
           "task.move",
+          "task.unblock",
           "triage.enqueue",
+          "unit.act",
         ],
         sections: [...SECTION_NAMES].sort(),
         // A console that does not take the owner's settings says no revision.
@@ -2318,7 +2414,7 @@ describe("actions", () => {
     // The object is put away and another starts in its place: it still knows the machine.
     w.edge.now = w.makeEdge();
     expect((await machines()).machines.map((m) => [m.name, m.actions.length, m.sections.length])).toEqual([
-      ["nixos", 10, SECTION_NAMES.length],
+      ["nixos", 37, SECTION_NAMES.length],
     ]);
     // The owner takes one back before the machine has it.
     const dropped = await w.act("held.drop", { id: kept });
@@ -2373,6 +2469,7 @@ describe("actions", () => {
     expect((await machines()).machines).toEqual([
       {
         name: "A machine",
+        kid: expect.any(String),
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
@@ -2545,6 +2642,112 @@ describe("actions", () => {
     const full = await w.act("ask.send", { text: "one too many" });
     expect(full.status).toBe(503);
     expect((heldStored(w) as unknown[]).length).toBe(100);
+  });
+});
+
+describe("routing an action to a machine that can do it (#13492 slice 2)", () => {
+  test("selection: a connected capable machine, else a capable one to hold for, else none", () => {
+    // Oracle: the pure choice in edge-proto.ts, against hand-worked cases.
+    const amd = { name: "amd", actions: ["issue.comment"], connected: false };
+    const nixos = { name: "nixos", actions: ["task.move"], connected: true };
+    expect(selectMachine([amd, nixos], "task.move")).toEqual({ state: "capable", machine: nixos });
+    expect(selectMachine([amd, nixos], "issue.comment")).toEqual({ state: "held", machine: amd });
+    expect(selectMachine([amd, nixos], "pr.merge")).toEqual({ state: "none" });
+    expect(selectMachine([], "pr.merge")).toEqual({ state: "none" });
+    expect(machineCanDo(nixos, "task.move")).toBe(true);
+    expect(machineCanDo(nixos, "issue.comment")).toBe(false);
+    expect(machineCanDo(null, "task.move")).toBe(false);
+  });
+
+  test("no connected machine declares the kind: answered at once, not relayed, not held", async () => {
+    const w = await setup();
+    w.machineSays.now = { name: "nixos", actions: ["task.move"] };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const res = await w.act("issue.comment", { issue: 301, text: "nobody can" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ noneCapable: true, kind: "issue.comment" });
+    // No blind relay toward the host, nothing kept, nothing run.
+    expect(acts()).toBe(before);
+    expect(heldStored(w)).toEqual([]);
+    expect(w.ran).toEqual([]);
+  });
+
+  test("a capable machine with no reachable address: held for it by name, and handed to no other", async () => {
+    const w = await setup();
+    w.machineSays.now = { name: "amd", actions: ["issue.comment"] };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // The machine goes quiet: no address the edge can reach.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += HOST_QUIET_MS + 1_000;
+    const res = await w.act("issue.comment", { issue: 301, text: "for amd" });
+    expect(await res.json()).toMatchObject({ ok: true, held: true, waits: "machine" });
+    const held = heldStored(w) as { kind: string; for?: string }[];
+    expect(held.map((h) => [h.kind, h.for])).toEqual([["issue.comment", "amd"]]);
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held.map((h) => [h.kind, h.for])).toEqual([["issue.comment", "amd"]]);
+    // Another machine reports, one that cannot do it: it is not handed it.
+    w.machineSays.now = { name: "other", actions: ["task.move"] };
+    w.link.now = w.makeLink();
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran).toEqual([]);
+    expect(heldStored(w)).toHaveLength(1);
+    // The machine it waits for reports: it alone is handed it, and does it.
+    w.machineSays.now = { name: "amd", actions: ["issue.comment"] };
+    w.link.now = w.makeLink();
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment"]);
+    // Its next report says what became of it, and it leaves the held list.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(heldStored(w)).toEqual([]);
+  });
+
+  test("a connected capable machine is asked, as before", async () => {
+    const w = await setup();
+    w.machineSays.now = { name: "amd", actions: ["issue.comment"] };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    const res = await w.act("issue.comment", { issue: 301, text: "do it" });
+    expect(res.status).toBe(200);
+    expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment"]);
+    expect(heldStored(w)).toEqual([]);
+  });
+
+  test("legacy reports still work: a machine that says nothing of what it can do is relayed and handed held actions", async () => {
+    const w = await setup();
+    w.machineSays.now = null;
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // Relayed blind, as before the saying: the edge cannot know it cannot.
+    const res = await w.act("issue.comment", { issue: 301, text: "legacy" });
+    expect(res.status).toBe(200);
+    expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment"]);
+    // Held while it is away, with no machine named, and handed to it on return.
+    w.net.hostUp = false;
+    const kept = await w.act("issue.comment", { issue: 301, text: "legacy held" });
+    expect(await kept.json()).toMatchObject({ ok: true, held: true });
+    const held = heldStored(w) as { kind: string; for?: string }[];
+    expect(held.map((h) => [h.kind, h.for])).toEqual([["issue.comment", undefined]]);
+    w.net.hostUp = true;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran.map((r) => r.kind)).toEqual(["issue.comment", "issue.comment"]);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(heldStored(w)).toEqual([]);
   });
 });
 
@@ -5468,6 +5671,10 @@ describe("the edge does the core itself", () => {
     test("a token that may not write there: nothing is written, and it is a machine's to do for the hour, as a reply is", async () => {
       const w = await primary();
       handsItem(w);
+      // handsItem advances beyond the heartbeat window. Establish a
+      // reachable machine before testing immediate permission handover.
+      w.now.t += 1000;
+      await w.link.now.once();
       w.ghRefuses.push(onItem("DELETE", /\/issues\/301\/labels\//));
       const done = await w.act("hands.done", { ref: REF });
       expect(done.status).toBe(200);
@@ -8470,6 +8677,10 @@ describe("the edge does the core itself", () => {
 
   test("an asking past its deadline becomes host-owned once, including across passivation", async () => {
     const w = await primary();
+    // primary's setup clock passed the heartbeat window. This test
+    // needs an actual relay in flight, not a stale machine's held work.
+    w.now.t += 1000;
+    await w.link.now.once();
     w.ghRefuses.push(COMMENT);
     let open = () => {};
     w.gate.wait = new Promise<void>((resolve) => {

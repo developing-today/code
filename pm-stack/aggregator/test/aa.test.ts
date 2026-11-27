@@ -834,6 +834,12 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain("Scored configurations without a published cost");
     expect(html).toContain("unpricedScoredPoints"); // the explorer script wires the button list from the computations module
     expect(html).toContain('data-sizeby="xpl-c1"');
+    expect(html).toContain('data-labelby="xpl-c1"'); // #1400: per-chart key/all/none label modes, key by default
+    expect(html).toContain('data-labelby="xpl-c2"');
+    expect(html).toContain('data-labelby="xpl-c3"');
+    expect(html).toContain('<option value="key" selected>Key</option>');
+    expect(html).toContain("resolveLabelMode"); // the draw gate normalizes S.labelBy through the computations module
+    expect(html).toContain("shouldLabelPoint");
     expect(html).toContain('data-dl="xpl-c2"');
     expect(html).toContain('data-tmode="tot"');
     expect(html).toContain('id="xf-baseline"');

@@ -310,6 +310,7 @@ async function setup() {
     act: async () => "unreached",
     publicHost: "pm.example",
     version: "test",
+    deployedAt: null,
     later: (work) => {
       later.push(work);
     },

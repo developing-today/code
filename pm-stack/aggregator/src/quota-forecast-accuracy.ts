@@ -206,7 +206,10 @@ export function resetDurationObservationsFromSnapshots(
       const points = pointsForWindow(index, pool.serviceId, window);
       if (!points.length) continue;
       seen.add(key);
-      observations.set(key, points.map((point) => ({ ts: new Date(point.ts).toISOString(), resetsAt: point.resetsAt })));
+      observations.set(
+        key,
+        points.map((point) => ({ ts: new Date(point.ts).toISOString(), resetsAt: point.resetsAt })),
+      );
     }
   }
   return observations;
@@ -526,7 +529,11 @@ export function deriveResetDurationOutcomes(
     let previousTs: number | null = null;
     for (const current of rows) {
       if (!Number.isFinite(current.reset)) continue;
-      if (previousReset !== null && previousTs !== null && Math.abs(current.reset - previousReset) > PROJECTION_PERIOD_TOLERANCE_MS) {
+      if (
+        previousReset !== null &&
+        previousTs !== null &&
+        Math.abs(current.reset - previousReset) > PROJECTION_PERIOD_TOLERANCE_MS
+      ) {
         const realizedMs = Math.round((previousTs + current.ts) / 2);
         outcomes.push({ pool, window, realizedAt: new Date(realizedMs).toISOString() });
       }
@@ -690,16 +697,26 @@ export function scoreResetDurationPredictions(args: {
   asOfMs: number;
 }): { baselines: ResetDurationBaseline[]; facts: ScoredResetDuration[] } {
   const facts: ScoredResetDuration[] = [];
-  const groups = new Map<string, { predictionsScored: number; predictionsUnscored: number; covered: number; widths: number[] }>();
+  const groups = new Map<
+    string,
+    { predictionsScored: number; predictionsUnscored: number; covered: number; widths: number[] }
+  >();
   for (const prediction of args.predictions) {
     const basis = prediction.basis?.name ?? "unknown";
-    const key = JSON.stringify([prediction.subject.pool, prediction.subject.window, basis, prediction.methodology_version]);
+    const key = JSON.stringify([
+      prediction.subject.pool,
+      prediction.subject.window,
+      basis,
+      prediction.methodology_version,
+    ]);
     const group = groups.get(key) ?? { predictionsScored: 0, predictionsUnscored: 0, covered: 0, widths: [] };
     groups.set(key, group);
     const issuedAt = Date.parse(prediction.issued_at);
     if (
-      prediction.state !== "predicted" || prediction.prediction === null ||
-      !Number.isFinite(issuedAt) || issuedAt > args.asOfMs
+      prediction.state !== "predicted" ||
+      prediction.prediction === null ||
+      !Number.isFinite(issuedAt) ||
+      issuedAt > args.asOfMs
     ) {
       group.predictionsUnscored++;
       continue;
@@ -726,29 +743,51 @@ export function scoreResetDurationPredictions(args: {
     if (covered) group.covered++;
     group.widths.push(widthMs);
     facts.push({
-      id: prediction.id, pool: prediction.subject.pool, window: prediction.subject.window,
-      basis, methodologyVersion: prediction.methodology_version, issuedAt: prediction.issued_at,
-      earliest: prediction.prediction.earliest, latest: prediction.prediction.latest,
-      realizedAt: outcome.item.realizedAt, covered, widthMs,
+      id: prediction.id,
+      pool: prediction.subject.pool,
+      window: prediction.subject.window,
+      basis,
+      methodologyVersion: prediction.methodology_version,
+      issuedAt: prediction.issued_at,
+      earliest: prediction.prediction.earliest,
+      latest: prediction.prediction.latest,
+      realizedAt: outcome.item.realizedAt,
+      covered,
+      widthMs,
     });
   }
-  const baselines = [...groups.entries()].map(([key, group]) => {
-    const [pool, window, basis, methodologyVersion] = JSON.parse(key) as [string, string, string, string];
-    return {
-      pool, window, kind: "reset_duration" as const, basis, methodologyVersion,
-      predictionsScored: group.predictionsScored, predictionsUnscored: group.predictionsUnscored,
-      covered: group.covered,
-      coverage: group.predictionsScored ? Math.round((group.covered / group.predictionsScored) * 1000) / 1000 : null,
-      meanWidthMs: group.widths.length ? Math.round(group.widths.reduce((sum, width) => sum + width, 0) / group.widths.length) : null,
-      targetBand: "~80%" as const,
-    };
-  }).sort((a, b) => a.pool.localeCompare(b.pool) || a.window.localeCompare(b.window));
+  const baselines = [...groups.entries()]
+    .map(([key, group]) => {
+      const [pool, window, basis, methodologyVersion] = JSON.parse(key) as [string, string, string, string];
+      return {
+        pool,
+        window,
+        kind: "reset_duration" as const,
+        basis,
+        methodologyVersion,
+        predictionsScored: group.predictionsScored,
+        predictionsUnscored: group.predictionsUnscored,
+        covered: group.covered,
+        coverage: group.predictionsScored ? Math.round((group.covered / group.predictionsScored) * 1000) / 1000 : null,
+        meanWidthMs: group.widths.length
+          ? Math.round(group.widths.reduce((sum, width) => sum + width, 0) / group.widths.length)
+          : null,
+        targetBand: "~80%" as const,
+      };
+    })
+    .sort((a, b) => a.pool.localeCompare(b.pool) || a.window.localeCompare(b.window));
   return { baselines, facts };
 }
 
 export function buildForecastAccuracyLedger(
   records: readonly SnapshotRecord[],
-  opts: { asOfMs?: number; generatedAt?: string; resetDurationPredictions?: readonly ResetDurationPredictionInput[]; resetDurationOutcomes?: readonly ResetDurationOutcomeInput[]; resetDurationObservations?: ReadonlyMap<string, readonly ResetDurationObservationInput[]> } = {},
+  opts: {
+    asOfMs?: number;
+    generatedAt?: string;
+    resetDurationPredictions?: readonly ResetDurationPredictionInput[];
+    resetDurationOutcomes?: readonly ResetDurationOutcomeInput[];
+    resetDurationObservations?: ReadonlyMap<string, readonly ResetDurationObservationInput[]>;
+  } = {},
 ): { ledger: ForecastAccuracyLedger; facts: ScoredForecast[] } {
   const pct = records.filter((r) => typeof r.value === "number" && r.unit === "pct");
   const stamps = records.map((r) => Date.parse(r.ts)).filter(Number.isFinite);
@@ -782,7 +821,9 @@ export function buildForecastAccuracyLedger(
   facts.sort((a, b) => a.issuedAt.localeCompare(b.issuedAt) || a.pool.localeCompare(b.pool));
   const resetDuration = scoreResetDurationPredictions({
     predictions: opts.resetDurationPredictions ?? [],
-    outcomes: opts.resetDurationOutcomes ?? deriveResetDurationOutcomes(opts.resetDurationObservations ?? resetDurationObservationsFromSnapshots(records)),
+    outcomes:
+      opts.resetDurationOutcomes ??
+      deriveResetDurationOutcomes(opts.resetDurationObservations ?? resetDurationObservationsFromSnapshots(records)),
     asOfMs,
   });
   return {
@@ -875,9 +916,12 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
   lines.push("| pool | window | basis | methodology | scored / unscored | coverage (target ~80%) | mean width |");
   lines.push("|---|---|---|---|---:|---:|---:|");
   for (const b of ledger.resetDuration?.baselines ?? []) {
-    lines.push(`| ${b.pool} | ${b.window} | ${b.basis} | ${b.methodologyVersion} | ${b.predictionsScored} / ${b.predictionsUnscored} | ${b.coverage === null ? "—" : `${(b.coverage * 100).toFixed(1)}%`} | ${b.meanWidthMs === null ? "—" : `${(b.meanWidthMs / MIN).toFixed(1)}m`} |`);
+    lines.push(
+      `| ${b.pool} | ${b.window} | ${b.basis} | ${b.methodologyVersion} | ${b.predictionsScored} / ${b.predictionsUnscored} | ${b.coverage === null ? "—" : `${(b.coverage * 100).toFixed(1)}%`} | ${b.meanWidthMs === null ? "—" : `${(b.meanWidthMs / MIN).toFixed(1)}m`} |`,
+    );
   }
-  if (!(ledger.resetDuration?.baselines.length ?? 0)) lines.push("No reset-duration prediction/outcome pairs supplied; unmeasured.");
+  if (!(ledger.resetDuration?.baselines.length ?? 0))
+    lines.push("No reset-duration prediction/outcome pairs supplied; unmeasured.");
   lines.push("");
   lines.push("## What this data cannot support");
   lines.push("");

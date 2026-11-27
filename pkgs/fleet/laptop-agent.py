@@ -40,7 +40,9 @@ def _load_legacy():
 
 
 def _parser(name):
-    return argparse.ArgumentParser(prog=f"laptop-agent.py {name}".rstrip(), allow_abbrev=False)
+    return argparse.ArgumentParser(
+        prog=f"laptop-agent.py {name}".rstrip(), allow_abbrev=False
+    )
 
 
 def validate(argv):
@@ -60,7 +62,7 @@ def validate(argv):
         ap.add_argument("--shell", action="store_true")
         i = rest.index("--") if "--" in rest else len(rest)
         opts = ap.parse_args(rest[:i])
-        if i == len(rest) or not rest[i + 1:]:
+        if i == len(rest) or not rest[i + 1 :]:
             ap.error("no command given (use -- cmd...)")
         if opts.timeout <= 0:
             ap.error("--timeout must be positive")
@@ -111,8 +113,11 @@ def probe(binary):
     proc = None
     try:
         proc = subprocess.Popen(
-            [binary, "capabilities"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+            [binary, "capabilities"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
         deadline = time.monotonic() + PROBE_TIMEOUT_S
         output = bytearray()
@@ -122,7 +127,9 @@ def probe(binary):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not ready.select(remaining):
                     return False
-                chunk = os.read(proc.stdout.fileno(), min(4096, PROBE_MAX_BYTES + 1 - len(output)))
+                chunk = os.read(
+                    proc.stdout.fileno(), min(4096, PROBE_MAX_BYTES + 1 - len(output))
+                )
                 if not chunk:
                     break
                 output.extend(chunk)

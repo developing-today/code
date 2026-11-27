@@ -16,6 +16,16 @@
 //! folds into it; the two flags combine in argument order when both
 //! are given. On a reopen there is no composed comment, so
 //! `--comment` forwards to gh unchanged, as real gh accepts it there.
+//!
+//! The composed comment is also accepted back as input (#16150):
+//! when a close carries no `--reason` but its folded comment text is
+//! exactly a composed comment (`Closed as <reason>.` plus the
+//! optional free text and `Successor:` line this layer generates),
+//! the reason, text and successor are recovered from it. Fleet's own
+//! generated arguments therefore survive re-entering a fleet — via
+//! the gh-fleet shim under a build without the #14650 recursion
+//! guard, or any mixed-revision pairing — instead of being refused
+//! with the policy error meant for a caller who gave no reason.
 
 use fleet_config::Config;
 use std::io::Write;
@@ -130,6 +140,20 @@ pub fn parse(args: &[String]) -> Result<Option<Intent>, String> {
         Some(raw) => item_number(&raw)?,
         None => return Err(format!("{} {} needs an item number or URL", kind, action)),
     };
+    // #16150: a close that re-enters fleet carrying this layer's own
+    // composed comment (see the module header) has no --reason flag —
+    // the reason lives in the comment. Recover it before the policy
+    // check so the generated form is judged by the same rules as the
+    // hand-written one, superseded-needs-successor included.
+    if action == "close" && reason.is_none() {
+        if let Some((r, text, succ)) = reason_text.as_deref().and_then(decompose_composed_comment) {
+            reason = Some(r);
+            reason_text = text;
+            if successor.is_none() {
+                successor = succ;
+            }
+        }
+    }
     if action == "close" {
         let r = match reason.as_deref() {
             None => return Err(POLICY_ERROR.to_string()),
@@ -179,6 +203,40 @@ fn append_reason_text(slot: &mut Option<String>, value: String) {
             }
         }
     }
+}
+
+/// Split a composed close comment back into its parts, when `text`
+/// is exactly one: `Closed as <reason>.` followed by nothing, by
+/// ` <free text>`, by `\nSuccessor: <item>`, or by both in that
+/// order — the shapes `Intent::gh_args_with_reason` generates. Any
+/// other text returns None, so an ordinary caller comment is never
+/// mistaken for a reason. The recovered reason must be a taxonomy
+/// value; the caller re-validates the triple as usual.
+fn decompose_composed_comment(text: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let rest = text.strip_prefix("Closed as ")?;
+    let (reason, mut rest) = rest.split_once('.')?;
+    if !REASONS.contains(&reason) {
+        return None;
+    }
+    let mut successor = None;
+    if let Some((head, tail)) = rest.split_once("\nSuccessor: ") {
+        if tail.is_empty() {
+            return None;
+        }
+        successor = Some(tail.to_string());
+        rest = head;
+    }
+    let reason_text = if rest.is_empty() {
+        None
+    } else if let Some(free) = rest.strip_prefix(' ') {
+        if free.is_empty() {
+            return None;
+        }
+        Some(free.to_string())
+    } else {
+        return None;
+    };
+    Some((reason.to_string(), reason_text, successor))
 }
 
 fn item_number(raw: &str) -> Result<String, String> {
@@ -440,6 +498,86 @@ mod tests {
         assert_eq!(args[5], "--comment");
         assert_eq!(args[6], "Closed as superseded. folded in\nSuccessor: 9");
         assert!(!args.iter().any(|a| a == "--reason" || a == "--successor"));
+    }
+
+    // oracle: #16150 — fleet's own generated close arguments (the
+    // composed --comment, no --reason flag) parse back to the same
+    // intent instead of dying with POLICY_ERROR when they re-enter a
+    // fleet through the gh-fleet shim or a mixed-revision pairing.
+    #[test]
+    fn generated_close_args_round_trip_through_parse() {
+        let first = parse(&s(&[
+            "pr",
+            "close",
+            "15772",
+            "--repo",
+            "developing-today/code",
+            "--reason",
+            "superseded",
+            "--reason-text",
+            "probe",
+            "--successor",
+            "15902",
+        ]))
+        .unwrap()
+        .unwrap();
+        let generated = first.gh_args_with_reason();
+        let second = parse(&generated).unwrap().unwrap();
+        assert_eq!(second.reason.as_deref(), Some("superseded"));
+        assert_eq!(second.reason_text.as_deref(), Some("probe"));
+        assert_eq!(second.successor.as_deref(), Some("15902"));
+        assert_eq!(second.item, "15772");
+        // Idempotent: recomposing the recovered intent reproduces the
+        // generated arguments exactly — one --comment, no doubling.
+        assert_eq!(second.gh_args_with_reason(), generated);
+    }
+
+    // oracle: #16150 — the bare and successor-only composed shapes
+    // round-trip too, and a superseded shape keeps its successor
+    // requirement satisfied from the comment alone.
+    #[test]
+    fn composed_comment_shapes_are_recovered() {
+        let i = parse(&s(&[
+            "issue",
+            "close",
+            "7",
+            "--comment",
+            "Closed as implemented.",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(i.reason.as_deref(), Some("implemented"));
+        assert_eq!(i.reason_text, None);
+        let i = parse(&s(&[
+            "pr",
+            "close",
+            "9",
+            "--comment",
+            "Closed as superseded.\nSuccessor: 10",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(i.reason.as_deref(), Some("superseded"));
+        assert_eq!(i.successor.as_deref(), Some("10"));
+    }
+
+    // oracle: #16150 — recovery is exact-shape only: an ordinary
+    // comment that merely mentions a closing, or names a non-taxonomy
+    // reason, is not a reason and still hits the policy error.
+    #[test]
+    fn ordinary_comments_are_not_recovered_as_reasons() {
+        for comment in [
+            "Closed as bogus.",
+            "closed as implemented.",
+            "Closed as implemented",
+            "Please close: Closed as implemented. thanks",
+        ] {
+            assert_eq!(
+                parse(&s(&["issue", "close", "7", "--comment", comment])),
+                Err(POLICY_ERROR.to_string()),
+                "{comment}"
+            );
+        }
     }
 
     // oracle: dezren39/fleet#118 — gh's native --comment on a close is

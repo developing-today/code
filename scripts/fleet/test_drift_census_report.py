@@ -137,16 +137,17 @@ class SilenceTests(unittest.TestCase):
     def test_pending_only_run_stays_silent(self):
         pending = converged_report()
         pending["rows"][0] = dict(
-            pending["rows"][0], state="pending", lag_s=60, reason="behind, inside window"
+            pending["rows"][0],
+            state="pending",
+            lag_s=60,
+            reason="behind, inside window",
         )
         pending["counts"] = {"converged": 1, "pending": 1, "held": 0, "drifted": 0}
         pending["silent"] = True
         self.assertEqual(report_mod.render_markdown(pending, None), "")
 
     def test_cli_prints_nothing_on_silent_report(self):
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump(converged_report(), f)
             path = f.name
         code, out = run_main(["--report", path])
@@ -156,9 +157,7 @@ class SilenceTests(unittest.TestCase):
 
 class DeliveryTests(unittest.TestCase):
     def test_cli_renders_attention_report_to_stdout(self):
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump(attention_report(), f)
             path = f.name
         code, out = run_main(
@@ -169,9 +168,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("https://example.test/run/1", out)
 
     def test_malformed_report_is_a_report_error_not_a_post(self):
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             f.write('{"total": 1}')
             path = f.name
         err = io.StringIO()

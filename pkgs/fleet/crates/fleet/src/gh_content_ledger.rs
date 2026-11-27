@@ -482,26 +482,27 @@ mod tests {
         assert_eq!(c.kind.as_ledger_kind(), "issue_comment");
         let c = classify(&args(&["pr", "comment", "12", "--body", "x"])).unwrap();
         assert_eq!(c.kind.as_ledger_kind(), "pr_comment");
-        let c = classify(&args(&[
-            "pr", "review", "12", "--comment", "--body", "x",
-        ]))
-        .unwrap();
+        let c = classify(&args(&["pr", "review", "12", "--comment", "--body", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::PrReview);
         assert_eq!(c.kind.as_ledger_kind(), "review");
-        let c = classify(&args(&[
-            "release", "create", "v1.0.0", "--title", "x",
-        ]))
-        .unwrap();
+        let c = classify(&args(&["release", "create", "v1.0.0", "--title", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::Release);
         assert_eq!(c.kind.as_ledger_kind(), "release");
 
         assert!(classify(&args(&["issue", "list"])).is_none());
         // Non-comment review shapes stay unledgered in this slice.
         assert!(classify(&args(&["pr", "review", "12", "--approve"])).is_none());
-        assert!(classify(&args(&[
-            "pr", "review", "12", "--request-changes", "--body", "x"
-        ]))
-        .is_none());
+        assert!(
+            classify(&args(&[
+                "pr",
+                "review",
+                "12",
+                "--request-changes",
+                "--body",
+                "x"
+            ]))
+            .is_none()
+        );
         assert!(classify(&args(&["pr", "review", "12"])).is_none());
         assert!(classify(&args(&["issue", "view", "12"])).is_none());
         assert!(classify(&args(&["pr", "merge", "12"])).is_none());

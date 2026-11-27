@@ -49,10 +49,9 @@ describe("D1 store client", () => {
       ACCOUNT,
       DATABASE,
       "test-token",
-      Object.assign(
-        async () => Response.json({ success: true, result: [{ success: false, results: [] }] }),
-        { preconnect: () => {} },
-      ),
+      Object.assign(async () => Response.json({ success: true, result: [{ success: false, results: [] }] }), {
+        preconnect: () => {},
+      }),
     );
 
     await expect(unavailable.query("select 1")).rejects.toThrow("HTTP 403");

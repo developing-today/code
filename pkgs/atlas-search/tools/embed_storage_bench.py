@@ -85,7 +85,6 @@ def measure(bodies, runs, cache_mode):
             # cache hits, while cold deliberately bypasses the same cache.
             indices = [index % len(bodies) for index in range(width)]
             for _run in range(runs):
-
                 before = perf_counter_ns()
                 _ = [bodies[index] for index in indices]
                 turso_times.append((perf_counter_ns() - before) / 1_000_000)
@@ -105,8 +104,14 @@ def measure(bodies, runs, cache_mode):
                         raise HydrationError("source/reference hash mismatch")
                 reference_times.append((perf_counter_ns() - before) / 1_000_000)
             output[operation][variant] = {
-                "turso_ms": {"p50": round(percentile(turso_times, 0.50), 6), "p95": round(percentile(turso_times, 0.95), 6)},
-                "reference_ms": {"p50": round(percentile(reference_times, 0.50), 6), "p95": round(percentile(reference_times, 0.95), 6)},
+                "turso_ms": {
+                    "p50": round(percentile(turso_times, 0.50), 6),
+                    "p95": round(percentile(turso_times, 0.95), 6),
+                },
+                "reference_ms": {
+                    "p50": round(percentile(reference_times, 0.50), 6),
+                    "p95": round(percentile(reference_times, 0.95), 6),
+                },
                 "r2_class_b_gets": r2_gets,
             }
 
@@ -114,7 +119,9 @@ def measure(bodies, runs, cache_mode):
         "source_bytes": source_bytes,
         "reference_bytes": reference_bytes,
         "unique_objects": len(objects),
-        "dedup_ratio": round(source_bytes / reference_bytes, 6) if reference_bytes else 1.0,
+        "dedup_ratio": round(source_bytes / reference_bytes, 6)
+        if reference_bytes
+        else 1.0,
         "r2_class_a_puts": len(objects),
         "hydration": output,
     }

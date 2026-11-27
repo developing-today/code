@@ -206,12 +206,7 @@ function jsonResponse(status: number, body: unknown): Response {
  * applied the gate and resolved the caller's policy ceiling;
  * this owns the JSON-RPC layer only.
  */
-export async function handleMcp(
-  req: Request,
-  env: SearchEnv,
-  agentId: string,
-  ceiling: Ceiling,
-): Promise<Response> {
+export async function handleMcp(req: Request, env: SearchEnv, agentId: string, ceiling: Ceiling): Promise<Response> {
   const raw = await readTextUpTo(req);
   if (raw === null) {
     return jsonResponse(413, rpcError(null, -32600, "body is larger than the 64 KiB limit"));

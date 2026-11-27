@@ -297,11 +297,7 @@ export default {
         resp.headers.set("Allow", "POST");
         return resp;
       }
-      const agentId = await authenticateMcpAgent(
-        req.headers.get("Authorization"),
-        env.GATE_TOKEN,
-        env.AGENT_TOKENS,
-      );
+      const agentId = await authenticateMcpAgent(req.headers.get("Authorization"), env.GATE_TOKEN, env.AGENT_TOKENS);
       if (!agentId) {
         return errorJson(401, "unauthorized", "missing or invalid MCP agent token");
       }

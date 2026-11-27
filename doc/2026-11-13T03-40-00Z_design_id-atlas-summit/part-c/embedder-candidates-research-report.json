@@ -3,7 +3,7 @@
   "issue": 10157,
   "slice": "C9138-01",
   "current_model": "Snowflake arctic-embed-m-v2.0",
-  "owner_decision": {"status": "undecided", "decision_ref": null},
+  "owner_decision": { "status": "undecided", "decision_ref": null },
   "independent_recall_run": false,
   "second_embedder_enabled": false,
   "corpus_sha256": null,

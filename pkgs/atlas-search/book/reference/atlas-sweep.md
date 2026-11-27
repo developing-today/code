@@ -86,5 +86,5 @@ Every failure in this binary prints `atlas-sweep: &lt;message&gt;` on stderr, wi
 | Code | Meaning                                                                                                                    |
 | ---- | -------------------------------------------------------------------------------------------------------------------------- |
 | 0    | Success — including an empty dead-letter list, an empty (`[]`) cycle report, and a `run-once` that printed `overlap-skip`. |
-| 1    | Execution failure: unreadable/unparseable `REQUEST.json`, missing report row, I/O and core errors from inside a run. |
-| 2    | Usage / invalid invocation: missing `--state-dir` or action, unknown action or source class, missing flag values. |
+| 1    | Execution failure: unreadable/unparseable `REQUEST.json`, missing report row, I/O and core errors from inside a run.       |
+| 2    | Usage / invalid invocation: missing `--state-dir` or action, unknown action or source class, missing flag values.          |

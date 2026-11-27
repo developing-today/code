@@ -236,10 +236,8 @@ impl ContextManifest {
     /// Canonical JSON of the manifest with `integrity.manifest_digest`
     /// omitted — the exact bytes the digest covers.
     fn digest_dto(&self) -> Result<Value, ContractError> {
-        let mut value = serde_json::to_value(self).map_err(|err| {
-            ContractError::InvalidSchema {
-                detail: format!("manifest is not JSON-serializable: {err}"),
-            }
+        let mut value = serde_json::to_value(self).map_err(|err| ContractError::InvalidSchema {
+            detail: format!("manifest is not JSON-serializable: {err}"),
         })?;
         if let Some(integrity) = value.get_mut("integrity") {
             if let Some(map) = integrity.as_object_mut() {
@@ -355,8 +353,7 @@ mod tests {
     /// independent of the envelope.
     #[test]
     fn pmo_hyd_manifest_rejects_unknown_schema_version() {
-        let mut manifest =
-            fixture_manifest(ManifestStatus::Partial, SourceStatus::Unavailable);
+        let mut manifest = fixture_manifest(ManifestStatus::Partial, SourceStatus::Unavailable);
         manifest.schema_version = "fleet.context-manifest/v999".to_string();
         assert!(matches!(
             manifest.validate(),
@@ -369,8 +366,7 @@ mod tests {
             SourceStatus::Unavailable,
         ))
         .unwrap();
-        value["schema_version"] =
-            Value::String("fleet.context-manifest/v999".to_string());
+        value["schema_version"] = Value::String("fleet.context-manifest/v999".to_string());
         let text = serde_json::to_string(&value).unwrap();
         assert!(matches!(
             ContextManifest::from_json(&text),

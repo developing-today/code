@@ -1413,6 +1413,7 @@ interface WorkIdentity {
   repo: string;
   issue: number;
   family: string;
+  promptId: string | null;
   key: string;
 }
 
@@ -1452,11 +1453,14 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
   if (payload["dedupe_exempt"] === true) return null;
   const kind = typeof payload["kind"] === "string" ? payload["kind"] : "";
   const family =
-    kind === "small_fix" ? "fix" : kind === "triage" ? "triage" : kind === "pr_shepherd" ? "pr_shepherd" : null;
+    kind === "small_fix" ? "fix" : kind === "triage" ? "triage" : kind === "pr_shepherd" ? "pr_shepherd" : kind === "prompt" ? "prompt" : null;
   if (family === null) return null;
+  const promptObj = payload["prompt"];
+  const promptId = kind === "prompt" && isObj(promptObj) && typeof promptObj["id"] === "string" ? promptObj["id"] : null;
+  if (kind === "prompt" && promptId === null) return null;
   const issueObj = payload["issue"];
-  const issue = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
-  if (issue === null || issue <= 0) return null;
+  const issue = kind === "prompt" ? 0 : isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
+  if (issue === null || (kind !== "prompt" && issue <= 0)) return null;
   const repo = taskRepoIdentity(row);
   if (repo === null) return null;
   let prs: number[] = [];
@@ -1471,8 +1475,8 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
     if (Array.isArray(prsRaw)) for (const el of prsRaw) collect(el);
     prs = [...prs].sort((a, b) => a - b);
   }
-  const key = `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
-  return { kind, repo, issue, family, key };
+  const key = promptId !== null ? `${repo}#${promptId}` : `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
+  return { kind, repo, issue, family, promptId, key };
 }
 
 function dedupeOverride(packet: JsonObject): string | null {
@@ -1494,9 +1498,11 @@ async function liveIdentityHolder(store: QueueStore, env: QueueEnv, identity: Wo
   for (const row of await store.allTasks()) {
     const payload = taskPayload(row);
     if (payload["kind"] !== identity.kind) continue;
-    const issueObj = payload["issue"];
-    const n = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
-    if (n !== identity.issue) continue;
+    if (identity.promptId === null) {
+      const issueObj = payload["issue"];
+      const n = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
+      if (n !== identity.issue) continue;
+    }
     if (holdsIdentity(store, env, row, identity)) return row;
   }
   return null;
@@ -3466,12 +3472,9 @@ async function verbBind(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
   // migration-0026, so error-stopped recovery deleted the session
   // but never cleared the binding.
   const recoveryReasons: Record<string, string> = {
-    "opencode-claimant-recovery:zero-message-deleted":
-      "verified zero-message session deleted before recovery",
-    "opencode-claimant-recovery:gone-session":
-      "bound session verified absent before recovery",
-    "opencode-claimant-recovery:error-stopped":
-      "verified error-stopped session deleted before recovery",
+    "opencode-claimant-recovery:zero-message-deleted": "verified zero-message session deleted before recovery",
+    "opencode-claimant-recovery:gone-session": "bound session verified absent before recovery",
+    "opencode-claimant-recovery:error-stopped": "verified error-stopped session deleted before recovery",
   };
   const recoveryReason = recoveryReasons[launchedBy];
   if (recoveryReason !== undefined) {

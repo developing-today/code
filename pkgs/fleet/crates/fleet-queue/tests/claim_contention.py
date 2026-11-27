@@ -70,12 +70,18 @@ def create_db(path, fixture_size, eligible_count):
     # with broker state unrelated to the single UPDATE under measurement.
     db.executemany(
         "INSERT INTO tasks(id,queue,status,priority,created_at,attempts,max_attempts,updated_at) VALUES(?, 'bench', 'completed', ?, ?, 0, 1000, ?)",
-        ((i, i % 100, f"2026-01-{(i % 28) + 1:02d}T00:00:00Z", "fixture") for i in range(1, fixture_size + 1)),
+        (
+            (i, i % 100, f"2026-01-{(i % 28) + 1:02d}T00:00:00Z", "fixture")
+            for i in range(1, fixture_size + 1)
+        ),
     )
     start = fixture_size + 1
     db.executemany(
         "INSERT INTO tasks(id,queue,status,priority,created_at,attempts,max_attempts,updated_at) VALUES(?, 'bench', 'queued', ?, ?, 0, 1000, ?)",
-        ((start + i, i, f"2026-02-{(i % 28) + 1:02d}T00:00:00Z", "fixture") for i in range(eligible_count)),
+        (
+            (start + i, i, f"2026-02-{(i % 28) + 1:02d}T00:00:00Z", "fixture")
+            for i in range(eligible_count)
+        ),
     )
     db.commit()
     db.close()
@@ -181,26 +187,45 @@ def benchmark(repeats):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verify", action="store_true", help="run the fast correctness oracle")
-    parser.add_argument("--benchmark", action="store_true", help="run all contention measurements")
+    parser.add_argument(
+        "--verify", action="store_true", help="run the fast correctness oracle"
+    )
+    parser.add_argument(
+        "--benchmark", action="store_true", help="run all contention measurements"
+    )
     parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
-    results = verify() if args.verify else benchmark(args.repeats) if args.benchmark else None
+    results = (
+        verify() if args.verify else benchmark(args.repeats) if args.benchmark else None
+    )
     if results is None:
         parser.error("choose --verify or --benchmark")
-    print(json.dumps({
-        "source_sha": __import__("subprocess").check_output(["git", "rev-parse", "HEAD"], cwd=SRC, text=True).strip(),
-        "source_fingerprint_sha256": source_fingerprint(),
-        "protocol": "one temporary SQLite file per sample using extracted production tasks DDL and tasks_claim_scan index; one connection per caller opened before a barrier; worker operations are SELECT then conditional UPDATE in autocommit; busy timeout 20s; lock/busy retries re-pick and are not grants; fixture rows are completed and eligible rows queued",
-        "throughput_denominator": "wall-clock seconds from immediately before starting worker threads through all joins; includes thread scheduling and SELECT/conditional-UPDATE contention; excludes fixture creation and connection setup",
-        "latency_denominator": "per-worker elapsed time from barrier release through its first successful conditional UPDATE or no-task result; includes SQLite operations and retry waits",
-        "repeats": 1 if args.verify else args.repeats,
-        "oracle": "unique task ids, no wrong grants, and all independent eligible rows granted",
-        "omitted": ["broker transport", "lease and event writes", "lane registration", "guard/quarantine/staleness probes", "managed-provider latency"],
-        "results": results,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "source_sha": __import__("subprocess")
+                .check_output(["git", "rev-parse", "HEAD"], cwd=SRC, text=True)
+                .strip(),
+                "source_fingerprint_sha256": source_fingerprint(),
+                "protocol": "one temporary SQLite file per sample using extracted production tasks DDL and tasks_claim_scan index; one connection per caller opened before a barrier; worker operations are SELECT then conditional UPDATE in autocommit; busy timeout 20s; lock/busy retries re-pick and are not grants; fixture rows are completed and eligible rows queued",
+                "throughput_denominator": "wall-clock seconds from immediately before starting worker threads through all joins; includes thread scheduling and SELECT/conditional-UPDATE contention; excludes fixture creation and connection setup",
+                "latency_denominator": "per-worker elapsed time from barrier release through its first successful conditional UPDATE or no-task result; includes SQLite operations and retry waits",
+                "repeats": 1 if args.verify else args.repeats,
+                "oracle": "unique task ids, no wrong grants, and all independent eligible rows granted",
+                "omitted": [
+                    "broker transport",
+                    "lease and event writes",
+                    "lane registration",
+                    "guard/quarantine/staleness probes",
+                    "managed-provider latency",
+                ],
+                "results": results,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -641,8 +641,7 @@ export function serve(db: Client, env: ServerEnv, port: number, deps: ServerDeps
     ...deps,
     healthSnapshot: deps.healthSnapshot ?? (() => snapshot),
     reconcileStatus:
-      deps.reconcileStatus ??
-      (() => (reconcileState ? { running: true, ...reconcileState } : { running: false })),
+      deps.reconcileStatus ?? (() => (reconcileState ? { running: true, ...reconcileState } : { running: false })),
     beginReconcile:
       deps.beginReconcile ??
       ((mode = "steady_state") => {
