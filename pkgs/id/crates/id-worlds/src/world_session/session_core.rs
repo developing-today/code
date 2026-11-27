@@ -118,7 +118,15 @@ pub(crate) async fn run_world_session<I: SessionIo>(
         | ClientFrame::Documents { .. }
         | ClientFrame::Document { .. }
         | ClientFrame::DownloadModule { .. } => {
-            query_session(service, io, frame, world_name, documents_store).await;
+            query_session(
+                service,
+                io,
+                frame,
+                world_name,
+                documents_store,
+                caller_account,
+            )
+            .await;
         }
         ClientFrame::InstallBegin {
             admin_token,
@@ -537,6 +545,7 @@ async fn query_session<I: SessionIo>(
     first: ClientFrame,
     world_name: &str,
     documents_store: Option<Store>,
+    caller_account: Option<String>,
 ) {
     let mut next = Some(first);
     loop {
