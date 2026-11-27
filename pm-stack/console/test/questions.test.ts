@@ -172,6 +172,42 @@ describe("the edge, with the laptop away", () => {
     // The oracle: the section the app draws is the Worker's sets,
     // IDs and state as it returned them, with the laptop never asked.
     expect(found?.sets.map((s) => s.setId)).toEqual(["set-a", "set-b"]);
+    const assembled = JSON.parse((await edge.docs.doc("questions")).body) as {
+      questionSets?: {
+        source: string;
+        laptopRequired: boolean;
+        definitions: string;
+        note: string;
+        sets: { setId: string; state: unknown }[];
+      };
+    };
+    expect(assembled.questionSets).toMatchObject({
+      source: "decision-events",
+      laptopRequired: false,
+      definitions: "unavailable",
+      note: expect.stringContaining("still need the laptop"),
+    });
+    expect(assembled.questionSets?.sets.map((s) => s.setId)).toEqual(["set-a", "set-b"]);
+    expect(assembled.questionSets?.sets.map((s) => s.state)).toEqual([
+      {
+        fannedOut: 3,
+        lastEventId: "e3",
+        lastType: "answer",
+        lastTs: "2026-11-26T12:00:00Z",
+        updatedAt: "2026-11-26T12:00:01Z",
+        subscribers: 1,
+        d1Events: 3,
+      },
+      {
+        fannedOut: 1,
+        lastEventId: "e9",
+        lastType: "created",
+        lastTs: "2026-11-26T11:00:00Z",
+        updatedAt: "2026-11-26T11:00:01Z",
+        subscribers: 0,
+        d1Events: 1,
+      },
+    ]);
     expect(asked.map((a) => a.url)).toEqual([
       "https://decision-events.test/sets",
       "https://decision-events.test/sets/set-a/state",
