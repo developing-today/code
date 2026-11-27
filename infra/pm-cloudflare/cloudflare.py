@@ -3,7 +3,6 @@
 The laptop script separately owns only its named tunnel ingress.
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -54,10 +53,12 @@ GOOGLE_ID = "google.access-sso.client-id"
 
 GOOGLE_SECRET = "google.access-sso.client-secret"
 
+
 def secret(name: str) -> str:
     return subprocess.run(
         ["fleet", "secrets", "get", name], capture_output=True, text=True, check=False
     ).stdout.strip()
+
 
 class Cloudflare:
     def __init__(self, token: str, check: bool) -> None:
@@ -96,6 +97,7 @@ class Cloudflare:
             return None
         return self.call(method, path, body)["result"]
 
+
 def find_tunnel(cf: Cloudflare, account: str) -> tuple[str, dict]:
     tunnels = cf.get(f"/accounts/{account}/cfd_tunnel?name={TUNNEL}&is_deleted=false")
     if len(tunnels) != 1:
@@ -104,6 +106,7 @@ def find_tunnel(cf: Cloudflare, account: str) -> tuple[str, dict]:
     return tunnel, cf.get(f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations")[
         "config"
     ]
+
 
 def ensure_routes(
     cf: Cloudflare, account: str, host: str, tunnel: str, config: dict, console: str
@@ -134,11 +137,13 @@ def ensure_routes(
         {"config": config},
     )
 
+
 USER_AGENT = "pm-console-expose"
 
 HEALTH_TRIES = 3
 
 HEALTH_WAIT_SECONDS = 3
+
 
 def fetch_json(url: str) -> dict | None:
     """One GET of a JSON document, or None if it cannot be had."""
@@ -149,6 +154,7 @@ def fetch_json(url: str) -> dict | None:
             return out if isinstance(out, dict) else None
     except (OSError, ValueError):
         return None
+
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
     """True when the edge Worker is deployed, answers its health check as
@@ -173,6 +179,7 @@ def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
         ):
             return True
     return False
+
 
 def ensure_edge_route(cf: Cloudflare, zone: str, host: str, wanted: bool) -> None:
     """The hostname's traffic goes through the edge Worker, or does not.
@@ -207,6 +214,7 @@ def ensure_edge_route(cf: Cloudflare, zone: str, host: str, wanted: bool) -> Non
                 None,
             )
 
+
 def find_zone(cf: Cloudflare, host: str) -> str:
     """The zone that holds the host: the longest suffix of the name that
     is a zone in this account. The last two labels are not always it
@@ -218,6 +226,7 @@ def find_zone(cf: Cloudflare, host: str) -> str:
         if len(zones) == 1:
             return zones[0]["id"]
     raise SystemExit(f"dns: no zone in this account holds {host}")
+
 
 def dns_plan(cf: Cloudflare, host: str, tunnel: str) -> tuple[str, bool]:
     """Read DNS for the host. Returns the zone and whether a record is
@@ -236,6 +245,7 @@ def dns_plan(cf: Cloudflare, host: str, tunnel: str) -> tuple[str, bool]:
         )
     return zone, not records
 
+
 def ensure_dns(cf: Cloudflare, host: str, tunnel: str, zone: str, needed: bool) -> None:
     if needed:
         cf.change(
@@ -250,6 +260,7 @@ def ensure_dns(cf: Cloudflare, host: str, tunnel: str, zone: str, needed: bool) 
                 "comment": f"pm stack via tunnel {TUNNEL}",
             },
         )
+
 
 def ensure_idps(
     cf: Cloudflare, account: str, google: tuple[str, str] | None = None
@@ -307,6 +318,7 @@ def ensure_idps(
             f"note: Google sign-in is not on yet: secrets {GOOGLE_ID} and {GOOGLE_SECRET} do not exist"
         )
     return ids
+
 
 def ensure_app(
     cf: Cloudflare,

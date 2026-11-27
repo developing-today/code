@@ -2316,7 +2316,7 @@ BIND_RETRY_CAP_S = 15.0
 
 def bind_retry_delay(attempt):
     """Delay before the retry after `attempt` failures (0-based)."""
-    return min(BIND_RETRY_BASE_S * (2**min(attempt, 4)), BIND_RETRY_CAP_S)
+    return min(BIND_RETRY_BASE_S * (2 ** min(attempt, 4)), BIND_RETRY_CAP_S)
 
 
 def is_retryable_bind_error(exc):

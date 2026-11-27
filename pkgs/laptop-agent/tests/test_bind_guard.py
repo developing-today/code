@@ -17,7 +17,8 @@ AGENT = Path(__file__).resolve().parents[1] / "src" / "laptop_agent.py"
 # module load and exits 3 on garbage, so the importing environment
 # must be clean (#15533 slice note).
 _clean_env = {
-    k: v for k, v in os.environ.items()
+    k: v
+    for k, v in os.environ.items()
     if not k.startswith(("LAPTOP_AGENT_", "FLEET_CTX_"))
 }
 with patch.dict(os.environ, _clean_env, clear=True):
@@ -45,9 +46,15 @@ class BindGuardTest(unittest.TestCase):
             patch.object(la, "reap_old_jobs"),
             patch.object(la.threading, "Thread"),
             patch.object(la.time, "sleep") as sleep,
-            patch.object(la, "AgentServer", side_effect=[
-                OSError(99, "address absent"), OSError(99, "address absent"), server
-            ]) as constructor,
+            patch.object(
+                la,
+                "AgentServer",
+                side_effect=[
+                    OSError(99, "address absent"),
+                    OSError(99, "address absent"),
+                    server,
+                ],
+            ) as constructor,
         ):
             la.main()
         self.assertEqual(constructor.call_count, 3)
@@ -75,7 +82,9 @@ class BindGuardTest(unittest.TestCase):
         """Oracle: an available address keeps the one-attempt startup path."""
         server = object()
         make = Mock(return_value=server)
-        self.assertIs(la.bind_with_retry(make, sleep=lambda _: self.fail("slept")), server)
+        self.assertIs(
+            la.bind_with_retry(make, sleep=lambda _: self.fail("slept")), server
+        )
         make.assert_called_once_with()
 
     def test_absent_address_clips_sleep_to_budget(self):

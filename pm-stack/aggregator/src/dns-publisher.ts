@@ -54,7 +54,8 @@ export interface DnsSnapshotStatement {
  * not data to publish. */
 export function dnsSnapshotStatements(section: DnsSection, receivedAt: string): DnsSnapshotStatement[] {
   if (!isDnsSection(section)) throw new Error("refusing to publish an invalid DNS section");
-  if (!Number.isFinite(Date.parse(receivedAt))) throw new Error("refusing to publish a DNS snapshot without a valid receivedAt");
+  if (!Number.isFinite(Date.parse(receivedAt)))
+    throw new Error("refusing to publish a DNS snapshot without a valid receivedAt");
   return [
     { sql: DNS_SNAPSHOT_CREATE_SQL, params: [] },
     {

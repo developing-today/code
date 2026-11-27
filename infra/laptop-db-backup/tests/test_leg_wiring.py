@@ -46,9 +46,7 @@ def test_every_wrapper_has_units_and_install():
 def test_every_timer_is_enabled_by_install():
     install = open(os.path.join(SYSTEMD, "install-units.sh")).read()
     enable_lines = [
-        line
-        for line in install.splitlines()
-        if "systemctl --user enable --now" in line
+        line for line in install.splitlines() if "systemctl --user enable --now" in line
     ]
     assert enable_lines, "install-units.sh does not enable any backup timer"
     for leg in _legs():
@@ -70,9 +68,7 @@ def test_every_wrapper_names_its_home_and_source():
 
 def test_every_leg_in_readme_and_registry():
     readme = open(os.path.join(LDB, "README.md")).read()
-    registry = open(
-        os.path.join(REPO, "doc", "fleet-schedule-registry.md")
-    ).read()
+    registry = open(os.path.join(REPO, "doc", "fleet-schedule-registry.md")).read()
     for leg in _legs():
         assert f"laptop-db-backup-{leg}.timer" in readme, (
             f"leg {leg}: README leg table omits the timer"

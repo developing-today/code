@@ -69,7 +69,9 @@ test("a seen list of thousands of ids is one JSON argument, not a json_array cal
   db.exec(`create table agg_activity_ingestion(source text primary key, checkpoint text, seen_ids text, source_status text, updated_at text);
     create table agg_activity_gaps(id text primary key, source text, gap_from text, gap_to text, status text, detected_at text, resolved_at text, updated_at text);`);
   const ids = Array.from({ length: 2000 }, (_, i) => `delivery-${i}-'q',]`);
-  const stmt = storeStatement(`select array[${ids.map((v) => `'${v.replaceAll("'", "''")}'`).join(", ")}]::text[] as seen`);
+  const stmt = storeStatement(
+    `select array[${ids.map((v) => `'${v.replaceAll("'", "''")}'`).join(", ")}]::text[] as seen`,
+  );
   expect(stmt.sql).toBe("select json(?1) as seen");
   expect(stmt.args).toHaveLength(1);
   const c = localClient(db);

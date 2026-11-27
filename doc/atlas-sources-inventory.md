@@ -193,7 +193,7 @@ the error and keep the previous number untouched and dated.
 ### Group 2 — GitHub (S2)
 
 Verified 2026-11-26 against GitHub APIs and the merged #6023 implementation.
-This inventory covers the in-scope *our-repos* estate; external repositories
+This inventory covers the in-scope _our-repos_ estate; external repositories
 are a separate, enumerated candidate set and remain gated as noted below.
 
 - **Source and scope:** GitHub API via `gh api` is the system of record for
@@ -203,7 +203,7 @@ are a separate, enumerated candidate set and remain gated as noted below.
   `dezren39`. On an all-visibility scope the first three organizations
   currently expose 47, 38, and 3 repositories respectively:
   `developing-today` is 31 public + 16 private = 47 total (`gh api
-  orgs/developing-today` reports `public_repos` 31 and
+orgs/developing-today` reports `public_repos` 31 and
   `total_private_repos` 16, and a paginated `orgs/developing-today/repos`
   recount also returns 47; the earlier version of this section counted
   that org public-only as 31, which understated the estate - #15867).

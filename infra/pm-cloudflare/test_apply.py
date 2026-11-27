@@ -136,7 +136,9 @@ class Apply(unittest.TestCase):
         self.assertIs(applier.expose, cloudflare)
         self.assertNotEqual(
             pathlib.Path(applier.expose.__file__).resolve(),
-            (HERE.parent.parent / "pm-stack" / "console" / "scripts" / "expose.py").resolve(),
+            (
+                HERE.parent.parent / "pm-stack" / "console" / "scripts" / "expose.py"
+            ).resolve(),
         )
 
     def test_a_renamed_tunnel_is_refused_before_anything_is_asked(self):

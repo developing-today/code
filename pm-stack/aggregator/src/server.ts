@@ -1080,7 +1080,12 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       source.orchestration().catch(() => null),
     ]);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
+    const briefs = buildBriefs(pool, {
+      comments: briefComments,
+      orchestration,
+      orchestrationStatus,
+      ruling: await projectTrustRuling(),
+    });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));

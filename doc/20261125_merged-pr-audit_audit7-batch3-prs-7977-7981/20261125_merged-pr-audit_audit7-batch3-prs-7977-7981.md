@@ -17,13 +17,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7977 | #5962 | `audit:complete` | Defines server/world budgets, accounting windows and enforcement classes, observable trip records, exploit-resistance boundaries and co-resident-world containment; the design issue closes with the record. |
-| #7978 | #6512 (salvage of #7524) | `audit:completed-later` | Adds the characterization probe for peer-declared chunk-size overflow. Later PR #8069 replaces unchecked arithmetic with checked size and total calculations and closes #6512. PR note: #7161058036. |
-| #7979 | #6424 (salvage of #7520) | `audit:completed-later` | Adds the non-player signer probe. Later PR #6559 makes `sign_genesis` and `sign_claim` refuse non-player signers and closes #6424. PR note: #7161058498. |
-| #7980 | #5810 | `audit:complete` | Chooses one canonical serialized frame at the adapter boundary, with carrier-specific stream framing or checked datagram/store-and-forward chunks; records invariants and conformance requirements. |
-| #7981 | none | `audit:no-issue` | Registers the measured Mistral pool and fixes its attribution test. No matching source issue was found; #10575 covers Groq/OpenRouter separately. PR note: #7161059021. |
+| Payload number |           Spawning issue | Verdict                 | Finding                                                                                                                                                                                                      |
+| -------------: | -----------------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7977 |                    #5962 | `audit:complete`        | Defines server/world budgets, accounting windows and enforcement classes, observable trip records, exploit-resistance boundaries and co-resident-world containment; the design issue closes with the record. |
+|          #7978 | #6512 (salvage of #7524) | `audit:completed-later` | Adds the characterization probe for peer-declared chunk-size overflow. Later PR #8069 replaces unchecked arithmetic with checked size and total calculations and closes #6512. PR note: #7161058036.         |
+|          #7979 | #6424 (salvage of #7520) | `audit:completed-later` | Adds the non-player signer probe. Later PR #6559 makes `sign_genesis` and `sign_claim` refuse non-player signers and closes #6424. PR note: #7161058498.                                                     |
+|          #7980 |                    #5810 | `audit:complete`        | Chooses one canonical serialized frame at the adapter boundary, with carrier-specific stream framing or checked datagram/store-and-forward chunks; records invariants and conformance requirements.          |
+|          #7981 |                     none | `audit:no-issue`        | Registers the measured Mistral pool and fixes its attribution test. No matching source issue was found; #10575 covers Groq/OpenRouter separately. PR note: #7161059021.                                      |
 
 ## Slice state
 

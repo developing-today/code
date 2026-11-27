@@ -15,8 +15,8 @@ server or `recv` from server to client) and the raw JSON message:
 {
   "format": "mcpx-call-trace/v1",
   "frames": [
-    {"dir": "send", "msg": {"jsonrpc": "2.0", "id": 1, "method": "initialize"}},
-    {"dir": "recv", "msg": {"jsonrpc": "2.0", "id": 1, "result": {}}}
+    { "dir": "send", "msg": { "jsonrpc": "2.0", "id": 1, "method": "initialize" } },
+    { "dir": "recv", "msg": { "jsonrpc": "2.0", "id": 1, "result": {} } }
   ]
 }
 ```

@@ -221,10 +221,10 @@ Uploads the file in 2 MiB chunks; the destination only appears once its hash ver
 fleet proxy copy [--mode OCTAL] [--no-resume] <source> <destination>
 ```
 
-| Flag          | Argument | Default             | Meaning                                                        |
-| ------------- | -------- | ------------------- | -------------------------------------------------------------- |
-| `--mode`      | `OCTAL`  | as `put` / `get`    | File mode at the destination.                                  |
-| `--no-resume` | —        | off (resume on)     | Do not resume from an existing deterministic temp; start over. |
+| Flag          | Argument | Default          | Meaning                                                        |
+| ------------- | -------- | ---------------- | -------------------------------------------------------------- |
+| `--mode`      | `OCTAL`  | as `put` / `get` | File mode at the destination.                                  |
+| `--no-resume` | —        | off (resume on)  | Do not resume from an existing deterministic temp; start over. |
 
 ### Behaviour
 

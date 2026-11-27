@@ -10,7 +10,9 @@ from pathlib import Path
 
 DELEGATED_VIEW_GRANTS = False
 REPO = Path(__file__).resolve().parents[2]
-D2_FIXTURES = REPO / "doc" / "2026-11-25T01-40-00Z_design_id-apps_d2_transclusion" / "fixtures"
+D2_FIXTURES = (
+    REPO / "doc" / "2026-11-25T01-40-00Z_design_id-apps_d2_transclusion" / "fixtures"
+)
 
 
 def load_graph():

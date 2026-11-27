@@ -14,13 +14,13 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Per-entry ledger
 
-| Payload number | Spawning issue | Verdict | Finding |
-|---:|---:|---|---|
-| #7889 | #1936 | `audit:completed-later` | Adds explicit capability requests and an append-only log of empty registry searches. Later #11171 ships the other requested API declarations; #1936 closes after both halves land. |
-| #7890 | #4967 | `audit:complete` | Detects oversized legacy checkpoints before replication, forcing legal compaction or returning an actionable error with the ordinal, encoded size, bound and recovery guidance. Tests cover compaction, no-program error and fast path. |
-| #7891 | #1065 | `audit:partial` | Delivers the Rust F12.8 guest SDK and playable example. The issue's second SDK and component-model/WIT decisions remain open; its bot close immediately after merge contradicts the source completion note. Lane 2 pointer: #13871 comment 7159579443. |
-| #7893 | #6058 | `audit:complete` | Records the embedding-cost ledger schema, delta reuse-ratio alert, per-source baseline slots, shared batch identity and invariants; unpopulated baselines are explicitly gated on ingest issues. |
-| #7894 | #5837 | `audit:complete` | Settles graph scope/query, edge types, filtering/read authority, scale targets, and multiplayer consistency against the #2048 object model and SQL/PGQ direction. The design issue closes by this record. |
+| Payload number | Spawning issue | Verdict                 | Finding                                                                                                                                                                                                                                                |
+| -------------: | -------------: | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|          #7889 |          #1936 | `audit:completed-later` | Adds explicit capability requests and an append-only log of empty registry searches. Later #11171 ships the other requested API declarations; #1936 closes after both halves land.                                                                     |
+|          #7890 |          #4967 | `audit:complete`        | Detects oversized legacy checkpoints before replication, forcing legal compaction or returning an actionable error with the ordinal, encoded size, bound and recovery guidance. Tests cover compaction, no-program error and fast path.                |
+|          #7891 |          #1065 | `audit:partial`         | Delivers the Rust F12.8 guest SDK and playable example. The issue's second SDK and component-model/WIT decisions remain open; its bot close immediately after merge contradicts the source completion note. Lane 2 pointer: #13871 comment 7159579443. |
+|          #7893 |          #6058 | `audit:complete`        | Records the embedding-cost ledger schema, delta reuse-ratio alert, per-source baseline slots, shared batch identity and invariants; unpopulated baselines are explicitly gated on ingest issues.                                                       |
+|          #7894 |          #5837 | `audit:complete`        | Settles graph scope/query, edge types, filtering/read authority, scale targets, and multiplayer consistency against the #2048 object model and SQL/PGQ direction. The design issue closes by this record.                                              |
 
 ## Slice state
 

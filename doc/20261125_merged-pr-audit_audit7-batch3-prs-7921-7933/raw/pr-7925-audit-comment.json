@@ -1,1 +1,47 @@
-{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7160277156","html_url":"https://github.com/developing-today/code/pull/7925#issuecomment-7160277156","issue_url":"https://api.github.com/repos/developing-today/code/issues/7925","id":7160277156,"node_id":"IC_kwDOJWP4788AAAABqskopA","user":{"login":"dezren39","id":11225574,"node_id":"MDQ6VXNlcjExMjI1NTc0","avatar_url":"https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4","gravatar_id":"","url":"https://api.github.com/users/dezren39","html_url":"https://github.com/dezren39","followers_url":"https://api.github.com/users/dezren39/followers","following_url":"https://api.github.com/users/dezren39/following{/other_user}","gists_url":"https://api.github.com/users/dezren39/gists{/gist_id}","starred_url":"https://api.github.com/users/dezren39/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/dezren39/subscriptions","organizations_url":"https://api.github.com/users/dezren39/orgs","repos_url":"https://api.github.com/users/dezren39/repos","events_url":"https://api.github.com/users/dezren39/events{/privacy}","received_events_url":"https://api.github.com/users/dezren39/received_events","type":"User","user_view_type":"public","site_admin":false},"created_at":"2026-11-25T10:51:59Z","updated_at":"2026-11-25T10:51:59Z","author_association":"MEMBER","body":"AUDIT-7 Lane 4 disposition: `audit:no-issue`. This PR repairs a scheduling_actor test fixture after the journal-author validation issue #2894 had already been completed by PR #4518. The fixture now records participant issuance as production does; no separate open source issue or scope gap remains. The audit record is at https://github.com/developing-today/code/blob/audit7-batch3-five-20261125/doc/20261125_merged-pr-audit_audit7-batch3-prs-7921-7933/20261125_merged-pr-audit_audit7-batch3-prs-7921-7933.md.","reactions":{"url":"https://api.github.com/repos/developing-today/code/issues/comments/7160277156/reactions","total_count":0,"+1":0,"-1":0,"laugh":0,"hooray":0,"confused":0,"heart":0,"rocket":0,"eyes":0},"performed_via_github_app":null,"minimized":null,"pin":null}
+{
+  "url": "https://api.github.com/repos/developing-today/code/issues/comments/7160277156",
+  "html_url": "https://github.com/developing-today/code/pull/7925#issuecomment-7160277156",
+  "issue_url": "https://api.github.com/repos/developing-today/code/issues/7925",
+  "id": 7160277156,
+  "node_id": "IC_kwDOJWP4788AAAABqskopA",
+  "user": {
+    "login": "dezren39",
+    "id": 11225574,
+    "node_id": "MDQ6VXNlcjExMjI1NTc0",
+    "avatar_url": "https://avatars.githubusercontent.com/u/11225574?u=797488820e2baf8f59c59e9b04226ff97119e64e&v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/dezren39",
+    "html_url": "https://github.com/dezren39",
+    "followers_url": "https://api.github.com/users/dezren39/followers",
+    "following_url": "https://api.github.com/users/dezren39/following{/other_user}",
+    "gists_url": "https://api.github.com/users/dezren39/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/dezren39/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/dezren39/subscriptions",
+    "organizations_url": "https://api.github.com/users/dezren39/orgs",
+    "repos_url": "https://api.github.com/users/dezren39/repos",
+    "events_url": "https://api.github.com/users/dezren39/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/dezren39/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "created_at": "2026-11-25T10:51:59Z",
+  "updated_at": "2026-11-25T10:51:59Z",
+  "author_association": "MEMBER",
+  "body": "AUDIT-7 Lane 4 disposition: `audit:no-issue`. This PR repairs a scheduling_actor test fixture after the journal-author validation issue #2894 had already been completed by PR #4518. The fixture now records participant issuance as production does; no separate open source issue or scope gap remains. The audit record is at https://github.com/developing-today/code/blob/audit7-batch3-five-20261125/doc/20261125_merged-pr-audit_audit7-batch3-prs-7921-7933/20261125_merged-pr-audit_audit7-batch3-prs-7921-7933.md.",
+  "reactions": {
+    "url": "https://api.github.com/repos/developing-today/code/issues/comments/7160277156/reactions",
+    "total_count": 0,
+    "+1": 0,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "performed_via_github_app": null,
+  "minimized": null,
+  "pin": null
+}
