@@ -84,6 +84,8 @@ mod id_key;
 mod id_postcard;
 #[cfg(feature = "id")]
 mod id_proxy;
+#[cfg(feature = "id")]
+mod id_stream;
 mod invocation_ledger;
 #[cfg(feature = "kv")]
 mod kv;
