@@ -209,7 +209,7 @@ async fn export_world_to_file_with_dir_sync(
     service: &WorldService,
     signing_key: &SigningKey,
     path: &Path,
-    sync_dir: &dyn Fn(&Path) -> Result<()>,
+    sync_dir: &(dyn Fn(&Path) -> Result<()> + Send + Sync),
 ) -> Result<ExportManifest> {
     if tokio::fs::symlink_metadata(path).await.is_ok() {
         bail!("{} already exists: export to a new file", path.display());
