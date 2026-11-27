@@ -108,7 +108,7 @@ export function sourceUrlFor(item: Pick<IngestionItem, "repo" | "number" | "kind
 
 /** Deterministic artifact identity: one GitHub item, one metadata row. */
 export function artifactIdFor(item: Pick<IngestionItem, "repo" | "number" | "kind">): string {
-  return `github:${item.repo}#${item.kind}/${item.number}`;
+  return `gh:${item.repo}#${item.kind}:${item.number}`;
 }
 
 /** Extract the raw JSON payload of the canonical block, if any. */
