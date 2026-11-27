@@ -49,6 +49,10 @@ export type Fact<T> =
       revision?: string;
       observed_at?: string;
       freshness: "live" | "stale";
+      /** Present facts carry no state marker; the state variants below
+       *  are the ones with something to say. Declared here so `.state`
+       *  is readable on the union without narrowing first. */
+      state?: undefined;
     }
   | { state: "absent"; freshness: "absent" }
   | { state: "error"; source: string; revision?: string; freshness: "error" }
@@ -59,8 +63,9 @@ export interface ClaimInput {
   worker?: string;
   lane?: string;
   /** A claim counts toward In Progress only when the authoritative
-   *  claim read is fresh. A label, queue row, dispatch intent or
-   *  session shell alone is not proof of active execution. */
+   *  claim read is fresh AND the adapter readback verifies the task/session
+   *  binding. A label, queue row, dispatch intent or session shell alone
+   *  is not proof of active execution. */
   fresh?: boolean;
   /** Session is displayed as bound only when readback confirms the
    *  task/session binding. */
@@ -247,13 +252,21 @@ export function projectWorkView(
   } else if (blocked) {
     column = "Blocked";
     reasons.add(hardBlockers.length > 0 ? "hard_blockers_present" : "queue_blocked");
-  } else if (claimFresh) {
+  } else if (
+    claimFresh &&
+    input.claim?.session_binding === "verified" &&
+    "value" in session &&
+    session.freshness === "live" &&
+    !session.value.endsWith(":terminal")
+  ) {
     column = "In Progress";
     reasons.add("fresh_authoritative_claim");
+    reasons.add("verified_session_binding");
   } else if (terminalSignal) {
-    // Terminal signal without a verified receipt: conflict/pending,
-    // never Done.
-    column = "Backlog";
+    // Terminal signal without a verified receipt: Review pending the
+    // completion policy's verified receipt (MOB-02 R5), never Done and
+    // never Backlog.
+    column = "Review";
     reasons.add("completion_unverified");
     conflicts.push({
       code: "completion_unverified",

@@ -77,9 +77,9 @@ class TestNightlyBackup(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, env=None):
+    def run_script(self, env=None, args=()):
         return subprocess.run(
-            ["bash", str(SCRIPT)],
+            ["bash", str(SCRIPT), *args],
             env=env or self.env,
             capture_output=True,
             text=True,
@@ -89,6 +89,16 @@ class TestNightlyBackup(unittest.TestCase):
     def calls(self):
         log = self.capture / "cold-store.log"
         return log.read_text().splitlines() if log.exists() else []
+
+    def test_arguments_are_rejected_before_logging_or_backup_steps(self):
+        for arg in ("--unexpected", "stray"):
+            with self.subTest(arg=arg):
+                result = self.run_script(args=(arg,))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(arg, result.stderr)
+                self.assertIn("usage: takes no arguments", result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((Path(self.env["COLD_STORE_HOME"]) / "logs").exists())
 
     def test_failing_first_step_does_not_starve_later_steps(self):
         env = {**self.env, "STUB_FAIL_STEP": "backup-d1"}

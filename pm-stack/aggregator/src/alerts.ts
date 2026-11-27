@@ -50,6 +50,7 @@ import {
   type NotificationSnapshot,
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
+import { postCostAnomalyTick, type CostEvidence } from "./cost-anomaly.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
 import {
@@ -1133,6 +1134,14 @@ export interface AlertTickOptions {
   dashboardSnapshot?: () => Promise<NotificationSnapshot>;
   notificationHistory?: NotificationHistoryStore;
   now?: number;
+  /** #4825: cost-anomaly evidence loader. When a caller injects one,
+   * the tick runs the detector over the loaded evidence and posts
+   * warning incidents to the same store, so they surface through the
+   * ordinary ledger (Needs-you / brief) with ordinary dedupe. Absent
+   * = the detector stays dormant; no production caller injects one
+   * yet because the certified evidence sources are still unwired
+   * (see COST-ANOMALY.md). */
+  costAnomalyEvidence?: () => Promise<readonly CostEvidence[]>;
 }
 
 async function runDashboardNotificationTick(
@@ -1470,6 +1479,22 @@ export async function runAlertTick(
           `alerts engine: escalation not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
         );
       }
+    }
+  }
+  // #4825: the cost-anomaly step runs only when a caller injected an
+  // evidence loader. Fail-soft like the rest of the tick: a loader or
+  // store failure is logged and suppresses this tick's anomalies; it
+  // never breaks delivery, escalation, or the dashboard tick.
+  if (options.costAnomalyEvidence) {
+    try {
+      await postCostAnomalyTick({
+        enabled: true,
+        now: new Date(options.now ?? Date.now()),
+        loadEvidence: options.costAnomalyEvidence,
+        store,
+      });
+    } catch (err) {
+      console.warn(`alerts engine: cost-anomaly step failed (${err instanceof Error ? err.message : "error"})`);
     }
   }
   await runDashboardNotificationTick(cfg, store, subs, push, options);

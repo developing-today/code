@@ -121,14 +121,15 @@ Secrets (names only; set via `wrangler secret put` or the `cf` versions secrets 
 
 | Name                   | Purpose                                                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GATE_TOKEN`           | The inbound bearer gate for all of the Worker's gated routes, REST and MCP.                                                                |
+| `GATE_TOKEN`           | The inbound bearer gate for REST routes and the legacy MCP fallback.                                                                       |
+| `AGENT_TOKENS`         | Optional JSON secret object mapping stable agent ids to distinct MCP bearer tokens; configured maps disable the shared MCP fallback.       |
 | `SERVICE_TOKEN`        | The fleet search service's `cf-worker` client token (service-side `ceiling_cap: personal`), presented by the Worker on every service call. |
 | `ACCESS_CLIENT_ID`     | Cloudflare Access service token, id half, for the `atlas-search.security.cab` tunnel hostname.                                             |
 | `ACCESS_CLIENT_SECRET` | Cloudflare Access service token, secret half, for the same hostname.                                                                       |
 
 Per the Worker README's deploy section, the fleet-secrets names these are assembled from at deploy time are `atlas.search-worker-gate-token`, `atlas.search-cf-worker-token`, `cloudflare.access-atlas-search-client-id` and `cloudflare.access-atlas-search-client-secret` (names only), plus `cloudflare.api-token-account-wide` for the `cf` CLI itself.
 
-The complete list of environment members the Worker code reads is the `Env` interface: `QUERY_CACHE` (required), `HOT_CACHE` (optional — declared optional so a deploy without the database provisioned still runs the pre-cache path), `HOT_CACHE_ENABLED` (optional string), `GATE_TOKEN`, `SERVICE_BASE`, `SERVICE_TOKEN`, `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`. There are no other env reads anywhere in the Worker source; all configuration arrives via the `env` argument. Narrower views are used per module: the search and MCP code sees only `{ QUERY_CACHE }`, and the service client sees only `{ SERVICE_BASE, SERVICE_TOKEN, ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET }`.
+The complete list of environment members the Worker code reads is the `Env` interface: `QUERY_CACHE` (required), `HOT_CACHE` (optional — declared optional so a deploy without the database provisioned still runs the pre-cache path), `HOT_CACHE_ENABLED` (optional string), `GATE_TOKEN`, `AGENT_TOKENS` (optional), `SERVICE_BASE`, `SERVICE_TOKEN`, `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`. All configuration arrives via the `env` argument. The MCP authentication helper receives the gate token and optional agent-token map; after authentication, the MCP handler receives only the resolved agent id. The service client sees only `{ SERVICE_BASE, SERVICE_TOKEN, ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET }`.
 
 ## The D1 master flag: `HOT_CACHE_ENABLED`
 

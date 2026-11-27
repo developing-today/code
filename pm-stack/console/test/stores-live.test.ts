@@ -221,3 +221,16 @@ test("the screen's words: an answering store shows its numbers; one that does no
   expect(storesList({ stores: [] }).stores).toEqual([]);
   expect(storesList(JSON.parse(file)).stores.length).toBeGreaterThanOrEqual(4);
 });
+
+test("the store list accepts the named D1 gateway path, but not another endpoint", () => {
+  const queue = JSON.parse(file).stores[0];
+  expect(storesList({ stores: [queue] }).stores).toHaveLength(1);
+  for (const address of [
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
+    "https://d1-gateway.developing-today.workers.dev/db/fleet-queue?other=1",
+    "https://other.workers.dev/db/fleet-queue",
+    "http://d1-gateway.developing-today.workers.dev/db/fleet-queue",
+  ]) {
+    expect(storesList({ stores: [{ ...queue, address }] }).malformed).toBe(1);
+  }
+});

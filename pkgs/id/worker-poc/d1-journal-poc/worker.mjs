@@ -137,6 +137,59 @@ function parseAfter(url) {
   return after;
 }
 
+// #15538 slice 3: the per-tenant event-store seam. Each tenant's events
+// live in that tenant's own D1 database; the binding IS the credential
+// boundary, so the Worker never takes a tenant id to switch databases
+// inside one binding — it picks the binding the route names.
+const TENANT_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS bridge_events (
+     author TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
+     bytes BLOB NOT NULL,
+     PRIMARY KEY (author, seq))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS bridge_events_by_id ON bridge_events(id)`,
+  `CREATE TABLE IF NOT EXISTS bridge_chains (
+     author TEXT PRIMARY KEY, next_seq INTEGER NOT NULL, head TEXT)`,
+];
+
+let tenantSchemaReady = new WeakMap();
+
+async function ensureTenantSchema(db) {
+  let ready = tenantSchemaReady.get(db);
+  if (!ready) {
+    ready = (async () => {
+      for (const statement of TENANT_SCHEMA) await db.prepare(statement).run();
+    })();
+    tenantSchemaReady.set(db, ready);
+    try {
+      await ready;
+    } catch (error) {
+      tenantSchemaReady.delete(db);
+      throw error;
+    }
+  } else {
+    await ready;
+  }
+}
+
+function tenantDb(env, tenant) {
+  if (tenant === "a") return env.TENANT_A_DB;
+  if (tenant === "b") return env.TENANT_B_DB;
+  throw new HttpError(400, "tenant must be a or b");
+}
+
+function hexToBytes(hex) {
+  if (typeof hex !== "string" || !/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2 !== 0 || hex.length === 0) {
+    throw new HttpError(400, "bytes_hex must be non-empty even-length hex");
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -196,6 +249,53 @@ export default {
         const after = parseAfter(url);
         const rows = await readRows(sessionFor(env.DB, request), after);
         return jsonlResponse(rows, after);
+      }
+
+      if (request.method === "POST" && url.pathname === "/tenant-append") {
+        const tenant = url.searchParams.get("tenant");
+        const db = tenantDb(env, tenant);
+        await ensureTenantSchema(db);
+        const body = await request.json();
+        const { author, seq, id } = body ?? {};
+        if (typeof author !== "string" || author.length === 0) throw new HttpError(400, "author is required");
+        if (!Number.isSafeInteger(seq) || seq < 0) throw new HttpError(400, "seq must be a non-negative safe integer");
+        if (typeof id !== "string" || id.length === 0) throw new HttpError(400, "id is required");
+        const bytes = hexToBytes(body.bytes_hex);
+        const head = await db.prepare("SELECT next_seq FROM bridge_chains WHERE author = ?").bind(author).first();
+        const nextSeq = head ? Number(head.next_seq) : 0;
+        if (seq !== nextSeq) throw new HttpError(422, `sequence_gap: author is at ${nextSeq}, append names ${seq}`);
+        const payload = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        await db.batch([
+          db.prepare("INSERT INTO bridge_events (author, seq, id, bytes) VALUES (?, ?, ?, ?)").bind(author, seq, id, payload),
+          db.prepare("INSERT OR REPLACE INTO bridge_chains (author, next_seq, head) VALUES (?, ?, ?)").bind(author, seq + 1, id),
+        ]);
+        return jsonResponse({ tenant, author, seq, id, head: id, next_seq: seq + 1 });
+      }
+
+      if (request.method === "GET" && url.pathname === "/tenant-event") {
+        const tenant = url.searchParams.get("tenant");
+        const db = tenantDb(env, tenant);
+        await ensureTenantSchema(db);
+        const author = url.searchParams.get("author") ?? "";
+        const seq = Number(url.searchParams.get("seq") ?? "NaN");
+        if (!author || !Number.isSafeInteger(seq) || seq < 0) throw new HttpError(400, "author and seq are required");
+        const row = await db
+          .prepare("SELECT id, bytes FROM bridge_events WHERE author = ? AND seq = ?")
+          .bind(author, seq)
+          .first();
+        if (!row) return jsonResponse({ error: "not found" }, 404);
+        return jsonResponse({ id: row.id, bytes_hex: bytesToHex(blobBytes(row.bytes)) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/tenant-head") {
+        const tenant = url.searchParams.get("tenant");
+        const db = tenantDb(env, tenant);
+        await ensureTenantSchema(db);
+        const author = url.searchParams.get("author") ?? "";
+        if (!author) throw new HttpError(400, "author is required");
+        const row = await db.prepare("SELECT next_seq, head FROM bridge_chains WHERE author = ?").bind(author).first();
+        if (!row) return jsonResponse({ next_seq: 0, head: null });
+        return jsonResponse({ next_seq: Number(row.next_seq), head: row.head ?? null });
       }
 
       return jsonResponse({ error: "not found" }, 404);

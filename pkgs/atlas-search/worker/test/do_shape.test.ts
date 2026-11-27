@@ -80,4 +80,25 @@ describe("the DO refuses a malformed query body before storing anything (#7983 i
       expect(meta.exists, body).toBe(false);
     }
   });
+
+  it("refuses an unknown ceiling or context before storing anything (#8625)", async () => {
+    const probes = [
+      '{"query":"q","k":10,"ceiling":"everyone"}',
+      '{"query":"q","k":10,"ceiling":"public"}',
+      '{"query":"q","k":10,"ceiling":3}',
+      '{"query":"q","k":10,"context":"elsewhere"}',
+      '{"query":"q","k":10,"context":3}',
+      '{"query":"q","k":10,"ceiling":"personal","context":"elsewhere"}',
+    ];
+    for (const [i, body] of probes.entries()) {
+      const name = `ceiling-probe-${i}`;
+      const resp = await post(name, body);
+      expect(resp.status, body).toBe(400);
+      const json = (await resp.json()) as { error: { code: string } };
+      expect(json.error.code).toBe("bad_request");
+      const inspect = await stub(name).fetch("https://do/inspect");
+      const meta = (await inspect.json()) as Record<string, unknown>;
+      expect(meta.exists, body).toBe(false);
+    }
+  });
 });

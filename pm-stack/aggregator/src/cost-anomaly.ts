@@ -1,4 +1,7 @@
-// #4825 detector/intake slice. No server, scheduler, or producer calls it.
+// #4825 detector/intake. The alert tick (runAlertTick in alerts.ts)
+// calls postCostAnomalyTick when a caller injects an evidence loader
+// via AlertTickOptions.costAnomalyEvidence; no production caller
+// injects one yet (certified sources unwired — see COST-ANOMALY.md).
 import type { AlertsStore, NewIncident } from "./alerts.ts";
 import type { MatchedCharge } from "./spend-dollars.ts";
 import { validateSpendRollup, windowRange, type SpendRollup } from "./spend-rollups.ts";

@@ -2671,11 +2671,14 @@ const REFUSED_SAID = {
   "ask.send": "sending a prompt",
   "ask.reply": "replying on a prompt",
   "ask.close": "closing a prompt",
+  "prompt.enqueue": "filing a prompt's task in the queue",
   "issue.comment": "commenting on an issue",
   "need.comment": "commenting on something that needs you",
   "hands.done": "marking something for your hands done",
   "issue.rank": "ranking an issue",
   "task.move": "moving a task",
+  "task.cancel": "cancelling a task",
+  "task.unblock": "unblocking a task",
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
   "store.migrate": "starting a store migration",
@@ -2688,6 +2691,7 @@ const REFUSED_SAID = {
   "read.done": "reading what was finished",
   "read.agents": "reading the agents list",
   "read.pipeline": "reading the unread instructions",
+  "read.questionSets": "reading the question sets",
 };
 
 /** What the edge says of doing the core itself, read from its public
@@ -3109,6 +3113,9 @@ async function viewMachines() {
       card(
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
+        machine.kid ? h("p", { class: "meta" }, `Key ${machine.kid}`) : null,
+        ...held.filter((item) => machine.kid && item.forKid === machine.kid).map((item) =>
+          h("p", { class: "meta" }, `Waiting here: ${Outbox.sayOf(item.kind, item.args)}`)),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
         s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
@@ -3139,6 +3146,7 @@ async function viewMachines() {
       card(
         h("h3", {}, Outbox.sayOf(item.kind, item.args)),
         h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        item.forKid ? h("p", { class: "meta" }, `For ${item.for || "a machine"} · key ${item.forKid}`) : null,
         heldWaitsSaid(item.waits) ? h("p", { class: "meta" }, heldWaitsSaid(item.waits)) : null,
         h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
       ),
@@ -3150,7 +3158,7 @@ async function viewMachines() {
       h(
         "p",
         { class: "meta" },
-        "One machine can be connected today: the one the tunnel leads to, whose key is the only one Cloudflare takes reports under. Connecting others, each under its own key and with what it can do, is not built yet.",
+        "Each enrolled machine reports under its own key. Actions go only to a machine that says it can do them. The tunnel machine can be asked directly; other machines take their waiting actions with their next report.",
       ),
     ),
   );

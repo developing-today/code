@@ -1436,6 +1436,10 @@ impl WorldInstance {
 }
 
 impl crate::world::WorldProgram for WorldInstance {
+    fn replace_caller_account(&mut self, account: Option<&str>) -> Option<String> {
+        std::mem::replace(&mut self.caller_account, account.map(str::to_owned))
+    }
+
     fn update(&mut self, event: &crate::world::WorldEvent) -> Result<()> {
         match &event.kind {
             crate::world::WorldEventKind::Input(bytes) => {

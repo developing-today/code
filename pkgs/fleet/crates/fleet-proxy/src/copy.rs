@@ -18,9 +18,12 @@
 //! The transfers are the hash-verified `/files/*` paths of
 //! [`crate::files`]: local to remote is a put, remote to local is a
 //! get, both resumable through their deterministic temps. Remote to
-//! remote relays through the caller (get into a local spool, then
-//! put). The delegated direct path, where bytes skip the caller, is
-//! #14219.
+//! remote on the SAME host is delegated (#14219): one
+//! [`crate::files::copy_file_direct`] request and the daemon moves
+//! the bytes itself, into the destination's deterministic temp and
+//! atomically over it — a pre-#14219 daemon (unknown route) falls
+//! back to the caller relay, as do two different remotes: get into
+//! a local spool, then put.
 
 use std::path::{Path, PathBuf};
 
@@ -28,8 +31,8 @@ use fleet_config::Config;
 
 use crate::client::{ClientError, ensure_broker};
 use crate::files::{
-    BrokerFilesTransport, FilesTransport, get_file, parse_transfer_args, put_file,
-    validate_remote_path,
+    BrokerFilesTransport, FilesTransport, copy_file_direct, get_file, is_unsupported_direct_copy,
+    parse_transfer_args, put_file, validate_remote_path,
 };
 
 pub const COPY_USAGE: &str = "\
@@ -44,8 +47,10 @@ A bare path is local; prefix ./ to keep a path with a colon local.
 NAME is 'local', 'localhost', this host's fleet location, or a known
 remote (laptop). Every transfer is SHA-256 verified and lands by
 atomic rename; an interrupted copy resumes unless --no-resume.
-Remote to remote relays through this host for now (#14219 tracks
-the direct path). Directories and stdin/stdout are 'fleet proxy put
+Remote to remote on the same host is delegated to that host's
+daemon (#14219): the bytes never pass through this host; a daemon
+without the copy route, and copies between different hosts, relay
+through this host. Directories and stdin/stdout are 'fleet proxy put
 -r' and 'fleet proxy get -' / 'put -'.
 Exit codes: 2 usage, 3 transport, 69 capability-unavailable.";
 
@@ -149,7 +154,14 @@ pub enum Plan {
         path: String,
         local: PathBuf,
     },
-    /// Remote to remote: get into a local spool, then put.
+    /// Remote to remote on the same host: delegated to the daemon
+    /// (#14219) — the bytes never pass through the caller.
+    Direct {
+        remote: String,
+        from_path: String,
+        to_path: String,
+    },
+    /// Remote to remote across hosts: get into a local spool, then put.
     Relay {
         from_remote: String,
         from_path: String,
@@ -179,6 +191,20 @@ pub fn plan(source: Endpoint, destination: Endpoint) -> Result<Plan, ClientError
             remote,
             path,
             local,
+        }),
+        (
+            Endpoint::Remote {
+                remote: from_remote,
+                path: from_path,
+            },
+            Endpoint::Remote {
+                remote: to_remote,
+                path: to_path,
+            },
+        ) if from_remote == to_remote => Ok(Plan::Direct {
+            remote: from_remote,
+            from_path,
+            to_path,
         }),
         (
             Endpoint::Remote {
@@ -285,42 +311,93 @@ pub fn execute(
                 sha256: report.sha256,
             })
         }
+        Plan::Direct {
+            remote,
+            from_path,
+            to_path,
+        } => {
+            let mut t = connect(remote)?;
+            match copy_file_direct(t.as_mut(), from_path, to_path, mode, log) {
+                Ok(report) => Ok(CopyReport {
+                    size: report.size,
+                    sha256: report.sha256,
+                }),
+                // A pre-#14219 daemon has no /files/copy route: the
+                // copy still works, relayed through this host.
+                Err(e) if is_unsupported_direct_copy(&e) => {
+                    drop(t);
+                    log(
+                        "fleet proxy copy: daemon has no /files/copy route; relaying through this host",
+                    );
+                    execute_relay(
+                        remote, from_path, remote, to_path, mode, resume, spool_dir, connect, log,
+                    )
+                }
+                Err(e) => Err(e),
+            }
+        }
         Plan::Relay {
             from_remote,
             from_path,
             to_remote,
             to_path,
-        } => {
-            let spool = spool_dir.join(format!(
-                "fleet-proxy-copy-{}-{}.spool",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            ));
-            let result = (|| -> Result<CopyReport, ClientError> {
-                let mut from = connect(from_remote)?;
-                // The spool is ours alone: no resume across runs.
-                let got = get_file(from.as_mut(), from_path, &spool, None, false, log)?;
-                drop(from);
-                let mut to = connect(to_remote)?;
-                let put = put_file(to.as_mut(), &spool, to_path, mode, resume, log)?;
-                if put.sha256 != got.sha256 {
-                    return Err(ClientError::Transport(format!(
-                        "relay hash changed in the spool: got {}, put {}",
-                        got.sha256, put.sha256
-                    )));
-                }
-                Ok(CopyReport {
-                    size: put.size,
-                    sha256: put.sha256,
-                })
-            })();
-            let _ = std::fs::remove_file(&spool);
-            result
-        }
+        } => execute_relay(
+            from_remote,
+            from_path,
+            to_remote,
+            to_path,
+            mode,
+            resume,
+            spool_dir,
+            connect,
+            log,
+        ),
     }
+}
+
+/// The caller relay: get into a local spool, then put. The spool
+/// is ours alone (pid + nanos named, removed on every exit path)
+/// and the two hashes must agree before the copy reports success.
+#[allow(clippy::too_many_arguments)]
+fn execute_relay(
+    from_remote: &str,
+    from_path: &str,
+    to_remote: &str,
+    to_path: &str,
+    mode: Option<u32>,
+    resume: bool,
+    spool_dir: &Path,
+    connect: &mut Connect<'_>,
+    log: &mut dyn FnMut(&str),
+) -> Result<CopyReport, ClientError> {
+    let spool = spool_dir.join(format!(
+        "fleet-proxy-copy-{}-{}.spool",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let result = (|| -> Result<CopyReport, ClientError> {
+        let mut from = connect(from_remote)?;
+        // The spool is ours alone: no resume across runs.
+        let got = get_file(from.as_mut(), from_path, &spool, None, false, log)?;
+        drop(from);
+        let mut to = connect(to_remote)?;
+        let put = put_file(to.as_mut(), &spool, to_path, mode, resume, log)?;
+        if put.sha256 != got.sha256 {
+            return Err(ClientError::Transport(format!(
+                "relay hash changed in the spool: got {}, put {}",
+                got.sha256, put.sha256
+            )));
+        }
+        Ok(CopyReport {
+            size: put.size,
+            sha256: put.sha256,
+        })
+    })();
+    let _ = std::fs::remove_file(&spool);
+    result
 }
 
 /// The verb entry point.
@@ -454,12 +531,26 @@ mod tests {
         assert!(matches!(plan(local(), local()), Err(ClientError::Usage(_))));
         assert!(matches!(plan(local(), remote("/b")), Ok(Plan::Put { .. })));
         assert!(matches!(plan(remote("/b"), local()), Ok(Plan::Get { .. })));
+        // Same host on both sides delegates (#14219); two different
+        // hosts still relay through the caller.
         assert_eq!(
             plan(remote("/b"), remote("/c")).unwrap(),
+            Plan::Direct {
+                remote: "laptop".into(),
+                from_path: "/b".into(),
+                to_path: "/c".into(),
+            }
+        );
+        let other = Endpoint::Remote {
+            remote: "elsewhere".into(),
+            path: "/c".into(),
+        };
+        assert_eq!(
+            plan(remote("/b"), other).unwrap(),
             Plan::Relay {
                 from_remote: "laptop".into(),
                 from_path: "/b".into(),
-                to_remote: "laptop".into(),
+                to_remote: "elsewhere".into(),
                 to_path: "/c".into(),
             }
         );
@@ -486,6 +577,14 @@ mod tests {
     struct Daemon {
         files: HashMap<String, Vec<u8>>,
         corrupt_reads: bool,
+        read_calls: usize,
+        write_calls: usize,
+        copy_calls: usize,
+        /// `/files/copy` is an unknown route — a pre-#14219 daemon.
+        no_copy_route: bool,
+        /// `/files/copy` dies after this many temp bytes — the
+        /// killed-transfer oracle.
+        fail_copy_after: Option<usize>,
     }
 
     impl Daemon {
@@ -504,7 +603,45 @@ mod tests {
                     self.files.entry(temp_path_for(&path, &sha)).or_default();
                     json!({"ok": true})
                 }
+                "/files/copy" => {
+                    if self.no_copy_route {
+                        return json!({"error": "unknown route /files/copy"});
+                    }
+                    self.copy_calls += 1;
+                    let source = body["source"].as_str().unwrap_or("").to_string();
+                    let Some(bytes) = self.files.get(&source).cloned() else {
+                        return json!({"error": "no such file"});
+                    };
+                    if sha256_hex(&bytes) != sha {
+                        return json!({"error": "source changed since stat"});
+                    }
+                    // Daemon-side stream into the deterministic temp,
+                    // hash-checked atomic commit — the #14219 route
+                    // contract in miniature.
+                    let temp = temp_path_for(&path, &sha);
+                    let mut slot = self.files.get(&temp).cloned().unwrap_or_default();
+                    if !bytes.starts_with(&slot) {
+                        slot.clear();
+                    }
+                    if let Some(limit) = self.fail_copy_after {
+                        if slot.len() < limit && limit < bytes.len() {
+                            slot.extend_from_slice(&bytes[slot.len()..limit]);
+                            self.files.insert(temp, slot);
+                            return json!({"error": "copy interrupted"});
+                        }
+                    }
+                    slot = bytes.clone();
+                    if sha256_hex(&slot) != sha {
+                        self.files.insert(temp, slot);
+                        return json!({"error": "sha256 mismatch"});
+                    }
+                    self.files.remove(&temp);
+                    let size = slot.len() as u64;
+                    self.files.insert(path, slot);
+                    json!({"size": size, "sha256": sha})
+                }
                 "/files/write" => {
+                    self.write_calls += 1;
                     let data = b64_decode(body["data_b64"].as_str().unwrap_or("")).unwrap();
                     let slot = self.files.entry(temp_path_for(&path, &sha)).or_default();
                     let offset = body["offset"].as_u64().unwrap_or(0) as usize;
@@ -526,6 +663,7 @@ mod tests {
                     json!({"size": size, "sha256": actual})
                 }
                 "/files/read" => {
+                    self.read_calls += 1;
                     let offset = body["offset"].as_u64().unwrap_or(0) as usize;
                     let length = body["length"].as_u64().unwrap_or(0) as usize;
                     let Some(bytes) = self.files.get(&path) else {
@@ -619,8 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_to_remote_relays_and_leaves_no_spool() {
-        let dir = scratch("relay");
+    fn remote_to_remote_same_host_delegates_and_moves_no_bytes_through_the_caller() {
+        let dir = scratch("direct");
         let daemon = Arc::new(Mutex::new(Daemon::default()));
         let data = bytes(70_000);
         daemon
@@ -628,14 +766,106 @@ mod tests {
             .unwrap()
             .files
             .insert("/srv/a.bin".into(), data.clone());
-        let relay = plan(
+        let direct = plan(
             resolve(parse_side("laptop:/srv/a.bin"), None).unwrap(),
             resolve(parse_side("laptop:/srv/b.bin"), None).unwrap(),
         )
         .unwrap();
-        let report = run(&daemon, &relay, &dir).unwrap();
+        assert!(matches!(direct, Plan::Direct { .. }));
+        let report = run(&daemon, &direct, &dir).unwrap();
         assert_eq!(report.size, data.len() as u64);
+        assert_eq!(report.sha256, sha256_hex(&data));
+        let d = daemon.lock().unwrap();
+        assert_eq!(d.files.get("/srv/b.bin"), Some(&data));
+        assert_eq!(d.copy_calls, 1);
+        assert_eq!(d.read_calls, 0, "no bytes may transit the caller");
+        assert_eq!(d.write_calls, 0, "no bytes may transit the caller");
+        drop(d);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert!(leftovers.is_empty(), "spool left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn direct_copy_of_100_mib_matches_the_source_hash() {
+        // The #14219 acceptance oracle at its stated size.
+        let dir = scratch("direct-100mib");
+        let daemon = Arc::new(Mutex::new(Daemon::default()));
+        let data = bytes(100 * 1024 * 1024);
+        let want = sha256_hex(&data);
+        daemon
+            .lock()
+            .unwrap()
+            .files
+            .insert("/srv/big.bin".into(), data);
+        let direct = plan(
+            resolve(parse_side("laptop:/srv/big.bin"), None).unwrap(),
+            resolve(parse_side("laptop:/srv/big-copy.bin"), None).unwrap(),
+        )
+        .unwrap();
+        let report = run(&daemon, &direct, &dir).unwrap();
+        assert_eq!(report.size, 100 * 1024 * 1024);
+        assert_eq!(report.sha256, want);
+        let d = daemon.lock().unwrap();
+        assert_eq!(
+            d.files.get("/srv/big-copy.bin").map(|b| sha256_hex(b)),
+            Some(want)
+        );
+        assert_eq!(d.read_calls + d.write_calls, 0);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_killed_direct_copy_leaves_no_partial_destination() {
+        let dir = scratch("direct-killed");
+        let daemon = Arc::new(Mutex::new(Daemon::default()));
+        let data = bytes(70_000);
+        daemon
+            .lock()
+            .unwrap()
+            .files
+            .insert("/srv/a.bin".into(), data.clone());
+        daemon.lock().unwrap().fail_copy_after = Some(30_000);
+        let direct = plan(
+            resolve(parse_side("laptop:/srv/a.bin"), None).unwrap(),
+            resolve(parse_side("laptop:/srv/b.bin"), None).unwrap(),
+        )
+        .unwrap();
+        assert!(run(&daemon, &direct, &dir).is_err());
+        assert!(
+            !daemon.lock().unwrap().files.contains_key("/srv/b.bin"),
+            "a killed transfer must leave no partial destination"
+        );
+        daemon.lock().unwrap().fail_copy_after = None;
+        let report = run(&daemon, &direct, &dir).unwrap();
+        assert_eq!(report.sha256, sha256_hex(&data));
         assert_eq!(daemon.lock().unwrap().files.get("/srv/b.bin"), Some(&data));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_legacy_daemon_without_the_copy_route_falls_back_to_the_relay() {
+        let dir = scratch("direct-legacy");
+        let daemon = Arc::new(Mutex::new(Daemon::default()));
+        let data = bytes(70_000);
+        daemon
+            .lock()
+            .unwrap()
+            .files
+            .insert("/srv/a.bin".into(), data.clone());
+        daemon.lock().unwrap().no_copy_route = true;
+        let direct = plan(
+            resolve(parse_side("laptop:/srv/a.bin"), None).unwrap(),
+            resolve(parse_side("laptop:/srv/b.bin"), None).unwrap(),
+        )
+        .unwrap();
+        let report = run(&daemon, &direct, &dir).unwrap();
+        assert_eq!(report.sha256, sha256_hex(&data));
+        let d = daemon.lock().unwrap();
+        assert_eq!(d.files.get("/srv/b.bin"), Some(&data));
+        assert!(d.read_calls > 0 && d.write_calls > 0, "relay must have run");
+        drop(d);
         let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
         assert!(leftovers.is_empty(), "spool left behind: {leftovers:?}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -665,12 +895,14 @@ mod tests {
         assert!(!dest.exists());
 
         // A relay with a bad download writes nothing on the far side
-        // and removes its spool.
-        let relay = plan(
-            resolve(parse_side("laptop:/srv/a.bin"), None).unwrap(),
-            resolve(parse_side("laptop:/srv/b.bin"), None).unwrap(),
-        )
-        .unwrap();
+        // and removes its spool. (Constructed directly: same-host
+        // pairs now plan Direct, the relay is the cross-host path.)
+        let relay = Plan::Relay {
+            from_remote: "laptop".into(),
+            from_path: "/srv/a.bin".into(),
+            to_remote: "laptop".into(),
+            to_path: "/srv/b.bin".into(),
+        };
         let spool = scratch("corrupt-spool");
         assert!(run(&daemon, &relay, &spool).is_err());
         assert!(!daemon.lock().unwrap().files.contains_key("/srv/b.bin"));

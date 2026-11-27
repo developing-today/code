@@ -83,3 +83,45 @@ python3 -I -m unittest discover -s scripts -p test_fleet_completion_usage.py -v
 ```
 
 The same focused suite is registered in nightly/manual `scripts-test.yml`.
+
+## Binding-history collector (Part 3 capture slice)
+
+`scripts/fleet_binding_history.py` closes the collection prerequisite the
+report above names: the native ledger upserts its session binding and native
+sources are pruned, so a raw latest-binding export cannot prove complete retry
+cost. The collector monotonically merges the same four offline exports into a
+durable history file that outlives pruning and overwrites. Still no broker
+queries, no network, no schedule changes.
+
+```sh
+# After each export pull, before native sources are pruned:
+python3 -I scripts/fleet_binding_history.py record --history bindings.json \
+  --export cohort.json --now 2026-11-26T00:00:00Z
+# Assemble the usage-report input for a window:
+python3 -I scripts/fleet_binding_history.py snapshot --history bindings.json \
+  --out cohort-snap.json --start 2026-11-01T00:00:00Z --end 2026-11-02T00:00:00Z
+python3 -I scripts/fleet_completion_usage.py --snapshot cohort-snap.json \
+  --start 2026-11-01T00:00:00Z --end 2026-11-02T00:00:00Z
+# Daily check-in markdown for the same window:
+python3 -I scripts/fleet_binding_history.py checkin --history bindings.json \
+  --start 2026-11-01T00:00:00Z --end 2026-11-02T00:00:00Z
+```
+
+Retention rules (all monotonic, nothing is ever deleted by a record call):
+
+- Per-task session bindings union in first-seen order, so a retry dropped by a
+  later ledger upsert stays counted.
+- Session input counters keep the latest non-null value; null never overwrites
+  a known counter.
+- A task first seen already `done`, or gaining a new session after completing,
+  is marked `history_gap` — earlier retries may predate the collector. The flag
+  is sticky. `snapshot` sets `binding_history_complete` true only when no
+  completed-in-window task carries the flag; per-session null handling stays
+  with the usage report, which withholds ratios for incomplete data.
+
+`checkin` renders per-queue completed-cohort totals with explicit source
+coverage (record calls, history horizon, gap task ids) and WITHHELD ratios
+unless the inputs are complete. It never claims window spend or a cadence
+before/after result. Tests: `scripts/test_fleet_binding_history.py` (retry
+retention, prune/overwrite safety, gap honesty, check-in rendering, and an
+end-to-end snapshot-into-usage-report sum).

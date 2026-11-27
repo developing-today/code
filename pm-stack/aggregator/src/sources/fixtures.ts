@@ -1361,6 +1361,30 @@ export const FIXTURE_USAGE: UsageView = {
 
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
+  // The search profiler can request a deterministic corpus at the live
+  // registry size without reading production or backup data. Its strict
+  // CLI validates the count; this source accepts only that bounded form.
+  const rawLargeRegistry = process.env.PM_AGG_LARGE_REGISTRY;
+  const largeRegistryCount = rawLargeRegistry && /^\d+$/.test(rawLargeRegistry) ? Number(rawLargeRegistry) : 0;
+  const registry =
+    Number.isSafeInteger(largeRegistryCount) && largeRegistryCount > 0 && largeRegistryCount <= 100_000
+      ? Array.from(
+          { length: largeRegistryCount },
+          (_, index): SessionRecord => ({
+            id: `synthetic-session-${index}`,
+            source: "opencode-sandbox",
+            label: index % 10 === 0 ? `Fleet search session ${index}` : `Synthetic session ${index}`,
+            title: `Registry fixture ${index}`,
+            agentId: "opencode:search-profile",
+            agentLabel: "Search profile",
+            parentId: null,
+            status: "complete",
+            model: "fixture-model",
+            directory: `/search-profile/session-${index}`,
+            taskRefs: [],
+          }),
+        )
+      : FIXTURE_REGISTRY;
   const provenance: Provenance = {
     board: "fixtures",
     roadmap: "fixtures (Grist seed rows)",
@@ -1406,7 +1430,7 @@ export function fixtureSource(): Source {
     orchestration: async () => null,
     dns: async () => FIXTURE_DNS,
     aa: async () => FIXTURE_AA,
-    registry: async () => FIXTURE_REGISTRY,
+    registry: async () => registry,
     // Fixtures carry no Project pool: the pool only exists live, from
     // the collector's GraphQL read (#910 stage 5).
     projects: async () => [],

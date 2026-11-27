@@ -28,12 +28,14 @@ import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 import { handleMcp } from "./mcp";
+import { authenticateMcpAgent } from "./mcp_auth";
+import { ceilingForAgent, parseAgentPolicy } from "./mcp_policy";
 import { clampK, DEFAULT_K, doJsonObject, executeSearch, malformedDoPayload } from "./search";
 import { AuditError, compareAudited, pinForAudit } from "./audit_report";
 import { RetainedObjectError } from "./retained_object";
 import { promoteClass, RetentionReportError, runRetentionReport, runScheduledCycle } from "./retention_report";
 import { recordSearch, validSession } from "./search_history";
-import { CONTEXT } from "./space";
+import { CEILING, CONTEXT } from "./space";
 
 export { QueryCache };
 
@@ -50,6 +52,12 @@ export interface Env {
    * audit set the comparison report reads. */
   RETAINED?: D1Database;
   GATE_TOKEN: string;
+  /** Optional secret JSON object mapping stable agent ids to MCP bearer tokens. */
+  AGENT_TOKENS?: string;
+  /** Optional JSON object mapping stable agent ids to per-agent query
+   * ceilings (#8625 slice: ceilings); absent entries default to the
+   * surface pin. Malformed policy fails the MCP route closed. */
+  AGENT_POLICY?: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;
   ACCESS_CLIENT_ID: string;
@@ -230,7 +238,7 @@ export default {
       // keyed or reach a Durable Object.
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(Number(url.searchParams.get("k") ?? DEFAULT_K));
-      const key = await queryKey({ q: query, k, context: CONTEXT });
+      const key = await queryKey({ q: query, k, ceiling: CEILING, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/inspect");
       const meta = await doJsonObject(resp);
@@ -262,7 +270,7 @@ export default {
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(body.k);
-      const key = await queryKey({ q: query, k, context: CONTEXT });
+      const key = await queryKey({ q: query, k, ceiling: CEILING, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/purge", { method: "POST" });
       const result = await doJsonObject(resp);
@@ -289,10 +297,23 @@ export default {
         resp.headers.set("Allow", "POST");
         return resp;
       }
-      if (!(await gateOk(env, req))) {
-        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      const agentId = await authenticateMcpAgent(req.headers.get("Authorization"), env.GATE_TOKEN, env.AGENT_TOKENS);
+      if (!agentId) {
+        return errorJson(401, "unauthorized", "missing or invalid MCP agent token");
       }
-      return handleMcp(req, env);
+      // The ceiling travels with the request (never caller-chosen):
+      // policy names it per agent, defaulting to the surface pin. A
+      // malformed policy fails the route closed — serving under an
+      // unknown ceiling rule is worse than serving nothing.
+      let ceiling: ReturnType<typeof ceilingForAgent> = CEILING;
+      if (env.AGENT_POLICY !== undefined) {
+        const table = parseAgentPolicy(env.AGENT_POLICY);
+        if (!table) {
+          return errorJson(500, "policy_misconfigured", "the agent policy is malformed");
+        }
+        ceiling = ceilingForAgent(table, agentId);
+      }
+      return handleMcp(req, env, agentId, ceiling);
     }
 
     return errorJson(404, "not_found", "no route");

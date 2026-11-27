@@ -3,13 +3,51 @@
 // what is held, and the mirrors of the host's sections.
 // Extracted from edge.ts for the production-line guard (#14547):
 // moves only, no behaviour change.
-import { type Held, type HeldFor, subjectOf, type SyncSection } from "../../src/edge-proto.ts";
+import { type Held, type HeldFor, type PublicKey, subjectOf, type SyncSection } from "../../src/edge-proto.ts";
 import type { Store } from "../../src/store.ts";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
  * held runs first, in the order it was done. */
 export const LAST_WINS = new Set(["issue.rank"]);
+
+/** A second machine's enrollment code lasts this long: long enough to
+ * read from the app and type on the machine, short enough that a
+ * forgotten code stops working the same day (#13492). */
+export const ENROLL_CODE_MS = 15 * 60_000;
+/** An enrollment code: unambiguous letters and digits, no look-alikes. */
+export const ENROLL_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+/** A machine key's short name, as keyId makes it. */
+export const KID = /^[A-Za-z0-9_-]{16}$/;
+
+/** One enrolled second machine's key, as kept under `mkey:<kid>`. */
+export interface MachineKey {
+  kid: string;
+  jwk: PublicKey;
+  /** When it was enrolled, in milliseconds, and by whose code. */
+  enrolledAt: number;
+  by: string;
+}
+
+/** One enrolled second machine's last report, as kept under
+ * `mhost:<kid>`. The sections it reported join the shared copies (as
+ * the first machine's do); what is per-machine is when it last
+ * reported, the time its reports carry, and what it says of itself. */
+export interface MachineHost {
+  seen: number;
+  seq: number;
+  version: string | null;
+  machine: unknown;
+  settingsRev: number | null;
+}
+
+/** One enrollment code the owner minted, as kept under `enroll:<code>`. */
+export interface EnrollCode {
+  /** When the code stops working, in milliseconds. */
+  expires: number;
+  /** Who minted it, as the edge verified them. */
+  by: string;
+}
 
 /** The edge's own storage: small values by key. */
 export interface KV {
@@ -135,6 +173,9 @@ export interface Acted {
    * only when that asking was the only one. (A record from before this
    * was counted has none, and is taken to have set off already.) */
   relays?: number;
+  /** Once sent, retries must not choose a different machine. */
+  forKid?: string;
+  for?: string;
 }
 export const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 

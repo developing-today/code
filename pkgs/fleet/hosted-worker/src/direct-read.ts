@@ -19,12 +19,14 @@
 //      `data_plane_credential_refused`; the conformance suite asserts
 //      a token minted here is refused there.
 //
-// TOKEN SHAPE: a libsql/Turso auth token is an EdDSA JWT. The claims
-// sqld enforces are `a` (access level: "read-only" | "full-access"),
-// `id` (the database the token is bound to) and `exp`. This mint
-// always sets `a` to "read-only" and `id` to the configured metadata
-// DB — there is no parameter for either, so a write-capable or
-// queue-bound token is not mintable through this module at all. The
+// TOKEN SHAPE: a libsql/Turso auth token is an EdDSA JWT. In the
+// libSQL wire format, `a` is the Permission enum (`ro`, `rw`, or
+// `roa`), not the Turso API's `read-only` label; sqld deserializes
+// these exact values. `id` binds the token to a database and `exp`
+// expires it. This mint always sets `a` to `ro` (Permission::Read)
+// and `id` to the configured metadata DB — there is no parameter for
+// either, so a write-capable or queue-bound token is not mintable
+// through this module at all. The
 // tenancy account rides as `binding_id` (component E's keying rule:
 // the binding_id, never an email or provider subject) so the token's
 // scope names its account; sqld ignores claims it does not know.
@@ -46,7 +48,7 @@ import { parseJwt } from "./jwt.ts";
 import { bytesToB64url } from "./stamp-sig.ts";
 import { BINDING_ID_RE } from "./tenancy.ts";
 
-export const DIRECT_READ_ACCESS = "read-only";
+export const DIRECT_READ_ACCESS = "ro";
 
 /** Claims the mint writes, in one place so the shape is auditable. */
 export interface DirectReadClaims {

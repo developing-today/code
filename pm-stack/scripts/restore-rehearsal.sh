@@ -8,8 +8,9 @@
 # laptop-off drill: it runs on the backup host and uses the local copy.
 #
 # Usage: restore-rehearsal.sh [YYYY-MM-DD]   (default: today's generation)
-# Contract: at most one calendar date; flags/unknown/excess args exit 2
-# before any subprocess or write. No options are accepted.
+# Contract (#3352): zero or one Gregorian date (0001-01-01..9999-12-31).
+# Flags/unknown/excess args exit 2 before filesystem checks, subprocesses,
+# cleanup or writes. No options (including --help or --) are accepted.
 # Requires: docker, sqlite3, zstd, curl; images postgres:16-alpine,
 # gristlabs/grist-oss, ghcr.io/perpetualsoftware/pad,
 # ghcr.io/usekaneo/kaneo (present on the laptop).

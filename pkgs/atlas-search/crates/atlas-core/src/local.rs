@@ -664,6 +664,14 @@ impl SearchBackend for LocalBackend {
         Ok(rows.iter().filter_map(detail_from_row).collect())
     }
 
+    fn chunk_ids_by_hash(&self, canonical_hash: &str) -> Result<Vec<i64>> {
+        let rows = self.execute(&Stmt::new(
+            "SELECT id FROM chunks WHERE content_hash = ?1 ORDER BY id",
+            vec![Value::text(canonical_hash)],
+        ))?;
+        Ok(rows.iter().filter_map(|row| row.get_i64("id")).collect())
+    }
+
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
         let rows = self.execute(&Stmt::new(
             NEIGHBORS_SQL,

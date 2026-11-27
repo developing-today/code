@@ -1992,6 +1992,41 @@ pub(crate) fn apply_wait_floor(
     }
 }
 
+/// #9179 class (c)4: a park carrying a structured time condition
+/// (`{"kind": "time", "until": <rfc3339>}`) must not lapse before
+/// that condition's own horizon. The audit's live case (task
+/// 13224) was parked for a day while its recorded resume
+/// condition was a month out, so it lapsed into the unchanged
+/// condition and burned a lane pass re-parking. When the
+/// condition's `until` parses and is later than the requested
+/// lapse term, the lapse term rises to `until` (and the park
+/// becomes absolute — its term is now that fixed timestamp).
+/// An earlier, equal, missing, or unparseable `until`, and any
+/// non-time condition, leave the park exactly as requested.
+pub(crate) fn apply_time_condition_floor(
+    condition: &Value,
+    not_before: String,
+    park_kind: &'static str,
+) -> (String, &'static str) {
+    if condition.get("kind").and_then(|k| k.as_str()) != Some("time") {
+        return (not_before, park_kind);
+    }
+    let Some(until) = condition.get("until").and_then(|u| u.as_str()) else {
+        return (not_before, park_kind);
+    };
+    let (Some(until_epoch), Some(nb_epoch)) = (
+        crate::disposition::parse_rfc3339_epoch(until),
+        crate::disposition::parse_rfc3339_epoch(&not_before),
+    ) else {
+        return (not_before, park_kind);
+    };
+    if until_epoch > nb_epoch {
+        (until.to_string(), "absolute")
+    } else {
+        (not_before, park_kind)
+    }
+}
+
 /// #3418: the required budget a park records. An explicit
 /// `required_budget_minutes` in the park request wins. Otherwise a
 /// capacity wait (ready-condition kind `capacity`) defaults the
@@ -2072,6 +2107,10 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     } else {
         condition
     };
+    // #9179 (c)4: a caller-supplied time condition whose `until`
+    // is later than the park's lapse term raises the lapse term —
+    // the park must not resume into the unchanged condition.
+    let (not_before, park_kind) = apply_time_condition_floor(&condition, not_before, park_kind);
     // #3418: the budget requirement this park records (explicit in
     // the request, or defaulted from the packet timebox for a
     // capacity wait). A capacity park stays timer-floored as
@@ -4108,6 +4147,156 @@ mod manual_claim_override_tests {
         assert_eq!(row["status"], "claimed");
         assert_eq!(row["attempts"], 2);
         assert_eq!(row["max_attempts"], 5);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod resume_session_storage_tests {
+    // #9178 §1 (FDR-0001), storage slice: `resume_session_id`
+    // persists from packet to row; the claim wire is a later slice,
+    // so the claim/pick path must behave exactly as before.
+    // Oracle: the task row is the contract.
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use crate::validate::{task_from_packet, validate_packet};
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("resume storage oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "resume storage test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn packet_with_hint(number: i64, hint: Value) -> Value {
+        let mut p = packet(number);
+        p["resume_session_id"] = hint;
+        p
+    }
+
+    #[test]
+    fn resume_hint_persists_from_packet_to_row_9178() {
+        // Oracle: a packet hint lands on the row verbatim and is
+        // audit-visible on the enqueued event.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(
+            &t,
+            &json!({"queue": QUEUE, "packet": packet_with_hint(91801, json!("ses_resume_target"))}),
+        );
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_resume_target"),
+            "{row}"
+        );
+        assert_eq!(
+            enqueued["row"]["resume_session_id"],
+            json!("ses_resume_target"),
+            "{enqueued}"
+        );
+        let events = events_for(&t, id, "enqueued");
+        assert_eq!(events.len(), 1);
+        let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            detail["resume_session_id"],
+            json!("ses_resume_target"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn absent_hint_reads_null_9178() {
+        // Oracle: no hint in the packet means NULL on the row —
+        // never an empty string — so "no hint" stays one state.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91802)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert!(row["resume_session_id"].is_null(), "{row}");
+    }
+
+    #[test]
+    fn hint_whitespace_is_trimmed_at_normalization_9178() {
+        // Oracle: task_from_packet stores the trimmed hint.
+        let task = task_from_packet(&packet_with_hint(91803, json!("  ses_trimmed  ")), QUEUE);
+        assert_eq!(task["resume_session_id"], json!("ses_trimmed"), "{task}");
+    }
+
+    #[test]
+    fn blank_and_non_string_hints_rejected_9178() {
+        // Oracle: validate_packet refuses empty, whitespace-only,
+        // and non-string hints; absent and null pass.
+        for bad in [json!(""), json!("   "), json!(123), json!(true)] {
+            let (errors, _) = validate_packet(&packet_with_hint(91804, bad.clone()));
+            assert!(
+                errors.iter().any(|e| e.contains("resume_session_id")),
+                "hint {bad} must be refused: {errors:?}"
+            );
+        }
+        for good in [packet(91805), packet_with_hint(91806, Value::Null)] {
+            let (errors, _) = validate_packet(&good);
+            assert!(
+                !errors.iter().any(|e| e.contains("resume_session_id")),
+                "packet must pass resume hint validation: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hint_changes_nothing_on_the_claim_path_9178() {
+        // Oracle: storage without the wire — a hinted task claims
+        // through the ordinary by-id path with the hint untouched,
+        // and a hint-less task claims exactly as before.
+        let (t, _) = fake_backend();
+        let hinted = verb_enqueue(
+            &t,
+            &json!({"queue": QUEUE, "packet": packet_with_hint(91807, json!("ses_not_yet_wired"))}),
+        );
+        assert_eq!(hinted["ok"], true, "{hinted}");
+        let hinted_id = hinted["row"]["id"].as_i64().expect("task id");
+        let plain = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91808)}));
+        assert_eq!(plain["ok"], true, "{plain}");
+        let plain_id = plain["row"]["id"].as_i64().expect("task id");
+        for id in [hinted_id, plain_id] {
+            let out = verb_claim(
+                &t,
+                &json!({"worker": "resume-storage-worker", "queue": QUEUE, "task_id": id}),
+            );
+            assert_eq!(out["ok"], true, "{out}");
+            assert_eq!(out["row"]["id"], id, "{out}");
+        }
+        let row = get_task(&t, hinted_id).unwrap().expect("claimed row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_not_yet_wired"),
+            "{row}"
+        );
+        let plain_row = get_task(&t, plain_id).unwrap().expect("claimed row");
+        assert!(plain_row["resume_session_id"].is_null(), "{plain_row}");
     }
 }
 

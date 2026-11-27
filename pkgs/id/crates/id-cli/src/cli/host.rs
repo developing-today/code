@@ -174,6 +174,22 @@ pub enum HostCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run a one-shot restore drill for a hosted world (#13744): replay
+    /// the world, export its latest signed snapshot, restore the export
+    /// into a fresh scratch world outside the data root, replay the
+    /// scratch to the same journal head, and compare. The source world
+    /// is never mutated and the scratch is never adopted; the attempt is
+    /// appended to `.drills.jsonl` in the data root. Scheduling and the
+    /// missing-success alarm stay follow-ups.
+    Drill {
+        /// The data root.
+        root: PathBuf,
+        /// The world to drill.
+        world: String,
+        /// Print the drill record as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show or set scheduled snapshots (#13739): how often a running
     /// host takes a signed export of each live world, and how many sets
     /// it keeps. With no `--world` this is the host-wide default; with

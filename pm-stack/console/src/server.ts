@@ -576,6 +576,8 @@ export function loaders(
       },
     },
     questions: { ttlMs: 15_000, load: () => work.questions() },
+    // Decision-set discovery belongs to the edge's Worker reader.
+    questionSets: { ttlMs: 45_000, load: async () => null },
     prs: { ttlMs: 45_000, load: () => ops.prs() },
     priorities: { ttlMs: 120_000, load: () => ops.priorities() },
     done: { ttlMs: 60_000, load: () => work.done() },

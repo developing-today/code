@@ -8,6 +8,34 @@ Design: `doc/2026-11-22T14-28-45Z_design_fleet-tool-workers-edition`
 (component C of epic #9078, design issue #9081), §3.1. This package is
 the service skeleton from #12583; each door is filled by its own issue.
 
+## Read-only live identity and RP verification (#16086)
+
+From this directory, run `node smoke/live-identity.mjs`. Supply a valid
+RP JWT only through `FLEET_HOSTED_RP_TOKEN` in the environment; never as
+an argument. Optional `--base-url https://worker.example` selects an HTTPS
+origin; `--help` prints the complete command contract. Unknown, duplicate
+or valueless arguments fail before requests.
+
+The probe checks `/health` and `/capabilities` for hosted identity and
+matching package versions, then sends only read-only `POST /v1/queue/health`
+requests with invalid, valid (when supplied), and absent credentials.
+Expected refusals are precisely `401 invalid_token` and `401 missing_token`;
+the valid credential must receive a successful broker envelope. It neither
+provisions fixtures nor deploys or mutates queue records. It uses ordinary
+Fetch behavior, refuses redirects and never substitutes a browser User-Agent.
+
+Exit **0** means every check passed; **1** means live proof is incomplete
+(including missing token, unconfigured RP/tenancy, WAF response, or transport
+failure); **2** means usage error. A `503 auth_not_configured` is not evidence
+of token rejection. Explicit false auth readiness in health also prevents
+success. Package version output is not a Cloudflare deployment UUID: read
+that back separately through the authenticated deployment API. Production
+verification requires Worker-reachable issuer/JWKS and active subject-to-tenancy
+mapping; a loopback-only issuer or local fixture does not establish that.
+
+Offline tests (Node 24, no install/network):
+`node --test test/live-identity.test.mjs`.
+
 ## What is real in this slice
 
 - **RP-token auth validation** (`src/jwt.ts`, `src/auth.ts`): callers
@@ -244,11 +272,17 @@ so it does not appear in the capabilities `doors` list.
   (`FixtureSessionRegistry`; the worker entry holds one instance at
   module scope). A DB-backed implementation replaces it behind the
   same interface.
-- **Metadata store**: the create path's insert target is #9074's
-  metadata DB, which does not exist yet, so `MetadataStore`
-  (`src/stamping.ts`) is an interface with a fixture in-memory
-  implementation, wired like the session registry. A Turso-backed
-  store replaces it behind the same interface.
+- **Metadata and backfill stores**: `QUEUE_D1` selects `D1MetadataStore`
+  and `D1BackfillRunStore` (`src/d1-metadata-stores.ts`, #15456).
+  Stamp create, query, ingestion and backfill share `fleet_metadata`
+  in the bound `fleet-queue` D1 database. Each row stores the full
+  `MetadataRecord` JSON (including complete Metadata and extracted
+  keys), keyed by `(repo, kind, number)`, with a binding index for
+  tenant-scoped reads. Remaining filters run over those rows in memory;
+  this is not #9074's aggregator table or its normalized link indexes.
+  Schema creation is lazy/idempotent and retries after transient failure.
+  Only unbound local/dev runs use the isolate-lifetime fixture.
+  See [the restart and deployment verification record](doc/metadata-durability-16096.md).
 - **Queue record source**: queue facts (queue id, scheduled start,
   pickup / work-start times) come from the queue record behind the
   `QueueRecordSource` seam (`src/stamping.ts`). Wired by #12589:
@@ -293,5 +327,7 @@ npm run typecheck
 npm run dev     # wrangler dev (set RP_ISSUER / TENANCY_FIXTURE_JSON first)
 ```
 
-Local-only: `wrangler.toml` authorizes no account deployment; a later
-C issue owns production deployment.
+Deployment uses `wrangler.toml` and the Cloudflare versions release workflow.
+Production D1 wiring is separate from enabling authenticated doors; see the
+[#16096 live verification gate](doc/metadata-durability-16096.md) before
+enabling authenticated create traffic.
