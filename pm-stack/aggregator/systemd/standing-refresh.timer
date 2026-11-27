@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the standing decision-set refresh every hour (pm-stack, #13983)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+Unit=standing-refresh.service
+
+[Install]
+WantedBy=timers.target
