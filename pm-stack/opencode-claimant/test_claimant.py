@@ -730,6 +730,58 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(recovered[0]["binding"]["task_id"], 4242)
         self.assertEqual(recovered[0]["action"], "requeued_retry")
 
+    def test_supervision_preserves_active_error_stopped_session(self):
+        # #16066: a stored error outcome is not proof of terminal -
+        # a resumed session can carry one while active. The
+        # authoritative active set preserves it: no DELETE, no
+        # recovery bind, no candidate.
+        binds = []
+        deletes = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW], sessions=[], active_ids={"ses_gone"}),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+        self.assertEqual(binds, [])
+
+    def test_supervision_error_stopped_fails_closed_when_active_set_unreadable(self):
+        # #16066: an unreadable active set (None) never authorizes
+        # deleting a session over a stored error outcome.
+        binds = []
+        deletes = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW], sessions=[], active_ids=None),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+        self.assertEqual(binds, [])
+
     def test_unreadable_messages_are_unknown_not_zero(self):
         # #3026: the old endpoint 404s with an empty body, and the old
         # read parsed that as []. Unknown must leave the task bound:
