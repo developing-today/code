@@ -7,13 +7,21 @@ const DATABASE = "01234567-89ab-cdef-0123-456789abcdef";
 describe("D1 store client", () => {
   test("sends translated SQL and bound parameters to the Cloudflare query API", async () => {
     let request: Request | undefined;
-    const client = createD1StoreClient(ACCOUNT, DATABASE, "test-token", async (input, init) => {
-      request = new Request(input, init);
-      return Response.json({
-        success: true,
-        result: [{ success: true, results: [{ store: "report", document: '{"count":3}' }] }],
-      });
-    });
+    const client = createD1StoreClient(
+      ACCOUNT,
+      DATABASE,
+      "test-token",
+      Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          request = new Request(input, init);
+          return Response.json({
+            success: true,
+            result: [{ success: true, results: [{ store: "report", document: '{"count":3}' }] }],
+          });
+        },
+        { preconnect: () => {} },
+      ),
+    );
 
     const rows = await client.query<{ store: string; document: { count: number } }>(
       "select store, document from public.agg_store_documents where store = 'report'",
@@ -35,10 +43,15 @@ describe("D1 store client", () => {
       ACCOUNT,
       DATABASE,
       "test-token",
-      async () => new Response("private error body", { status: 403 }),
+      Object.assign(async () => new Response("private error body", { status: 403 }), { preconnect: () => {} }),
     );
-    const malformed = createD1StoreClient(ACCOUNT, DATABASE, "test-token", async () =>
-      Response.json({ success: true, result: [{ success: false, results: [] }] }),
+    const malformed = createD1StoreClient(
+      ACCOUNT,
+      DATABASE,
+      "test-token",
+      Object.assign(async () => Response.json({ success: true, result: [{ success: false, results: [] }] }), {
+        preconnect: () => {},
+      }),
     );
 
     await expect(unavailable.query("select 1")).rejects.toThrow("HTTP 403");

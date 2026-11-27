@@ -108,9 +108,7 @@ export const WORKER_BINDINGS: WorkerBindingSpec[] = [
  * environment actually has, in roster order. A binding that is not
  * configured leaves its Worker out of the round — the deployed edge
  * declares them all; a local run may not. */
-export function workerCheckTargets(
-  resolve: (binding: string) => WorkerBinding | undefined,
-): WorkerCheckTarget[] {
+export function workerCheckTargets(resolve: (binding: string) => WorkerBinding | undefined): WorkerCheckTarget[] {
   const targets: WorkerCheckTarget[] = [];
   for (const spec of WORKER_BINDINGS) {
     const binding = resolve(spec.binding);

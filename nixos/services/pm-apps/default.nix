@@ -185,7 +185,8 @@ in
           WorkingDirectory = "${pmDir}/ready-for-agent";
           Environment = [
             "PATH=${home}/.local/bin:/etc/profiles/per-user/${cfg.user}/bin:${home}/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-          ] ++ lib.optional cfg.readyForAgentSocketActivation "PORT=${toString cfg.readyForAgentBackendPort}";
+          ]
+          ++ lib.optional cfg.readyForAgentSocketActivation "PORT=${toString cfg.readyForAgentBackendPort}";
           # The binary is installed by pm-stack/ready-for-agent/install.sh;
           # state (SQLite) lives in ~/.local/share/ready-for-agent/ by
           # upstream default. No --host flag: upstream's default bind is

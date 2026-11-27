@@ -262,12 +262,14 @@ pub(crate) enum WorldCommand {
     },
     View {
         token: JoinCapability,
+        caller_account: Option<String>,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
     ViewAt {
         token: JoinCapability,
         width: u16,
         height: u16,
+        caller_account: Option<String>,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
     InstallProgram {
@@ -306,6 +308,8 @@ pub(crate) enum WorldCommand {
         token: Option<JoinCapability>,
         /// Connection context for attribution of resulting program requests.
         session_id: Option<SessionId>,
+        /// Authenticated account for attribution of guest fuel during delivery.
+        caller_account: Option<String>,
         result: id_core::world_presentation::FormResult,
         reply: oneshot::Sender<Result<FormSubmissionStatus>>,
     },

@@ -295,7 +295,7 @@ fn a_fully_supported_query_translates() {
         request
             .params
             .iter()
-            .any(|(k, v)| k == "order" && v == "title.asc,id.asc")
+            .any(|(k, v)| k == "order" && v == "title.asc.nullslast,id.asc.nullslast")
     );
     assert!(
         request

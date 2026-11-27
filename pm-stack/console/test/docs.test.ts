@@ -12,6 +12,7 @@ const SECTIONS = [
   "asks",
   "questionCount",
   "questions",
+  "questionSets",
   "prs",
   "priorities",
   "done",

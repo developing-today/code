@@ -44,7 +44,10 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 
 /** A fake GitHub: token exchanges succeed per installation; creates
  * are answered by the supplied per-installation behaviour. */
-function fakeGitHub(createBehaviour: (installation: number) => Response): {
+function fakeGitHub(
+  createBehaviour: (installation: number) => Response,
+  exchangeBehaviour?: (installation: number) => Response | null,
+): {
   fetchFn: FetchFn;
   calls: RecordedCall[];
 } {
@@ -56,6 +59,8 @@ function fakeGitHub(createBehaviour: (installation: number) => Response): {
     const exchange = /\/app\/installations\/(\d+)\/access_tokens$/.exec(url);
     if (exchange) {
       const installation = Number(exchange[1]);
+      const exchangeResponse = exchangeBehaviour?.(installation);
+      if (exchangeResponse) return exchangeResponse;
       const token = `installation-token-${installation}`;
       tokenToInstallation.set(token, installation);
       return jsonResponse(201, {
@@ -136,6 +141,59 @@ test("a permission refusal (resource not accessible) fails over", async () => {
     base: "main",
   });
   assert.equal(created.number, 3);
+});
+
+test("an installation-token permission refusal fails over before create", async () => {
+  const { fetchFn, calls } = fakeGitHub(
+    () => jsonResponse(201, { number: 12, html_url: "https://github.com/o/r/issues/12" }),
+    (installation) =>
+      installation === 111 ? jsonResponse(403, { message: "Resource not accessible by integration" }) : null,
+  );
+  const writer = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  const created = await writer.createItem({ repo: "o/r", kind: "issue", title: "t", body: "b" });
+
+  assert.equal(created.number, 12);
+  assert.deepEqual(
+    calls.map((call) => call.url.replace("https://api.github.com", "")),
+    ["/app/installations/111/access_tokens", "/app/installations/222/access_tokens", "/repos/o/r/issues"],
+  );
+  assert.equal(calls[2].authorization, "Bearer installation-token-222");
+});
+
+test("a non-failover installation-token exchange failure stops before any write", async () => {
+  const { fetchFn, calls } = fakeGitHub(
+    () => jsonResponse(201, { number: 12, html_url: "https://github.com/o/r/issues/12" }),
+    () => jsonResponse(500, { message: "GitHub is unavailable" }),
+  );
+  const writer = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+
+  await assert.rejects(
+    () => writer.createItem({ repo: "o/r", kind: "issue", title: "t", body: "b" }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "github_token_exchange_failed");
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith("/app/installations/111/access_tokens"));
+});
+
+test("a malformed installation-token response stops before any write", async () => {
+  const { fetchFn, calls } = fakeGitHub(
+    () => jsonResponse(201, { number: 12, html_url: "https://github.com/o/r/issues/12" }),
+    () => jsonResponse(201, { token: "", expires_at: new Date(NOW_MS + 3600_000).toISOString() }),
+  );
+  const writer = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+
+  await assert.rejects(
+    () => writer.createItem({ repo: "o/r", kind: "issue", title: "t", body: "b" }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "github_token_exchange_failed");
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith("/app/installations/111/access_tokens"));
 });
 
 test("a non-failover failure surfaces instead of rotating", async () => {

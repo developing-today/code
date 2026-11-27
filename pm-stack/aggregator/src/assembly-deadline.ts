@@ -287,7 +287,13 @@ function timeoutResponse(path: string, timeoutMs: number): Response {
   );
 }
 
-function staleResponse(path: string, cached: CachedResponse, timeoutMs: number, at: number, stillRunning = false): Response {
+function staleResponse(
+  path: string,
+  cached: CachedResponse,
+  timeoutMs: number,
+  at: number,
+  stillRunning = false,
+): Response {
   const headers = new Headers(cached.headers);
   headers.set("x-aggregator-stale", "true");
   headers.set("cache-control", "no-store");

@@ -164,6 +164,9 @@ export interface QuotaGathererProviderHealth {
   /** Why the gatherer could not read the provider, as it reported it
    *  (#14062: an "error" row with no error text tells the reader nothing). */
   error?: string;
+  /** Other provider ids whose rows read this same split pool and were
+   *  folded into this row (#14062), in first-appearance order. */
+  aliasProviderIds?: string[];
 }
 
 const GATHERER_STATE_RANK: Record<QuotaGathererProviderHealth["state"], number> = {
@@ -173,16 +176,45 @@ const GATHERER_STATE_RANK: Record<QuotaGathererProviderHealth["state"], number> 
   ok: 0,
 };
 
-/** One row per provider, service and credential (#14062). The gatherer can
- *  list the same provider more than once in a tick; the row kept is the
- *  worst state among them (an error is never hidden behind an ok twin),
- *  then the latest sync. Order follows each key's first appearance. */
+/** Account/model split pools emitted by quota-gather-map.ts. A dot alone
+ *  is not identity evidence: serviceIdFor also passes unknown ids through. */
+const GATHERER_SPLIT_POOLS = new Set([
+  "_openai.main",
+  "_openai.alt",
+  "opencode-go.drewrypope",
+  "opencode-go.popesdrew",
+  "opencode-go.developing-today-0",
+  "opencode-go.0x111dev",
+  "_antigravity.gemini",
+  "_antigravity.claude-gpt",
+  "antigravity-direct.gemini",
+  "antigravity-direct.claude-gpt",
+]);
+
+/** One row for each known split meter (#14062), including its Go/Zen and
+ *  folded/dedicated OpenAI doors. This follows the gatherer's attribution;
+ *  it does not infer account identity for unknown services or credentials.
+ *  Other services keep provider, service and credential apart. */
+function gathererRowKey(provider: QuotaGathererProviderHealth): string {
+  if (GATHERER_SPLIT_POOLS.has(provider.serviceId)) return JSON.stringify(["pool", provider.serviceId]);
+  return JSON.stringify([provider.providerId, provider.serviceId, provider.credentialLabel ?? null]);
+}
+
+/** One row per provider, service and credential, and one per split pool
+ *  (#14062). The gatherer can list the same meter more than once in a tick;
+ *  the row kept is the worst state among them (an error is never hidden
+ *  behind an ok twin), then the latest sync, and it names the other
+ *  provider ids it absorbed. Order follows each key's first appearance. */
 export function dedupeGathererProviders(
   providers: readonly QuotaGathererProviderHealth[],
 ): QuotaGathererProviderHealth[] {
   const kept = new Map<string, QuotaGathererProviderHealth>();
+  const seenIds = new Map<string, string[]>();
   for (const provider of providers) {
-    const key = JSON.stringify([provider.providerId, provider.serviceId, provider.credentialLabel ?? null]);
+    const key = gathererRowKey(provider);
+    const ids = seenIds.get(key) ?? [];
+    if (!ids.includes(provider.providerId)) ids.push(provider.providerId);
+    seenIds.set(key, ids);
     const held = kept.get(key);
     if (held === undefined) {
       kept.set(key, provider);
@@ -192,7 +224,10 @@ export function dedupeGathererProviders(
     const newer = (provider.lastSyncAt ?? "") > (held.lastSyncAt ?? "");
     if (rank > 0 || (rank === 0 && newer)) kept.set(key, provider);
   }
-  return [...kept.values()];
+  return [...kept.entries()].map(([key, row]) => {
+    const aliases = (seenIds.get(key) ?? []).filter((id) => id !== row.providerId);
+    return aliases.length ? { ...row, aliasProviderIds: aliases } : row;
+  });
 }
 
 export interface PageHealth {

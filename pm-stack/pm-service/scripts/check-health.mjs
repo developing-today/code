@@ -1,14 +1,20 @@
 // Usage: node scripts/check-health.mjs --url HTTPS_URL --version FULL_SHA
 // Strictly accepts those two flags once each; rejects any other argument.
 // The deploy workflow's health gate (design §4): the promoted
-// version's /health must report the exact commit it was deployed
-// from before the deploy counts as landed. Shape follows the
+// version's /health must report the exact commit and a truthful age
+// before the deploy counts as landed. Shape follows the
 // decision-events Worker's check-health.mjs.
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export function matchesHealth(payload, expectedVersion) {
-  return payload?.ok === true && payload?.version === expectedVersion;
+export function matchesHealth(payload, expectedVersion, nowMs = Date.now()) {
+  if (payload?.ok !== true || payload?.version !== expectedVersion) return false;
+  if (typeof payload.deployedAt !== "string" || !Number.isInteger(payload.ageSeconds) || payload.ageSeconds < 0) return false;
+
+  const deployedAtMs = Date.parse(payload.deployedAt);
+  if (!Number.isFinite(deployedAtMs) || deployedAtMs > nowMs) return false;
+  const expectedAgeSeconds = Math.floor((nowMs - deployedAtMs) / 1_000);
+  return Math.abs(payload.ageSeconds - expectedAgeSeconds) <= 5;
 }
 
 function parseArgs(args) {

@@ -79,7 +79,11 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   shows at once. `/console/health` says, to anyone, which release of the
   Android app this side knows of (`androidRelease`), beside the copy of
   the laptop's build (`androidBuild`): that is how either arriving here
-  is checked from outside.
+  is checked from outside. Beside them it says which commit this Worker
+  was deployed from (`version`, the full commit id the release stamps as
+  the `VERSION` var) and when (`deployedAt`, the `DEPLOYED_AT` var the
+  release stamps with the deploy; `ageSeconds` counts the seconds since,
+  so a stale copy cannot pass the deploy's health gate as this one).
 - **No class keeps the platform's `fetch` itself.** In the Worker
   runtime `fetch` refuses to be called as a method of another object
   ("Illegal invocation"), and bun does not mind, so no test under bun
@@ -458,7 +462,8 @@ which drive this Worker's routing and state against the laptop's real
 handler; a bundle; a run of that bundle in the Worker runtime itself
 (`scripts/edge-smoke.ts`, below), because the tests run under bun and
 the two do not behave alike everywhere; the release; then a check that
-the deployed Worker answers its health check as that commit.
+the deployed Worker answers its health check as that commit, with a
+truthful deployed age.
 
 The release is [`release.mjs`](release.mjs), and it starts from whatever
 is there, including nothing:
@@ -504,6 +509,32 @@ python3 pm-stack/console/scripts/expose.py --edge off   # hostname goes straight
 gh workflow run pm-console-edge-deploy.yml -f rollback_version=<version id>   # an earlier version of the Worker
 git revert <merge>                                       # and the next push deploys it
 ```
+
+### Queue transport notification rollout (#13503)
+
+This additive slice keeps `queue-transport-alert`, its queue and its incident
+handling in service. The console reads its `/status` on the existing five-minute
+trigger; after deployment, `/console/health` must include `queueTransport` with a
+non-null `checkedAt` from a subsequent tick before the slice is merged.
+
+The known-good deployment before this rollout is Actions run
+[45986510807](https://github.com/developing-today/code/actions/runs/45986510807),
+commit `bc173425a00f`, Worker version
+`8746c273-6f08-43c1-bb56-86c74b64c7f6`. To restore it through Actions:
+
+```bash
+gh workflow run pm-console-edge-deploy.yml --ref bc173425a00f1a4e25b59d153fbe10f042f903b6 -f rollback_version=8746c273-6f08-43c1-bb56-86c74b64c7f6
+```
+
+Follow that run to success, then check
+`https://pm-console-edge.developing-today.workers.dev/console/health` answers
+`ok: true`, `edge: true`, `version: "bc173425a00f"`. The rollout adds storage
+keys only, with no Durable Object migration or deletion; the previous version
+ignores those keys. Cron Triggers are applied separately after version deployment;
+rolling back a version leaves the five-minute trigger in place. The older
+version already handles the scheduled Worker checks. The original alert Worker continues GitHub incident,
+Telegram and enqueue handling even after this rollback. Retirement requires a
+later slice preserving those semantics; it is not part of this deploy.
 
 ## Run it here
 

@@ -759,11 +759,12 @@ mod tests {
         // Ordering is reconstructible from the chain, not arrival
         // order: history storage order does not matter, the stated
         // range order governs publication.
-        assert_eq!(backfilled.claims[0].batch_id, first.predicate.batch.batch_id);
         assert_eq!(
-            backfilled.claims[1]
-                .prior_attestation
-                .as_deref(),
+            backfilled.claims[0].batch_id,
+            first.predicate.batch.batch_id
+        );
+        assert_eq!(
+            backfilled.claims[1].prior_attestation.as_deref(),
             Some(backfilled.claims[0].subject.as_str())
         );
     }

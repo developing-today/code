@@ -40,7 +40,32 @@ export const PM_METADATA_BLOCK_START = "<!-- pm-metadata:start -->";
 export const PM_METADATA_BLOCK_END = "<!-- pm-metadata:end -->";
 
 const BLOCK_PATTERN = /<!--\s*pm-metadata:start\s*-->([\s\S]*?)<!--\s*pm-metadata:end\s*-->/;
-const JSON_FENCE_PATTERN = /```json\s*([\s\S]*?)```/i;
+const JSON_FENCE_OPEN_PATTERN = /^```json\s*$/i;
+const FENCE_CLOSE_LINE = "```";
+
+/**
+ * Extract the payload between fence delimiter lines. Fences count only
+ * when a delimiter is the whole line: a JSON string value may itself
+ * contain triple backticks (e.g. a title quoting ```json examples), and
+ * a regex over the raw block mistakes those characters for the closing
+ * fence, truncating the payload so the check rejects its own block
+ * (#16013). The closing fence is the LAST bare delimiter line, matching
+ * what renderMetadataBlock emits after the JSON text.
+ */
+function extractFencedJson(block: string): string | undefined {
+  const lines = block.split("\n");
+  const open = lines.findIndex((line) => JSON_FENCE_OPEN_PATTERN.test(line.trim()));
+  if (open === -1) return undefined;
+  let close = -1;
+  for (let i = lines.length - 1; i > open; i -= 1) {
+    if (lines[i].trim() === FENCE_CLOSE_LINE) {
+      close = i;
+      break;
+    }
+  }
+  if (close === -1) return undefined;
+  return lines.slice(open + 1, close).join("\n");
+}
 
 /** Minimal GitHub item snapshot the check needs. Both watchers build this. */
 export interface IngestionItem {
@@ -186,7 +211,7 @@ export function sourceUrlFor(item: Pick<IngestionItem, "repo" | "number" | "kind
 
 /** Deterministic artifact identity: one GitHub item, one metadata row. */
 export function artifactIdFor(item: Pick<IngestionItem, "repo" | "number" | "kind">): string {
-  return `github:${item.repo}#${item.kind}/${item.number}`;
+  return `gh:${item.repo}#${item.kind}:${item.number}`;
 }
 
 /** Extract the raw JSON payload of the canonical block, if any. */
@@ -196,7 +221,7 @@ export function extractMetadataPayload(
   if (!body) return { found: false, malformed: false };
   const block = BLOCK_PATTERN.exec(body)?.[1];
   if (block === undefined) return { found: false, malformed: false };
-  const json = JSON_FENCE_PATTERN.exec(block)?.[1];
+  const json = extractFencedJson(block);
   if (json === undefined) return { found: false, malformed: true };
   return { found: true, json: json.trim() };
 }

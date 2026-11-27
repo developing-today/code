@@ -4206,12 +4206,24 @@ mod resume_session_storage_tests {
         assert_eq!(enqueued["ok"], true, "{enqueued}");
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         let row = get_task(&t, id).unwrap().expect("task row");
-        assert_eq!(row["resume_session_id"], json!("ses_resume_target"), "{row}");
-        assert_eq!(enqueued["row"]["resume_session_id"], json!("ses_resume_target"), "{enqueued}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_resume_target"),
+            "{row}"
+        );
+        assert_eq!(
+            enqueued["row"]["resume_session_id"],
+            json!("ses_resume_target"),
+            "{enqueued}"
+        );
         let events = events_for(&t, id, "enqueued");
         assert_eq!(events.len(), 1);
         let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
-        assert_eq!(detail["resume_session_id"], json!("ses_resume_target"), "{detail}");
+        assert_eq!(
+            detail["resume_session_id"],
+            json!("ses_resume_target"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -4278,7 +4290,11 @@ mod resume_session_storage_tests {
         }
         let row = get_task(&t, hinted_id).unwrap().expect("claimed row");
         assert_eq!(row["status"], "claimed");
-        assert_eq!(row["resume_session_id"], json!("ses_not_yet_wired"), "{row}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_not_yet_wired"),
+            "{row}"
+        );
         let plain_row = get_task(&t, plain_id).unwrap().expect("claimed row");
         assert!(plain_row["resume_session_id"].is_null(), "{plain_row}");
     }

@@ -101,6 +101,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       db,
       epicSlugs: async () => EPICS,
       resolveNativeParent: async () => undefined,
+      readCurrent: async (item) => item,
       writeBack: async () => {
         writes++;
       },
@@ -115,7 +116,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       expect(response.status).toBe(500);
       expect(writes).toBe(0);
       expect(enqueued).toBe(0);
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")).toBeNull();
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")).toBeNull();
     } finally {
       db.close();
     }
@@ -129,6 +130,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       db,
       epicSlugs: async () => EPICS,
       resolveNativeParent: async () => ({ repo: "developing-today/code", number: 100, kind: "sub-issue" }),
+      readCurrent: async (item) => item,
       writeBack: async () => {},
       enqueueTriage: async () => {},
       now: () => NOW,
@@ -138,7 +140,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       const response = await handler(signedIssueRequest());
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "generated" });
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")?.indexes.directParentNumber).toBe(100);
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")?.indexes.directParentNumber).toBe(100);
     } finally {
       db.close();
     }
@@ -153,6 +155,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       db,
       epicSlugs: async () => new Map(),
       resolveNativeParent: async () => null,
+      readCurrent: async (item) => item,
       writeBack: async () => {},
       enqueueTriage: async (packet) => {
         enqueued.push(packet);
@@ -165,7 +168,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "needs-triage" });
       expect(enqueued).toHaveLength(1);
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")).toBeNull();
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")).toBeNull();
     } finally {
       db.close();
     }
@@ -183,6 +186,7 @@ describe("webhook native-parent resolution (#16011)", () => {
         lookups++;
         return null;
       },
+      readCurrent: async (item) => item,
       writeBack: async () => {},
       enqueueTriage: async () => {},
       now: () => NOW,
@@ -218,7 +222,7 @@ describe("webhook native-parent resolution (#16011)", () => {
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "generated" });
       expect(lookups).toBe(0);
-      expect(getPmMetadata(db, "github:developing-today/code#pr/4243")?.indexes.directParentNumber).toBe(9060);
+      expect(getPmMetadata(db, "gh:developing-today/code#pr:4243")?.indexes.directParentNumber).toBe(9060);
     } finally {
       db.close();
     }

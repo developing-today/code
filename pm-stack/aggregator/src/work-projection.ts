@@ -49,6 +49,10 @@ export type Fact<T> =
       revision?: string;
       observed_at?: string;
       freshness: "live" | "stale";
+      /** Present facts carry no state marker; the state variants below
+       *  are the ones with something to say. Declared here so `.state`
+       *  is readable on the union without narrowing first. */
+      state?: undefined;
     }
   | { state: "absent"; freshness: "absent" }
   | { state: "error"; source: string; revision?: string; freshness: "error" }
@@ -259,9 +263,10 @@ export function projectWorkView(
     reasons.add("fresh_authoritative_claim");
     reasons.add("verified_session_binding");
   } else if (terminalSignal) {
-    // Terminal signal without a verified receipt: conflict/pending,
-    // never Done.
-    column = "Backlog";
+    // Terminal signal without a verified receipt: Review pending the
+    // completion policy's verified receipt (MOB-02 R5), never Done and
+    // never Backlog.
+    column = "Review";
     reasons.add("completion_unverified");
     conflicts.push({
       code: "completion_unverified",

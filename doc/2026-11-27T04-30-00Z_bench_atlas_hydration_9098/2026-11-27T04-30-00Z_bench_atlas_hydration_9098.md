@@ -8,16 +8,16 @@ The content-safe harness (`pkgs/atlas-search/tools/embed_storage_bench.py`) runs
 
 Synthetic outcome (`hydration-bench-results.json` in this directory):
 
-| Measure | Value |
-| ------- | ----- |
-| Source bytes | 95,232 |
-| Reference (unique-object) bytes | 71,616 |
-| Unique objects | 96 |
-| Content-address dedup ratio | 1.329759 |
-| R2 Class A puts (one per unique object) | 96 |
-| R2 request cost, arithmetic estimate | $0.00055476 |
+| Measure                                                         | Value          |
+| --------------------------------------------------------------- | -------------- |
+| Source bytes                                                    | 95,232         |
+| Reference (unique-object) bytes                                 | 71,616         |
+| Unique objects                                                  | 96             |
+| Content-address dedup ratio                                     | 1.329759       |
+| R2 Class A puts (one per unique object)                         | 96             |
+| R2 request cost, arithmetic estimate                            | $0.00055476    |
 | R2 Class B gets, cold (`get-chunk` / `expand` / `with-message`) | 30 / 150 / 150 |
-| R2 Class B gets, hot (`get-chunk` / `expand` / `with-message`) | 1 / 5 / 5 |
+| R2 Class B gets, hot (`get-chunk` / `expand` / `with-message`)  | 1 / 5 / 5      |
 
 Per-operation p50/p95 latencies for `get-chunk`, `expand`, and `with-message` are in the JSON for both paths and both cache variants. They are process-local timings only (see limits).
 

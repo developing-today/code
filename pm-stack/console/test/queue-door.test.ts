@@ -169,8 +169,11 @@ describe("the edge queue door", () => {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
       }
       if (typeof row.manual_only === "number") row.manual_only = row.manual_only === 1;
+      // A fresh enqueue has no native session to resume; the hosted TaskRow does not model this column.
+      expect(row.resume_session_id).toBeNull();
       // The native schema carries lifecycle columns the hosted TaskRow does not model.
       for (const key of [
+        "resume_session_id",
         "labels",
         "labels_synced_at",
         "resolution",

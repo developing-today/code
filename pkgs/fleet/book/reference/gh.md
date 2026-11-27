@@ -167,7 +167,7 @@ fleet gh closures [<item>]
 
 ### Behaviour
 
-Reads back the closure log. The policy layer behind it: `issue|pr close|reopen` through the rotation must carry a `--reason` from the taxonomy — `implemented`, `superseded`, `cancelled`, `started-incorrectly` — enforced with the policy error "Please give a reason. This is required by policy." The reason is written into the close comment, and every successful close or reopen appends one `fleet-closure/v1` JSON-line record to `closure-records.jsonl` in the fleet state directory (backed up with it); `closures` prints the log, optionally filtered to one item.
+Reads back the closure log. The policy layer behind it: `issue|pr close|reopen` through the rotation must carry a `--reason` from the taxonomy — `implemented`, `superseded`, `cancelled`, `started-incorrectly` — enforced with the policy error "Please give a reason. This is required by policy." The reason is written into the close comment, and every successful close or reopen appends one `fleet-closure/v1` JSON-line record to `closure-records.jsonl` in the fleet state directory (backed up with it); `closures` prints the log, optionally filtered to one item. A close whose only reason carrier is the composed comment itself (fleet's own generated arguments re-entering a fleet, #16150) is accepted: the reason, free text and successor are recovered from the comment's exact composed shape and re-validated as usual.
 
 Help: `fleet gh closures --help` prints the verb's own usage and exits 0.
 

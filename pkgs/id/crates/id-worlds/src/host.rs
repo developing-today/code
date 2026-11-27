@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::host_snapshots::{
     SNAPSHOT_DIR_NAME, SnapshotPolicy, SnapshotRun, SnapshotSet, is_due, list_sets, prune_plan,
-    remove_sets, set_file_name, usage, world_snapshot_dir,
+    remove_sets, replaces_previous, set_file_name, usage, world_snapshot_dir,
 };
 use crate::world::{Authority, WorldHandle, WorldLimits};
 use crate::world_doctor::{JournalFacts, journal_facts};
@@ -1394,12 +1394,32 @@ pub async fn snapshot_live_world(
     };
     run.taken.push(taken.clone());
     let mut after = sets;
-    // The journal is append-only, so the same entry count is the same
-    // journal: the new set replaces the newest one.
+    // An unchanged journal: the new set replaces the newest one. Entry
+    // count alone does not prove "unchanged" — checkpoint compaction
+    // rewrites the journal, so a different journal can carry the same
+    // count (#16134). Compare the journal digest recorded in each
+    // set's export manifest; a previous set whose manifest cannot be
+    // read is kept, never deleted on a guess.
     if let Some(previous) = previous.filter(|set| set.entries == manifest.entries) {
-        remove_sets(std::slice::from_ref(&previous))?;
-        after.pop();
-        run.removed.push(previous);
+        let previous_digest = read_export_manifest(&previous.path)
+            .await
+            .map(|previous_manifest| Some(previous_manifest.journal_digest))
+            .unwrap_or(None);
+        // `None` here means the manifest could not be read at all (the
+        // helper's legacy fallback is `Some("")` from a manifest with
+        // no digest field): keep the set rather than delete on a guess.
+        if previous_digest.is_some()
+            && replaces_previous(
+                previous.entries,
+                previous_digest.as_deref(),
+                manifest.entries,
+                &manifest.journal_digest,
+            )
+        {
+            remove_sets(std::slice::from_ref(&previous))?;
+            after.pop();
+            run.removed.push(previous);
+        }
     }
     after.push(taken);
     let plan = prune_plan(&after, policy, now_secs);
@@ -3250,6 +3270,75 @@ mod tests {
         let journal = std::fs::read(root.path().join("alpha").join(JOURNAL_FILE)).unwrap();
         assert!(!journal.is_empty());
         sup.stop_all(actor()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshots_keep_distinct_journals_with_equal_entry_counts() {
+        use crate::world::WorldScopes;
+
+        // Oracle (#16134): distinct restorable world states must remain
+        // distinct retained restore points, even when their journals
+        // have the same entry count — the shape checkpoint compaction
+        // produces. Two worlds built from the same script but different
+        // participants have equal entry counts and different journals.
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let mut journals = Vec::new();
+        for (index, participant) in ["ann", "bob"].into_iter().enumerate() {
+            let dir = root.path().join(format!("world-{index}"));
+            let (service, _) = open_world(
+                &dir,
+                "alpha",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                |world| WorldService::new(world, None),
+            )
+            .await
+            .unwrap();
+            let (_, token) = service
+                .world()
+                .issue(participant, WorldScopes::GUEST)
+                .await
+                .unwrap();
+            service.world().chat(token.clone(), "hello").await.unwrap();
+            service.world().chat(token, "again").await.unwrap();
+            let mut run = SnapshotRun::default();
+            snapshot_live_world(
+                &service,
+                &key,
+                "alpha",
+                &policy,
+                &snapshot_root,
+                1_000 + index as u64 * 1_000,
+                &mut run,
+            )
+            .await
+            .unwrap();
+            assert_eq!(run.taken.len(), 1);
+            assert!(run.removed.is_empty(), "{run:?}");
+            service.world().shutdown().await.unwrap();
+            journals.push(std::fs::read(dir.join(JOURNAL_FILE)).unwrap());
+        }
+        assert_ne!(journals[0], journals[1]);
+        let sets = list_sets(&snapshot_root, "alpha").unwrap();
+        assert_eq!(sets.len(), 2, "{sets:?}");
+        assert_eq!(sets[0].entries, sets[1].entries);
+        // Each set restores its own journal, byte for byte.
+        for (set, journal) in sets.iter().zip(&journals) {
+            let scratch = TempDir::new().unwrap();
+            let dest = scratch.path().join("alpha");
+            import_world_from_file(&set.path, &dest, source)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(dest.join(JOURNAL_FILE)).unwrap(), *journal);
+        }
     }
 
     #[tokio::test]

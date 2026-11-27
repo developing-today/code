@@ -1554,11 +1554,7 @@ export function liveSource(
           let merged = rows;
           let label = "live (Grist)";
           if (projectorReader) {
-            const { entries, linksDegraded } = await enrichWithRegistryLinks(
-              projectorReader,
-              rows,
-              (r) => r.subject,
-            );
+            const { entries, linksDegraded } = await enrichWithRegistryLinks(projectorReader, rows, (r) => r.subject);
             merged = entries;
             // #8570: same degraded-links honesty as the board path above.
             label = linksDegraded

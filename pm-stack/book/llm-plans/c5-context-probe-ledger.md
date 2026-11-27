@@ -155,3 +155,92 @@ Harness reused as-is from PR #15006; no harness code changed.
 2. Binary-search ceilings remain unstarted (need live adapters).
 3. Ordered vs weighted vs round-robin cluster comparison remains unstarted
    (needs live adapters + pool-steward coordination; policy only here).
+
+## Slice 4 (2026-11-27, task 26036) — credentialed direct adapters + capability matrix
+
+Recommendation-only boundary holds: no routing configuration changed, no
+provider configuration changed, no live call was made by this slice.
+
+### What landed
+
+- `bin/free-context-probe.mjs` gains credentialed direct adapters
+  (`DIRECT_ADAPTERS`, `resolveDirectAdapter`, `runDirectProbe`,
+  `createProbeBudget`) for three source-backed OpenAI-compatible provider
+  families: **groq** (`https://api.groq.com/openai/v1/chat/completions`,
+  credential env `GROQ_API_KEY`, Groq OpenAI-compatibility docs),
+  **nvidia** (`https://integrate.api.nvidia.com/v1/chat/completions`,
+  credential env `NVIDIA_API_KEY`, NVIDIA API Catalog getting started),
+  and **openrouter** (`https://openrouter.ai/api/v1/chat/completions`,
+  credential env `OPENROUTER_API_KEY`, OpenRouter docs). Kilo stays on
+  its separate keyless path.
+- Fail-closed contract, all checks BEFORE any network call: unsupported
+  provider, exact leaf absent from the wired inventory, output cap above
+  the hard cap (64 tokens), named credential env var absent or empty,
+  missing explicit call budget, or budget exhausted. Run budgets are
+  hard-bounded at 5 live calls (`DIRECT_PROBE_MAX_CALLS`); the CLI live
+  path uses a budget of exactly 1. A provider that reports output beyond
+  the requested cap invalidates the measurement (`fail-cap`), never a
+  pass. Credentials travel only in the Authorization header; records
+  carry the env var NAME (`credentialSource: env:<NAME>`), never a value.
+- `--live` now accepts an exact direct leaf (e.g.
+  `--leaf groq/openai/gpt-oss-120b --max-probes 1`) alongside the Kilo
+  leaf. A fail-closed probe writes no record and exits 4.
+- Live records now persist `sentinelReturned` explicitly for both
+  adapters — the slice-3 harness gap noted above is closed.
+- Offline suite: `node --test bin/free-context-probe.test.mjs` → 15/15
+  pass (7 pre-existing + 8 new). The new tests name their oracles:
+  fail-closed paths leave the mock-fetch call count at zero; the happy
+  path keys the serving leaf by the response-reported model, carries the
+  64-token cap in the request body, and contains no credential value; a
+  CLI spawn with `GROQ_API_KEY` scrubbed exits 4 with
+  `missing-credentials` and writes no record.
+
+### Live leg — not run; capability matrix is the deliverable
+
+No non-Kilo credential is provisioned in this lane's environment: an
+env-var NAME check on 2026-11-27 found zero provider key names (no
+`GROQ_API_KEY`, `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, or any
+`*API_KEY` name; values were never read). Per the task's fallback, this
+slice delivers the source-backed capability matrix instead of a live
+comparison — full matrix with per-family prerequisites:
+`pm-stack/book/llm-plans/evidence/c5-slice4-capability-matrix-2026-11-27.json`.
+
+Summary (representative leaf → prerequisite):
+
+- groq `groq/openai/gpt-oss-120b` → provision a Groq Free Plan key as
+  `GROQ_API_KEY` on the probe host, then one bounded `--live` call.
+- nvidia `nvidia/nvidia/nemotron-3-ultra-550b-a55b` → generate a free key
+  at build.nvidia.com/settings, provision as `NVIDIA_API_KEY`, then one
+  bounded `--live` call.
+- openrouter `openrouter/inclusionai/ling-3.2-flash:free` → provision
+  `OPENROUTER_API_KEY`, then one bounded `--live` call; key results by
+  the response-reported model (router caveat, B6 precedent).
+- zai, google.muse, _commandcode-free, exaone → no adapter: no
+  source-verified direct endpoint/credential name recorded, or the wired
+  leaf is an internal route name rather than a direct provider identity.
+  Prerequisite per family is in the matrix JSON; endpoints and credential
+  names must be source-verified, never guessed.
+- opencode zen/go route families (11 of 20 plans) → excluded by design:
+  aggregator routes; probing them measures the router.
+
+### Acceptance mapping for #9573
+
+- Advances item 3's precondition: the free-provider inventory now has a
+  credentialed exact-leaf probe path for three provider families.
+- Item 3 is NOT completed: no live exact-leaf measurement has run (no
+  credential provisioned), no context value is promoted (every leaf
+  stays `contextSource: provider-published`), no free path is wired in
+  front of a production path, and fall prevention is not demonstrated.
+- Item 2's controlled routing-mode comparison remains unmeasured; this
+  slice does not claim it. Item 1 was delivered by PR #11979.
+
+### Remaining work (updated)
+
+1. Provision ONE named credential above on the probe host and run the
+   first bounded direct comparison: the same sentinel payload through a
+   direct leaf and through the existing routed path where the same model
+   is available (≤5 live calls total, 64-token output cap), recording
+   serving-leaf attribution in this ledger.
+2. Binary-search ceilings per leaf (needs step 1's live adapters proven).
+3. Ordered vs weighted vs round-robin cluster comparison (needs live
+   adapters + pool-steward coordination; policy only here).

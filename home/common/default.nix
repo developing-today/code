@@ -851,7 +851,10 @@ in
     Unit = {
       Description = "OpenCode route proxy (socket-activated)";
       Wants = [ "network-online.target" ];
-      After = [ "network-online.target" "opencode-route-proxy.socket" ];
+      After = [
+        "network-online.target"
+        "opencode-route-proxy.socket"
+      ];
       Requires = [ "opencode-route-proxy.socket" ];
     };
     Service = {
@@ -1015,19 +1018,23 @@ in
     };
     Service = {
       Type = "oneshot";
-      # The revalidator lands in observe-only mode (C3,
-      # doc/fleet/agent-events-turso.md): it logs would-releases
-      # without mutating tasks. Flip it live by writing "enabled" to
-      # ~/.config/queue-broker/revalidator-mode once the first daily
-      # observe cycle has been reviewed on #6803.
+      # The revalidator landed in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logged would-releases
+      # without mutating tasks. #16006 activates it by default:
+      # the scheduled sweep now releases satisfied broker-condition
+      # parks (task_terminal, task_status, event_seen) to queued,
+      # while person_answer parks still wait for the person's
+      # /wake. To run a non-mutating observe cycle instead, write
+      # "observe" to ~/.config/queue-broker/revalidator-mode;
+      # "enabled" (or no file at all) keeps the live default.
       ExecStart = toString (
         pkgs.writeShellScript "fleet-queue-sweeper" ''
           token="$(cat "$HOME/.config/queue-broker/token")"
-          mode="observe"
+          obs=false
           if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
             mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+            if [ "$mode" = "observe" ]; then obs=true; fi
           fi
-          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
           ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
             -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
             -d '{"prune":true,"keep_days":30}'
@@ -1282,7 +1289,10 @@ in
   # consumer dezren39/darwin-nix#1393.)
   systemd.user.services.mcpx = {
     Unit = {
-      After = [ "network-online.target" "mcpx.socket" ];
+      After = [
+        "network-online.target"
+        "mcpx.socket"
+      ];
       Wants = [ "network-online.target" ];
       Requires = [ "mcpx.socket" ];
       # A switch must not restart the daemon: that would end every

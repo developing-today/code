@@ -21,6 +21,8 @@ Every verb's call goes down a four-leg **ladder**, in order; the first leg that 
 3. **Tailscale** — HTTP CONNECT through the egress proxy at port **3130** to `100.99.113.103:4799`.
 4. **SSH** — the daemon's surfaces (`/health`, `/exec`, `/jobs`) re-run as shell commands over `~/tools/laptop-ssh-real.sh`, for when the daemon itself is down. It owns `sshfb-` jobs, spooled on the laptop under `~/.local/state/laptop-agent/sshfb-jobs/`. `LAPTOP_AGENT_NO_SSH_FALLBACK` turns it off.
 
+**SSH-owned jobs:** requests for `/jobs/sshfb-*` (including poll query parameters and `/kill`) go only to SSH, even after the daemon or broker recovers. If SSH is missing, disabled, or fails, the call errors without consulting unrelated HTTP job stores. Collection requests (`/jobs`) and other job IDs keep the normal ladder. The HTTP-only `fleet http` surface cannot access SSH-owned jobs and fails clearly rather than looking them up in the daemon.
+
 When the SSH leg answers a call, the client prints `fleet: form T3 ssh/fleet` on stderr, once per process (#15419). Under the route-form matrix (#13717) a call served this way is tier T3, not T2, and the line says so in the words the other forms announce themselves with. Calls answered by an HTTP leg print nothing.
 
 **New callers:** use [`fleet http`](laptop-route-forms.md) for the same verbs over HTTP legs only (it can never become SSH), or `fleet laptop exec` (tier 0) to let Fleet choose the form. `fleet laptop-agent` stays for existing callers. No `fleet connect --method` wrapper is planned (#10356 section 2).
@@ -77,7 +79,7 @@ fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 | Flag        | Argument | Default        | Meaning                                                                                                                  |
 | ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
-| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. The client deadline is timeout + 15 s transport grace.                                   |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                           |
 | `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
 | `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 
@@ -103,7 +105,7 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 ## fleet laptop-agent run
 
 ```
-fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
+fleet laptop-agent run [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
 | Flag        | Argument | Default        | Meaning                                                                                                                                  |
@@ -111,17 +113,17 @@ fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
 | `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
 | `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
 | `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
-| `--timeout` | —        | —              | **Not accepted** — passing it is an unknown-option error. Detached jobs have no client-side timeout; use `poll --wait` to bound waiting. |
+| `--timeout` | `SECS`   | 120 (ignored)  | Accepted for Python-CLI compatibility and ignored: detached jobs have no client-side timeout; use `poll --wait` to bound waiting. Must be positive. |
 
 ### Behaviour
 
-**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure.
+**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure. A passed `--timeout` is not sent to the daemon and does not change the fixed submit deadline, matching the legacy Python client.
 
 ### Exit codes
 
 - `0` — job submitted, `job_id` printed.
 - `1` — transport failure.
-- `2` — usage (including `--timeout`).
+- `2` — usage.
 
 ### Example
 

@@ -30,7 +30,7 @@
 //     [--db <path>] [--limit <n>] [--triage-queue <name>]
 //     [--write-back] [--forward-triage] [--dry-run] [--help]
 // Env: METADATA_SWEEP_REPOS (comma-separated default repos),
-//   PM_METADATA_DB_PATH (default DB), FLEET_BIN (default `fleet`).
+//   FLEET_METADATA_DB (Fleet's shared DB override), FLEET_BIN (default `fleet`).
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,7 +52,7 @@ import {
   type NativeParentLookup,
   type PrimaryParentViolation,
 } from "../src/metadata-ingestion.ts";
-import { requireHome } from "../src/home.ts";
+import { fleetMetadataDbPath } from "../src/metadata-db.ts";
 
 const USAGE =
   "metadata-sweeper: usage: bun run scripts/metadata-sweeper.ts --repo <owner/name> [--repo ...] " +
@@ -87,9 +87,7 @@ function takeValue(args: string[], index: number, flag: string): string {
 function parseArgs(argv: string[]): Options {
   const repos: string[] = [];
   const only: { kind: "issue" | "pr"; number: number }[] = [];
-  let dbPath =
-    process.env.PM_METADATA_DB_PATH ??
-    join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  let dbPath = fleetMetadataDbPath();
   let limit = 50;
   let triageQueue = "repo-health-code-pilot";
   let writeBack = false;

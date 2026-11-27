@@ -16,7 +16,7 @@ func TestUnixHTTPTransportInitializeListAndCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -54,7 +54,7 @@ func TestUnixHTTPTransportInitializeListAndCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if got := client.ServerInfo.Instance; got != "unix-fixture" {
 		t.Fatalf("initialize instance = %q, want unix-fixture", got)
 	}

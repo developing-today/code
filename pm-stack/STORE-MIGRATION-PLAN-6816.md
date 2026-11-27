@@ -76,7 +76,7 @@ promotion; no configuration permits two active writers.**
   itself accepts writes only through Kaneo's role in practice, and the local
   Postgres is never host-exposed) **and** stop the managing user service
   and its retry timer (`systemctl --user stop pm-kaneo.service
-  pm-kaneo.timer`) — the manager runs `deploy.sh` (`compose up`) and
+pm-kaneo.timer`) — the manager runs `deploy.sh` (`compose up`) and
   revives stopped containers on its next run or timer elapse, so
   `fence-check.sh` (stores `all`, `kaneo`) requires both units inactive
   before it reports FENCED. Promotion = point the Kaneo DSN at
