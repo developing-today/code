@@ -285,6 +285,77 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
       ]);
     });
   },
+  readCurrent: async (item) => {
+    // Stale-snapshot protection (issue #16012): re-read the live item
+    // the snapshot check ran on, mapped like the sweeper's fetchOne so
+    // the recompute sees the same shape. Null (fetch failure or
+    // unparseable shape) skips the write-back; the stored row stands
+    // and the sweeper converges on its next pass. The native parent is
+    // carried over: the webhook path never resolves it (the sweeper's
+    // native-parent lookup covers that on its pass).
+    const command = item.kind === "issue" ? "issue" : "pr";
+    const fields =
+      item.kind === "issue"
+        ? "number,title,body,labels,milestone,state,author,createdAt,updatedAt,closedAt"
+        : "number,title,body,labels,milestone,state,author,createdAt,updatedAt,closedAt,mergedAt";
+    let raw: unknown;
+    try {
+      const output = await runMetadataFleet([
+        "gh",
+        command,
+        "view",
+        String(item.number),
+        "--repo",
+        item.repo,
+        "--json",
+        fields,
+      ]);
+      raw = JSON.parse(output) as unknown;
+    } catch {
+      return null;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const viewed = raw as {
+      number?: unknown;
+      title?: unknown;
+      body?: unknown;
+      labels?: (string | { name?: unknown })[];
+      milestone?: { title?: unknown; dueOn?: unknown } | null;
+      state?: unknown;
+      author?: { login?: unknown } | null;
+      createdAt?: unknown;
+      updatedAt?: unknown;
+      closedAt?: unknown;
+      mergedAt?: unknown;
+    };
+    if (!Number.isSafeInteger(viewed.number) || (viewed.number as number) !== item.number) return null;
+    if (typeof viewed.title !== "string" || typeof viewed.createdAt !== "string" || typeof viewed.updatedAt !== "string") {
+      return null;
+    }
+    return {
+      repo: item.repo,
+      number: item.number,
+      kind: item.kind,
+      title: viewed.title,
+      body: typeof viewed.body === "string" ? viewed.body : null,
+      labels: (viewed.labels ?? [])
+        .map((label) => (typeof label === "string" ? label : String(label.name ?? "")))
+        .filter(Boolean),
+      milestoneTitle: typeof viewed.milestone?.title === "string" ? viewed.milestone.title : null,
+      milestoneDueOn: typeof viewed.milestone?.dueOn === "string" ? viewed.milestone.dueOn : null,
+      state: String(viewed.state ?? "OPEN").toUpperCase(),
+      author: typeof viewed.author?.login === "string" ? viewed.author.login : "unknown",
+      createdAt: viewed.createdAt,
+      updatedAt: viewed.updatedAt,
+      closedAt:
+        typeof viewed.closedAt === "string"
+          ? viewed.closedAt
+          : typeof viewed.mergedAt === "string"
+            ? viewed.mergedAt
+            : null,
+      nativeParent: item.nativeParent ?? null,
+    };
+  },
   enqueueTriage: async (packet) => {
     await withMetadataTempFile("pm-metadata-triage-", JSON.stringify(packet, null, 2), async (path) => {
       await runMetadataFleet(["queue", "enqueue", path, "--queue", "repo-health-code-pilot"]);
