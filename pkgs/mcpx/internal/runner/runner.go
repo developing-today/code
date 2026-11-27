@@ -1282,7 +1282,7 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 	}
 	scriptDir := filepath.Dir(abs)
 	manifestDir := preparedManifestScope(opts, scriptDir)
-	if prepared == nil || prepared.Dir == "" {
+	if prepared == nil || (prepared.Dir == "" && len(prepared.PreparedSubsets) == 0) {
 		if alreadyLocked {
 			removePreparedLink(scriptDir)
 			if manifestDir != "" {
@@ -1309,16 +1309,20 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		}
 		return unlock, nil, nil
 	}
-	modules := filepath.Join(prepared.Dir, "node_modules")
-	if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
-		return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+	if prepared.Dir != "" {
+		modules := filepath.Join(prepared.Dir, "node_modules")
+		if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
+			return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+		}
 	}
 	// Lease the cache entry for the run's lifetime so pruning cannot
 	// delete it from under a live exec (#1908) -- the same lease the
 	// exec workdir takes above.
 	var lease *cache.Lease
-	if l, lerr := cache.Acquire(prepared.Dir); lerr == nil {
-		lease = l
+	if prepared.Dir != "" {
+		if l, lerr := cache.Acquire(prepared.Dir); lerr == nil {
+			lease = l
+		}
 	}
 	release := func() {
 		if lease != nil {
@@ -1366,14 +1370,16 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 			release = func() { unlock(); inner() }
 		}
 	}
-	if lerr := linkPreparedNodeModules(scriptDir, prepared.Dir, workDir); lerr != nil {
-		release()
-		return nil, nil, fmt.Errorf("imports: link the prepared environment beside the script: %w", lerr)
-	}
-	if manifestDir != "" {
-		if lerr := linkPreparedNodeModules(manifestDir, prepared.Dir, workDir); lerr != nil {
+	if prepared.Dir != "" {
+		if lerr := linkPreparedNodeModules(scriptDir, prepared.Dir, workDir); lerr != nil {
 			release()
-			return nil, nil, fmt.Errorf("imports: link the prepared environment at the manifest's directory: %w", lerr)
+			return nil, nil, fmt.Errorf("imports: link the prepared environment beside the script: %w", lerr)
+		}
+		if manifestDir != "" {
+			if lerr := linkPreparedNodeModules(manifestDir, prepared.Dir, workDir); lerr != nil {
+				release()
+				return nil, nil, fmt.Errorf("imports: link the prepared environment at the manifest's directory: %w", lerr)
+			}
 		}
 	}
 	for _, subset := range prepared.PreparedSubsets {
