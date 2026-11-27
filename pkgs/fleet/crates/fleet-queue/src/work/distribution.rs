@@ -228,6 +228,182 @@ pub fn selection_order_hash(input: &SelectionOrderInput) -> Result<String, Contr
     digest(DIGEST_DOMAIN_SELECTION_ORDER, &selection_order_dto(input))
 }
 
+/// How two order observations relate, checked in this order
+/// (DST-06 record §4.1). The classes mean different things, so the
+/// report stops at the first class that applies: different inputs
+/// are expected during normal operation (re-run on a pinned
+/// snapshot), while a different sequence over the same inputs,
+/// items and keys is always a comparator defect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderComparison {
+    /// Same inputs, same population, same keys, same sequence: the
+    /// two targets computed the same order. A fingerprint only — it
+    /// grants nothing (SEL-02).
+    Identical,
+    /// The two targets ordered different snapshots (different graph
+    /// revision, as-of, policy ...). Expected during normal
+    /// operation; re-run on a pinned snapshot. Order beneath it is
+    /// not inspected.
+    InputsDiffer {
+        /// Snapshot keys that differ, in canonical snapshot order.
+        keys: Vec<&'static str>,
+    },
+    /// Same pinned inputs, different eligible set: an eligibility
+    /// disagreement (predicates or hard gates).
+    PopulationDiffers {
+        /// Canonical identities only in `a`, sorted.
+        only_in_a: Vec<String>,
+        /// Canonical identities only in `b`, sorted.
+        only_in_b: Vec<String>,
+    },
+    /// Same population, an item's comparator keys differ (e.g. one
+    /// target normalised `peer_rank` differently).
+    ItemKeysDiffer {
+        /// `work_id` of the first item (in `a`'s order) whose
+        /// comparator keys differ.
+        work_id: String,
+        /// Comparator keys that differ, in comparator order.
+        keys: Vec<&'static str>,
+    },
+    /// Same inputs, same items, same keys, different sequence: a
+    /// comparator bug. The only class that is always a defect.
+    OrderDiffers {
+        /// First index where the two sequences disagree.
+        first_index: usize,
+        /// The item `a` holds at that index.
+        a: OrderedItem,
+        /// The item `b` holds at that index.
+        b: OrderedItem,
+    },
+    /// The pair cannot be compared: at least one side is a partial
+    /// candidate set, which claims no order. (Version-skew refusal
+    /// joins this variant when the types carry schema/comparator
+    /// versions — oracle test 7.)
+    NotComparable {
+        /// Machine-readable reason (`partial_candidate_set`).
+        reason: &'static str,
+    },
+}
+
+/// Render the authority-qualified identity of one item for
+/// population reports: `authority_id/work_id`.
+fn canonical_identity(item: &OrderedItem) -> String {
+    format!("{}/{}", item.authority_id, item.work_id)
+}
+
+/// Snapshot keys in canonical order, for [`OrderComparison`]
+/// reports.
+fn snapshot_diff_keys(a: &OrderSnapshot, b: &OrderSnapshot) -> Vec<&'static str> {
+    let mut keys = Vec::new();
+    if a.profile_version != b.profile_version {
+        keys.push("profile_version");
+    }
+    if a.taxonomy_version != b.taxonomy_version {
+        keys.push("taxonomy_version");
+    }
+    if a.policy_version != b.policy_version {
+        keys.push("policy_version");
+    }
+    if a.queue_rev != b.queue_rev {
+        keys.push("queue_rev");
+    }
+    if a.graph_rev != b.graph_rev {
+        keys.push("graph_rev");
+    }
+    if a.lane != b.lane {
+        keys.push("lane");
+    }
+    if a.as_of != b.as_of {
+        keys.push("as_of");
+    }
+    keys
+}
+
+/// Sorted canonical identities of one population, multiset: the same
+/// identity appears once per occurrence, so a duplicated identity is
+/// a population difference, not silent agreement. (Duplicates
+/// themselves are a builder refusal — oracle test 5.)
+fn sorted_identities(items: &[OrderedItem]) -> Vec<String> {
+    let mut ids: Vec<String> = items.iter().map(canonical_identity).collect();
+    ids.sort();
+    ids
+}
+
+/// Compare two order observations and name their divergence class.
+///
+/// Both sides must be complete: a partial candidate set claims no
+/// order, so a pair holding one is [`OrderComparison::NotComparable`],
+/// never a comparison. Otherwise the report stops at the first
+/// class that applies: inputs, then population, then item keys,
+/// then sequence (DST-06 record §4.1).
+pub fn compare(a: &SelectionOrderInput, b: &SelectionOrderInput) -> OrderComparison {
+    if !a.complete || !b.complete {
+        return OrderComparison::NotComparable {
+            reason: "partial_candidate_set",
+        };
+    }
+    let keys = snapshot_diff_keys(&a.snapshot, &b.snapshot);
+    if !keys.is_empty() {
+        return OrderComparison::InputsDiffer { keys };
+    }
+    let ids_a = sorted_identities(&a.items);
+    let ids_b = sorted_identities(&b.items);
+    if ids_a != ids_b {
+        let only_in_a: Vec<String> = ids_a
+            .iter()
+            .filter(|id| !ids_b.contains(id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let only_in_b: Vec<String> = ids_b
+            .iter()
+            .filter(|id| !ids_a.contains(id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        return OrderComparison::PopulationDiffers {
+            only_in_a,
+            only_in_b,
+        };
+    }
+    for item_a in &a.items {
+        if let Some(item_b) = b
+            .items
+            .iter()
+            .find(|item| item.authority_id == item_a.authority_id && item.work_id == item_a.work_id)
+        {
+            let mut keys = Vec::new();
+            if item_a.effective_urgency != item_b.effective_urgency {
+                keys.push("effective_urgency");
+            }
+            if item_a.peer_rank != item_b.peer_rank {
+                keys.push("peer_rank");
+            }
+            if item_a.created_at != item_b.created_at {
+                keys.push("created_at");
+            }
+            if !keys.is_empty() {
+                return OrderComparison::ItemKeysDiffer {
+                    work_id: item_a.work_id.clone(),
+                    keys,
+                };
+            }
+        }
+    }
+    for (index, (item_a, item_b)) in a.items.iter().zip(b.items.iter()).enumerate() {
+        if item_a.authority_id != item_b.authority_id || item_a.work_id != item_b.work_id {
+            return OrderComparison::OrderDiffers {
+                first_index: index,
+                a: item_a.clone(),
+                b: item_b.clone(),
+            };
+        }
+    }
+    OrderComparison::Identical
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::contracts::is_digest_string;
@@ -408,5 +584,130 @@ mod tests {
                 "refusal states the rule: {rendered}"
             );
         }
+    }
+
+    /// DST-06 oracle test 6 (#9456): `compare` returns each
+    /// divergence class for a constructed pair, in the §4.1
+    /// precedence — inputs, then population, then item keys, then
+    /// sequence — and refuses a pair holding a partial candidate
+    /// set. Oracle source: the DST-06 design record §4
+    /// ("Comparing two targets"), which this test copies, not this
+    /// module's implementation.
+    #[test]
+    fn pmo_distribution_divergence_classes() {
+        // Identical observations compare identical, and their hashes
+        // agree: same inputs hashed twice on "two targets".
+        let first = fixture_input();
+        let second = fixture_input();
+        assert_eq!(compare(&first, &second), OrderComparison::Identical);
+        assert_eq!(
+            selection_order_hash(&first).unwrap(),
+            selection_order_hash(&second).unwrap()
+        );
+
+        // One snapshot field differs: inputs differ, naming the key
+        // in canonical snapshot order. Order beneath it is not
+        // inspected, so the population may differ too.
+        let mut retaxed = fixture_input();
+        retaxed.snapshot.policy_version = "policy:v8".to_string();
+        retaxed.items.pop();
+        assert_eq!(
+            compare(&first, &retaxed),
+            OrderComparison::InputsDiffer {
+                keys: vec!["policy_version"],
+            }
+        );
+        let mut multi = fixture_input();
+        multi.snapshot.policy_version = "policy:v8".to_string();
+        multi.snapshot.as_of = "2026-11-13T04:30:00Z".to_string();
+        assert_eq!(
+            compare(&first, &multi),
+            OrderComparison::InputsDiffer {
+                keys: vec!["policy_version", "as_of"],
+            }
+        );
+
+        // Same pinned inputs, different eligible set: the missing
+        // and extra identities are named, sorted.
+        let mut smaller = fixture_input();
+        smaller.items.pop();
+        assert_eq!(
+            compare(&first, &smaller),
+            OrderComparison::PopulationDiffers {
+                only_in_a: vec!["fleet-local/843".to_string()],
+                only_in_b: vec![],
+            }
+        );
+        let mut swapped_set = fixture_input();
+        swapped_set.items[1].work_id = "844".to_string();
+        assert_eq!(
+            compare(&first, &swapped_set),
+            OrderComparison::PopulationDiffers {
+                only_in_a: vec!["fleet-local/843".to_string()],
+                only_in_b: vec!["fleet-local/844".to_string()],
+            }
+        );
+
+        // Same population, an item's comparator keys differ: the
+        // work_id and the differing keys, in comparator order.
+        let mut reranked = fixture_input();
+        reranked.items[1].peer_rank = "b".to_string();
+        assert_eq!(
+            compare(&first, &reranked),
+            OrderComparison::ItemKeysDiffer {
+                work_id: "843".to_string(),
+                keys: vec!["peer_rank"],
+            }
+        );
+
+        // Same inputs, same items, same keys, different sequence: a
+        // comparator bug, with the first disagreeing index. The
+        // hashes differ too: order is part of the claim.
+        let mut reordered = fixture_input();
+        reordered.items.reverse();
+        assert_eq!(
+            compare(&first, &reordered),
+            OrderComparison::OrderDiffers {
+                first_index: 0,
+                a: first.items[0].clone(),
+                b: first.items[1].clone(),
+            }
+        );
+        assert_ne!(
+            selection_order_hash(&first).unwrap(),
+            selection_order_hash(&reordered).unwrap()
+        );
+
+        // Precedence: a population difference does not mask an input
+        // difference, and a sequence difference does not mask a
+        // population difference.
+        assert!(matches!(
+            compare(&first, &retaxed),
+            OrderComparison::InputsDiffer { .. }
+        ));
+        let mut both = fixture_input();
+        both.items[1].work_id = "844".to_string();
+        both.items.reverse();
+        assert!(matches!(
+            compare(&first, &both),
+            OrderComparison::PopulationDiffers { .. }
+        ));
+
+        // A pair holding a partial candidate set claims no order, so
+        // there is nothing to compare: refused, never classified.
+        let mut partial = fixture_input();
+        partial.complete = false;
+        assert_eq!(
+            compare(&first, &partial),
+            OrderComparison::NotComparable {
+                reason: "partial_candidate_set",
+            }
+        );
+        assert_eq!(
+            compare(&partial, &first),
+            OrderComparison::NotComparable {
+                reason: "partial_candidate_set",
+            }
+        );
     }
 }
