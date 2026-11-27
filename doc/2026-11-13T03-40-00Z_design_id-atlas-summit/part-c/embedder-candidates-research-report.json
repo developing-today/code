@@ -1,0 +1,98 @@
+{
+  "schema": "atlas-embedder-research/v1",
+  "issue": 10157,
+  "slice": "C9138-01",
+  "current_model": "Snowflake arctic-embed-m-v2.0",
+  "owner_decision": {"status": "undecided", "decision_ref": null},
+  "independent_recall_run": false,
+  "second_embedder_enabled": false,
+  "corpus_sha256": null,
+  "eval_set_sha256": null,
+  "quality_artifact": null,
+  "sources": [
+    {
+      "id": "snowflake-card",
+      "url": "https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0",
+      "retrieved": "2026-11-27",
+      "fact": "Apache-2.0; released models usable commercially free of charge; local SentenceTransformer example; 768 dimensions; 8192 token context; query prefix required. Compute is not priced here."
+    },
+    {
+      "id": "bge-card",
+      "url": "https://huggingface.co/BAAI/bge-m3",
+      "retrieved": "2026-11-27",
+      "fact": "MIT license; 1024 dimensions; 8192 sequence length; local FlagEmbedding example; dense, sparse and multi-vector retrieval; more than 100 working languages."
+    },
+    {
+      "id": "voyage-embeddings",
+      "url": "https://docs.voyageai.com/docs/embeddings",
+      "retrieved": "2026-11-27",
+      "fact": "Hosted voyage-4 family, voyage-code-4 and older models; open-weight voyage-4-nano also offered; 4-family default dimension 1024 with 256/512/2048 options and 32000 context. General/multilingual and code are distinct model choices."
+    },
+    {
+      "id": "voyage-pricing",
+      "url": "https://docs.voyageai.com/docs/pricing",
+      "retrieved": "2026-11-27",
+      "fact": "USD per million input tokens: voyage-4-large 0.12, voyage-4 0.06, voyage-4-lite 0.02, voyage-code-4 0.12. Standard endpoint list prices after allowances; Batch has separate discount/credit rules."
+    },
+    {
+      "id": "openai-embeddings",
+      "url": "https://developers.openai.com/api/docs/guides/embeddings",
+      "retrieved": "2026-11-27",
+      "fact": "Hosted text-embedding-3-small and text-embedding-3-large API; default 1536 and 3072 dimensions; dimensions can be shortened; max input 8192; guide includes code-search example. No downloadable weights established by this source."
+    },
+    {
+      "id": "openai-pricing",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-11-27",
+      "fact": "Specialized models, Standard: text-embedding-3-small USD 0.02 per million input tokens; text-embedding-3-large USD 0.13."
+    },
+    {
+      "id": "workers-model",
+      "url": "https://developers.cloudflare.com/workers-ai/models/bge-m3/",
+      "retrieved": "2026-11-27",
+      "fact": "Cloudflare-hosted @cf/baai/bge-m3; USD 0.0118 per million input tokens; page advertises 60000-token context. Hosted API boundary is not evidence of equivalence to local BAAI/bge-m3."
+    }
+  ],
+  "candidates": [
+    {
+      "identity": "Snowflake arctic-embed-m-v2.0",
+      "cost": "No model-license charge; own hardware, power, operations and throughput cost unmeasured. Not Snowflake Cortex pricing.",
+      "self_hostability": "Yes: downloadable Apache-2.0 weights and local usage example.",
+      "mixed_corpus": "Multilingual text; 768-D base. Pin existing revision and preprocessing; do not compare or merge vectors across candidate spaces. Repository mixed-corpus quality unmeasured.",
+      "sources": ["snowflake-card"],
+      "quality_status": "unmeasured"
+    },
+    {
+      "identity": "BGE-M3",
+      "cost": "No hosted token rate for self-hosting established; hardware, serving and storage cost unmeasured. MIT model license, not zero operating cost.",
+      "self_hostability": "Yes: downloadable MIT weights and local FlagEmbedding usage.",
+      "mixed_corpus": "Multilingual dense/sparse/multi-vector capability is vendor-documented, not repository quality evidence. 1024-D dense vectors and 8192 tokens; multi-vector outputs need different indexing, not a drop-in 768-D table.",
+      "sources": ["bge-card"],
+      "quality_status": "unmeasured"
+    },
+    {
+      "identity": "Voyage",
+      "cost": "Standard USD/M input tokens: voyage-4-lite 0.02, voyage-4 0.06, voyage-4-large/code-4 0.12 after allowances; choose model before estimating total corpus cost.",
+      "self_hostability": "Family-dependent: hosted APIs are distinct from open-weight voyage-4-nano; nano license, hardware sizing and operating cost not evaluated in this slice. Do not label whole family closed or self-hostable.",
+      "mixed_corpus": "General multilingual and code-specialized variants; pin concrete model, revision, dimensions and query/document input_type before integration. Family label is not a pipeline identity; repository quality unmeasured.",
+      "sources": ["voyage-embeddings", "voyage-pricing"],
+      "quality_status": "unmeasured"
+    },
+    {
+      "identity": "OpenAI text-embedding-3",
+      "cost": "Standard USD/M input tokens: small 0.02; large 0.13. Excludes storage, retrieval, retries and model-specific tokenization effects.",
+      "self_hostability": "Hosted API documented; no self-hostable weights established for these exact models in retrieved sources. Not proof that all OpenAI products are closed.",
+      "mixed_corpus": "Guide documents text and code-search uses, not repository mixed-corpus quality. Pin small/large plus dimensions (1536/3072 defaults) and preprocessing; shortened vectors remain their own qualified pipeline.",
+      "sources": ["openai-embeddings", "openai-pricing"],
+      "quality_status": "unmeasured"
+    },
+    {
+      "identity": "Workers AI",
+      "cost": "For concrete hosted @cf/baai/bge-m3, USD 0.0118/M input tokens on retrieved model page. Workers/runtime/storage charges and allowances are outside this figure.",
+      "self_hostability": "Workers AI is Cloudflare-hosted. Underlying BAAI model can be self-hosted separately, but that is the BGE-M3 row, not the same serving identity.",
+      "mixed_corpus": "Hosted BGE-M3 advertises multilingual/multi-granularity text. Vendor page lists 60000 context versus upstream BAAI 8192; unresolved API/model boundary discrepancy, never infer identical preprocessing or vector compatibility. Repository quality unmeasured.",
+      "sources": ["workers-model", "bge-card"],
+      "quality_status": "unmeasured"
+    }
+  ]
+}
