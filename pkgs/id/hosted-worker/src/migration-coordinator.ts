@@ -88,8 +88,32 @@ async function current(ports: MigrationPorts, subjectKey: string): Promise<Hoste
 export async function driveMigration(ports: MigrationPorts, run: MigrationRun): Promise<HostedAccountRecord> {
   const target = parseJurisdiction(run.targetJurisdiction);
   let lease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
+
+  // #15828: a failed or refused run must not keep the lease for the
+  // full TTL — the operator route mints a fresh owner per request, so
+  // a held lease wedges every retry with `lease_held` even though no
+  // driver is running. Release on every throw; releaseLease is a
+  // no-op when another coordinator has already taken the lease over
+  // (owner/token no longer match), so this cannot free a live lease.
+  try {
+    return await driveMigrationLoop(ports, run, target, () => lease, (next) => { lease = next; });
+  } catch (error) {
+    await ports.directory.releaseLease(run.subjectKey, lease).catch(() => {});
+    throw error;
+  }
+}
+
+async function driveMigrationLoop(
+  ports: MigrationPorts,
+  run: MigrationRun,
+  target: Jurisdiction,
+  getLease: () => MigrationLease,
+  setLease: (lease: MigrationLease) => void,
+): Promise<HostedAccountRecord> {
+  let lease = getLease();
   const step = async (record: HostedAccountRecord, event: Parameters<PersistentHostedAccountDirectory["transition"]>[1]) => {
     lease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
+    setLease(lease);
     return ports.directory.transition(record, event, { lease, nowMs: ports.now() });
   };
   const mid = { migration_id: run.migrationId };
@@ -181,6 +205,24 @@ export async function abortMigration(
   run: Omit<MigrationRun, "targetJurisdiction">,
 ): Promise<HostedAccountRecord> {
   let lease: MigrationLease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
+  // #15828: like driveMigration, a refused or failed abort (e.g. the
+  // after-switch refusal below) must release the lease it just took,
+  // or it poisons the account for the full TTL.
+  try {
+    return await abortMigrationBody(ports, run, lease, (next) => { lease = next; });
+  } catch (error) {
+    await ports.directory.releaseLease(run.subjectKey, lease).catch(() => {});
+    throw error;
+  }
+}
+
+async function abortMigrationBody(
+  ports: MigrationPorts,
+  run: Omit<MigrationRun, "targetJurisdiction">,
+  initialLease: MigrationLease,
+  setLease: (lease: MigrationLease) => void,
+): Promise<HostedAccountRecord> {
+  let lease: MigrationLease = initialLease;
   let record = await current(ports, run.subjectKey);
   if (record.phase === "switched") {
     throw new FailClosed(409, "directory_transition_refused", "cannot abort after the switch; finish the migration instead");
@@ -199,6 +241,7 @@ export async function abortMigration(
       ["not_staged"],
     );
     lease = await ports.directory.acquireLease(run.subjectKey, run.owner, ports.now(), run.leaseTtlMs);
+    setLease(lease);
     record = await ports.directory.transition(
       record,
       { type: "abort", migrationId: run.migrationId },

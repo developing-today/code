@@ -438,7 +438,7 @@ export class NotifyRelayClient {
         // withdrawn at the edge (a new state of the same question is
         // not a withdrawal: its raised event supersedes the old one).
         const objectRef = activeObjectRef(key);
-        if (objectRef?.startsWith("needs-drew:") && !currentRefs.has(objectRef)) {
+        if (isNeedsUserQuestionRef(objectRef) && !currentRefs.has(objectRef)) {
           const cleared = needsDrewClearedEvent(objectRef, active.occurrenceId, clearedAt);
           if (
             !this.ackedEvents.has(cleared.mirrorId) &&
@@ -731,6 +731,11 @@ export class NotifyRelayClient {
     this.persistInFlight = write.catch(() => {});
     return write;
   }
+}
+
+/** Both prefixes may still occur while question events roll forward. */
+export function isNeedsUserQuestionRef(objectRef: string | null | undefined): objectRef is string {
+  return objectRef?.startsWith("needs-drew:") === true || objectRef?.startsWith("needs-user:") === true;
 }
 
 /** The object ref inside an active-candidate key

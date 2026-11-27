@@ -149,3 +149,22 @@ func TestException(t *testing.T) {
 		t.Fatal("expected rejection: exception without a chosen option")
 	}
 }
+
+func TestClaimedImplementationUses8187Exception(t *testing.T) {
+	p := testPolicy(t)
+	now := time.Date(2026, 11, 26, 3, 0, 0, 0, time.UTC)
+	fresh := now.Add(-1 * time.Minute)
+	const exceptionID = "E1-2026-11-26-8187"
+	rec, err := Evaluate(p, Answers{
+		Task:            "claimed queue implementation task 24880",
+		ExceptionID:     exceptionID,
+		ExceptionOption: "Muse",
+		PoolReadAt:      &fresh,
+	}, now)
+	if err != nil {
+		t.Fatalf("Evaluate claimed implementation exception: %v", err)
+	}
+	if rec.Rule != "exception" || rec.ExceptionID != exceptionID || rec.Option != "Muse" {
+		t.Fatalf("claimed implementation must record the #8187 exception and claiming lane option: %+v", rec)
+	}
+}

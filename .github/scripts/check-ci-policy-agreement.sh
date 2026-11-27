@@ -32,6 +32,7 @@ REGISTRY=(
   "identity-build.yml|identity build|nightly"
   "map-build.yml|map build|nightly"
   "mcpx-nixbuild.yml|mcpx nix build|nightly"
+  "pmo-contract-conformance.yml|pmo-contract-conformance|nightly"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a

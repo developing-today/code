@@ -1758,7 +1758,7 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 		if !refused || attempt >= 20 {
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(defaults.SupervisorReapRetry)
 	}
 	reaped := 0
 	for _, o := range outcomes {

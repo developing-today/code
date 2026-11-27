@@ -1032,6 +1032,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/link-list" => verb_link_list(t, req),
         "/dep-recheck" => verb_dep_recheck(t, req),
         "/quarantine-recheck" => verb_quarantine_recheck(t, req),
+        "/time-recheck" => verb_time_recheck(t, req),
         "/repair" => verb_repair(t, req),
         "/cancel" => verb_cancel(t, req),
         "/resolution-backfill" => verb_resolution_backfill(t, req),

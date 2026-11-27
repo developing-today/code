@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, ownerSettingsRecord, SILENT_MS } from "../edge/src/edge.ts";
 import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
-import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
+import { ACT_MS, forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
@@ -5321,6 +5321,7 @@ describe("the edge does the core itself", () => {
         "push.test",
         "settings.clear",
         "settings.set",
+        "prompt.enqueue",
         "ask.send",
         "ask.reply",
         "ask.close",
@@ -7613,6 +7614,27 @@ describe("the edge does the core itself", () => {
     }
   };
   const ID = (n: number) => `0f000000-0000-4000-8000-${String(100_000 + n).padStart(12, "0")}`;
+  const relayKey = (about: string) => `relaying:${encodeURIComponent(about)}`;
+  const marker = (
+    w: HeldWorld,
+    id: string,
+    kind: string,
+    args: Record<string, unknown>,
+    about: string,
+    at = w.now.t,
+  ) => {
+    w.stored.set(relayKey(about), [
+      {
+        token: `token-${id}`,
+        id,
+        kind,
+        args,
+        who: "owner",
+        at: new Date(at).toISOString(),
+        until: at + ACT_MS,
+      },
+    ]);
+  };
 
   test("what is held and never reached a machine is done here when this side can again: with no machine, once, and the owner sees it done", async () => {
     const w = await primary();
@@ -8239,6 +8261,209 @@ describe("the edge does the core itself", () => {
     ]);
   });
 
+  test("a newer action about the same thing waits while the older host asking is still out", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(235));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The ask belongs to the host, not the object that sent it. A newly
+    // activated edge over the same storage must still hold the next act.
+    w.edge.now = w.makeEdge();
+
+    let secondDone = false;
+    const second = w.act("issue.comment", { issue: 7, text: "newer" }, ID(236)).finally(() => {
+      secondDone = true;
+    });
+    for (let turn = 0; turn < 200 && !secondDone; turn++) await new Promise((r) => setTimeout(r, 1));
+    const relaysWhileFirstOut = acts();
+
+    w.gate.wait = null;
+    open();
+    const [older, newer] = await Promise.all([first, second]);
+    expect(await older.json()).toMatchObject({ ok: true });
+    expect(await newer.json()).toMatchObject({ ok: true, held: true });
+    expect(relaysWhileFirstOut).toBe(before + 1);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(heldIds(w)).toEqual([ID(236)]);
+  });
+
+  test("a host answer settles its subject marker so later actions are not held for the old asking", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(237));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+
+    const later = await w.act("issue.comment", { issue: 7, text: "later" }, ID(238));
+    expect(await later.json()).toMatchObject({ ok: true });
+    expect(acts()).toBe(before + 2);
+    expect(heldIds(w)).toEqual([]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(2);
+  });
+
+  test("a confirmed unreachable answer settles the subject marker and keeps the older action", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    expect(
+      await (await w.act("issue.comment", { issue: 7, text: "older, never arrived" }, ID(239))).json(),
+    ).toMatchObject({
+      held: true,
+      waits: "either",
+    });
+
+    w.net.hostUp = true;
+    w.ghRefuses.length = 0;
+    await w.act("issue.comment", { issue: 7, text: "newer" }, ID(240));
+    expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toEqual([]);
+    expect(heldIds(w)).toContain(ID(239));
+  });
+
+  test("two direct actions about one issue commit in arrival order", async () => {
+    const w = await primary();
+    let open = () => {};
+    const wait = new Promise<void>((resolve) => (open = resolve));
+    w.ghHolds.push({ match: COMMENT, wait });
+    const first = w.act("issue.comment", { issue: 81, text: "first" }, ID(245));
+    for (let turn = 0; turn < 200 && commented(w).length === 0; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(commented(w)).toEqual(["first"]);
+    let secondDone = false;
+    const second = w.act("issue.comment", { issue: 81, text: "second" }, ID(246)).finally(() => {
+      secondDone = true;
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect([commented(w), secondDone]).toEqual([["first"], false]);
+    open();
+    expect((await Promise.all([first, second])).map((res) => res.status)).toEqual([200, 200]);
+    expect(commented(w)).toEqual(["first", "second"]);
+  });
+
+  test("an outstanding relay keeps a held action from running during a wake", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(247), 82, "waiting"]]);
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    marker(w, ID(248), "issue.comment", { issue: 82, text: "older" }, "issue:82");
+    const before = commented(w).length;
+    await wakeNow(w);
+    expect([heldIds(w), commented(w).length]).toEqual([[ID(247)], before]);
+  });
+
+  test("sync does not hand a held action to a machine while its subject is relaying", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(249), 83, "waiting"]]);
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    marker(w, ID(250), "issue.comment", { issue: 83, text: "older" }, "issue:83");
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.stored.get("handed") ?? []).not.toContain(ID(249));
+  });
+
+  test("an expired asking returns to its original position ahead of newer held actions", async () => {
+    const w = await primary();
+    const at = w.now.t;
+    marker(w, ID(251), "issue.comment", { issue: 84, text: "old" }, "issue:84", at);
+    w.now.t = at + 10_000;
+    expect(await (await w.act("issue.comment", { issue: 84, text: "new" }, ID(252))).json()).toMatchObject({
+      held: true,
+    });
+    w.now.t = at + ACT_MS + 1;
+    expect(await (await w.act("issue.comment", { issue: 84, text: "last" }, ID(253))).json()).toMatchObject({
+      held: true,
+    });
+    expect(heldIds(w)).toEqual([ID(251), ID(252), ID(253)]);
+  });
+
+  test("an expired non-holdable relay does not block its subject indefinitely", async () => {
+    const w = await primary();
+    const at = w.now.t;
+    marker(w, ID(254), "task.cancel", { task: 21016 }, "task:21016", at);
+    w.now.t = at + ACT_MS + 1;
+    const moved = await w.act("task.move", { task: 21016, to: "last" }, ID(255));
+    expect(moved.status).not.toBe(503);
+    expect(w.stored.has(relayKey("task:21016"))).toBe(false);
+  });
+
+  test("a failed hold keeps the relay marker until the older action is retained", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.storeFails.add(`held:${ID(256)}`);
+    await w.act("issue.comment", { issue: 85, text: "older" }, ID(256)).catch(() => null);
+    expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toHaveLength(1);
+  });
+
+  test("no answer keeps the older action host-owned and holds a newer action behind it", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    w.net.giveUpEarly = true;
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older, unknown" }, ID(243))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    expect(acts()).toBe(before + 1);
+
+    w.net.giveUpEarly = false;
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(244));
+    expect(await newer.json()).toMatchObject({ held: true });
+    expect(heldIds(w)).toEqual([ID(243), ID(244)]);
+    expect(acts()).toBe(before + 1);
+
+    w.gate.wait = null;
+    open();
+    await Promise.all(w.stillRunning);
+  });
+
+  test("an asking past its deadline becomes host-owned once, including across passivation", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(241));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+
+    w.now.t += ACT_MS + 1;
+    w.edge.now = w.makeEdge();
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(242));
+    expect(await newer.json()).toMatchObject({ ok: true, held: true });
+    expect(heldIds(w)).toEqual([ID(241), ID(242)]);
+    expect(acts()).toBe(before + 1);
+
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect(heldIds(w)).toEqual([ID(242)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
   test("a newer one about the same thing does not go ahead of one the laptop may have: it waits behind it, and one about something else does not", async () => {
     const w = await primary();
     w.ghRefuses.push(COMMENT);
@@ -8486,6 +8711,61 @@ describe("the edge does the core itself", () => {
     await wakeNow(w);
     expect([commented(w).slice(asked), heldIds(w)]).toEqual([["second"], []]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("two ranks seconds apart: the newer waits while the older rank is still out at the laptop", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    // Add the host's rank handler after its report: the edge can do ranks, and
+    // the machine can do the relayed action, without changing the test's report.
+    w.table["issue.rank"] = {
+      run: async (a) => {
+        w.ran.push({ kind: "issue.rank", args: a });
+        await w.gate.wait;
+        return { ranked: a.issue, rank: a.rank };
+      },
+      touch: ["priorities"],
+      audit: (a) => ({ issue: a.issue, rank: a.rank }),
+    };
+    w.ghRefuses.push(labels);
+    // The older rank is turned away here and is slow at the laptop.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.rank", { issue: 201, rank: "now" }, ID(311));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+
+    // A newer rank for the same issue must neither run here nor go to the laptop.
+    const calls = w.githubCalls.filter((c) => labels(c.method, c.url)).length;
+    const second = await w.act("issue.rank", { issue: 201, rank: "next" }, ID(312));
+    expect([second.status, await second.json()]).toMatchObject([200, { held: true }]);
+    expect([heldIds(w), acts(), w.githubCalls.filter((c) => labels(c.method, c.url)).length]).toEqual([
+      [ID(312)],
+      before + 1,
+      calls,
+    ]);
+
+    // The laptop answers for the older rank; only then is its asking settled.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    await settle(w);
+    expect(heldIds(w)).toEqual([ID(312)]);
+    expect(w.githubCalls.filter((c) => labels(c.method, c.url))).toHaveLength(calls);
+    expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toEqual([]);
+    // The older is answered; on the next machine report the newer rank follows it.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((command) => command.id)).toEqual([ID(312)]);
+    expect(w.ran.filter((action) => action.kind === "issue.rank").map((action) => action.args.rank)).toEqual([
+      "now",
+      "next",
+    ]);
   });
 
   test("with no machine ever reporting, what only a machine can do is still dropped after a day, and said to have been", async () => {

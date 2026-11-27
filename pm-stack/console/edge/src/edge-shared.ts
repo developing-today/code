@@ -27,6 +27,7 @@ export const SECTIONS: Record<string, number> = {
   asks: 45_000,
   questionCount: 45_000,
   questions: 45_000,
+  questionSets: 45_000,
   prs: 90_000,
   priorities: 180_000,
   done: 120_000,
@@ -192,6 +193,11 @@ export interface EdgeOptions {
      * as service:pm-stack. Either missing, they stay a machine's. */
     bridgeToken?: string;
     bridgeFetch?: unknown;
+    /** The decision-events Worker (#13491): where it is and the
+     * shared secret its reads take. With both, the Questions
+     * discovery section is this side's; without either, it stays a
+     * machine's. The secret is never logged or returned. */
+    decisionEvents?: { url: string; secret: string };
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */
@@ -216,6 +222,12 @@ export interface EdgeOptions {
   ledgerPages?:
     | { store: "turso"; url: string; token?: string }
     | { store: "d1"; db?: import("./ledger-pages.ts").LedgerD1Database };
+  /** Hosted /dns (#14968 slice 2): the #902 register snapshot the
+   * collector publishes into the same fleet-platform D1 database,
+   * present only when the Worker's DNS_PAGES flag reads `on`. With
+   * it, this side serves /dns and /api/dns.json itself from the
+   * snapshot row; without it, those pages stay the host's. */
+  dnsPages?: { db?: import("./ledger-pages.ts").LedgerD1Database };
   /** C6 quota page (#15018): opt-in. Envelope + existing question sets
    * are supplied by the host; dispatchReset is the existing pool-steward
    * machinery. Absent/off: /console/api/quota answers 503. */

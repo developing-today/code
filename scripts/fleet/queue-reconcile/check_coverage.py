@@ -20,7 +20,10 @@ Two halves, deliberately split:
   owns the Turso connection. It is read-only and safe to run any time.
 - **The import** is done here, through the sanctioned CLI enqueue path,
   so packets are validated and dedupe-keyed exactly like every other
-  task. The dedupe key makes a re-run idempotent by construction.
+  task. The dedupe key makes a re-run idempotent by construction; when
+  the canonical key belongs only to a completed task, a terminal-dedupe
+  response is retried with a deterministic dispatch suffix so the still-
+  uncovered issue receives a new live task.
 
 Default is observe-only: the run reports what it *would* import and
 writes nothing. Pass `--import` to actually enqueue.
@@ -94,6 +97,7 @@ report names which; a failure never masquerades as "0 uncovered").
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -953,6 +957,60 @@ def ready_shepherd_candidates(
     return candidates
 
 
+def _enqueue_response(stdout: str) -> dict:
+    """Read the broker row JSON after the CLI's human status lines."""
+    start = stdout.find("{")
+    if start < 0:
+        return {}
+    try:
+        response = json.loads(stdout[start:])
+    except json.JSONDecodeError:
+        return {}
+    return response if isinstance(response, dict) else {}
+
+
+_TERMINAL_TASK_STATUSES = {"done", "failed", "cancelled"}
+
+
+def _is_terminal_dedupe_response(response: dict) -> bool:
+    """Recognize both broker metadata and the CLI's returned terminal row."""
+    dedupe_match = response.get("dedupe_match") or {}
+    return (
+        dedupe_match.get("rule") == "dedupe_key_terminal"
+        or response.get("status") in _TERMINAL_TASK_STATUSES
+    )
+
+
+def _terminal_retry_key(packet: dict) -> str | None:
+    """Give a previously completed packet one new, deterministic key.
+
+    Coverage imports are keyed canonically per issue/PR. A completed row
+    still owns that key but is not live coverage; the queue explicitly
+    instructs producers to suffix the key for a later dispatch. Using the
+    packet's checked_at timestamp makes two workers in the same pass
+    dedupe together while allowing a later reconciliation pass to requeue
+    the still-open item.
+    """
+    key = packet.get("dedupe_key")
+    payload = packet.get("payload") or {}
+    subject = payload.get("issue") or payload.get("pr") or {}
+    repo = payload.get("repo")
+    number = subject.get("number")
+    dedupe = payload.get("dedupe") or {}
+    checked_at = dedupe.get("checked_at") or subject.get("state_checked_at")
+    if (
+        not isinstance(key, str)
+        or ":dispatch:" in key
+        or not isinstance(repo, str)
+        or not isinstance(number, int)
+        or not isinstance(checked_at, str)
+    ):
+        return None
+    seed = f"{key}:{repo}:{number}:{checked_at}".encode("utf-8")
+    suffix = hashlib.sha256(seed).hexdigest()[:8]
+    return f"{key}:dispatch:{suffix}"
+
+
 def enqueue_packet(
     packet: dict,
     queue: str,
@@ -968,40 +1026,77 @@ def enqueue_packet(
     file is unique per enqueue: an ad-hoc run overlapping the scheduled
     one must never overwrite or delete the other's packet.
     """
-    payload = packet["payload"]
-    repo_slug = payload["repo"].replace("/", "-")
-    # Issue packets key the temp file on the issue; PR packets
-    # (merge-watch, shepherd) key it on the PR.
-    number = (payload.get("issue") or payload["pr"])["number"]
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"coverage-{repo_slug}-{number}-",
-        suffix=".json",
-        dir=os.environ.get("TMPDIR") or None,
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(packet, fh)
-        env = os.environ.copy()
-        env["REPO_QUEUE_BROKER_URL"] = broker_url
-        env["REPO_QUEUE_TOKEN_FILE"] = str(token_file)
+    def run_once(candidate: dict) -> subprocess.CompletedProcess:
+        payload = candidate["payload"]
+        repo_slug = payload["repo"].replace("/", "-")
+        # Issue packets key the temp file on the issue; PR packets
+        # (merge-watch, shepherd) key it on the PR.
+        number = (payload.get("issue") or payload["pr"])["number"]
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"coverage-{repo_slug}-{number}-",
+            suffix=".json",
+            dir=os.environ.get("TMPDIR") or None,
+        )
+        tmp = Path(tmp_name)
         try:
-            out = subprocess.run(
+            with os.fdopen(fd, "w") as fh:
+                json.dump(candidate, fh)
+            env = os.environ.copy()
+            env["REPO_QUEUE_BROKER_URL"] = broker_url
+            env["REPO_QUEUE_TOKEN_FILE"] = str(token_file)
+            return subprocess.run(
                 [fleet, "queue", "enqueue", str(tmp), "--queue", queue],
                 capture_output=True,
                 text=True,
                 timeout=120,
                 env=env,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            # A launch failure or timeout is an enqueue failure, not a
-            # reason to abandon the remaining issues and the report.
-            return False, f"could not run enqueue: {exc}"
-    finally:
-        tmp.unlink(missing_ok=True)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    try:
+        out = run_once(packet)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A launch failure or timeout is an enqueue failure, not a
+        # reason to abandon the remaining issues and the report.
+        return False, f"could not run enqueue: {exc}"
     if out.returncode != 0:
         return False, (out.stderr or out.stdout).strip()[:300]
-    return True, out.stdout.strip()[:300]
+
+    response = _enqueue_response(out.stdout)
+    if not _is_terminal_dedupe_response(response):
+        return True, out.stdout.strip()[:300]
+
+    retry_key = _terminal_retry_key(packet)
+    if retry_key is None:
+        return False, (
+            "terminal dedupe hit, but packet has no safe dispatch suffix: "
+            f"{out.stdout.strip()[:240]}"
+        )
+    retry_payload = {
+        **packet["payload"],
+        "dedupe_override": (
+            "Coverage reconciliation retried this still-open item after its previous "
+            "queue task reached a terminal state."
+        ),
+    }
+    retry_packet = {
+        **packet,
+        "dedupe_key": retry_key,
+        "payload": retry_payload,
+    }
+    try:
+        retry = run_once(retry_packet)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"terminal dedupe retry could not run: {exc}"
+    if retry.returncode != 0:
+        return False, (retry.stderr or retry.stdout).strip()[:300]
+    if _is_terminal_dedupe_response(_enqueue_response(retry.stdout)):
+        return False, (
+            "dispatch-suffixed terminal dedupe retry was not filed: "
+            f"{retry.stdout.strip()[:240]}"
+        )
+    return True, retry.stdout.strip()[:300]
 
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,6 @@ use std::collections::{HashMap, HashSet};
 
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum};
-use redb::ReadableTable;
 
 use super::compaction::Residue;
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
@@ -55,6 +54,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::AuthorKey;
 use id_store::chain::Event;
 use id_store::chat::CHAT_MESSAGE_KIND;
+use id_store::event_rows::RowRead;
 
 /// One stored event, with the membership action it carries when it is a group operation.
 #[derive(Clone, Debug)]
@@ -607,26 +607,18 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
 pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 
 /// Reads every stored event with its action, the fork points, and the kept fork proof headers.
-pub(super) fn load<T>(
-    events: &T,
-    actions: &T,
-    device_ops: &T,
-    forks: &T,
-    proof_headers: &T,
-) -> Result<Loaded, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
+pub(super) fn load<T: RowRead + ?Sized>(rows: &mut T) -> Result<Loaded, StoreError> {
+    let actions: HashMap<_, _> = rows.scan_all("actions")?.into_iter().collect();
+    let device_ops: HashMap<_, _> = rows.scan_all("device_ops")?.into_iter().collect();
     let mut stored = Vec::new();
-    for entry in events.iter()? {
-        let (_, value) = entry?;
-        let event = decode_stored(value.value())?;
-        let action = match actions.get(event.id.as_bytes().as_slice())? {
-            Some(row) => Some(decode_action(row.value())?),
+    for (_, value) in rows.scan_all("events")? {
+        let event = decode_stored(&value)?;
+        let action = match actions.get(event.id.as_bytes().as_slice()) {
+            Some(row) => Some(decode_action(row)?),
             None => None,
         };
-        let device = match device_ops.get(event.id.as_bytes().as_slice())? {
-            Some(row) => Some(decode_device_op(row.value())?),
+        let device = match device_ops.get(event.id.as_bytes().as_slice()) {
+            Some(row) => Some(decode_device_op(row)?),
             None => None,
         };
         stored.push(Stored {
@@ -637,17 +629,15 @@ where
     }
     // An author has a row at each point it has forked at. Its fork point is the lowest of them.
     let mut fork_points: HashMap<AuthorKey, SeqNum> = HashMap::new();
-    for entry in forks.iter()? {
-        let (key, value) = entry?;
-        let (author, _) = split_position(key.value())?;
-        let proof = decode_proof(value.value())?;
+    for (key, value) in rows.scan_all("forks")? {
+        let (author, _) = split_position(&key)?;
+        let proof = decode_proof(&value)?;
         let point = fork_points.entry(author).or_insert(proof.seq);
         *point = (*point).min(proof.seq);
     }
     let mut headers = Vec::new();
-    for entry in proof_headers.iter()? {
-        let (_, value) = entry?;
-        headers.push(decode_stored(value.value())?);
+    for (_, value) in rows.scan_all("proof_headers")? {
+        headers.push(decode_stored(&value)?);
     }
     Ok((stored, fork_points, headers))
 }

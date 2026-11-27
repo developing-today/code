@@ -1759,7 +1759,10 @@ fn test_a_joiner_sees_the_control_message_it_missed_and_drains_when_it_arrives()
 
     // The add arrives: the stall drains and the joiner is welcomed.
     cast.deliver(&add, &[4]);
-    assert_eq!(cast.session(4).stalled_delivery(), [] as [StalledDelivery; 0]);
+    assert_eq!(
+        cast.session(4).stalled_delivery(),
+        [] as [StalledDelivery; 0]
+    );
     assert!(cast.session(4).is_welcomed());
 }
 
@@ -1796,7 +1799,10 @@ fn test_an_application_message_stalled_on_a_concurrent_add_reports_exactly_the_m
         cast.deliver(&add_by_2, &[3]),
         vec![vec![text("names both adds")]]
     );
-    assert_eq!(cast.session(3).stalled_delivery(), [] as [StalledDelivery; 0]);
+    assert_eq!(
+        cast.session(3).stalled_delivery(),
+        [] as [StalledDelivery; 0]
+    );
 }
 
 #[test]

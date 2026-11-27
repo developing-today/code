@@ -369,7 +369,9 @@ mod tests {
             1
         );
         assert_eq!(
-            store.author_events(&alice.author(), None, Some(0), 0).unwrap(),
+            store
+                .author_events(&alice.author(), None, Some(0), 0)
+                .unwrap(),
             [] as [AuthorEvent; 0]
         );
     }

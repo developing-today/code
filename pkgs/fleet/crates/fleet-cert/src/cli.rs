@@ -32,9 +32,9 @@ Usage: fleet cert <group> <verb> [options]
        fleet pki  <group> <verb> [options]   (alias)
 
 Groups and verbs (spec §6.1 tree; status as built):
-  root     create | inspect | list | validate
-  issuer   create | inspect | list
-  leaf     issue | inspect | list
+  root     create | renew | rotate | replace | inspect | list | validate
+  issuer   create | renew | rotate | replace | inspect | list
+  leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
@@ -44,7 +44,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   publish  plan | verify (apply | status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
-  trust    export | stage | ack | activate | retire | status
+  trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
   profile  list | show | validate | scaffold
   algorithms list | describe | benchmark | doctor
   explain  [topic]
@@ -55,6 +55,14 @@ Common options:
   --not-before <rfc3339>  Validity start (default: now).
   --not-after <rfc3339>   Exact validity end (mutually exclusive with --valid-for).
   --valid-for <duration>  Lifetime from not-before: 20y, 90d, '15 years 7 days'.
+
+Trust over a root set (documentation/output only; nothing installs trust):
+  trust inspect --root <root-set-dir> [--trust all|classical|pq]
+  trust pin --root <root-set-dir> [--trust ...] --out <pinset.json>
+  trust verify --root <root-set-dir> [--trust ...] --pins <pinset.json> [--store <pem-or-dir>]
+  trust export --root <root-set-dir> --target <consumer> [--trust ...] --out <dir>
+  trust install-plan --target <consumer>
+See `fleet cert explain trust` for the safety model.
 
 Signing operations never discover keys ambiently: issuer/leaf
 creation requires the signer's key directory as an explicit
@@ -705,6 +713,80 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["root", "root-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root renew requires --root <root-dir>"))?;
+            let signer = signer_source(&p, "root-key-dir", "root renew")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRenewRequest {
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "root renew")?;
+            let manifest = engine::renew_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec!["root", "out", "private-store"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(
+                rest,
+                &flags,
+                &["allow-legacy-root-strength", "private-in-bundle", "json"],
+            )?;
+            let root = p
+                .get("root")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("root rotate requires --root <root-dir>"))?;
+            // §24.3 ceremony: the new keys' destination must be explicit.
+            let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+                (Some(dir), _) => Some(PathBuf::from(dir)),
+                (None, true) => None,
+                (None, false) => {
+                    return Err(CertError::policy(
+                        "root rotation is a ceremony: name the new root key destination \
+                         explicitly — --private-store <dir> or --private-in-bundle \
+                         (spec §24.3)",
+                    ));
+                }
+            };
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::RootRotateRequest {
+                root_bundle: PathBuf::from(&root),
+                not_before: nb,
+                not_after: na,
+                allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+                private_store,
+            };
+            let out = p.require("out", "root rotate")?;
+            let manifest = engine::rotate_root_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Root set rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "replace" => replace_cmd(rest, json_out, true),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::RootSet)),
         "list" => list_cmd(rest, json_out, BundleType::RootSet),
         "validate" => {
@@ -734,7 +816,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(if all_ok { code } else { 1 })
         }
         other => Err(CertError::usage(format!(
-            "unknown root verb '{other}' (create | inspect | list | validate)"
+            "unknown root verb '{other}' (create | renew | rotate | replace | inspect | list | validate)"
         ))),
     }
 }
@@ -797,10 +879,90 @@ fn issuer_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["issuer", "root", "root-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let issuer = p
+                .get("issuer")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage("issuer renew requires --issuer <issuer-set-dir>")
+                })?;
+            let root = p.require("root", "issuer renew")?;
+            let signer = signer_source(&p, "root-key-dir", "issuer renew")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::IssuerRenewRequest {
+                issuer_bundle: PathBuf::from(&issuer),
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "issuer renew")?;
+            let manifest = engine::renew_issuer_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Issuer set renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec![
+                "issuer",
+                "root",
+                "root-key-dir",
+                "out",
+                "private-store",
+                "overlap-root",
+                "overlap-root-key-dir",
+            ];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-legacy-root-strength", "json"])?;
+            let issuer = p
+                .get("issuer")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage("issuer rotate requires --issuer <issuer-set-dir>")
+                })?;
+            let root = p.require("root", "issuer rotate")?;
+            let signer = signer_source(&p, "root-key-dir", "issuer rotate")?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS),
+            )?;
+            let req = crate::model::IssuerRotateRequest {
+                issuer_bundle: PathBuf::from(&issuer),
+                root_bundle: PathBuf::from(&root),
+                root_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+                private_store: p.get("private-store").map(PathBuf::from),
+                overlap_root_bundle: p.get("overlap-root").map(PathBuf::from),
+                overlap_root_signer: p.get("overlap-root-key-dir").map(|dir| SignerSource {
+                    key_dir: PathBuf::from(dir),
+                }),
+            };
+            let out = p.require("out", "issuer rotate")?;
+            let manifest = engine::rotate_issuer_set(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Issuer set rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "replace" => replace_cmd(rest, json_out, false),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::IssuerSet)),
         "list" => list_cmd(rest, json_out, BundleType::IssuerSet),
         other => Err(CertError::usage(format!(
-            "unknown issuer verb '{other}' (create | inspect | list)"
+            "unknown issuer verb '{other}' (create | renew | rotate | replace | inspect | list)"
         ))),
     }
 }
@@ -884,12 +1046,173 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["leaf", "issuer", "issuer-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf renew requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf renew")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf renew")?;
+            // The default lifetime is the leaf's own profile's.
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to renew under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRenewRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "leaf renew")?;
+            let manifest = engine::renew_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
+        "rotate" => {
+            let mut flags = vec![
+                "leaf",
+                "issuer",
+                "issuer-key-dir",
+                "out",
+                "csr",
+                "private-store",
+            ];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf rotate requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf rotate")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf rotate")?;
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to rotate under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRotateRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                csr: p.get("csr").map(PathBuf::from),
+                private_store: p.get("private-store").map(PathBuf::from),
+            };
+            let out = p.require("out", "leaf rotate")?;
+            let manifest = engine::rotate_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf rotated", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::Leaf)),
         "list" => list_cmd(rest, json_out, BundleType::Leaf),
         other => Err(CertError::usage(format!(
-            "unknown leaf verb '{other}' (issue | inspect | list)"
+            "unknown leaf verb '{other}' (issue | renew | rotate | inspect | list)"
         ))),
     }
+}
+
+/// `root replace` / `issuer replace` (§5.2): the replacement
+/// orchestration in [`crate::replace`].
+fn replace_cmd(rest: &[String], json_out: bool, rotate_roots: bool) -> Result<i32> {
+    let verb = if rotate_roots {
+        "root replace"
+    } else {
+        "issuer replace"
+    };
+    let p = parse_args(
+        rest,
+        &[
+            "root",
+            "root-key-dir",
+            "issuer",
+            "out",
+            "private-store",
+            "not-before",
+            "root-valid-for",
+            "issuer-valid-for",
+        ],
+        &["allow-legacy-root-strength", "private-in-bundle", "json"],
+    )?;
+    let root = p.require("root", verb)?;
+    let signer = signer_source(&p, "root-key-dir", verb)?;
+    // §24.3 ceremony: the new keys' destination must be explicit.
+    let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+        (Some(dir), _) => Some(PathBuf::from(dir)),
+        (None, true) => None,
+        (None, false) => {
+            return Err(CertError::policy(format!(
+                "{verb} makes new keys: name their destination explicitly — \
+                 --private-store <dir> or --private-in-bundle (spec §24.3)"
+            )));
+        }
+    };
+    let nb = p.get("not-before").map(Rfc3339::parse).transpose()?;
+    let window = |flag: &str, years: i64| -> Result<(Rfc3339, Rfc3339)> {
+        let vf = p.get(flag).map(CalendarDuration::parse).transpose()?;
+        crate::timeparse::resolve_validity(nb, vf, None, CalendarDuration::years(years))
+    };
+    let (not_before, root_not_after) = window(
+        "root-valid-for",
+        crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let (_, issuer_not_after) = window(
+        "issuer-valid-for",
+        crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let req = crate::replace::ReplaceRequest {
+        root_bundle: PathBuf::from(&root),
+        root_signer: signer,
+        issuer_bundles: p.all("issuer").into_iter().map(PathBuf::from).collect(),
+        rotate_roots,
+        not_before,
+        root_not_after,
+        issuer_not_after,
+        allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+        private_store,
+    };
+    let out = p.require("out", verb)?;
+    let report = crate::replace::replace(&req, &PathBuf::from(&out))?;
+    let mut text = String::new();
+    if let Some(root) = &report.root {
+        text.push_str(&format!(
+            "Root set rotated: {} at {}\n",
+            root.manifest.bundle_id, root.dir
+        ));
+    }
+    for issuer in &report.issuers {
+        text.push_str(&format!(
+            "Issuer set replaced: {} ({}) at {}\n",
+            issuer.manifest.name, issuer.manifest.bundle_id, issuer.dir
+        ));
+    }
+    text.push_str(&format!(
+        "Chains verified: {}\nOld material can retire after {}\nNext steps:\n",
+        report.checks.len(),
+        report.retire_old_after
+    ));
+    for (i, step) in report.next_steps.iter().enumerate() {
+        text.push_str(&format!("  {}. {step}\n", i + 1));
+    }
+    let value = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+    Ok(emit(json_out, text, value))
 }
 
 // ---------------------------------------------------------------- chain
@@ -1026,6 +1349,19 @@ fn manifest_text(verb: &str, m: &crate::model::BundleManifest, dir: &str) -> Str
         m.bundle_id,
         m.certificates.len()
     );
+    if let Some(predecessor) = &m.predecessor {
+        if m.revision > 1 {
+            text.push_str(&format!(
+                "  revision: r{} on the same keys (renews {predecessor})\n",
+                m.revision
+            ));
+        } else {
+            text.push_str(&format!(
+                "  generation: g{} on new keys (replaces {predecessor})\n",
+                m.generation
+            ));
+        }
+    }
     for c in &m.certificates {
         text.push_str(&format!(
             "  {:10} {:10} {:40} sha256:{}.. {}\n",
@@ -1909,7 +2245,20 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     match verb {
         "export" => {
-            let p = parse_args(rest, &["root", "out", "version", "name", "at"], &[])?;
+            let p = parse_args(
+                rest,
+                &["root", "out", "version", "name", "at", "target", "trust"],
+                &["json"],
+            )?;
+            if p.has("target") {
+                return trust_consumer_export(&p, json_out);
+            }
+            if p.has("trust") {
+                return Err(CertError::usage(
+                    "trust export --trust applies to a consumer export (--target <consumer>); \
+                     the versioned trust bundle always carries every §3.5 file",
+                ));
+            }
             let root_bundles: Vec<PathBuf> = p.all("root").into_iter().map(PathBuf::from).collect();
             if root_bundles.is_empty() {
                 return Err(CertError::usage(
@@ -1960,7 +2309,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, value))
         }
         "stage" => {
-            let p = parse_args(rest, &["bundle", "store"], &[])?;
+            let p = parse_args(rest, &["bundle", "store"], &["json"])?;
             let bundle = p.require("bundle", "trust stage")?;
             let store = p.require("store", "trust stage")?;
             let vref = crate::trust::stage_bundle(&PathBuf::from(&store), &PathBuf::from(&bundle))?;
@@ -1971,7 +2320,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&vref)?))
         }
         "ack" => {
-            let p = parse_args(rest, &["store", "version", "at"], &[])?;
+            let p = parse_args(rest, &["store", "version", "at"], &["json"])?;
             let store = p.require("store", "trust ack")?;
             let version = p
                 .get("version")
@@ -1996,7 +2345,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&ack)?))
         }
         "activate" => {
-            let p = parse_args(rest, &["store", "version"], &[])?;
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
             let store = p.require("store", "trust activate")?;
             let version = p
                 .get("version")
@@ -2016,7 +2365,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, serde_json::to_value(&vref)?))
         }
         "retire" => {
-            let p = parse_args(rest, &["store", "version"], &[])?;
+            let p = parse_args(rest, &["store", "version"], &["json"])?;
             let store = p.require("store", "trust retire")?;
             let version_raw = p.require("version", "trust retire")?;
             let version: u32 = version_raw.parse().map_err(|_| {
@@ -2029,7 +2378,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, json!({"retired": version})))
         }
         "status" => {
-            let p = parse_args(rest, &["store"], &[])?;
+            let p = parse_args(rest, &["store"], &["json"])?;
             let store = p.require("store", "trust status")?;
             let status = crate::trust::store_status(&PathBuf::from(&store))?;
             let fmt_ref = |r: &Option<crate::trust::VersionRef>| match r {
@@ -2057,10 +2406,207 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
             Ok(emit(json_out, text, serde_json::to_value(&status)?))
         }
+        "inspect" => {
+            let p = parse_args(rest, &["root", "trust"], &["json"])?;
+            let root_dir = p.require("root", "trust inspect")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+            let mut text = format!(
+                "Trust selection {} ({}) from {}: {} anchor(s)\n",
+                crate::trust_consumer::bundle_file_name(kind),
+                kind.as_str(),
+                bundle.manifest.name,
+                assembled.certificates.len()
+            );
+            for c in &assembled.certificates {
+                text.push_str(&format!(
+                    "  {} {} {}\n",
+                    &c.fingerprint_sha256[..12.min(c.fingerprint_sha256.len())],
+                    c.subject_algorithm.map(|a| a.name()).unwrap_or("unknown"),
+                    c.subject_dn
+                ));
+            }
+            text.push_str(&format!("  sha256: {}\n", assembled.sha256));
+            let anchors: Vec<Value> = assembled
+                .certificates
+                .iter()
+                .map(|c| {
+                    json!({
+                        "subject_dn": c.subject_dn,
+                        "algorithm": c.subject_algorithm.map(|a| a.name()),
+                        "fingerprint_sha256": c.fingerprint_sha256,
+                    })
+                })
+                .collect();
+            let value = json!({
+                "trust": kind.as_str(),
+                "bundle": bundle.manifest.name,
+                "bundle_id": bundle.manifest.bundle_id,
+                "anchors": anchors,
+                "bundle_sha256": assembled.sha256,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "pin" => {
+            let p = parse_args(rest, &["root", "trust", "out"], &["json"])?;
+            let root_dir = p.require("root", "trust pin")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let out = p.require("out", "trust pin")?;
+            if Path::new(&out).exists() {
+                return Err(CertError::policy(format!(
+                    "pinset already exists at {out}; remove it explicitly before re-pinning"
+                )));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let pins = crate::trust_consumer::create_pins(&bundle, kind)?;
+            std::fs::write(&out, serde_json::to_string_pretty(&pins)? + "\n")?;
+            let text = format!(
+                "Pinned {} {} anchor(s) -> {out}\n",
+                pins.pins.len(),
+                kind.as_str()
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&pins)?))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["root", "trust", "pins", "store"], &["json"])?;
+            let root_dir = p.require("root", "trust verify")?;
+            let kind = TrustSelection::parse(p.get("trust").unwrap_or("all"))?;
+            let pins_path = p.get("pins");
+            let store_path = p.get("store");
+            if pins_path.is_none() && store_path.is_none() {
+                return Err(CertError::usage(
+                    "trust verify requires --pins <pinset.json> and/or --store <pem-or-dir>",
+                ));
+            }
+            let bundle = load_bundle(&PathBuf::from(&root_dir))?;
+            let mut checks = Vec::new();
+            if let Some(path) = pins_path {
+                let pins: crate::trust_consumer::TrustPins =
+                    serde_json::from_str(&std::fs::read_to_string(path)?)?;
+                checks.extend(crate::trust_consumer::check_pins(&bundle, kind, &pins));
+            }
+            if let Some(path) = store_path {
+                let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+                let store = crate::trust_consumer::read_store_certs(Path::new(path))?;
+                checks.extend(crate::trust_consumer::check_store(&assembled, &store));
+            }
+            let ok = checks.iter().all(|c| c.ok);
+            let mut text = format!(
+                "Trust verify ({}): {}\n",
+                kind.as_str(),
+                if ok { "OK" } else { "DRIFT" }
+            );
+            for c in &checks {
+                text.push_str(&format!(
+                    "  [{}] {}: {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            let code = emit(
+                json_out,
+                text,
+                json!({"trust": kind.as_str(), "ok": ok, "checks": checks}),
+            );
+            Ok(if ok { code } else { 1 })
+        }
+        "install-plan" => {
+            let p = parse_args(rest, &["target"], &["json"])?;
+            let name = p.require("target", "trust install-plan")?;
+            let target = trust_target(&name)?;
+            let text = format!(
+                "Install plan for {} ({} trust; documentation only, nothing installed):\n  install: {}\n  verify: {}\n  remove: {}\n  note: {}\n",
+                target.name,
+                target.kind.as_str(),
+                target.install,
+                target.verify,
+                target.remove,
+                target.note
+            );
+            let value = json!({
+                "consumer": target.name,
+                "trust": target.kind.as_str(),
+                "bundle_file": crate::trust_consumer::bundle_file_name(target.kind),
+                "install": target.install,
+                "verify": target.verify,
+                "remove": target.remove,
+                "note": target.note,
+            });
+            Ok(emit(json_out, text, value))
+        }
         other => Err(CertError::usage(format!(
-            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status)"
+            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan)"
         ))),
     }
+}
+
+/// Resolve a `--target` consumer, refusing `ssh` (not X.509, §44).
+fn trust_target(name: &str) -> Result<&'static crate::trust_consumer::ConsumerTarget> {
+    if name.trim().eq_ignore_ascii_case("ssh") {
+        return Err(crate::trust_consumer::refuse_ssh());
+    }
+    crate::trust_consumer::consumer_target(name).ok_or_else(|| {
+        CertError::usage(format!(
+            "unknown trust target '{name}' ({} | ssh is refused)",
+            crate::trust_consumer::consumer_names().join(" | ")
+        ))
+    })
+}
+
+/// `trust export --target <consumer>`: PEM files plus per-consumer
+/// install/verify/remove guidance from one root set. Writes files
+/// only; never touches a consumer's store.
+fn trust_consumer_export(p: &Parsed, json_out: bool) -> Result<i32> {
+    for flag in ["version", "name", "at"] {
+        if p.has(flag) {
+            return Err(CertError::usage(format!(
+                "trust export --target writes a consumer export from one root set; \
+                 --{flag} applies to the versioned trust bundle (omit --target)"
+            )));
+        }
+    }
+    let roots = p.all("root");
+    let [root_dir] = roots.as_slice() else {
+        return Err(CertError::usage(
+            "trust export --target requires exactly one --root <root-set-bundle-dir>",
+        ));
+    };
+    let target_name = p.require("target", "trust export")?;
+    let out_dir = p.require("out", "trust export")?;
+    let target = trust_target(&target_name)?;
+    let kind = match p.get("trust") {
+        Some(flag) => {
+            let want = TrustSelection::parse(flag)?;
+            if want != target.kind {
+                return Err(CertError::usage(format!(
+                    "target {} takes the {} bundle, not {}",
+                    target.name,
+                    target.kind.as_str(),
+                    want.as_str()
+                )));
+            }
+            want
+        }
+        None => target.kind,
+    };
+    let bundle = load_bundle(&PathBuf::from(root_dir))?;
+    let assembled = crate::trust_consumer::assemble(&bundle, kind)?;
+    let manifest = crate::trust_consumer::write_export(
+        &PathBuf::from(&out_dir),
+        &bundle,
+        target.name,
+        target,
+        &assembled,
+    )?;
+    let text = format!(
+        "Trust export for {} ({}): {} anchor(s) -> {out_dir}\n  manifest: {out_dir}/export.json\n",
+        target.name,
+        kind.as_str(),
+        assembled.certificates.len(),
+    );
+    Ok(emit(json_out, text, serde_json::to_value(&manifest)?))
 }
 
 // ---------------------------------------------------------------- explain / doctor
@@ -2079,10 +2625,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "remaining standalone key ceremonies (spec §6.1)",
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
-    (
-        "root/issuer renew/rotate/replace",
-        "lifecycle verbs (spec §5.2)",
-    ),
     (
         "bundle pack/unpack/diff/migrate",
         "bundle packaging verbs (spec §7)",
@@ -2150,9 +2692,20 @@ at least one --dns name under .internal and a tailnet --ip (100.64.0.0/10 or \
 fd7a:115c:a1e0::/48); wildcards, public names and other IPs are refused. Revocation \
 is CRL-only: no OCSP URL or AIA is embedded. See `fleet cert profile list`."
             .to_string(),
+        "trust" => "Two trust surfaces share one rule: only signature-proven \
+self-signed roots become anchors (the record's role label alone never admits one). \
+The versioned trust bundle (`trust export --root ... --version N`) feeds the \
+broker-client store's stage -> ack -> activate -> retire rollover. The root-set verbs \
+work on one root set directly: `trust inspect` lists the anchors a selection admits, \
+`trust pin` records approved fingerprints, `trust verify --pins/--store` reports \
+rotation, new anchors and consumer-store drift, and `trust export --target <consumer>` \
+writes PEM files plus that consumer's install/verify/remove guidance. None of them \
+installs trust: live trust-store mutation is production-gated (#9155, spec §44). \
+`ssh` is refused because native OpenSSH CA trust is not X.509."
+            .to_string(),
         other => {
             return Err(CertError::usage(format!(
-                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles)"
+                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | trust | profiles)"
             )));
         }
     };
@@ -2194,7 +2747,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2202,7 +2755,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);

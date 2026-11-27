@@ -30,9 +30,11 @@
 //! session's channel (held in [`SessionBridge`]): key presses in the
 //! window reach the foreground world as the terminal's own `input`
 //! frames, mapped by [`id_native_shell::events::key_input_bytes`]
-//! (in directory mode Esc stays the way back to the list).
-//! Clipboard paste and window resize are later slices on the same
-//! tested [`id_native_shell::events`] mapping.
+//! (in directory mode Esc stays the way back to the list), the
+//! paste chord sends the clipboard as one `paste` frame, and every
+//! live session is sent a `resize` frame for the window's cell grid
+//! when it opens and whenever that grid changes (#15022), sized with
+//! the renderer's pinned cell metrics.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -44,18 +46,22 @@ use bevy::input::ButtonInput;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::{
-    App, DefaultPlugins, IntoScheduleConfigs, KeyCode, MessageReader, Res, ResMut, Resource,
-    Startup, Update,
+    App, DefaultPlugins, IntoScheduleConfigs, KeyCode, MessageReader, Query, Res, ResMut, Resource,
+    Startup, Update, With,
 };
+use bevy::window::{PrimaryWindow, Window};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
     DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus,
     DirectoryInputSystems, DirectoryMarks, DirectoryPlugin,
 };
 use id_native_shell::events::{
-    KeyModifiers, NativeEvent, is_paste_chord, key_input_bytes, native_event_frame, paste_event,
+    KeyModifiers, NativeEvent, ResizeTracker, is_paste_chord, key_input_bytes, native_event_frame,
+    paste_event, resize_dimensions_logical,
 };
-use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
+use id_native_shell::render::{
+    CELL_HEIGHT_PX, CELL_WIDTH_PX, PresentedForm, PresentedView, ShellRenderPlugin,
+};
 use id_native_shell::scene::SceneRenderPlugin;
 use id_native_shell::widget::WidgetRenderPlugin;
 use id_native_shell::{
@@ -121,6 +127,73 @@ fn parse_args() -> Result<SessionArgs> {
 struct SessionBridge {
     views: Mutex<mpsc::UnboundedReceiver<SessionView>>,
     outbound: mpsc::Sender<Value>,
+    /// The grid size this session was last sent.
+    resize: ResizeTracker,
+}
+
+/// The primary window's terminal grid: its logical size divided by
+/// the renderer's pinned cell metrics, clamped into the contract's
+/// `resize` bounds. `None` while there is no primary window.
+fn window_grid(windows: &Query<'_, '_, &Window, With<PrimaryWindow>>) -> Option<(u16, u16)> {
+    let window = windows.single().ok()?;
+    Some(resize_dimensions_logical(
+        window.width(),
+        window.height(),
+        CELL_WIDTH_PX,
+        CELL_HEIGHT_PX,
+    ))
+}
+
+/// Send a session the `resize` frame for `grid` if it does not have
+/// that size yet. A full or closed outbound queue leaves the size
+/// unsent, so it is offered again on the next frame rather than
+/// lost; the frame is never dropped with a size the host lacks.
+fn sync_size(bridge: &mut SessionBridge, grid: (u16, u16)) {
+    let Some(event) = bridge.resize.pending(grid) else {
+        return;
+    };
+    match native_event_frame(&event) {
+        Ok(frame) => {
+            if bridge.outbound.try_send(frame).is_ok() {
+                bridge.resize.mark_sent(grid);
+            }
+        }
+        Err(error) => {
+            // Unreachable for a clamped grid; record it so a bad
+            // size is reported once, not every frame.
+            eprintln!("id-native-shell: resize not sent: {error}");
+            bridge.resize.mark_sent(grid);
+        }
+    }
+}
+
+/// Direct-join mode: keep the one session's grid in step with the
+/// window (including the first size, right after join).
+#[allow(clippy::needless_pass_by_value)]
+fn sync_session_size(
+    windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
+    mut bridge: ResMut<'_, SessionBridge>,
+) {
+    if let Some(grid) = window_grid(&windows) {
+        sync_size(&mut bridge, grid);
+    }
+}
+
+/// Directory mode: every live world session shares the one window,
+/// so each is kept at the window's grid — a newly entered world gets
+/// it at once, and a background world already has the right size
+/// when it is brought back to the foreground.
+#[allow(clippy::needless_pass_by_value)]
+fn sync_world_sizes(
+    windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
+    mut sessions: ResMut<'_, WorldSessions>,
+) {
+    let Some(grid) = window_grid(&windows) else {
+        return;
+    };
+    for session in sessions.0.values_mut() {
+        sync_size(&mut session.bridge, grid);
+    }
 }
 
 /// The modifier keys held right now, for the terminal key mapping.
@@ -593,6 +666,7 @@ fn spawn_session(args: &SessionArgs, world: Option<String>) -> Result<SessionBri
     Ok(SessionBridge {
         views: Mutex::new(views_rx),
         outbound: outbound_tx,
+        resize: ResizeTracker::default(),
     })
 }
 
@@ -650,8 +724,10 @@ fn main() {
         // the pre-directory behaviour.
         match spawn_session(&args, args.world.clone()) {
             Ok(bridge) => {
-                app.insert_resource(bridge)
-                    .add_systems(Update, (drain_session_views, forward_session_keys));
+                app.insert_resource(bridge).add_systems(
+                    Update,
+                    (drain_session_views, forward_session_keys, sync_session_size),
+                );
             }
             Err(error) => {
                 eprintln!("id-native-shell: cannot start session: {error:#}");
@@ -675,6 +751,7 @@ fn main() {
                         (
                             forward_directory_session_keys.before(DirectoryInputSystems),
                             drive_directory,
+                            sync_world_sizes.after(drive_directory),
                         ),
                     );
             }

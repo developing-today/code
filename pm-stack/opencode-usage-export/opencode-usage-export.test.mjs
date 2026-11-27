@@ -172,6 +172,35 @@ test("fresh export covers a known session with model, tokens, cost, parentage", 
   assert.equal(state.storePath, defaultDb(home));
 });
 
+test("assistant bodies of the wrong shape are skipped and non-numeric cost or tokens count as zero (#7983)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [{ id: "ses_shapes" }],
+    messages: [
+      { sessionId: "ses_shapes", type: "assistant", data: null },
+      { sessionId: "ses_shapes", type: "assistant", data: [1, 2] },
+      { sessionId: "ses_shapes", type: "assistant", data: "assistant" },
+      { sessionId: "ses_shapes", type: "assistant", data: 7 },
+      assistantMsg("ses_shapes", {
+        cost: "5",
+        tokens: { input: "100", output: 10, reasoning: null, cache: { read: { n: 1 }, write: 3 } },
+      }),
+      assistantMsg("ses_shapes", { cost: 0.5 }),
+    ],
+  });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  const session = doc.sessions.find((s) => s.id === "ses_shapes");
+  assert.equal(session.messages.total, 6);
+  assert.equal(session.messages.byModel.length, 1);
+  const entry = session.messages.byModel[0];
+  assert.equal(entry.count, 2);
+  assert.equal(entry.cost, 0.5);
+  assert.equal(typeof entry.cost, "number");
+  assert.deepEqual(entry.tokens, { input: 100, output: 20, reasoning: 2, cacheRead: 40, cacheWrite: 6 });
+});
+
 test("move detection: stale default store, fresh chamber store wins and the move is surfaced", async () => {
   const { home, outDir } = await fakeHome();
   await makeStore(defaultDb(home), {

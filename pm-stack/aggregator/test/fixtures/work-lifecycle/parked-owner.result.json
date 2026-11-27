@@ -1,0 +1,10 @@
+{
+  "column": "Parked",
+  "rule": "R2",
+  "reason_codes": [
+    "held_not_promoted",
+    "parked_with_reason"
+  ],
+  "conflicts": [],
+  "stale_facets": []
+}

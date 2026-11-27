@@ -257,6 +257,7 @@ pub mod hosted_export;
 pub mod hosted_freeze;
 pub mod hosted_ingest;
 pub mod hosted_migration;
+pub mod hosted_transfer;
 pub mod hosted_world_partition;
 pub use id_directory::invite;
 pub use id_directory::invites;
@@ -269,8 +270,10 @@ pub use id_sync::chained_message;
 pub use id_sync::log_sync;
 pub use id_worlds::input_framing;
 pub mod serve_proxy;
+pub mod serve_proxy_keepalive;
 pub mod serve_proxy_leg;
 pub mod serve_proxy_mux;
+pub mod serve_proxy_scheduler;
 pub use id_core::membership;
 pub use id_core::migration_control;
 #[cfg(feature = "world")]
@@ -287,6 +290,7 @@ pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_store::session_checkpoint;
 pub use id_store::store;
+pub use id_store::turso;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::guest_burn;
 #[cfg(feature = "sandbox")]

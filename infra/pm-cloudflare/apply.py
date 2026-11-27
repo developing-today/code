@@ -4,15 +4,14 @@
 Reads state.json (this directory): the hostname, its tunnel route, the
 Access application and policy, DNS, the edge Worker route, and the
 Worker's secrets (names only; values come from the environment, named
-by the state). Applies each through Cloudflare's API by calling the
-same functions pm-stack/console/scripts/expose.py uses on the laptop,
-in the same gate-first order, recording what changed.
+by the state). Applies each through Cloudflare's API using the
+workflow-owned cloudflare.py module, in gate-first order, recording
+what changed. The laptop's expose.py separately manages only its named
+tunnel's ingress to the local console.
 
 This changes nothing on the laptop: no console environment file, no
-systemd unit, no remembered edge/edge-direct markers. The timer's
-expose.py keeps doing all of that until the workflow's first apply
-from Actions is confirmed on #13495; removing it from expose.py is the
-follow-on, not this change.
+systemd unit, and no remembered edge/edge-direct markers. The workflow
+is the sole applier of Access, DNS, Worker routes and Worker settings.
 
 Values never come from this directory: the owner address, the
 Cloudflare token, the Google OAuth client and the Worker secret values
@@ -33,16 +32,7 @@ import os
 import pathlib
 import sys
 
-sys.path.insert(
-    0,
-    str(
-        pathlib.Path(__file__).resolve().parent.parent.parent
-        / "pm-stack"
-        / "console"
-        / "scripts"
-    ),
-)
-import expose
+import cloudflare as expose
 
 
 def read_state(path: pathlib.Path) -> dict:

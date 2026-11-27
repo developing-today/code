@@ -285,6 +285,7 @@ pub const DOMAINS: &[Domain] = &[
             "validate",
             "enqueue",
             "list",
+            "meta",
             "claim",
             "release",
             "lane",
@@ -299,6 +300,7 @@ pub const DOMAINS: &[Domain] = &[
             "dep-recheck",
             "quarantine-recheck",
             "repair",
+            "resolution-backfill",
             "cancel",
             "revive",
             "fail",
@@ -309,6 +311,8 @@ pub const DOMAINS: &[Domain] = &[
             "staleness",
             "needs-user",
             "show",
+            "note",
+            "link",
             "models",
             "health",
             "signal",
@@ -335,7 +339,7 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+        summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put/copy).",
         capabilities: &[
             Capability::ProxyServe,
             Capability::ProxyConnect,
@@ -343,7 +347,9 @@ pub const DOMAINS: &[Domain] = &[
         ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh", "splice", "get", "put"],
+        subcommands: &[
+            "serve", "connect", "init", "ssh", "splice", "get", "put", "copy",
+        ],
     },
     Domain {
         name: "dispatch",
