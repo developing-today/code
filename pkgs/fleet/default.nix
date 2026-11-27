@@ -270,7 +270,16 @@ let
           mkdir -p "$HOME"
         '';
 
-        env = envAttrs // lib.optionalAttrs static { OPENSSL_STATIC = "1"; OPENSSL_DIR = pkgsStatic.openssl.out; };
+        env = envAttrs // lib.optionalAttrs static {
+          OPENSSL_STATIC = "1";
+          # Same shape as the pkgs/id opensslEnv precedent, against
+          # the static-only OpenSSL (headers live in dev, libs in
+          # out). With all three set, openssl-sys skips pkg-config
+          # entirely and links the musl archives directly.
+          OPENSSL_DIR = "${pkgsStatic.openssl.dev}";
+          OPENSSL_LIB_DIR = "${pkgsStatic.openssl.out}/lib";
+          OPENSSL_INCLUDE_DIR = "${pkgsStatic.openssl.dev}/include";
+        };
 
         inherit postInstall postFixup;
 
