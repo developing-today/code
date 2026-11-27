@@ -207,9 +207,13 @@ if occluded is not None:
     sys.exit(2)
 # No tappable node matched: say what the screen did hold, so a miss
 # is diagnosable from the run log (run 45574682050 missed a tab five
-# times that the failure dump, seconds later, showed plainly).
-seen = [n.get("text") for n in root.iter("node") if n.get("text")]
-print("tap_xy: no tappable node names %r; screen texts: %s" % (needle, seen[:40]), file=sys.stderr)
+# times that the failure dump, seconds later, showed plainly). Nodes
+# that name the needle but report no box are counted separately: a
+# visible label with bounds [0,0][0,0] is rendered off-screen, and no
+# tap can reach it without scrolling.
+seen = [n.get("text") for n in nodes if n.get("text")]
+boxless = sum(1 for n in nodes if needle in label_of(n) and tap_point(n) is None)
+print("tap_xy: no tappable node names %r (label matches with no box: %d); screen texts: %s" % (needle, boxless, seen[:40]), file=sys.stderr)
 sys.exit(1)
 ' "$1"
 }
@@ -317,6 +321,25 @@ wait_text_scrolling() {
     # showed the top of the page.
     echo "offline-check: scroll $tries: page shows '$(printf '%s' "$texts" | head -3 | tr '\n' ' ')' … '$(printf '%s' "$texts" | tail -2 | tr '\n' ' ')'" >&2
     adb shell input swipe 540 1600 540 600 300 >/dev/null 2>&1 || true
+    sleep 2
+  done
+}
+
+# Taps, scrolling the page down between misses: a control can sit
+# below the fold — after the answered list reloads, the segment row
+# is further down the Needs-me page than the stats. Eight looks with
+# a swipe between, so a control below the fold is still found.
+tap_text_scrolling() {
+  local tries=0 rc=1
+  until tap_text "$1"; do
+    rc=$?
+    tries=$((tries + 1))
+    [ "$tries" -gt 8 ] && return 1
+    if screen_text | grep -qF "isn't responding"; then
+      dismiss_anr
+      sleep 2
+    fi
+    adb shell input swipe 540 1500 540 600 300 >/dev/null 2>&1 || true
     sleep 2
   done
 }
@@ -515,7 +538,7 @@ done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
 launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
-tap_text_retry "Questions" || fail "could not reopen the Questions segment"
+tap_text_scrolling "Questions" || fail "could not reopen the Questions segment"
 wait_text_scrolling "$NEXT_QUESTION_TEXT" || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
