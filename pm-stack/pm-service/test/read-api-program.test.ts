@@ -16,6 +16,9 @@ import { applyMigrations, type SqlDb } from "../src/tenant-store/migrate.ts";
 import type { BoardDef } from "../src/tenant-store/schema.ts";
 import { openTenantDb } from "../src/tenant-store/sqlite.ts";
 import { programFromPool } from "../src/read-api/waves.ts";
+import { createDashboardHandler, escapeHtml } from "../src/dashboard/dashboard.ts";
+import { programJsonAsync } from "../src/read-api/async-api.ts";
+import type { AsyncSqlDb, AsyncSqlValue } from "../src/tenant-store/libsql-http.ts";
 
 const T1 = "2026-11-25T08:00:00.000Z";
 const T3 = "2026-11-25T08:30:00.000Z";
@@ -46,7 +49,7 @@ function poolItem(number: number, fields: Partial<ProjectPoolItem> = {}): Projec
 
 const POOL: ProjectPoolItem[] = [
   poolItem(200, { kind: "Epic" }),
-  poolItem(201, { epicRef: ref(200) }),
+  poolItem(201, { epicRef: ref(200), title: 'child <script>alert("x")</script> & task' }),
   poolItem(202),
   poolItem(203, { epicRef: ref(999) }),
   poolItem(204, { kind: "Epic", state: "closed" }),
@@ -139,6 +142,66 @@ async function seededDb(): Promise<SqlDb> {
   });
   return sql;
 }
+
+const asyncFromSync = (db: SqlDb): AsyncSqlDb => ({
+  all: async <T>(sql: string, params: readonly AsyncSqlValue[] = []) => {
+    // Oracle: page/API reads must never add a write path.
+    expect(sql.trimStart().toUpperCase().startsWith("SELECT ")).toBe(true);
+    return db.all<T>(sql, params as readonly (string | number | null)[]);
+  },
+});
+
+describe("CF-5d program HTML wave", () => {
+  test("GET /program renders the same seeded projection as the JSON API, escaped and lossless", async () => {
+    // Oracle: the landed program JSON projection over the exact same seeded DB.
+    const db = await seededDb();
+    db.run(`INSERT INTO pm_boards (board_id, org, number, node_id, url, role, sibling_order, title, recorded_at)
+      VALUES ('empty<&', 'example', 9, 'empty-node', 'https://example.test', 'project', 2, 'Empty', ?)`, [T1]);
+    const deps = { db: asyncFromSync(db), now: () => T2 };
+    const program = await programJsonAsync(deps);
+    const response = await createDashboardHandler(deps)(new Request("https://pm.test/program"));
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-type")).toContain("text/html");
+    expect(response?.headers.get("cache-control")).toBe("no-store");
+    const html = await response!.text();
+    expect(html).toContain('<a href="/program">Program</a>');
+    for (const group of program.epics) {
+      expect(html).toContain(`<h2><a href="/item/${encodeURIComponent(group.ref)}">${escapeHtml(group.ref)}</a></h2>`);
+      if (!group.headers.length) expect(html).toContain("No Epic header in the tenant pool.");
+    }
+    const rows = [...program.epics.flatMap((group) => [...group.headers, ...group.items]), ...program.unassigned];
+    for (const item of rows) {
+      // Titles uniquely identify these fixture rows, including duplicate Epic refs across boards.
+      expect(html.split(`<td>${escapeHtml(item.title)}</td>`).length - 1).toBe(1);
+    }
+    expect(html).not.toContain('<script>alert("x")</script>');
+    expect(html).toContain("<h2>Unassigned</h2>");
+    expect(html).toContain(`Latest snapshot: ${program.freshness.latestSnapshotAt}`);
+    for (const snapshot of program.freshness.snapshots) {
+      expect(html).toContain(escapeHtml(snapshot.boardId));
+      expect(html).toContain(escapeHtml(snapshot.snapshotId ?? "no snapshot yet"));
+      if (snapshot.generatedAt) expect(html).toContain(snapshot.generatedAt);
+    }
+    expect(html).toContain(`Rendered ${T2}`);
+    expect(html).toContain("Editorial program and health summaries are not in this projection.");
+  });
+
+  test("empty program states are honest; methods and JSON fallthrough match dashboard conventions", async () => {
+    // Oracle: migrated empty store has neither program rows nor snapshot freshness.
+    const { sql } = openTenantDb();
+    applyMigrations(sql, await tenantStoreMigrations(), () => T1);
+    const handler = createDashboardHandler({ db: asyncFromSync(sql), now: () => T2 });
+    const response = await handler(new Request("https://pm.test/program"));
+    expect(response?.status).toBe(200);
+    const html = await response!.text();
+    expect(html).toContain("No Epic groups in the tenant pool.");
+    expect(html).toContain("No unassigned items.");
+    expect(html).toContain("No snapshots have landed yet.");
+    expect(html).toContain("The registry has no boards.");
+    expect((await handler(new Request("https://pm.test/program", { method: "POST" })))?.status).toBe(405);
+    expect(await handler(new Request("https://pm.test/api/program.json"))).toBeNull();
+  });
+});
 
 describe("CF-5d program read wave", () => {
   test("pool grouping is a deterministic, lossless partition against a filter oracle", () => {
