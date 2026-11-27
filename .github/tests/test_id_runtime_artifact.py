@@ -36,7 +36,9 @@ with open(os.environ['CALLS'], 'a') as log:
     log.write(name + ' ' + ' '.join(sys.argv[1:]) + '\\n')
 if os.environ.get('FAIL_TOOL') == name:
     sys.exit(7)
-if name == 'nix':
+if name == 'git':
+    print(os.environ['SOURCE_SHA'])
+elif name == 'nix':
     print(os.environ['PACKAGE'])
 elif name == 'nix-store':
     if sys.argv[1] == '--query':
@@ -44,11 +46,11 @@ elif name == 'nix-store':
     elif not os.environ.get('EMPTY_EXPORT'):
         sys.stdout.buffer.write(b'closure-fixture')
 '''
-        for path in (self.tools / 'nix', self.tools / 'nix-store', self.package / 'bin/id'):
+        for path in (self.tools / 'git', self.tools / 'nix', self.tools / 'nix-store', self.package / 'bin/id'):
             path.write_text(fake)
             path.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.tools}:{os.environ["PATH"]}',
-                        CALLS=str(self.log), PACKAGE=str(self.package))
+                        CALLS=str(self.log), PACKAGE=str(self.package), SOURCE_SHA=SHA)
         self.out = self.root / 'artifact'
 
     def run_script(self, *args, **env):
