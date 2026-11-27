@@ -7,7 +7,10 @@
 //!
 //! The schedule is a pure function of the stream position: the same
 //! (seed, tier) always produces the same stream, and the per-1,000
-//! counts always match the declared mix table.
+//! counts always match the declared mix table. Shapes interleave at
+//! the 10-event grain rather than blocking per 1,000, so every
+//! fixture window — including a whole quick-tier active world —
+//! contains every declared shape.
 
 /// The stress event mix, as counts per 1,000 events in the same
 /// discipline as the loadgen core's mix tables.
@@ -33,13 +36,15 @@ impl StressShape {
 }
 
 pub fn stress_shape_at(index: u64) -> StressShape {
-    let at = index % 1_000;
-    if at < STRESS_MIX_CHAT {
-        StressShape::Chat
-    } else if at < STRESS_MIX_CHAT + STRESS_MIX_DOC_EDIT {
-        StressShape::DocEdit
-    } else {
-        StressShape::ProgramInstall
+    // One 10-event grain of the per-1,000 mix (700 / 200 / 100):
+    // positions 0..7 chat, 7..9 doc edit, 9 program install. The
+    // per-1,000 counts are unchanged from the blocked schedule, but
+    // every window of 10 consecutive events contains every declared
+    // shape, so no fixture silently lacks doc edits or installs.
+    match index % 10 {
+        0..=6 => StressShape::Chat,
+        7..=8 => StressShape::DocEdit,
+        _ => StressShape::ProgramInstall,
     }
 }
 
@@ -115,5 +120,6 @@ mod tests {
             assert_eq!(stress_shape_at(i), stress_shape_at(i));
         }
         assert_eq!(stress_shape_at(0), stress_shape_at(1_000));
+        assert_eq!(stress_shape_at(3), stress_shape_at(13));
     }
 }
