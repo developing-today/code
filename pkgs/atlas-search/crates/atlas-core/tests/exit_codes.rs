@@ -123,7 +123,7 @@ fn atlas_github_comments_exit_codes() {
                 "--out",
                 "/nonexistent-dir-15766/out.jsonl",
                 "--repo",
-                "owner/name",
+                "developing-today/code",
             ]
         )),
         1

@@ -225,10 +225,10 @@ fn action_schema_review(db: &Path, args: &[String]) -> Result<Json, String> {
         ],
         &[],
     )?;
-    let old =
-        SchemaDoc::parse(&read_json(flags.require("--old-schema")?)?).map_err(|e| e.to_string())?;
-    let new =
-        SchemaDoc::parse(&read_json(flags.require("--new-schema")?)?).map_err(|e| e.to_string())?;
+    let old_path = flags.require("--old-schema")?;
+    let new_path = flags.require("--new-schema")?;
+    let old = SchemaDoc::parse(&read_json(old_path)?).map_err(|e| e.to_string())?;
+    let new = SchemaDoc::parse(&read_json(new_path)?).map_err(|e| e.to_string())?;
     // The review's config provenance binds the reviewer identity
     // and both schema documents.
     let config_canonical = format!(
@@ -265,11 +265,13 @@ fn action_schema_apply(db: &Path, args: &[String]) -> Result<Json, String> {
         &["--review", "--dispositions", "--now", "--manifest-out"],
         &[],
     )?;
+    let review_path = flags.require("--review")?;
+    let dispositions_path = flags.require("--dispositions")?;
     let review: classify::SchemaReview =
-        serde_json::from_value(read_json(flags.require("--review")?)?)
+        serde_json::from_value(read_json(review_path)?)
             .map_err(|e| format!("parse review: {e}"))?;
     let dispositions: BTreeMap<String, Disposition> =
-        classify::parse_dispositions(&read_json(flags.require("--dispositions")?)?)
+        classify::parse_dispositions(&read_json(dispositions_path)?)
             .map_err(|e| e.to_string())?;
     let now = flags
         .get("--now")
