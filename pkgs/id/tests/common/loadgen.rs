@@ -38,7 +38,7 @@ use std::time::Duration;
 /// The generator version. A change to a unit, a metric definition,
 /// or a workload's mix table is a version event under #5894's
 /// baseline versioning: numbers across the event are incomparable.
-pub const GENERATOR_VERSION: u64 = 1;
+pub const GENERATOR_VERSION: u64 = 2;
 
 /// SplitMix64: a small deterministic PRNG, seeded per run. Chosen
 /// because it is fully specified here — the same seed produces the
@@ -787,7 +787,7 @@ mod tests {
             "scale=S0",
             "surface=in_process",
             "actors=2",
-            "generator=1",
+            "generator=2",
         ] {
             assert!(line.contains(field), "header {line:?} lacks {field}");
         }
