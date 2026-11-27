@@ -362,6 +362,31 @@ func (a *App) runOp(ctx context.Context, cmd string, op api.Op, args []string) e
 	if err != nil {
 		return err
 	}
+	// Generated discovery routes serve the schema cache. An explicit ns
+	// selection is a first use: await its schema read instead of serving
+	// the cold-cache stub (an empty tools list), while the implicit path
+	// only starts the read in the background. Mirrors CmdSchema/run.
+	for _, p := range op.Params {
+		if p.Name != "ns" {
+			continue
+		}
+		if raw, ok := values["ns"]; ok {
+			if s, _ := raw.(string); s != "" {
+				if selectors := splitCSV(s); len(selectors) > 0 {
+					if err := a.ensureSchemas(ctx, c, selectors); err != nil {
+						return err
+					}
+				} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+					return err
+				}
+			} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+				return err
+			}
+		} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+			return err
+		}
+		break
+	}
 	if op.Streams {
 		// -o is printed in this command's usage like any other, so it has to
 		// work here too: a flag that is advertised and ignored is the bug
