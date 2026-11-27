@@ -155,7 +155,7 @@ func TestAuthKeyHelpDocumentsRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"create", "list", "revoke", "shown once", "create a replacement"} {
+	for _, want := range []string{"create", "list", "revoke", "printed only at creation", "create a replacement"} {
 		if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
 			t.Errorf("auth help lacks %q: %q", want, out)
 		}
