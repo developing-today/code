@@ -292,7 +292,9 @@ impl WorldCache {
     /// Open (creating if needed) the cache rooted at `root` with the
     /// given tier-1 LRU budget in bytes. Existing entries and proofs
     /// are re-indexed from disk; unreadable metadata is skipped rather
-    /// than wedging the server on one corrupt file.
+    /// than wedging the server on one corrupt file, and artifacts no
+    /// surviving entry references are swept so a skipped entry cannot
+    /// leak bytes outside the LRU budget (#16244).
     ///
     /// # Errors
     ///
@@ -333,6 +335,34 @@ impl WorldCache {
                 index
                     .proofs
                     .insert((compiler.to_owned(), platform.to_owned()));
+            }
+        }
+        // Orphan sweep (#16244): an entry that failed to parse above
+        // (e.g. a torn write from before `write_entry` became atomic)
+        // is never indexed, so its artifact would otherwise sit under
+        // `artifacts/` forever, invisible to `total_bytes` and the LRU
+        // budget. Remove every artifact file no indexed entry
+        // references. Best-effort and bounded to this one directory
+        // scan; staged writes (`.{hash}.tmp`, see `store`) are not
+        // artifacts and are left alone.
+        let referenced: BTreeSet<&str> = index
+            .entries
+            .values()
+            .map(|entry| entry.artifact_hash.as_str())
+            .collect();
+        let artifacts_dir = root.join("artifacts");
+        if let Ok(files) = std::fs::read_dir(&artifacts_dir) {
+            for file in files.flatten() {
+                let path = file.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if name.starts_with('.') || referenced.contains(name) {
+                    continue;
+                }
+                if file.file_type().is_ok_and(|kind| kind.is_file()) {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
         }
         Ok(Self {
@@ -677,12 +707,37 @@ impl WorldCache {
     }
 
     fn write_entry(&self, entry: &CacheEntry) -> Result<()> {
-        let path = self
-            .root
-            .join("entries")
-            .join(format!("{}.json", entry.key));
+        let dir = self.root.join("entries");
+        let path = dir.join(format!("{}.json", entry.key));
         let text = serde_json::to_string(entry).context("serialize cache entry")?;
-        std::fs::write(&path, text).with_context(|| format!("write cache entry {}", path.display()))
+        // Atomic install (#16244): stage the metadata in a sibling
+        // temp file and rename it over the final name, mirroring
+        // `program_registry::write_atomically`, so a crash mid-write
+        // can never leave a torn entry under its final name — a torn
+        // entry is skipped at `open`, orphaning its artifact outside
+        // the LRU budget. The parent directory is synced after the
+        // rename so the rename itself is durable.
+        let mut staged = tempfile::NamedTempFile::new_in(&dir)
+            .with_context(|| format!("stage cache entry in {}", dir.display()))?;
+        std::io::Write::write_all(&mut staged, text.as_bytes())
+            .with_context(|| format!("write cache entry {}", path.display()))?;
+        staged
+            .as_file()
+            .sync_all()
+            .with_context(|| format!("sync cache entry {}", path.display()))?;
+        staged
+            .persist(&path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("install cache entry {}", path.display()))?;
+        std::fs::File::open(&dir)
+            .and_then(|dir_file| dir_file.sync_all())
+            .with_context(|| {
+                format!(
+                    "{}: sync after rename; the write at {} is not durable",
+                    dir.display(),
+                    path.display()
+                )
+            })
     }
 
     fn remove_entry_files(&self, entry: &CacheEntry, drop_artifact_if_orphan: bool) {
@@ -1080,6 +1135,79 @@ mod tests {
             cache.lookup(&input("s"), "bob").unwrap(),
             Lookup::Hit { .. }
         ));
+    }
+
+    #[test]
+    fn a_torn_entry_reopen_reclaims_its_orphaned_artifact() {
+        // Oracle: #16244 — a torn entry file is skipped at `open`, so
+        // its artifact must be reclaimed by the open sweep rather than
+        // leaking outside `total_bytes`/the LRU budget, while intact
+        // entries keep serving.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+        let torn_hash = artifact_hash(b"torn-artifact");
+        let good_hash = artifact_hash(b"good-artifact");
+        {
+            let cache = WorldCache::open(root.clone(), 1 << 20).unwrap();
+            cache
+                .store(
+                    &input("torn"),
+                    "alice",
+                    CacheScope::Author,
+                    b"torn-artifact",
+                    "roc 1",
+                )
+                .unwrap();
+            cache
+                .store(
+                    &input("good"),
+                    "alice",
+                    CacheScope::Author,
+                    b"good-artifact",
+                    "roc 1",
+                )
+                .unwrap();
+            // Simulate the post-crash torn write: truncate the entry
+            // metadata to half length under its final name.
+            let torn_key = cache_key(&input("torn"));
+            let entry_path = root.join("entries").join(format!("{torn_key}.json"));
+            let text = std::fs::read_to_string(&entry_path).unwrap();
+            std::fs::write(&entry_path, &text[..text.len() / 2]).unwrap();
+        }
+        let cache = WorldCache::open(root.clone(), 1 << 20).unwrap();
+        assert_eq!(cache.entry_count(), 1);
+        assert_eq!(cache.lookup(&input("torn"), "alice").unwrap(), Lookup::Miss);
+        assert!(matches!(
+            cache.lookup(&input("good"), "alice").unwrap(),
+            Lookup::Hit { .. }
+        ));
+        // No invisible orphan: the torn entry's artifact is gone, the
+        // good entry's artifact remains, and the budget sees only it.
+        assert!(!root.join("artifacts").join(&torn_hash).exists());
+        assert!(root.join("artifacts").join(&good_hash).exists());
+        assert_eq!(cache.total_bytes(), b"good-artifact".len() as u64);
+    }
+
+    #[test]
+    fn storing_an_entry_leaves_no_staging_file_behind() {
+        // Oracle: #16244 — `write_entry` stages through a sibling temp
+        // file + rename, so after a store the entries directory holds
+        // exactly the entry's final `.json` name and nothing else.
+        let (dir, cache) = cache(1 << 20);
+        cache
+            .store(
+                &input("s"),
+                "alice",
+                CacheScope::Author,
+                b"artifact",
+                "roc 1",
+            )
+            .unwrap();
+        let names: Vec<String> = std::fs::read_dir(dir.path().join("cache/entries"))
+            .unwrap()
+            .map(|file| file.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![format!("{}.json", cache_key(&input("s")))]);
     }
 
     #[test]

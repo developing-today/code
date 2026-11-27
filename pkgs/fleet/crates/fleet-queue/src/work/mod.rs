@@ -4,11 +4,13 @@
 //! slice's contract and its tests; slices land independently as
 //! their design gates clear.
 
+pub mod activity;
 pub mod authority;
 pub mod completion;
 pub mod context;
 pub mod contracts;
 pub mod degraded;
+pub mod distribution;
 pub mod journal;
 pub mod lifecycle;
 pub mod operations;

@@ -9,7 +9,7 @@
     "deploy": "echo 'deploy through the flake: nix run .#message-bridge-deploy' >&2; exit 1"
   },
   "devDependencies": {
-    "cf": "1.0.0-rc.4",
-    "wrangler": "4.167.0"
+    "cf": "1.0.0-rc.5",
+    "wrangler": "4.168.0"
   }
 }

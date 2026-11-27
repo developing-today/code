@@ -45,7 +45,9 @@ use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
+mod admin_time;
 mod claim;
+mod claim_filter;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
@@ -64,7 +66,9 @@ mod work_identity;
 
 pub use actions_exec::*;
 pub use admin::*;
+pub use admin_time::*;
 pub use claim::*;
+pub use claim_filter::*;
 pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
@@ -92,6 +96,7 @@ mod tests {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/claim_filter.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/placement_coord.rs"),
@@ -844,6 +849,65 @@ mod tests {
                 "cols": [], "rows": [],
                 "affected_row_count": 1,
                 "last_insert_rowid": id.to_string()}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// One parked task row in TASK_COLS order with a broker-owned
+    /// ready condition, for the #16006 sweeper oracle. Cells are
+    /// keyed by column name so a TASK_COLS addition cannot silently
+    /// shift the row (same pattern as task_row_13091).
+    fn parked_row_16006(id: i64, condition: &Value) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text("{}"));
+        cells.insert(
+            "dedupe_key",
+            text("repo-health:v1:fix:developing-today/code:issue:16006"),
+        );
+        cells.insert("priority", int(30));
+        cells.insert("status", text("parked"));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("park_kind", text("condition"));
+        cells.insert("wait_kind", text("condition"));
+        cells.insert("ready_condition", text(&condition.to_string()));
+        cells.insert("last_checked_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-20T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
+    }
+
+    fn status_reply_16006(status: &str) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "status"}],
+                "rows": [[{"type": "text", "value": status}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    fn count_reply_16006(n: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "n"}],
+                "rows": [[{"type": "integer", "value": n.to_string()}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
             {"type": "ok", "response": {"type": "close"}}
         ]})
         .to_string()
@@ -3008,6 +3072,99 @@ mod tests {
             reval_seg.contains("if observe_only"),
             "the observe branch must remain for explicit observe cycles"
         );
+    }
+
+    #[test]
+    fn default_sweep_releases_satisfied_condition_parks_16006() {
+        // #16006 oracle (cherry-picked end-to-end sweep proof offered
+        // on #16022 from branch queue/26155-16006-revalidation-default):
+        // the default scheduled path — /sweep with revalidate and NO
+        // observe_only flag — releases satisfied broker-condition
+        // parks, keeps an unsatisfied one parked, and never releases
+        // a person_answer park (that waits for /wake). The pick
+        // exclusion (#13143) strands these rows without this path.
+        // Reuses the #13091 routed stub (identical wire shape).
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        // Sweeper call routing: target-status reads answer per
+        // task id (100 done, 200 still queued), the wake-event count
+        // is seen, and every write gets a bare ok.
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // No observe_only key: the request exercises the broker
+        // default, which #16006 flips to mutating.
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(out["row"]["observe_only"], false, "{out}");
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        assert_eq!(rev["would_release"], 0, "{out}");
+        // Exactly the two satisfied rows release to queued (401:
+        // terminal task done; 403: wake event seen); the
+        // unsatisfied task_status (402) and the person_answer park
+        // (404) only get their check stamps and stay parked.
+        let bodies = captured.lock().unwrap();
+        let updates: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("UPDATE tasks SET"))
+            .collect();
+        assert_eq!(updates.len(), 4, "{bodies:?}");
+        let releases: Vec<&&String> = updates
+            .iter()
+            .filter(|b| b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(releases.len(), 2, "{bodies:?}");
+        for r in &releases {
+            let v: Value = serde_json::from_str(r).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "401" || id["value"] == "403",
+                "only the satisfied parks release: {r}"
+            );
+        }
+        let stamps: Vec<&&String> = updates
+            .iter()
+            .filter(|b| !b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(stamps.len(), 2, "{bodies:?}");
+        for s in &stamps {
+            let v: Value = serde_json::from_str(s).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "402" || id["value"] == "404",
+                "only the unsatisfied/person parks stamp: {s}"
+            );
+        }
     }
 
     #[test]

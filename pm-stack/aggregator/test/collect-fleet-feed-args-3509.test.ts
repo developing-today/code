@@ -9,9 +9,11 @@
 // file-write side effect. A valid explicit --out and the no-argument
 // default keep working.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { resolveCheckoutRoot } from "../scripts/collect-fleet-feed.ts";
 
 const script = join(import.meta.dir, "../scripts/collect-fleet-feed.ts");
 
@@ -28,6 +30,7 @@ async function runScript(
   home: string,
   cwd: string,
   args: string[],
+  extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     cwd,
@@ -37,6 +40,7 @@ async function runScript(
       TMPDIR: home,
       FLEET_FEED_OUT: join(home, "feed.json"),
       PM_AGG_FRESHNESS_URL: `http://127.0.0.1:${freshnessStub.port}/publish`,
+      ...extraEnv,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -118,4 +122,35 @@ describe("collect-fleet-feed argument validation (#3509)", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   }, 60000);
+
+  test("FLEET_FEED_CHECKOUT_ROOT selects the checkout for config and drift inspection (#15827 slice 1)", async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "fleet-feed-root-fixture-"));
+    try {
+      const git = (...args: string[]) => {
+        const proc = Bun.spawnSync(["git", "-C", fixture, ...args], { stdout: "pipe", stderr: "pipe" });
+        if (!proc.success) throw new Error(`git ${args.join(" ")} failed: ${new TextDecoder().decode(proc.stderr)}`);
+      };
+      git("init", "-b", "main");
+      git("config", "user.email", "test@example.invalid");
+      git("config", "user.name", "collector test");
+      await writeFile(join(fixture, "tracked.txt"), "fixture checkout\n", "utf8");
+      git("add", "tracked.txt");
+      git("commit", "-m", "fixture");
+      const head = Bun.spawnSync(["git", "-C", fixture, "rev-parse", "HEAD"], { stdout: "pipe" });
+      const sha = new TextDecoder().decode(head.stdout).trim();
+      git("update-ref", "refs/remotes/origin/main", sha);
+
+      const env = { FLEET_FEED_CHECKOUT_ROOT: fixture };
+      const selectedRoot = resolveCheckoutRoot(env.FLEET_FEED_CHECKOUT_ROOT);
+      expect(selectedRoot).toBe(fixture);
+      // The .opencode config lookup uses this same selected root.
+      expect(join(selectedRoot, ".opencode", "opencode.jsonc")).toBe(join(fixture, ".opencode", "opencode.jsonc"));
+      // This is the actual drift inspection the collector performs, and it
+      // must report the fixture checkout rather than this test's checkout.
+      const drift = await computeCheckoutDrift(selectedRoot);
+      expect(drift).toEqual({ state: "in-sync", head: sha, originMain: sha, behindBy: 0 });
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
 });

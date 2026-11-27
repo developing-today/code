@@ -50,6 +50,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
@@ -81,6 +82,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => {
         lookedUpEpics = true;
         return new Map();
@@ -107,6 +109,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map(),
       writeBack: async () => {},
       enqueueTriage: async (packet) => {
@@ -139,6 +142,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => {
         checked = true;
         return new Map();
@@ -165,6 +169,7 @@ describe("GitHub metadata webhook listener", () => {
     const handler = createMetadataWebhookHandler({
       secret: async () => SECRET,
       db,
+      resolveNativeParent: async () => null,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
@@ -218,6 +223,7 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
+      resolveNativeParent: async () => null,
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
       },
@@ -256,6 +262,7 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
+      resolveNativeParent: async () => null,
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
       },
@@ -285,6 +292,7 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
+      resolveNativeParent: async () => null,
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
       },
@@ -298,7 +306,7 @@ describe("GitHub metadata webhook listener", () => {
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "generated" });
       expect(writes).toHaveLength(0);
-      expect(getPmMetadata(db, "github:developing-today/code#issue/4242")?.indexes.directParentNumber).toBe(9060);
+      expect(getPmMetadata(db, "gh:developing-today/code#issue:4242")?.indexes.directParentNumber).toBe(9060);
     } finally {
       db.close();
     }
@@ -312,6 +320,7 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
+      resolveNativeParent: async () => null,
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
       },
@@ -342,7 +351,7 @@ describe("GitHub metadata webhook listener", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     upsertPmMetadata(db, {
-      artifactId: "github:developing-today/code#issue/4242",
+      artifactId: "gh:developing-today/code#issue:4242",
       repo: "developing-today/code",
       itemNumber: 4242,
       itemKind: "issue",
@@ -355,6 +364,7 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
+      resolveNativeParent: async () => null,
       writeBack: async (item, body) => {
         writes.push({ number: item.number, body });
       },
@@ -368,7 +378,7 @@ describe("GitHub metadata webhook listener", () => {
       // (09:30): the store guard must leave the newer row and links alone.
       const response = await handler(signedRequest({}));
       expect(response.status).toBe(202);
-      const stored = getPmMetadata(db, "github:developing-today/code#issue/4242");
+      const stored = getPmMetadata(db, "gh:developing-today/code#issue:4242");
       expect(stored?.sourceUpdatedAt).toBe("2026-11-23T09:30:00Z");
       expect(stored?.indexes.directParentNumber).toBe(3447);
       expect(stored?.indexes.links).toEqual(parsed.value.indexes.links);

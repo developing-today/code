@@ -29,7 +29,7 @@ if [ -z "${WASM_OPT:-}" ]; then
   fi
 fi
 
-(cd ../../../examples/roc-world && ./build-host.sh >/dev/null)
+(cd ../../../examples/roc-world && bash ./build-host.sh >/dev/null)
 "$ROC" build main.roc --target=wasm32 --wasm-memory=8454144 --output=space-invaders.wasm
 
 # Shrink the checked-in module (F11.15, #555): optimize with wasm-opt

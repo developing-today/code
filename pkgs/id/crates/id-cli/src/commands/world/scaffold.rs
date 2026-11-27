@@ -145,7 +145,7 @@ if [ -z "${{WASM_TOOLS:-}}" ]; then
   fi
 fi
 
-(cd ../roc-world && ./build-host.sh >/dev/null)
+(cd ../roc-world && bash ./build-host.sh >/dev/null)
 "$ROC" build main.roc --target=wasm32 --debug --wasm-memory=8454144 --output={name}.wasm
 $WASM_TOOLS validate {name}.wasm
 echo "Built {name}.wasm (import-free Roc world module)"

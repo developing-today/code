@@ -1271,6 +1271,19 @@ impl Edge {
         }
     }
 
+    /// Whether this edge gates readiness (DEP-04 §3.1, §6.1): only an
+    /// active hard `blocks` edge. Hierarchy, related_to, duplicates
+    /// and supersedes never gate, whatever their status; a resolved
+    /// or removed `blocks` edge gates nothing. External close is not
+    /// represented here at all: `EdgeStatus` has no `closed` value,
+    /// so reading the other end's state can never complete this end
+    /// by itself.
+    pub fn gates_readiness(&self) -> bool {
+        self.relation == Relation::Blocks
+            && self.hardness == Hardness::Hard
+            && self.status == EdgeStatus::Active
+    }
+
     /// Check every D4 field rule.
     pub fn validate(&self) -> Result<(), RelationError> {
         require_decimal("edge_id", &self.edge_id)?;
@@ -1716,6 +1729,14 @@ pub fn increment_decimal(value: &str) -> String {
 /// incomplete evaluation is never ready (D8).
 pub fn blockers_ready(complete: bool, active_hard_blockers: usize) -> bool {
     complete && active_hard_blockers == 0
+}
+
+/// Count the edges that gate readiness (DEP-04 §6.1): the active hard
+/// `blocks` edges. Hierarchy, related_to, duplicates and supersedes
+/// edges contribute nothing, by construction rather than by a second
+/// check at the call site.
+pub fn active_hard_blocker_count(edges: &[Edge]) -> usize {
+    edges.iter().filter(|edge| edge.gates_readiness()).count()
 }
 
 // ---------------------------------------------------------------------------
@@ -2825,6 +2846,82 @@ mod tests {
         assert!(!blockers_ready(true, 1));
         assert!(!blockers_ready(false, 0));
         assert!(!blockers_ready(false, 2));
+    }
+
+    #[test]
+    fn pmo_dep_github_hierarchy_is_not_hard_blocking() {
+        // Oracle: DEP-04 §6.1 + §3.1. A native `blocked_by` and a native
+        // sub-issue parent stay distinct facts; only an active hard
+        // `blocks` edge gates readiness; closing either end completes
+        // nothing by itself.
+        let parent = work("1");
+        let child_a = work("2");
+        let child_b = work("3");
+        let blocker = issue("a/x", "7", Some("I_7"));
+
+        // blocked_by normalises to blocks; parent_of normalises to
+        // hierarchy: the same ends never collapse the two meanings.
+        let blocks = normalize(&blocker, RelationSpelling::Blocks, &child_b).unwrap();
+        assert_eq!(blocks.relation, Relation::Blocks);
+        let hierarchy = normalize(&parent, RelationSpelling::ParentOf, &child_a).unwrap();
+        assert_eq!(hierarchy.relation, Relation::Hierarchy);
+        assert_ne!(blocks.relation, hierarchy.relation);
+
+        // A hard hierarchy edge is refused rather than silently stored.
+        let mut hard_hierarchy = edge(Relation::Hierarchy, parent.clone(), child_a.clone());
+        hard_hierarchy.validate().unwrap();
+        hard_hierarchy.hardness = Hardness::Hard;
+        assert_eq!(
+            hard_hierarchy.validate().unwrap_err().code(),
+            "relation_not_gating"
+        );
+
+        // Readiness: the parent with only hierarchy edges is ready; the
+        // child with one active hard blocker is not, naming only it.
+        let mut hard_blocks = edge(Relation::Blocks, blocker.clone(), child_b.clone());
+        hard_blocks.hardness = Hardness::Hard;
+        hard_blocks.validate().unwrap();
+        let mut soft_hierarchy = edge(Relation::Hierarchy, parent.clone(), child_b.clone());
+        soft_hierarchy.validate().unwrap();
+        assert!(hard_blocks.gates_readiness());
+        assert!(!soft_hierarchy.gates_readiness());
+        // Resolving the blocker stops it gating; removing never gates.
+        let mut resolved_edge = hard_blocks.clone();
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+        assert!(!resolved_edge.gates_readiness());
+        // Every non-blocks relation never gates, even when active.
+        for relation in [
+            Relation::RelatedTo,
+            Relation::Hierarchy,
+            Relation::Duplicates,
+            Relation::Supersedes,
+        ] {
+            let mut advisory = edge(relation, work("11"), work("12"));
+            if relation == Relation::Duplicates {
+                advisory.role = Some(DuplicateRole::SourceIsDuplicate);
+            }
+            advisory.validate().unwrap();
+            assert!(!advisory.gates_readiness(), "{}", relation.as_str());
+        }
+        let parent_edges = vec![soft_hierarchy.clone()];
+        let child_edges = vec![soft_hierarchy, hard_blocks];
+        assert_eq!(active_hard_blocker_count(&parent_edges), 0);
+        assert_eq!(active_hard_blocker_count(&child_edges), 1);
+        assert!(blockers_ready(true, active_hard_blocker_count(&parent_edges)));
+        assert!(!blockers_ready(true, active_hard_blocker_count(&child_edges)));
+
+        // Closing either end completes nothing: there is no `closed`
+        // edge status, and no transition leads to one.
+        assert_eq!(
+            EdgeStatus::parse_field("status", "closed").unwrap_err().code(),
+            "invalid_schema"
+        );
+        for status in EdgeStatus::ALL {
+            assert_ne!(status.as_str(), "closed");
+            assert!(transition(Some(*status), *status).is_err());
+        }
+        assert!(transition(None, EdgeStatus::Active).is_ok());
     }
 
     fn end_strategy() -> impl Strategy<Value = EdgeEnd> {

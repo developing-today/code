@@ -78,6 +78,11 @@ getrandom = { version = "0.3", optional = true }
 # The relay-aware ID proxy uses native iroh QUIC and Tokio I/O only in the
 # working-seat id client; connect/serve artifacts do not link this transport.
 iroh = { version = "1.5", optional = true }
+# Slice 3 (#15435, design §4.4): postcard-native framing for the
+# mode-3 initiator. Same major version as id-sync; `alloc` only, no
+# std-dependent features beyond what fleet already links.
+postcard = { version = "1", features = ["alloc"], optional = true }
+serde = { workspace = true, optional = true }
 tokio = { version = "1", features = [
   "io-std",
   "io-util",
@@ -222,6 +227,8 @@ id = [
   "dep:zeroize",
   "dep:getrandom",
   "dep:iroh",
+  "dep:postcard",
+  "dep:serde",
   "dep:tokio",
   "dep:url",
 ]

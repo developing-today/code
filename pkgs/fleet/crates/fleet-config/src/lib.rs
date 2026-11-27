@@ -604,6 +604,16 @@ pub struct SecretsConfig {
     /// as unset. Setting a vault with no store is a load-time parse
     /// error.
     pub vault: Option<String>,
+    /// 1Password vault the client-side [`OpSource`](fleet_secrets::OpSource)
+    /// reads through (`op read op://<vault>/<name>/<field>`, #14151).
+    /// Env `FLEET_OP_VAULT` beats this file value when both are set.
+    /// The generalized `[secrets] store`/`vault` (#10358) covers the
+    /// same ground; this alias stays so the #14151 packet's
+    /// documented spelling keeps working.
+    pub op_vault: Option<String>,
+    /// 1Password item field holding the value (`credential` when
+    /// unset). Env `FLEET_OP_FIELD` beats this file value.
+    pub op_field: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -1056,6 +1066,8 @@ impl Config {
             (&self.proxy.cf_access_file, "[proxy] cf_access_file"),
             (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
             (&self.secrets.token_file, "[secrets] token_file"),
+            (&self.secrets.op_vault, "[secrets] op_vault"),
+            (&self.secrets.op_field, "[secrets] op_field"),
             (&self.dispatch.url, "[dispatch] url"),
             (&self.dispatch.token_name, "[dispatch] token_name"),
             (&self.gh.cache_local, "[gh] cache_local"),
@@ -1956,6 +1968,31 @@ impl Config {
             Some(p) => resolve_under_home(p),
             None => resolve_under_home(DEFAULT_SECRETS_TOKEN_FILE),
         }
+    }
+
+    /// The 1Password vault for the client-side op source (#14151),
+    /// if the operator named one in `[secrets]`. Env
+    /// `FLEET_OP_VAULT` beats this value; see
+    /// `fleet_secrets::OpSource::from_config`.
+    pub fn secrets_op_vault(&self) -> Option<String> {
+        self.secrets
+            .op_vault
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+
+    /// The 1Password item field for the client-side op source
+    /// (#14151), if the operator named one in `[secrets]`. Env
+    /// `FLEET_OP_FIELD` beats this value.
+    pub fn secrets_op_field(&self) -> Option<String> {
+        self.secrets
+            .op_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
     }
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
@@ -3040,6 +3077,10 @@ socket = "rel/s.sock"
             ),
             ("[secrets]\ntoken_file = \"\"\n", "[secrets] token_file"),
             ("[secrets]\ntoken_file = \"  \"\n", "[secrets] token_file"),
+            ("[secrets]\nop_vault = \"\"\n", "[secrets] op_vault"),
+            ("[secrets]\nop_vault = \"  \"\n", "[secrets] op_vault"),
+            ("[secrets]\nop_field = \"\"\n", "[secrets] op_field"),
+            ("[secrets]\nop_field = \"  \"\n", "[secrets] op_field"),
             ("[dispatch]\nurl = \"\"\n", "[dispatch] url"),
             ("[dispatch]\nurl = \"  \"\n", "[dispatch] url"),
             ("[dispatch]\ntoken_name = \"\"\n", "[dispatch] token_name"),
@@ -3133,6 +3174,20 @@ socket = "rel/s.sock"
             }
             other => panic!("expected Parse error for unknown store, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn secrets_op_vault_and_field_parse() {
+        // #14151: the op backend selection is visible in fleet.toml.
+        let (_dir, path) = write_temp("[secrets]\nop_vault = \"Dev\"\nop_field = \"password\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.secrets_op_vault().as_deref(), Some("Dev"));
+        assert_eq!(cfg.secrets_op_field().as_deref(), Some("password"));
+        // Omitted keeps the op source off.
+        let (_dir2, path2) = write_temp("");
+        let cfg2 = Config::load_from(&path2).unwrap();
+        assert_eq!(cfg2.secrets_op_vault(), None);
+        assert_eq!(cfg2.secrets_op_field(), None);
     }
 
     // ---- [host] manifest + location resolution (#6770, #5687) ----
