@@ -53,6 +53,11 @@ Groups and verbs (spec §6.1 tree; status as built):
 Format conversion:
   Certificates retain the original PEM/DER behavior. Private keys use
   --algorithm <id>; conversion requires --out and creates an owner-only file.
+  PKCS#12 identity archives (encrypted, password via --password-file):
+    export: convert --to pkcs12 --bundle <bundle-with-one-identity> --password-file <f> --out <archive.p12>
+    import: convert --from pkcs12 --in <archive.p12> --password-file <f> --out <new-dir>
+            (writes certificate.der, private-key.pk8 owner-only, chain-NN.der)
+    verify: verify --in <archive.p12> --password-file <f> (redacts key material)
 
 Common options:
   --json                  Emit one JSON value instead of text.
@@ -1883,9 +1888,121 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
         "convert" => {
             let p = parse_args(
                 rest,
-                &["in", "to", "out", "bundle", "password-file", "algorithm"],
+                &[
+                    "in",
+                    "to",
+                    "from",
+                    "out",
+                    "bundle",
+                    "password-file",
+                    "algorithm",
+                ],
                 &["json"],
             )?;
+            if let Some(from) = p.get("from") {
+                if from != "pkcs12" {
+                    return Err(CertError::usage(format!(
+                        "unknown format convert --from '{from}' (pkcs12)"
+                    )));
+                }
+                if p.get("to").is_some() {
+                    return Err(CertError::usage(
+                        "format convert --from pkcs12 takes no --to; output is DER files in --out",
+                    ));
+                }
+                if p.get("bundle").is_some() || p.get("algorithm").is_some() {
+                    return Err(CertError::usage(
+                        "format convert --from pkcs12 takes no --bundle or --algorithm",
+                    ));
+                }
+                let input = p.require("in", "format convert --from pkcs12")?;
+                let password_path =
+                    PathBuf::from(p.require("password-file", "format convert --from pkcs12")?);
+                let out_dir = PathBuf::from(p.require("out", "format convert --from pkcs12")?);
+                let password = std::fs::read_to_string(&password_path).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot read PKCS#12 password file {}: {e}",
+                        password_path.display()
+                    ))
+                })?;
+                let password = password.trim_end_matches(['\r', '\n']);
+                let bytes = std::fs::read(&input)
+                    .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+                let imported = crate::pkcs12::import(&bytes, password)?;
+                std::fs::create_dir(&out_dir).map_err(|e| {
+                    CertError::policy(format!(
+                        "cannot create PKCS#12 import directory {}: {e}",
+                        out_dir.display()
+                    ))
+                })?;
+                let mut created: Vec<PathBuf> = Vec::new();
+                let cert_path = out_dir.join("certificate.der");
+                if let Err(e) = write_new_file(
+                    &cert_path,
+                    &imported.certificate_der,
+                    false,
+                    "imported certificate",
+                ) {
+                    for path in created.iter().rev() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    let _ = std::fs::remove_dir(&out_dir);
+                    return Err(e);
+                }
+                created.push(cert_path.clone());
+                let key_path = out_dir.join("private-key.pk8");
+                if let Err(e) = write_new_file(
+                    &key_path,
+                    &imported.private_key_pkcs8_der,
+                    true,
+                    "imported private key",
+                ) {
+                    for path in created.iter().rev() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    let _ = std::fs::remove_dir(&out_dir);
+                    return Err(e);
+                }
+                created.push(key_path.clone());
+                let mut chain_paths: Vec<PathBuf> = Vec::new();
+                for (index, der) in imported.chain_der.iter().enumerate() {
+                    let path = out_dir.join(format!("chain-{index:02}.der"));
+                    match write_new_file(&path, der, false, "imported chain certificate") {
+                        Ok(()) => {
+                            created.push(path.clone());
+                            chain_paths.push(path);
+                        }
+                        Err(e) => {
+                            for path in created.iter().rev() {
+                                let _ = std::fs::remove_file(path);
+                            }
+                            let _ = std::fs::remove_dir(&out_dir);
+                            return Err(e);
+                        }
+                    }
+                }
+                let fingerprint = crate::bundle::sha256_hex(&imported.certificate_der);
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "imported PKCS#12 identity to {} (leaf sha256 {}, {} chain certificates; private key owner-only)\n",
+                        out_dir.display(),
+                        fingerprint,
+                        imported.chain_der.len()
+                    ),
+                    json!({
+                        "out": out_dir,
+                        "format": "pkcs12",
+                        "from": "pkcs12",
+                        "certificate": cert_path,
+                        "private_key": key_path,
+                        "chain": chain_paths,
+                        "certificate_sha256": fingerprint,
+                        "chain_certificates": imported.chain_der.len(),
+                        "private_material_emitted": true,
+                    }),
+                ));
+            }
             let target = p.require("to", "format convert")?;
             let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             if target == "pkcs12" {
