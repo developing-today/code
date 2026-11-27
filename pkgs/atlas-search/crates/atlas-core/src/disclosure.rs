@@ -133,9 +133,9 @@ impl DisclosureContext {
 }
 
 /// The effective classification of one search detail row, from
-/// the legacy label string the row carries (`ChunkDetail`'s
-/// chunk-or-label sensitivity). Fail-closed, per design
-/// sections 2–3: a missing, empty, or unrecognized value is
+/// the rung-typed label string the row carries (`ChunkDetail`'s
+/// chunk-or-label sensitivity, #13506 stage 2 dual-read). Fail-closed,
+/// per design sections 2–3: a missing, empty, or unrecognized value is
 /// `secret-bearing` (the locked default for unclassified
 /// content), and the `excluded_personal_life` label is the
 /// exclusion disposition, which is sticky and outranks every
@@ -148,7 +148,7 @@ pub fn chunk_classification(eff_sensitivity: Option<&str>) -> EffectiveClassific
             EffectiveClassification::from_parts(Sensitivity::SecretBearing, true)
         }
         Some(name) => EffectiveClassification::from_parts(
-            Sensitivity::from_name(name).unwrap_or(Sensitivity::SecretBearing),
+            Sensitivity::from_published_name(name).unwrap_or(Sensitivity::SecretBearing),
             false,
         ),
         None => EffectiveClassification::from_parts(Sensitivity::SecretBearing, false),
@@ -219,7 +219,7 @@ mod tests {
         // Oracle: design decisions 2-3 — missing/invalid
         // sensitivity takes the most-locked-down value, never
         // shareable.
-        for bad in [None, Some(""), Some("internal"), Some("Shareable")] {
+        for bad in [None, Some(""), Some("unknown-rung"), Some("Shareable")] {
             let class = chunk_classification(bad);
             assert_eq!(class.sensitivity, Sensitivity::SecretBearing, "{bad:?}");
             assert!(!class.is_excluded(), "{bad:?}");

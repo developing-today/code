@@ -43,7 +43,7 @@ const CORPUS: [(i64, Option<&str>, &str, &str); 7] = [
         "s2",
     ),
     (6, None, "unlabeled scratch note", "s2"),
-    (7, Some("internal"), "mislabeled ops note", "s2"),
+    (7, Some("public"), "canonical public note", "s2"),
 ];
 
 struct LeakBackend;
@@ -176,15 +176,18 @@ fn public_surface_filters_even_a_fully_cleared_caller() {
     // the destination is public — only shareable content may
     // cross, in ANY field of the envelope.
     let out = search(DisclosureContext::PublicSurface, "secret-bearing", |_| {});
-    assert_eq!(served_ids(&out), vec![1]);
+    assert_eq!(served_ids(&out), vec![1, 7]);
     let whole = out.to_string();
+    assert!(
+        whole.contains("canonical public note"),
+        "canonical shareable spelling must serve publicly: {whole}"
+    );
     for leaked in [
         "personal project journal",
         "local-only homelab runbook",
         "SECRET production API key",
         "personal-life diary entry",
         "unlabeled scratch note",
-        "mislabeled ops note",
     ] {
         assert!(
             !whole.contains(leaked),
@@ -208,13 +211,13 @@ fn fleet_internal_withholds_secret_bearing_from_a_cleared_caller() {
     // content needs the dedicated secret path, which an
     // ordinary search is not.
     let out = search(DisclosureContext::FleetInternal, "secret-bearing", |_| {});
-    assert_eq!(served_ids(&out), vec![1, 2, 3]);
+    assert_eq!(served_ids(&out), vec![1, 2, 3, 7]);
 }
 
 #[test]
 fn hosted_context_narrows_a_wider_grant() {
     let out = search(DisclosureContext::HostedPerUser, "secret-bearing", |_| {});
-    assert_eq!(served_ids(&out), vec![1, 2]);
+    assert_eq!(served_ids(&out), vec![1, 2, 7]);
 }
 
 #[test]
@@ -222,7 +225,7 @@ fn context_never_widens_a_narrower_grant() {
     // The intersection is symmetric: the widest context with a
     // personal grant still serves only personal-and-below.
     let out = search(DisclosureContext::LocalOwner, "personal", |_| {});
-    assert_eq!(served_ids(&out), vec![1, 2]);
+    assert_eq!(served_ids(&out), vec![1, 2, 7]);
 }
 
 #[test]
@@ -244,17 +247,19 @@ fn excluded_content_is_ineligible_in_every_context() {
 
 #[test]
 fn missing_and_unknown_labels_fail_closed_to_secret_bearing() {
-    // Chunks 6 (no label) and 7 (non-ladder label) classify as
-    // secret-bearing: servable only where secret-bearing is.
+    // Chunk 6 (no label) classifies as secret-bearing: servable
+    // only where secret-bearing is. Chunk 7 carries the
+    // canonical `public` spelling and dual-reads as shareable
+    // (#13506 stage 2), so it serves wherever shareable does.
     let owner = search(DisclosureContext::LocalOwner, "secret-bearing", |_| {});
     assert!(served_ids(&owner).contains(&6));
     assert!(served_ids(&owner).contains(&7));
     let public = search(DisclosureContext::PublicSurface, "secret-bearing", |_| {});
     assert!(!served_ids(&public).contains(&6));
-    assert!(!served_ids(&public).contains(&7));
+    assert!(served_ids(&public).contains(&7));
     let fleet = search(DisclosureContext::FleetInternal, "secret-bearing", |_| {});
     assert!(!served_ids(&fleet).contains(&6));
-    assert!(!served_ids(&fleet).contains(&7));
+    assert!(served_ids(&fleet).contains(&7));
 }
 
 #[test]
@@ -266,7 +271,7 @@ fn unstated_context_defaults_to_public_surface() {
     o.k = 10;
     let out =
         run_search(&LeakBackend, &FakeEmbedder, &filters("secret-bearing"), &o).expect("search");
-    assert_eq!(served_ids(&out), vec![1]);
+    assert_eq!(served_ids(&out), vec![1, 7]);
 }
 
 #[test]
@@ -298,7 +303,7 @@ fn raw_branch_rows_are_filtered() {
     let out = search(DisclosureContext::PublicSurface, "secret-bearing", |o| {
         o.parameters.raw_mode = RawMode::Branches
     });
-    assert_eq!(served_ids(&out), vec![1]);
+    assert_eq!(served_ids(&out), vec![1, 7]);
     assert!(!out.to_string().contains("SECRET production API key"));
     assert!(!out.to_string().contains("personal-life diary entry"));
 }

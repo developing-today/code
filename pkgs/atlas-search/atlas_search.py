@@ -119,20 +119,26 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
-# Canonical ladder names (#13506), accepted as caller ceilings only.
-# Stored labels, SQL parameters and emitted JSON keep SENS_ORDER.
+# Canonical ladder names (#13506); accepted as caller ceilings and
+# dual-read from explicitly rung-typed published labels. Staging tier
+# columns are separate and must never be parsed by these helpers.
 SENS_CANONICAL = {
     "public": "shareable",
     "internal": "personal",
     "private": "local-only",
     "sensitive": "secret-bearing",
 }
+SENS_CANONICAL_INVERSE = {legacy: canonical for canonical, legacy in SENS_CANONICAL.items()}
 
 
 def ceiling_name(value):
     """Map a canonical ceiling name to its legacy spelling; pass others through."""
     return SENS_CANONICAL.get(value, value)
 
+
+def published_sensitivity_name(value):
+    """Map a rung-typed published sensitivity to its legacy rung, if known."""
+    return ceiling_name(value)
 
 DISCLOSURE_CONTEXT_CEILINGS = {
     "fleet-internal": "local-only",
@@ -160,7 +166,9 @@ def effective_sensitivity_ceiling(context, caller_ceiling):
 
 
 def disclosure_allows(classification, ceiling):
-    """Return whether a raw classification may cross this disclosure boundary."""
+    """Return whether a raw rung-typed classification may cross this boundary."""
+    classification = published_sensitivity_name(classification)
+    ceiling = ceiling_name(ceiling)
     if classification == EXCLUDED_DISPOSITION or classification not in SENS_ORDER:
         return False
     return ceiling in SENS_ORDER and SENS_ORDER.index(
@@ -690,7 +698,12 @@ class Filters:
         self.effective_ceiling = effective_sensitivity_ceiling(
             self.context, caller_ceiling
         )
-        self.allowed_sens = SENS_ORDER[: SENS_ORDER.index(self.effective_ceiling) + 1]
+        ceiling_index = SENS_ORDER.index(self.effective_ceiling)
+        self.allowed_sens = [
+            spelling
+            for i in range(ceiling_index + 1)
+            for spelling in (SENS_ORDER[i], SENS_CANONICAL_INVERSE[SENS_ORDER[i]])
+        ]
         self.since = getattr(args, "since", None)
         self.until = None
         until = getattr(args, "until", None)
