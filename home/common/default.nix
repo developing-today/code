@@ -1299,7 +1299,15 @@ in
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
       if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
         if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
-          run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          if ${pkgs.systemd}/bin/systemctl --user is-enabled --quiet mcpx.socket; then
+            # An in-app upgrade inherits the old listener but not
+            # systemd's LISTEN_FDS marker. Start the socket first and
+            # restart through systemd so the successor receives fd 3.
+            run ${pkgs.systemd}/bin/systemctl --user start mcpx.socket
+            run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          else
+            run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+          fi
         else
           run ${pkgs.systemd}/bin/systemctl --user start mcpx.service || true
         fi
