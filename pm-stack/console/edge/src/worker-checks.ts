@@ -63,6 +63,63 @@ export interface WorkerCheckTarget {
   fetcher: WorkerFetcher;
 }
 
+/** A service binding as the runtime hands it over: an object with a
+ * fetch, not a bare function. */
+export interface WorkerBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
+/** One binding the edge holds for the checks: the Worker it reaches
+ * and the binding's name in the edge's environment (and so in
+ * wrangler.jsonc's services). */
+export interface WorkerBindingSpec {
+  name: string;
+  binding: string;
+}
+
+/** The roster: every Worker pm-stack/platform/workers.json says is
+ * in service, except the edge itself, whose record is selfCheck's.
+ * The console tests hold this list to workers.json and to
+ * wrangler.jsonc, so a Worker that enters service without a binding,
+ * or a binding declared for no in-service Worker, fails there. */
+export const WORKER_BINDINGS: WorkerBindingSpec[] = [
+  { name: "message-bridge", binding: "BRIDGE" },
+  { name: "pm-service", binding: "PM_SERVICE" },
+  { name: "decision-events", binding: "DECISION_EVENTS" },
+  { name: "pm-notify", binding: "PM_NOTIFY" },
+  { name: "mcpx", binding: "MCPX" },
+  { name: "queue-transport-alert", binding: "QUEUE_TRANSPORT_ALERT" },
+  { name: "github-ci", binding: "GITHUB_CI" },
+  { name: "voice-line", binding: "VOICE_LINE" },
+  { name: "muse-agent-handoff", binding: "MUSE_AGENT_HANDOFF" },
+  { name: "desktop-commander", binding: "DESKTOP_COMMANDER" },
+  { name: "fleet-hosted", binding: "FLEET_HOSTED" },
+  { name: "atlas-search", binding: "ATLAS_SEARCH" },
+  { name: "d1-gateway", binding: "D1_GATEWAY" },
+  { name: "cold-store-rehydrator", binding: "COLD_STORE_REHYDRATOR" },
+  { name: "developing-today-backup", binding: "DEVELOPING_TODAY_BACKUP" },
+  { name: "fleet-git-rehost", binding: "FLEET_GIT_REHOST" },
+  { name: "pkarr", binding: "PKARR" },
+  { name: "lab-ops-hub", binding: "LAB_OPS_HUB" },
+  { name: "cf-container-hello", binding: "CF_CONTAINER_HELLO" },
+];
+
+/** The round's targets: every roster Worker whose binding the
+ * environment actually has, in roster order. A binding that is not
+ * configured leaves its Worker out of the round — the deployed edge
+ * declares them all; a local run may not. */
+export function workerCheckTargets(
+  resolve: (binding: string) => WorkerBinding | undefined,
+): WorkerCheckTarget[] {
+  const targets: WorkerCheckTarget[] = [];
+  for (const spec of WORKER_BINDINGS) {
+    const binding = resolve(spec.binding);
+    if (binding === undefined) continue;
+    targets.push({ name: spec.name, fetcher: (request: Request) => binding.fetch(request) });
+  }
+  return targets;
+}
+
 /** The commit an answer names: a `commit` field first, then
  * `version` (the field the Workers that stamp a VERSION var answer
  * with). Anything else — no body, not JSON, no such field — names

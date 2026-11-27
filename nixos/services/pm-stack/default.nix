@@ -514,6 +514,11 @@ in
           };
           Service = {
             Type = "oneshot";
+            # #10305: the timer fires every 15 minutes. Leave a minute of
+            # slack so a stalled/backfill poll cannot hold this unit for hours.
+            # The projector's single-flight pass may still finish server-side;
+            # completed streams have persisted cursors for its next pass.
+            TimeoutStartSec = 14 * 60;
             EnvironmentFile = "${projState}/.env";
             ExecStart = "${projectorReconcile}";
           };

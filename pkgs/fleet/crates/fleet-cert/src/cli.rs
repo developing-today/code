@@ -50,6 +50,10 @@ Groups and verbs (spec §6.1 tree; status as built):
   explain  [topic]
   doctor
 
+Format conversion:
+  Certificates retain the original PEM/DER behavior. Private keys use
+  --algorithm <id>; conversion requires --out and creates an owner-only file.
+
 Common options:
   --json                  Emit one JSON value instead of text.
   --not-before <rfc3339>  Validity start (default: now).
@@ -635,7 +639,11 @@ fn pkcs8_from_der_or_pem(raw: &[u8], path: &Path) -> Result<Vec<u8>> {
 
 fn parse_key_algorithm(p: &Parsed) -> Result<AlgorithmId> {
     let name = p.require("algorithm", "key operation")?;
-    AlgorithmId::parse(&name).map(|(algorithm, warning)| {
+    parse_algorithm_name(&name)
+}
+
+fn parse_algorithm_name(name: &str) -> Result<AlgorithmId> {
+    AlgorithmId::parse(name).map(|(algorithm, warning)| {
         if let Some(warning) = warning {
             eprintln!("warning: {warning}");
         }
@@ -1875,10 +1883,11 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
         "convert" => {
             let p = parse_args(
                 rest,
-                &["in", "to", "out", "bundle", "password-file"],
+                &["in", "to", "out", "bundle", "password-file", "algorithm"],
                 &["json"],
             )?;
             let target = p.require("to", "format convert")?;
+            let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             if target == "pkcs12" {
                 let bundle_dir = p.require("bundle", "format convert --to pkcs12")?;
                 let password_path =
@@ -1935,6 +1944,34 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let to = crate::format::Encoding::parse(&target)?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+
+            if let Some(algorithm) = algorithm {
+                // Private-key material is never written to stdout and the
+                // destination is created owner-only without replacing an
+                // existing file.
+                let path = p.require("out", "private-key format convert")?;
+                let out = crate::format::convert_private_key(&bytes, to, algorithm)?;
+                write_new_file(Path::new(&path), &out, true, "converted private key")?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "wrote {} private-key encoding ({}, {})\n",
+                        path,
+                        algorithm.name(),
+                        to.as_str()
+                    ),
+                    json!({
+                        "out": path,
+                        "kind": "private-key",
+                        "algorithm": algorithm.name(),
+                        "format": to.as_str(),
+                        "bytes": out.len(),
+                    }),
+                ));
+            }
+
+            // Without --algorithm, preserve the original certificate path,
+            // including its stdout behavior and overwrite semantics.
             let out = crate::format::convert(&bytes, to)?;
             match p.get("out") {
                 Some(path) => {
@@ -1956,8 +1993,9 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
         }
         "verify" => {
-            let p = parse_args(rest, &["in", "password-file"], &["json"])?;
+            let p = parse_args(rest, &["in", "password-file", "algorithm"], &["json"])?;
             let input = p.require("in", "format verify")?;
+            let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
             if let Some(password_path) = p.get("password-file") {
@@ -1977,6 +2015,26 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
                         verified.certificate_sha256, verified.chain_certificates
                     ),
                     json!({"in": input, "format": "pkcs12", "certificate_sha256": verified.certificate_sha256, "chain_certificates": verified.chain_certificates, "private_material_emitted": false}),
+                ));
+            }
+
+            if let Some(algorithm) = algorithm {
+                let verified = crate::format::verify_private_key(&bytes, algorithm)?;
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "{input}: well-formed {} PKCS#8 private key ({} input, {} DER bytes); PEM and DER round trips preserve the key\n",
+                        algorithm.name(),
+                        verified.input.as_str(),
+                        verified.der_len
+                    ),
+                    json!({
+                        "in": input,
+                        "kind": "private-key",
+                        "algorithm": algorithm.name(),
+                        "input": verified.input.as_str(),
+                        "der_bytes": verified.der_len,
+                    }),
                 ));
             }
             let v = crate::format::verify(&bytes)?;
@@ -2983,6 +3041,267 @@ mod key_ceremony_tests {
         let err = pkcs8_from_der_or_pem(&std::fs::read(&legacy).unwrap(), &legacy)
             .expect_err("legacy label refused");
         assert!(err.to_string().contains("EC PRIVATE KEY"));
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_convert_and_verify_round_trip_keys_for_every_algorithm() {
+        // Oracle: the generated PKCS#8 DER bytes are the input identity;
+        // converting DER -> PEM -> DER must reproduce those exact bytes.
+        let dir = scratch_dir("format-key-roundtrip");
+        // Match the bundle's documented key_path layout; convert/verify act
+        // on the referenced key artifact without rewriting its manifest.
+        let key_dir = dir.join("bundle/private/keys");
+        std::fs::create_dir_all(&key_dir).expect("create bundle key path");
+        for algorithm in [
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::Rsa2048,
+            AlgorithmId::Rsa4096,
+            AlgorithmId::MlDsa44,
+        ] {
+            let key = engine::generate_key(algorithm).expect("generate key");
+            let expected_der = key.serialize_der();
+            let input = key_dir.join(format!("{}.pk8", algorithm.name()));
+            let pem = dir.join(format!("{}.pem", algorithm.name()));
+            let round_trip = dir.join(format!("{}-roundtrip.pk8", algorithm.name()));
+            std::fs::write(&input, &expected_der).expect("write source key");
+
+            let input_text = input.to_string_lossy().into_owned();
+            let pem_text = pem.to_string_lossy().into_owned();
+            let round_trip_text = round_trip.to_string_lossy().into_owned();
+            let algorithm_name = algorithm.name();
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input_text,
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &pem_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} DER-to-PEM failed: {error}", algorithm.name()));
+
+            let pem_bytes = std::fs::read(&pem).expect("read PEM output");
+            assert!(pem_bytes.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&pem)
+                        .expect("PEM metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600,
+                    "private-key conversion output must be owner-only"
+                );
+            }
+            format_cmd(
+                &args(&["verify", "--in", &pem_text, "--algorithm", algorithm_name]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM verify failed: {error}", algorithm.name()));
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &pem_text,
+                    "--to",
+                    "der",
+                    "--algorithm",
+                    algorithm_name,
+                    "--out",
+                    &round_trip_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} PEM-to-DER failed: {error}", algorithm.name()));
+            let round_trip_der = std::fs::read(&round_trip).expect("read DER output");
+            assert_eq!(round_trip_der, expected_der, "{}", algorithm.name());
+            format_cmd(
+                &args(&[
+                    "verify",
+                    "--in",
+                    &round_trip_text,
+                    "--algorithm",
+                    algorithm_name,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{} DER verify failed: {error}", algorithm.name()));
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_key_conversion_rejects_malformed_trailing_and_mismatched_material() {
+        let dir = scratch_dir("format-key-invalid");
+        let key = engine::generate_key(AlgorithmId::Ed25519).expect("generate key");
+        let der = key.serialize_der();
+        let cases = [
+            ("trailing.der", [der.clone(), vec![0]].concat(), "ed25519"),
+            ("mismatch.der", der.clone(), "p256"),
+            (
+                "multi.pem",
+                format!(
+                    "{}{}",
+                    crate::bundle::pem_encode("PRIVATE KEY", &der),
+                    crate::bundle::pem_encode("PRIVATE KEY", &der)
+                )
+                .into_bytes(),
+                "ed25519",
+            ),
+            (
+                "text.pem",
+                format!("{}trailing", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "legacy-label.pem",
+                crate::bundle::pem_encode("RSA PRIVATE KEY", &der).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "encrypted-label.pem",
+                crate::bundle::pem_encode("ENCRYPTED PRIVATE KEY", &der).into_bytes(),
+                "ed25519",
+            ),
+            (
+                "leading-text.pem",
+                format!("prefix{}", crate::bundle::pem_encode("PRIVATE KEY", &der)).into_bytes(),
+                "ed25519",
+            ),
+        ];
+        for (name, bytes, algorithm) in cases {
+            let input = dir.join(name);
+            let output = dir.join(format!("{name}.out"));
+            std::fs::write(&input, bytes).expect("write invalid source");
+            let input_text = input.to_string_lossy().into_owned();
+            let output_text = output.to_string_lossy().into_owned();
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "convert",
+                        "--in",
+                        &input_text,
+                        "--to",
+                        "pem",
+                        "--algorithm",
+                        algorithm,
+                        "--out",
+                        &output_text,
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "accepted invalid key case {name}"
+            );
+            assert!(!output.exists(), "wrote output for invalid key case {name}");
+        }
+
+        // RSA-2048 and RSA-4096 share a signature scheme, so enforce the
+        // fleet-cert profile size as well as successful PKCS#8 parsing.
+        let rsa_der = engine::generate_key(AlgorithmId::Rsa2048)
+            .expect("generate RSA-2048")
+            .serialize_der();
+        let rsa_input = dir.join("rsa-2048.pk8");
+        let rsa_output = dir.join("rsa-mismatch.pem");
+        std::fs::write(&rsa_input, rsa_der).expect("write RSA-2048 key");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &rsa_input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "rsa-4096",
+                    "--out",
+                    &rsa_output.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "accepted an RSA key with the wrong registered size"
+        );
+        assert!(!rsa_output.exists());
+
+        let input = dir.join("valid.pk8");
+        std::fs::write(&input, &der).expect("write valid key");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must require an explicit output path"
+        );
+
+        let existing = dir.join("existing.pem");
+        let sentinel = b"do not replace this file";
+        std::fs::write(&existing, sentinel).expect("write existing destination");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "ed25519",
+                    "--out",
+                    &existing.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "private key conversion must not replace an existing file"
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), sentinel);
+
+        let cert_key = engine::generate_key(AlgorithmId::P256).expect("generate certificate key");
+        let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("certificate params")
+            .self_signed(&cert_key)
+            .expect("self-signed certificate");
+        let cert_input = dir.join("not-a-private-key.der");
+        let cert_output = dir.join("not-a-private-key.pem");
+        std::fs::write(&cert_input, cert.der()).expect("write certificate");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--in",
+                    &cert_input.to_string_lossy(),
+                    "--to",
+                    "pem",
+                    "--algorithm",
+                    "p256",
+                    "--out",
+                    &cert_output.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "a certificate must not be accepted as private-key input"
+        );
+        assert!(!cert_output.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 

@@ -35,9 +35,10 @@ let
   # proxies had no consumers left; their lets, units, session
   # variables, bin programs and guard rows were removed in one
   # change. Both ports are free.
-  # opencodeRouteProxyPort (18750) retired 2026-11-04
-  # (opencode#1153): OpenClaw repointed to the server facade
-  # (127.0.0.1:13420/v1); the port is free.
+  # Route proxy (#1822): the deployed OpenCode config still routes
+  # opencode-route/* through this door. Keep the audited loopback port
+  # outside the process so systemd holds it across service restarts.
+  opencodeRouteProxyPort = 18750;
   # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
   # the in-fork native provider replaced the door; the port is free.
   # Atlas search service port (code#5350 step 5, #5355): the fleet
@@ -51,6 +52,7 @@ let
   # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
   # the live listener table on 2026-11-04.
   atlasSearchPort = 18760;
+  routeProxy = pkgs.callPackage ../../pkgs/deploy/route-proxy.nix { };
   # The atlas-search package (pkgs/atlas-search), built with the
   # toolchain pinned by its own rust-toolchain.toml (channel
   # 1.99.1) through the fleet's rust-overlay lock — the pkgs/id
@@ -838,16 +840,34 @@ in
   # variable, bin/muse-proxy.mjs, its start script and its test
   # were removed in the same change. The port is free.
 
-  # Route proxy retired 2026-11-04 (opencode#1153): the door's
-  # only live consumer, OpenClaw's opencode-route provider, was
-  # repointed to the OpenCode server facade (127.0.0.1:13420/v1)
-  # and verified live (four-part proof on opencode#1146: all five
-  # route ids answered through the direct path, a workhorse turn
-  # completed with this unit stopped and :18750 refusing
-  # connections). Demotion lives in the fork (routes.settings
-  # .demotion + ledger counts, opencode#1151), so nothing of the
-  # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
-  # start script and test were removed in the same change.
+  # Restore the route-proxy runtime required by the current deployed
+  # OpenCode config (#5610, #1822). The socket owns :18750; Node adopts
+  # its fd 3 via LISTEN_FDS/LISTEN_PID and keeps the same listener when
+  # systemd restarts the service. The executable is the packaged source
+  # used by the deploy registry, not a mutable checkout path.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (socket-activated)";
+      Wants = [ "network-online.target" ];
+      After = [ "network-online.target" "opencode-route-proxy.socket" ];
+      Requires = [ "opencode-route-proxy.socket" ];
+    };
+    Service = {
+      ExecStart = "${routeProxy}/bin/opencode-route-proxy";
+      Restart = "on-failure";
+      RestartSec = 3;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.sockets.opencode-route-proxy = {
+    Unit.Description = "OpenCode route proxy listener (#1822)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeRouteProxyPort}";
+      Service = "opencode-route-proxy.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
 
   # Atlas search service (code#5350 step 5, #5355): the Atlas
   # service — one resident Snowflake
