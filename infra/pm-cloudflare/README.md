@@ -13,18 +13,23 @@ are described in [`state.json`](state.json) and applied by
   Access application and its owner policy, the five paths that bypass
   sign-in, DNS, the edge Worker route, and the Worker's secrets
   (names only; values come from the environment at apply time).
-- `apply.py` — enforces the state through Cloudflare's API by calling
-  the same functions `pm-stack/console/scripts/expose.py` uses on the
-  laptop, in the same gate-first order. `--check` (the default)
-  reports and changes nothing; `--apply` makes the changes. It keeps
-  nothing on the machine it runs on: no console file, no unit, no
-  remembered markers. The state file is the memory.
-- `test_apply.py` — the state and the applier against a model of the
-  account. The parity test holds the workflow and the laptop's timer
-  to the same account state: for the same hostname and owner, a check
-  run records exactly the changes `expose.py --check` records.
+- `apply.py` — enforces the state through Cloudflare's API using the
+  workflow-owned `cloudflare.py` module, in gate-first order. `--check`
+  (the default) reports and changes nothing; `--apply` makes the changes.
+  It keeps nothing on the machine it runs on: no console file, no unit,
+  no remembered markers. The state file is the memory.
+- `cloudflare.py` — Cloudflare API helpers for the repository applier;
+  the laptop script does not import them or manage repository-owned state.
+- `test_apply.py` — checks the declared state and applier against an
+  independent account model. Tunnel ingress is tested separately with
+  `pm-stack/console/scripts/test_expose.py`.
 
-Run the tests: `python3 -I infra/pm-cloudflare/test_apply.py`.
+Run the model and boundary tests:
+
+```sh
+python3 -I infra/pm-cloudflare/test_apply.py
+python3 -I pm-stack/console/scripts/test_expose.py
+```
 
 ## Secrets (repository secrets, never in the repo)
 
@@ -41,11 +46,14 @@ Google sign-in credentials must be supplied as a pair. When both are
 omitted, an existing Google identity provider is preserved; the applier
 never sends empty credentials to Cloudflare.
 
-## What this does not do yet (the follow-on)
+## Ownership boundary
 
-- The laptop timer's `expose.py` still enforces all of this too.
-  Removing it there — keeping only the laptop's tunnel — happens
-  after this workflow's first apply is confirmed on #13495, not
-  before, so the gate is never unenforced in between.
-- The app Cloudflare screen does not say where each item was last
-  applied from and when; that display reads the confirmation above.
+The laptop timer's `expose.py` manages only the named tunnel's ingress
+for its local console. This workflow remains the sole applier for the
+Access application and policy, DNS, Worker route and Worker settings.
+
+The app's Cloudflare screen says where the configuration was last
+  applied from: the latest successful dispatched run of this
+  workflow on main, with its commit, completion time and a link to
+  the run (the console's `cloudflare-apply` read). It says provenance
+  is unavailable when no successful apply is on record.

@@ -3,7 +3,7 @@
 //! versioned schema, provisioning tool and registry; design
 //! `doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision` section 4.1).
 //!
-//! Seven verbs:
+//! Available verbs:
 //! * `atlas-stage provision --db <path> --unit <id> --owner <o>
 //!   [--sensitivity internal] --registry <path>` — create the unit's
 //!   staging DB, apply the v1 schema, and register the unit as `open`.
@@ -32,6 +32,9 @@
 //!   memory, carrying the design's provenance set. The export's
 //!   vectors are ignored; promotion re-embeds with the mandated
 //!   model.
+//! * `atlas-stage ingest-memory-lancedb --db <path> --unit <id>
+//!   --store <memories.lance>` — natively read OpenClaw's LanceDB
+//!   dataset and idempotently sync changed rows into Atlas staging.
 //! * `atlas-stage ingest-memory-files --db <path> --unit <id>
 //!   --dir <memory-tree>` — scan a Muse memory tree and stage
 //!   its markdown files into the fleet-memory unit (#8626 slice
@@ -58,12 +61,21 @@
 //!   through the registry's M6 gate. Needs the embedding model +
 //!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
 //!   resolution the atlas-search binary uses).
+//! * `atlas-stage rebuild-memory --export <memories.json>
+//!   --registry <path> --dir <dir> --shard-dir <dir>` — rebuild
+//!   the agent-memory Atlas index from its sources (#14039): the
+//!   provision-corpora + ingest-memory + promote steps in one
+//!   command, into a fresh registry/dir (the staging area is
+//!   disposable and promotion closes it). Prints the rebuild
+//!   report: shard, items, chunks, staged-changed count, and
+//!   fingerprint count. Needs the embedding model + ONNX runtime,
+//!   like `promote`.
 //!
-//! Five of the six are offline: a staging DB is a local libSQL/SQLite
+//! Most commands are offline: a staging DB is a local libSQL/SQLite
 //! file today; hosted Turso creation is the aggregator slice's
-//! deployment surface, not this foundation. `promote` is the
-//! exception: it needs the embedding model + ONNX runtime, as its
-//! entry above states.
+//! deployment surface, not this foundation. `promote`, `rebuild-memory`
+//! and `reembed` need the embedding model + ONNX runtime, as their
+//! entries above state.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -75,7 +87,6 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "atlas-stage",
-    version,
     about = "Provision Atlas staging units and read the staging registry (#5669)"
 )]
 struct Cli {
@@ -187,6 +198,18 @@ enum Command {
         #[arg(long)]
         export: PathBuf,
     },
+    /// Natively read and idempotently sync an OpenClaw LanceDB store.
+    IngestMemoryLancedb {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the entries belong to.
+        #[arg(long)]
+        unit: String,
+        /// The native memory-lancedb dataset path (typically memories.lance).
+        #[arg(long)]
+        store: PathBuf,
+    },
     /// Scan a Muse memory tree and stage its markdown files
     /// into the fleet-memory unit (#8626 slice 4).
     IngestMemoryFiles {
@@ -226,6 +249,25 @@ enum Command {
         /// Shard topic for the promoted entries.
         #[arg(long, default_value = "codeconfig")]
         topic: String,
+    },
+    /// Rebuild the agent-memory Atlas index from its sources
+    /// (#14039): provision-corpora + ingest-memory + promote in one
+    /// command, into a fresh registry/dir. Needs the embedding
+    /// model + ONNX runtime, like `promote`.
+    RebuildMemory {
+        /// The read-only JSON export of the memory-lancedb store.
+        #[arg(long)]
+        export: PathBuf,
+        /// The registry store file (created if missing).
+        #[arg(long)]
+        registry: PathBuf,
+        /// Directory each corpus unit's staging DB is provisioned in.
+        #[arg(long)]
+        dir: PathBuf,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
     },
     /// Rebuild an already-promoted corpus end-to-end under the
     /// mandated embedding model (#8623 slice 2: the re-embed job).
@@ -269,6 +311,7 @@ enum Command {
         /// reports from, recursively.
         #[arg(long)]
         root: PathBuf,
+    },
     /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
     /// notes into the zettelkasten unit (#8626 slice 4).
     IngestNotes {
@@ -510,14 +553,31 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        #[cfg(feature = "lancedb")]
+        Command::IngestMemoryLancedb { db, unit, store } => {
+            let report =
+                atlas_core::memory::sync_lancedb_store_in_db(&store, &db, &unit, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"added\":{},\"restaged\":{},\"unchanged\":{}}}",
+                json_str(&unit),
+                report.added,
+                report.restaged,
+                report.unchanged,
+            );
+            Ok(())
+        }
+        #[cfg(not(feature = "lancedb"))]
+        Command::IngestMemoryLancedb { .. } => Err(
+            "ingest-memory-lancedb needs atlas-stage built with the `lancedb` feature \
+             (cargo build -p atlas-search --features lancedb); \
+             `ingest-memory --export` reads the JSON export without it"
+                .to_string(),
+        ),
         Command::IngestMemoryFiles { db, unit, dir } => {
-            let item_ids = atlas_core::memory::scan_and_stage_memory_files_in_db(
-                &db,
-                &unit,
-                &dir,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::memory::scan_and_stage_memory_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
@@ -613,20 +673,55 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
-        Command::IngestReports { db, unit, root } => {
-            let reports = atlas_core::reports::collect_research_reports(&root)
-                .map_err(|e| e.to_string())?;
-            let item_ids = atlas_core::reports::stage_research_reports_in_db(
-                &db,
-                &unit,
-                &reports,
+        Command::RebuildMemory {
+            export,
+            registry,
+            dir,
+            shard_dir,
+        } => {
+            let raw = std::fs::read_to_string(&export)
+                .map_err(|e| format!("reading {}: {e}", export.display()))?;
+            let entries =
+                atlas_core::memory::parse_memory_export(&raw).map_err(|e| e.to_string())?;
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::memory::rebuild_agent_memory_index(
+                &registry,
+                &dir,
+                &entries,
+                &shard_dir,
+                &embedder,
                 &now_utc(),
             )
             .map_err(|e| e.to_string())?;
             println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"chunks\":{},\"dims\":{},\"staged_changed\":{},\"fingerprints\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.chunks,
+                report.dims,
+                report.staged_changed.len(),
+                report.fingerprints.len(),
+            );
+            Ok(())
+        }
+        Command::IngestReports { db, unit, root } => {
+            let reports =
+                atlas_core::reports::collect_research_reports(&root).map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::reports::stage_research_reports_in_db(&db, &unit, &reports, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
                 "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
                 reports.len(),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
         Command::IngestNotes { db, unit, dir } => {
             let item_ids =
                 atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
@@ -723,6 +818,16 @@ fn json_str(s: &str) -> String {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-stage {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

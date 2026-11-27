@@ -31,6 +31,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "pool",
             "launched-by",
             "remaining-budget-minutes",
+            "manual-override",
         ],
         &["handoff", "bind"],
     );
@@ -149,6 +150,24 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // plain claim never names a task.
     if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
+    }
+    if let Some(reason) = args.get("manual-override") {
+        if args.get_i64("task").filter(|task| *task > 0).is_none() {
+            die(2, "claim: --manual-override requires --task <positive-id>");
+        }
+        if reason.trim().is_empty() {
+            die(2, "claim: --manual-override reason must not be empty");
+        }
+        if args.get("from-session").is_some()
+            || args.has("handoff")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --manual-override cannot combine with transfer, handoff, or batch",
+            );
+        }
+        body["manual_override"] = json!(reason.trim());
     }
     // --count <n> (#8217): batch claim — the broker runs the same
     // atomic pick n times and answers with every claimed row. The
@@ -1002,7 +1021,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
 pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
     let config = fleet_config::Config::load().unwrap_or_default();
     fleet_secrets::Resolver::default_chain(&config)
-        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
         .map(|v| v.expose().to_string())
         .map_err(|e| e.to_string())
 }
@@ -1010,7 +1029,7 @@ pub(super) fn resolve_alerts_intake_token() -> Result<String, String> {
 /// #8568: parse cmd_block's --options-json flag: a JSON array of
 /// {"id": ..., "label": ...} objects. Bad shapes are usage errors
 /// at the caller's terminal, like --progress.
-pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_user::NeedsUserOption> {
     let Some(raw) = args.get("options-json") else {
         return Vec::new();
     };
@@ -1026,7 +1045,7 @@ pub(super) fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrew
             let id = o.get("id").and_then(|v| v.as_str());
             let label = o.get("label").and_then(|v| v.as_str());
             match (id, label) {
-                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                (Some(id), Some(label)) => crate::needs_user::NeedsUserOption {
                     id: id.to_string(),
                     label: label.to_string(),
                 },
@@ -1128,7 +1147,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
         match (args.get("ledger-id"), question) {
-            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_user::BlockNeedsUser {
                 ledger_id,
                 question,
                 context: args.get("context"),
@@ -1172,7 +1191,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     if let Some(nd) = &needs_drew {
         // Snake_case keys, matching the /block body's own style;
         // the broker (and, later, the broker-side raise) reads
-        // this shape back via needs_drew::from_block_request.
+        // this shape back via needs_user::from_block_request.
         let mut nd_json = json!({
             "ledger_id": nd.ledger_id,
             "question": nd.question,
@@ -1208,7 +1227,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     // above keeps its current JSON shape exactly.
     if let Some(nd) = &needs_drew {
         let raised = resolve_alerts_intake_token()
-            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+            .and_then(|token| crate::needs_user::post_needs_user(&token, nd));
         match raised {
             Ok(_) => eprint(&format!(
                 "repo-queue: needs-drew raised for ledger item {}",
@@ -1381,6 +1400,29 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
     print_json(&served_row(
         require_row(&resp, "quarantine_recheck"),
         "quarantine-recheck",
+    ));
+    0
+}
+
+/// time-recheck (#14212): run the broker's time recheck pass
+/// now, or force one blocked task's recheck with --task. The
+/// pass requeues blocked rows whose {"kind": "time"} ready
+/// condition has lapsed. Production cadence is the sweep's;
+/// this is the manual trigger.
+pub(super) fn cmd_time_recheck(rest: &[String]) -> i32 {
+    let args = parse_verb_args("time-recheck", rest, &["task", "limit"], &[]);
+    reject_extra_pos("time-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/time-recheck", &body));
+    print_json(&served_row(
+        require_row(&resp, "time_recheck"),
+        "time-recheck",
     ));
     0
 }

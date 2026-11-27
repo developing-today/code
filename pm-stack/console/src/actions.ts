@@ -14,12 +14,19 @@ import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts"
 
 type Args = Record<string, unknown>;
 export interface Action {
-  run: (args: Args) => Promise<unknown>;
+  /** `by` is who asked, where the side running it knows (the edge's
+   * own actions that record who changed something need it). */
+  run: (args: Args, by?: string) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
   /** What the audit log keeps of the arguments. */
   audit: (args: Args) => Args;
 }
+
+/** How a queue packet is handed over. Given by whoever runs these
+ * actions, so that the edge can file it without a machine's fleet
+ * binary while a machine goes on running `fleet queue enqueue`. */
+export type Enqueue = (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 const ids =
   (...keys: string[]) =>
@@ -70,6 +77,7 @@ export function actions(
   push?: Push,
   devices?: Devices,
   plan: Plan = new Plan(ops, work),
+  enqueue: Enqueue = (packet) => ops.enqueue(packet),
 ): Record<string, Action> {
   return {
     ...ownActions(push, devices),
@@ -132,7 +140,7 @@ export function actions(
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
+        const queued = await enqueue(
           promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
         );
         if (queued.code !== 0) {
@@ -194,6 +202,17 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
+    // Start a Turso management operation (create-db / mint-token) in
+    // its workflow (#14257). The audit keeps names only — the operation,
+    // the database and the secret's name — never a token value.
+    "store.admin": {
+      run: (a) => ops.tursoAdmin(a),
+      touch: [],
+      audit: ids("operation", "database", "secret_name"),
+    },
+    // Start a store migration in its workflow (#14256). The audit keeps
+    // the store's name only.
+    "store.migrate": { run: (a) => ops.storeMigrate(a), touch: [], audit: ids("store") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

@@ -105,7 +105,7 @@ Enabled capabilities: proxy-connect, proxy-serve, … (usable set, registry orde
 
 The fields are: the workspace **version**; the **build** name — `fleet`, `fleet-serve`, or `fleet-connect`, derived by matching the _compiled_ capability set against the variant sets (an unrecognised compiled set falls back to the plain build name) — with the profile annotation when the invocation name narrowed the surface; the **derived version** (the `0.1.0-dev+g<rev>` form); the **source rev** (the full commit SHA the build was cut from); and the **enabled capabilities** — the _usable_ set (compiled ∩ profile ∩ `[domains]` enables), comma-joined in registry order, or `none`. The values above are the reference build's, as captured in the capabilities dump.
 
-There are 22 capability atoms, in registry order: `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent, commander, laptop-http, laptop-ssh, laptop, cert, actions, orgs`. `proxy-connect` is unconditional — present in every variant. The three build variants are: Full (`fleet`, all 22), Serve (`fleet-serve`: `proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets` — daemon roles plus proxy, no working-seat clients), and Connect (`fleet-connect`: `proxy-connect, proxy-raw-splice` only). Invoking the binary under a hyphenated name selects that profile as a ceiling; profiles can only narrow, never widen. An unknown invocation name is a usage error, exit 2, naming the expected names.
+There are 24 capability atoms, in registry order: `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent, commander, laptop-http, laptop-ssh, laptop, cert, actions, orgs, kv, id`. `proxy-connect` is unconditional — present in every variant. The three build variants are: Full (`fleet`, all 24), Serve (`fleet-serve`: `proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets` — daemon roles plus proxy, no working-seat clients), and Connect (`fleet-connect`: `proxy-connect, proxy-raw-splice` only). Invoking the binary under a hyphenated name selects that profile as a ceiling; profiles can only narrow, never widen. An unknown invocation name is a usage error, exit 2, naming the expected names.
 
 Exit codes: 0 ok · 2 usage error (any argument, including `--help`).
 
@@ -146,7 +146,7 @@ Usage: fleet capabilities
 }
 ```
 
-Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this _invocation_ can use; `compiled_capabilities` is what the _binary_ was built with — their difference is the profile/config narrowing. In the reference build both are the full 22 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
+Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this _invocation_ can use; `compiled_capabilities` is what the _binary_ was built with — their difference is the profile/config narrowing. In the reference build both are the full 24 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
 
 Exit codes: 0 ok · 2 usage error (any argument, including `--help`).
 
@@ -179,7 +179,7 @@ Usage: fleet help [domain]
 | ----------------------- | ----------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<domain>` (positional) | domain name | full registry | With no argument, prints the full registry help (identical to `fleet --help`). With one domain name, prints that domain's help. A second argument is rejected. `fleet help --help` is an error: there is no domain named `--help`. |
 
-**Behaviour.** `fleet help` with no argument prints the full registry: `fleet 0.1.0 — one multicall binary for the fleet's tools`, the usage lines, all 19 domains with summaries and argv0 aliases, the five built-in commands, and the note that a domain this invocation cannot use answers with a stub and exit code 69. `fleet help <domain>` prints the domain's registry help: summary line, `Usage: fleet <domain> <command> [args...]`, argv0 aliases, the command list, and a status line whose wording is per-domain and capability-aware. An unknown name is a usage error: `error: no domain named '<name>' — run 'fleet --help' for the registry`, exit 2. Domain help is registry data and renders identically on every build, with unavailable domains marked — help never stubs.
+**Behaviour.** `fleet help` with no argument prints the full registry: `fleet 0.1.0 — one multicall binary for the fleet's tools`, the usage lines, all 22 domains with summaries and argv0 aliases, the five built-in commands, and the note that a domain this invocation cannot use answers with a stub and exit code 69. `fleet help <domain>` prints the domain's registry help: summary line, `Usage: fleet <domain> <command> [args...]`, argv0 aliases, the command list, and a status line whose wording is per-domain and capability-aware. An unknown name is a usage error: `error: no domain named '<name>' — run 'fleet --help' for the registry`, exit 2. Domain help is registry data and renders identically on every build, with unavailable domains marked — help never stubs.
 
 Exit codes: 0 ok · 2 unknown domain name or extra argument.
 
@@ -189,7 +189,7 @@ fleet queue — Repo work queue: enqueue, claim, and complete tasks through the 
 
 Usage: fleet queue <command> [args...]
 Aliases (argv0): repo-queue
-Commands: validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
+Commands: validate, enqueue, list, meta, claim, release, lane, bind, heartbeat, checkpoint, reprioritize, park, wake, block, unblock, dep-recheck, quarantine-recheck, repair, resolution-backfill, cancel, revive, fail, complete, verify-disposition, timeline, history, staleness, needs-user, show, note, link, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack
 Status: included in this build
 ```
 

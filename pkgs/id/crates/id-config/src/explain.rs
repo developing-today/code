@@ -86,8 +86,12 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     ceilings(&document, &resolved, &mut entries);
     gates(&resolved, &mut entries);
     behavior(&resolved, &mut entries)?;
-    fanout(&written, &resolved, &mut entries);
+    fanout(&written, &resolved, &mut entries)?;
     peers(&written, &resolved, &mut entries)?;
+    storage(&written, &resolved, &mut entries);
+    tiers(&written, &resolved, &mut entries);
+    links(&written, &resolved, &mut entries)?;
+    namespaces(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -228,7 +232,11 @@ fn behavior(resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) -> Resul
     Ok(())
 }
 
-fn fanout(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+fn fanout(
+    written: &Value,
+    resolved: &ResolvedConfig,
+    entries: &mut Vec<ExplainEntry>,
+) -> Result<(), ConfigError> {
     let set = |key: &str| written.get("fanout").and_then(|f| f.get(key)).is_some();
     let source = |key: &str| {
         if set(key) {
@@ -237,7 +245,7 @@ fn fanout(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainE
             SOURCE_DEFAULT
         }
     };
-    let fanout = resolved.fanout;
+    let fanout = &resolved.fanout;
     push(
         entries,
         "fanout.deadline_ms",
@@ -268,6 +276,91 @@ fn fanout(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainE
         fanout.peer_breadth.to_string(),
         source("peer_breadth"),
     );
+    remotes(written, resolved, entries)?;
+    Ok(())
+}
+
+/// Each fan-out remote's fields under `fanout.remotes[<peer_id>]`, in ask
+/// order. The timeout and scope say which plane supplied them.
+fn remotes(
+    written: &Value,
+    resolved: &ResolvedConfig,
+    entries: &mut Vec<ExplainEntry>,
+) -> Result<(), ConfigError> {
+    let written_remotes = written
+        .get("fanout")
+        .and_then(|f| f.get("remotes"))
+        .and_then(Value::as_array);
+    for remote in &resolved.fanout.remotes {
+        let entry = written_remotes.and_then(|list| {
+            list.iter()
+                .find(|item| item.get("peer_id").and_then(Value::as_str) == Some(&remote.peer_id))
+        });
+        let wrote = |key: &str| entry.and_then(|e| e.get(key)).is_some_and(|v| !v.is_null());
+        let peer = resolved.peers.iter().find(|p| p.peer_id == remote.peer_id);
+        let peer_id = json(&remote.peer_id)?;
+        let from_peer = format!("peers[{peer_id}]");
+        let prefix = format!("fanout.remotes[{peer_id}]");
+        let relay_source = if wrote("relay") {
+            SOURCE_DOCUMENT
+        } else {
+            SOURCE_DEFAULT
+        };
+        // The effective timeout comes from the remote, else the peer, else
+        // the fan-out per-peer timeout, and is then capped by the deadline.
+        let given = entry
+            .and_then(|e| e.get("timeout_ms"))
+            .and_then(Value::as_u64)
+            .map(|t| (t, SOURCE_DOCUMENT.to_owned()))
+            .or_else(|| {
+                peer.and_then(|p| p.timeout_ms)
+                    .map(|t| (t, from_peer.clone()))
+            })
+            .unwrap_or_else(|| {
+                (
+                    resolved.fanout.per_peer_timeout_ms,
+                    "fanout.per_peer_timeout_ms".to_owned(),
+                )
+            });
+        let timeout = remote.timeout_ms.unwrap_or(given.0);
+        let timeout_source = if timeout == given.0 {
+            given.1
+        } else {
+            "clamped:fanout.deadline_ms".to_owned()
+        };
+        let scope_source = if wrote("scope") {
+            SOURCE_DOCUMENT.to_owned()
+        } else if remote.scope.is_some() {
+            from_peer.clone()
+        } else {
+            SOURCE_DEFAULT.to_owned()
+        };
+        push(
+            entries,
+            &format!("{prefix}.priority"),
+            remote.priority.to_string(),
+            SOURCE_DOCUMENT,
+        );
+        push(
+            entries,
+            &format!("{prefix}.relay"),
+            remote.relay.to_string(),
+            relay_source,
+        );
+        push(
+            entries,
+            &format!("{prefix}.timeout_ms"),
+            timeout.to_string(),
+            &timeout_source,
+        );
+        push(
+            entries,
+            &format!("{prefix}.scope"),
+            json(&remote.scope)?,
+            &scope_source,
+        );
+    }
+    Ok(())
 }
 
 /// Each peer's fields under `peers[<peer_id>]`, in `peer_id` order; a
@@ -305,8 +398,209 @@ fn peers(
         for (key, value) in fields {
             push(entries, &format!("{prefix}.{key}"), value, source(key));
         }
+        // Overrides that set nothing are dropped at resolution, so each
+        // one listed here was written.
+        for (operation, over) in &peer.overrides {
+            if let Some(adapter) = &over.adapter {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.adapter", operation.as_str()),
+                    adapter.clone(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+            if let Some(timeout) = over.timeout_ms {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.timeout_ms", operation.as_str()),
+                    timeout.to_string(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+        }
     }
     Ok(())
+}
+
+fn storage(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // An absent key and an explicit `null` both take the default (record
+    // §6.3), so only a non-null written value is the document's.
+    let source = |store: &str, key: &str| {
+        let set = written
+            .get("storage")
+            .and_then(|s| s.get(store))
+            .and_then(|b| b.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    let storage = &resolved.storage;
+    for (store, binding) in [
+        ("local_store", &storage.local_store),
+        ("event_log", &storage.event_log),
+    ] {
+        let fields = [
+            ("adapter", binding.adapter.clone()),
+            ("durability", binding.durability.clone()),
+            (
+                "sync_participation",
+                binding.sync_participation.as_str().to_owned(),
+            ),
+        ];
+        for (key, value) in fields {
+            push(
+                entries,
+                &format!("storage.{store}.{key}"),
+                value,
+                source(store, key),
+            );
+        }
+    }
+    if let Some(object_store) = &storage.object_store {
+        push(
+            entries,
+            "storage.object_store.adapter",
+            object_store.adapter.clone(),
+            SOURCE_DOCUMENT,
+        );
+        push(
+            entries,
+            "storage.object_store.retention_class",
+            object_store.retention_class.clone(),
+            source("object_store", "retention_class"),
+        );
+    }
+}
+
+fn links(
+    written: &Value,
+    resolved: &ResolvedConfig,
+    entries: &mut Vec<ExplainEntry>,
+) -> Result<(), ConfigError> {
+    // As in `storage`: only a non-null written value is the document's.
+    let source = |link: &str, key: &str| {
+        let set = written
+            .get("links")
+            .and_then(|l| l.get(link))
+            .and_then(|k| k.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    let links = &resolved.links;
+    // An unset sync scope and query timeout come from another plane.
+    let sync_scope = links
+        .sync
+        .sync_scope
+        .unwrap_or(resolved.behavior.sync_scope);
+    let sync_scope_source = if links.sync.sync_scope.is_some() {
+        SOURCE_DOCUMENT
+    } else {
+        "behavior.sync_scope"
+    };
+    let timeout = links
+        .query
+        .timeout_ms
+        .unwrap_or(resolved.fanout.per_peer_timeout_ms);
+    let timeout_source = if links.query.timeout_ms.is_some() {
+        SOURCE_DOCUMENT
+    } else {
+        "fanout.per_peer_timeout_ms"
+    };
+    let fields: [(&str, &str, String, &str); 9] = [
+        (
+            "sync",
+            "enabled",
+            links.sync.enabled.to_string(),
+            source("sync", "enabled"),
+        ),
+        (
+            "sync",
+            "adapter",
+            links.sync.adapter.clone(),
+            source("sync", "adapter"),
+        ),
+        ("sync", "sync_scope", json(&sync_scope)?, sync_scope_source),
+        (
+            "sync",
+            "retention_class",
+            links.sync.retention_class.clone(),
+            source("sync", "retention_class"),
+        ),
+        (
+            "query",
+            "enabled",
+            links.query.enabled.to_string(),
+            source("query", "enabled"),
+        ),
+        ("query", "timeout_ms", timeout.to_string(), timeout_source),
+        (
+            "send_only",
+            "enabled",
+            links.send_only.enabled.to_string(),
+            source("send_only", "enabled"),
+        ),
+        (
+            "send_only",
+            "adapter",
+            links.send_only.adapter.clone(),
+            source("send_only", "adapter"),
+        ),
+        (
+            "send_only",
+            "retention_class",
+            links.send_only.retention_class.clone(),
+            source("send_only", "retention_class"),
+        ),
+    ];
+    for (link, key, value, from) in fields {
+        push(entries, &format!("links.{link}.{key}"), value, from);
+    }
+    push(
+        entries,
+        "links.control.enabled",
+        "true".to_owned(),
+        SOURCE_FIXED,
+    );
+    Ok(())
+}
+
+fn namespaces(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let set = written
+        .get("namespaces")
+        .and_then(|n| n.get("registry"))
+        .is_some_and(|v| !v.is_null());
+    push(
+        entries,
+        "namespaces.registry",
+        Value::String(resolved.namespaces.registry.clone()).to_string(),
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT },
+    );
+}
+
+fn tiers(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let source = |tier: &str, key: &str| {
+        let set = written
+            .get("tiers")
+            .and_then(|t| t.get(tier))
+            .and_then(|p| p.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    for (tier, policy) in &resolved.tiers.0 {
+        push(
+            entries,
+            &format!("tiers.{tier}.placement"),
+            policy.placement.as_str().to_owned(),
+            source(tier, "placement"),
+        );
+        push(
+            entries,
+            &format!("tiers.{tier}.retention"),
+            policy.retention.clone(),
+            source(tier, "retention"),
+        );
+    }
 }
 
 fn extensions(

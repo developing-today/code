@@ -9,15 +9,15 @@ Acceptance item 1 of #9097: every source, its store, volume, update mechanism
 its group section; do not edit another slice's section. Append-only: a slice
 adds its section (or extends it) without rewording settled sections.
 
-| Group | #9097 item | Slice | State |
-|---|---|---|---|
-| 1. Turso queue / PM-stack | item 1: fleet-queue data, PM-stack aggregator state / boards / reconcile | S1 (this slice, task 22929) | LANDED here |
-| 2. GitHub — all orgs/repos | item 2 | S2 | PLACEHOLDER — not this slice |
-| 3. Muse conversations + data | item 3 | S3 | PLACEHOLDER — not this slice |
-| 4. OpenCode sessions + data (incl. thinking-traces decision) | item 4 | S4 | PLACEHOLDER — not this slice |
-| 5. ID objects | item 5 | S5 | PLACEHOLDER — not this slice |
-| 6. Inventory-pass extras (notes/zettel, Reports Space, ask-ledger, quota/burn, laptop state) | item 6 | S6 | PLACEHOLDER — not this slice |
-| 7. Continuous-update design + connector filings index | acceptance items 2–3 | S7 | PLACEHOLDER — not this slice |
+| Group                                                                                        | #9097 item                                                               | Slice                       | State                        |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------- | ---------------------------- |
+| 1. Turso queue / PM-stack                                                                    | item 1: fleet-queue data, PM-stack aggregator state / boards / reconcile | S1 (this slice, task 22929) | LANDED here                  |
+| 2. GitHub — all orgs/repos                                                                   | item 2                                                                   | S2                          | LANDED here                  |
+| 3. Muse conversations + data                                                                 | item 3                                                                   | S3                          | PLACEHOLDER — not this slice |
+| 4. OpenCode sessions + data (incl. thinking-traces decision)                                 | item 4                                                                   | S4                          | PLACEHOLDER — not this slice |
+| 5. ID objects                                                                                | item 5                                                                   | S5                          | PLACEHOLDER — not this slice |
+| 6. Inventory-pass extras (notes/zettel, Reports Space, ask-ledger, quota/burn, laptop state) | item 6                                                                   | S6                          | PLACEHOLDER — not this slice |
+| 7. Continuous-update design + connector filings index                                        | acceptance items 2–3                                                     | S7                          | PLACEHOLDER — not this slice |
 
 Corpus anchor (last verified census, NOT a live count): **18,325 sessions /
 122,124 messages / 107,639 chunks** (2026-10-31 publish, recorded on #3125;
@@ -109,8 +109,8 @@ Three sub-sources, one group. None has an Atlas connector today.
     Grist-only row is seed/mirror, never truth). Design record:
     `doc/2026-10-24T11-05-38Z_design_project-management-stack/`.
   - Fresh volume: **UNVERIFIED in this slice** — Kaneo task counts per project
-    + roadmap-row counts + Grist row counts not pulled (needs Kaneo/Grist
-    credentials). Recount: §3 step 4.
+    - roadmap-row counts + Grist row counts not pulled (needs Kaneo/Grist
+      credentials). Recount: §3 step 4.
   - Current mechanism: none (roadmap-sync mirrors files→Grist only; nothing
     feeds Atlas).
   - Target: sweep over Kaneo tasks per project + roadmap files at rest (git is
@@ -191,31 +191,112 @@ the error and keep the previous number untouched and dated.
 ## Placeholders for other slices (do not fill in S1)
 
 ### Group 2 — GitHub (S2)
-Owner: S2. Scope per #9097 item 2: all issues/PRs/commits/files for all orgs
-and repos in scope (developing-today, developing-today-forks,
-Clustered-Computing, personal), extending #6023 beyond comments. Existing
-ground: #6023 closed (comments extraction), #10688 writer landed
-(`atlas-github-comments`), #7608 license capture landed; gates #6024/#6052
-(external half) OPEN.
+
+Verified 2026-11-26 against GitHub APIs and the merged #6023 implementation.
+This inventory covers the in-scope *our-repos* estate; external repositories
+are a separate, enumerated candidate set and remain gated as noted below.
+
+- **Source and scope:** GitHub API via `gh api` is the system of record for
+  issues, pull requests, commits, repository files, and their activity.
+  Enumerate all repositories owned by `developing-today`,
+  `developing-today-forks`, `Clustered-Computing`, and personal account
+  `dezren39`. On an all-visibility scope the first three organizations
+  currently expose 47, 38, and 3 repositories respectively:
+  `developing-today` is 31 public + 16 private = 47 total (`gh api
+  orgs/developing-today` reports `public_repos` 31 and
+  `total_private_repos` 16, and a paginated `orgs/developing-today/repos`
+  recount also returns 47; the earlier version of this section counted
+  that org public-only as 31, which understated the estate - #15867).
+  The authenticated, paginated
+  `/user/repos?visibility=all&affiliation=owner` endpoint returned 546 repos
+  whose owner is `dezren39` (536 are also visible from
+  `users/dezren39/repos?type=owner`). The current live census is therefore
+  634 repos across these four owners, not a current item/file count.
+  `#6023`'s first estate run recorded 615 repos from its original three
+  owners (the two developing-today orgs and `dezren39`) on 2026-11-16.
+  That 615 is not directly comparable to an all-visibility recount: it
+  equals today's count for those same three owners only when
+  `developing-today` is counted public-only (31 + 38 + 546 = 615), while
+  the all-visibility count for the same three owners is 631
+  (47 + 38 + 546); the 3 Clustered-Computing repos then bring the
+  four-owner total to 634. Recount with paginated `gh api` calls to
+  `orgs/<org>/repos?type=all&per_page=100` and the authenticated
+  `/user/repos?visibility=all&affiliation=owner&per_page=100` endpoint,
+  filtering the latter to `owner.login == dezren39`; deduplicate by
+  `owner/repo`. Record the endpoint, permissions, measured date, and returned
+  count because visibility can differ by credential.
+- **Store and volume:** the completed #6023 baseline extracted **35,819
+  comment records** (35,749 issue comments, 69 review comments, 1 review)
+  across 615 repos; the run skipped one HTTP-451-blocked repo. These are
+  extraction counts reported on #6023, not a fresh count and not evidence that
+  35,819 records were promoted into the canonical Atlas corpus. The feed emits
+  `atlas-github-comment/v1` JSONL records for the Atlas writer; current
+  published Atlas row/chunk counts are **UNVERIFIED**. Counts for issues,
+  PRs, commits, and repository files—the broader #9097 item 2 corpus—are also
+  **UNVERIFIED**. Recount those with paginated per-repo API enumeration:
+  `issues?state=all` (separate `pull_request` objects from issues),
+  `pulls?state=all`, `commits`, and the default-branch recursive Git tree
+  (report truncated trees as incomplete and count unique tree paths, not blobs
+  assumed from a partial response). Preserve the repo list and per-repo raw
+  counts so removals, private-repo visibility, and inaccessible repositories
+  are explicit.
+- **Existing coverage and gaps:** #6023 is closed; PR #10688 merged the
+  `atlas-github-comments` extractor and Atlas comment writer, and PR #10834
+  added skip-and-log behavior for HTTP 451 repos. The feed is gh-API-only,
+  paginated, sequential (rate-limit disciplined), watermark-incremental by
+  per-repo `updated_at`, and persists state after each repo. It extracts issue
+  comments, PR review comments, and PR reviews with thread context, author,
+  and provenance. It does **not** yet inventory or extract full issue/PR
+  descriptions, commits, or files. The live source code enumerates the two
+  developing-today organizations and `dezren39`, but not `Clustered-Computing`;
+  that org's three repos therefore need inclusion in any complete estate run.
+  No scheduled recurring run is verified; #7969 is the related runner issue.
+- **Update mechanism:** current delivered mechanism is a manually invoked,
+  resumable `atlas-github-comments` CLI, not an always-running connector. Its
+  comment feed uses API `updated_at` watermarks; the broader issues/PRs,
+  commits, and files need source-specific cursors (issue/PR updates, commit
+  history, and default-branch tree/object changes) before they can be called
+  continuous. Target: webhook/event hooks where supported plus scheduled
+  `updated_at`/commit/tree sweeps with durable per-repo watermarks and
+  idempotent upserts; advance only after successful source processing, record
+  inaccessible repos/errors, and publish per-repo counts. Do not imply the
+  comment watermark covers commits or file changes.
+- **External set and gates:** `pkgs/atlas-search/docs/external-set-enumeration.md`
+  records 31 external candidates from fork upstreams and dependency manifests;
+  account activity contributed no candidates within its documented 1,000-item
+  search window (not an exhaustive history). The artifact is enumeration only:
+  zero external comment text was extracted. External-content ingestion remains
+  gated on licensing work #6024 and policy #6052; #7608's license-capture
+  implementation does not itself clear those gates.
+- **Owner:** #9097 owns this source inventory and continuous-ingestion
+  acceptance. #6023 is the existing comments connector/extraction issue; its
+  shipped feed is partial coverage, not a substitute for the broader issues,
+  PRs, commits, and files inventory/ingestion. #7969 tracks recurring sweep
+  runner work. No separate owner issue for the missing object/metadata feeds
+  was verified in this slice.
 
 ### Group 3 — Claude conversations + data (S3)
+
 Owner: S3. Scope per #9097 item 3: main + side chats, memory tree, artifacts.
 No export/API mechanism on record (2026-11-23 research: UNVERIFIED) — S3
 decides the mechanism in this section.
 
 ### Group 4 — OpenCode sessions + data (S4)
+
 Owner: S4. Scope per #9097 item 4: OpenCode session store (laptop server
 127.0.0.1:13420) + OpenChamber session data, via session-close hook or store
 sweep. Must include #9097's explicit **thinking-traces investigation +
 recommendation** (volume, value, classification per workstream D) — undecided.
 
 ### Group 5 — ID objects (S5)
+
 Owner: S5. Scope per #9097 item 5 + #6062 publication line: laptop redb, Turso
 ID DBs, hosted stores as they arrive — into Atlas (reverse of the designed
 Atlas→ID #6062/#11182–#11186 direction). End state per #9109 Part C:
 automatic vectorization (Snowflake + second embedder) feeding ID search.
 
 ### Group 6 — Inventory-pass extras (S6)
+
 Owner: S6. Scope per #9097 item 6: notes/zettel, Fleet Reports Space records,
 ask-ledger logs, quota/burn records, laptop state stores; related open
 connectors #8622 (memory-lancedb), #8626 (memory/notes/docs/research), #9576
@@ -224,6 +305,7 @@ the disposition of each candidate from research §2.7 (Gmail paused 2026-11-22,
 Drive, Slack allowlist, CI runs, non-Atlas Turso DBs).
 
 ### Group 7 — Continuous-update design + connector filings index (S7)
+
 Owner: S7. #9097 acceptance items 2–3: per-source connector issues filed (or
 existing ones linked: #6023, #8626, …) with acceptance criteria each; the
 continuous-update design (hooks + sweeps + watermark); the canonical corpus
@@ -252,4 +334,4 @@ recount procedure's promotion from §3 of this file into the standing runbook.
 - Prior art cited, not duplicated: #6019 operations design (§§2–6: source
   classes, delta→filter→land→promote pipeline, guardrails, plan ceiling,
   runbook); 2026-11-23 Atlas sources/consumers research (§2.1 item-1 holder
-  + status "no connector built", §2.7 candidates, §4 gates).
+  - status "no connector built", §2.7 candidates, §4 gates).

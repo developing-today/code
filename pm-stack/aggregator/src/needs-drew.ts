@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { requireHome } from "./home.ts";
+import { needsUserStatePath } from "./needs-user-state-path.ts";
 
 export const NEEDS_DREW_LABELS = ["user/review", "user/escalated"] as const;
 export type NeedsDrewLabel = (typeof NEEDS_DREW_LABELS)[number];
@@ -366,9 +367,39 @@ export interface NeedsDrewOption {
   label: string;
 }
 
+/**
+ * Generalised question types (#14149 §1). Absent means "radio", the only
+ * shape that existed before, so every stored question keeps its meaning.
+ * Every type keeps the custom free-text path (`freeText`).
+ */
+export const NEEDS_DREW_ANSWER_TYPES = ["radio", "checkbox", "text"] as const;
+export type NeedsDrewAnswerType = (typeof NEEDS_DREW_ANSWER_TYPES)[number];
+
+/**
+ * How a checkbox answer to a broker-sourced question becomes one boolean
+ * (#14149 §2). Recorded on the question at raise, never inferred at apply.
+ * - unanimous (default): every ticked option maps to the same boolean.
+ * - any-deny: one ticked deny-mapped option denies; otherwise approve.
+ * - all-approve: approve only when every approve-mapped option is ticked
+ *   and no deny-mapped option is; otherwise deny.
+ */
+export const NEEDS_DREW_RESOLUTION_RULES = ["unanimous", "any-deny", "all-approve"] as const;
+export type NeedsDrewResolutionRule = (typeof NEEDS_DREW_RESOLUTION_RULES)[number];
+
+/** A standard option set referenced at raise (e.g. approve-deny v1). The
+ * question's `options` stay the frozen copy, so set edits never rewrite it. */
+export interface NeedsDrewOptionSetRef {
+  setId: string;
+  version: number;
+}
+
 export interface NeedsDrewAnswer {
   optionId?: string;
+  /** Checkbox selection (#14149). `optionId` stays the radio field. */
+  optionIds?: string[];
   freeText?: string;
+  /** The question's type when this answer was recorded. */
+  answerType?: NeedsDrewAnswerType;
   at: string;
   via: string;
 }
@@ -391,6 +422,14 @@ export interface NeedsDrewQuestion {
   source: string;
   /** Present only when a broker-raised Actions-exec question has a valid key. */
   brokerMapping?: NeedsDrewBrokerMapping;
+  /** #14149: absent = "radio". */
+  answerType?: NeedsDrewAnswerType;
+  optionSet?: NeedsDrewOptionSetRef;
+  /** #14149: checkbox rule for broker resolution; absent = "unanimous". */
+  resolution?: NeedsDrewResolutionRule;
+  /** #14149: option id -> approve boolean, frozen at raise for
+   * broker-sourced questions so resolution never reads live set data. */
+  resolutionMap?: Record<string, boolean>;
   answer?: NeedsDrewAnswer;
 }
 
@@ -400,14 +439,17 @@ export interface NeedsDrewInput {
   context?: string;
   options: NeedsDrewOption[];
   links: string[];
+  answerType?: NeedsDrewAnswerType;
+  optionSet?: NeedsDrewOptionSetRef;
+  resolution?: NeedsDrewResolutionRule;
+  resolutionMap?: Record<string, boolean>;
 }
 
 export const NEEDS_DREW_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 /** Default question-store path (mirrors src/config.ts needsDrewFile). */
 export function defaultNeedsDrewFile(env: Record<string, string | undefined> = process.env): string {
-  const v = env.PM_AGG_NEEDS_DREW_FILE?.trim();
-  return v ? v : join(requireHome("PM_AGG_NEEDS_DREW_FILE"), ".local", "state", "pm-aggregator", "needs-drew.json");
+  return needsUserStatePath(env, () => join(requireHome("PM_AGG_NEEDS_USER_FILE"), ".local", "state", "pm-aggregator"));
 }
 
 /** Validate the intake `needsDrew` extension object (#8568 wire contract). */
@@ -444,6 +486,44 @@ export function validateNeedsDrew(value: unknown): { ok: true; value: NeedsDrewI
     }
     links = [...(b.links as string[])];
   }
+  const ids = new Set(options.map((o) => o.id));
+  let answerType: NeedsDrewAnswerType | undefined;
+  if (b.answerType !== undefined) {
+    if (!NEEDS_DREW_ANSWER_TYPES.includes(b.answerType as NeedsDrewAnswerType)) {
+      return { ok: false, error: `needsDrew.answerType must be one of ${NEEDS_DREW_ANSWER_TYPES.join(", ")}` };
+    }
+    answerType = b.answerType as NeedsDrewAnswerType;
+  }
+  let optionSet: NeedsDrewOptionSetRef | undefined;
+  if (b.optionSet !== undefined) {
+    const os = b.optionSet as Record<string, unknown> | null;
+    const setId = os && typeof os === "object" && typeof os.setId === "string" ? os.setId.trim() : "";
+    const version = os && typeof os === "object" ? os.version : undefined;
+    if (!setId || typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+      return { ok: false, error: "needsDrew.optionSet requires setId and an integer version >= 1" };
+    }
+    optionSet = { setId, version };
+  }
+  let resolution: NeedsDrewResolutionRule | undefined;
+  if (b.resolution !== undefined) {
+    if (!NEEDS_DREW_RESOLUTION_RULES.includes(b.resolution as NeedsDrewResolutionRule)) {
+      return { ok: false, error: `needsDrew.resolution must be one of ${NEEDS_DREW_RESOLUTION_RULES.join(", ")}` };
+    }
+    resolution = b.resolution as NeedsDrewResolutionRule;
+  }
+  let resolutionMap: Record<string, boolean> | undefined;
+  if (b.resolutionMap !== undefined) {
+    const m = b.resolutionMap;
+    if (!m || typeof m !== "object" || Array.isArray(m)) {
+      return { ok: false, error: "needsDrew.resolutionMap must be an object" };
+    }
+    resolutionMap = {};
+    for (const [id, v] of Object.entries(m as Record<string, unknown>)) {
+      if (!ids.has(id)) return { ok: false, error: `needsDrew.resolutionMap names unknown option "${id}"` };
+      if (typeof v !== "boolean") return { ok: false, error: "needsDrew.resolutionMap values must be booleans" };
+      resolutionMap[id] = v;
+    }
+  }
   return {
     ok: true,
     value: {
@@ -452,6 +532,10 @@ export function validateNeedsDrew(value: unknown): { ok: true; value: NeedsDrewI
       ...(typeof b.context === "string" ? { context: b.context } : {}),
       options,
       links,
+      ...(answerType ? { answerType } : {}),
+      ...(optionSet ? { optionSet } : {}),
+      ...(resolution ? { resolution } : {}),
+      ...(resolutionMap ? { resolutionMap } : {}),
     },
   };
 }
@@ -521,6 +605,16 @@ export async function raiseNeedsDrew(
       raisedAt: new Date().toISOString(),
       source,
       ...(brokerMapping ? { brokerMapping } : {}),
+      ...(input.answerType ? { answerType: input.answerType } : {}),
+      ...(input.optionSet ? { optionSet: input.optionSet } : {}),
+      ...(input.resolution ? { resolution: input.resolution } : {}),
+      // #14149 §2: a broker-sourced question freezes its resolution map
+      // with its options at raise; later set edits never change it.
+      ...(input.resolutionMap
+        ? { resolutionMap: { ...input.resolutionMap } }
+        : brokerMapping
+          ? { resolutionMap: defaultResolutionMap(input.options) }
+          : {}),
     };
     items.push(item);
     await writeNeedsDrewItems(file, items);
@@ -532,7 +626,12 @@ function actionsExecMapping(source: string, key: string | undefined): NeedsDrewB
   const normalizedKey = key?.trim() ?? "";
   const prefix = "actions-exec-ext:";
   if (source !== "fleet-actions-exec" || !normalizedKey.startsWith(prefix)) return null;
-  const handle = normalizedKey.slice(prefix.length).trim();
+  // The broker's alert key is actions-exec-ext:<handle>:<ordinal>; the
+  // session handle is the middle part, so the trailing ordinal goes.
+  const handle = normalizedKey
+    .slice(prefix.length)
+    .replace(/:\d+$/, "")
+    .trim();
   if (!handle) return null;
   return { source: "fleet-actions-exec", key: normalizedKey, handle };
 }
@@ -544,6 +643,75 @@ export function needsDrewAnswerHandle(question: NeedsDrewQuestion): string | nul
   const parsed = actionsExecMapping(mapping.source, mapping.key);
   if (!parsed || parsed.handle !== mapping.handle) return null;
   return mapping.handle;
+}
+
+/** The standard approve-deny mapping: option `approve` -> true, `deny` -> false. */
+export function defaultResolutionMap(options: NeedsDrewOption[]): Record<string, boolean> {
+  const map: Record<string, boolean> = {};
+  for (const o of options) {
+    if (o.id === "approve") map[o.id] = true;
+    else if (o.id === "deny") map[o.id] = false;
+  }
+  return map;
+}
+
+export type NeedsDrewBrokerResolution =
+  | { kind: "resolved"; handle: string; approve: boolean }
+  | { kind: "unresolvable"; handle: string; reason: string };
+
+/**
+ * #14149 §2: turn a broker-sourced answer into the broker's unchanged
+ * `{handle, approve}` envelope, or say why it cannot be. Null when the
+ * question is not an answered broker question (the applier ignores it).
+ * An unresolvable answer is never dropped: the caller raises the #14043
+ * §4 alert naming the handle, the answer and this reason.
+ */
+export function resolveBrokerAnswer(question: NeedsDrewQuestion): NeedsDrewBrokerResolution | null {
+  const handle = needsDrewAnswerHandle(question);
+  if (handle === null || !question.answer) return null;
+  const answer = question.answer;
+  // Questions raised before #14149 carry no frozen map; their implicit
+  // convention was the approve/deny option ids.
+  const map = question.resolutionMap ?? defaultResolutionMap(question.options);
+  const type = question.answerType ?? "radio";
+  const unresolvable = (reason: string): NeedsDrewBrokerResolution => ({ kind: "unresolvable", handle, reason });
+  if (type === "text") return unresolvable("free-text answer has no approve/deny mapping");
+  if (type === "radio") {
+    const id = answer.optionId;
+    if (id === undefined) return unresolvable("free-text answer has no approve/deny mapping");
+    if (!(id in map)) return unresolvable(`option "${id}" has no approve/deny mapping`);
+    return { kind: "resolved", handle, approve: map[id]! };
+  }
+  const ids = answer.optionIds ?? (answer.optionId !== undefined ? [answer.optionId] : []);
+  if (ids.length === 0) return unresolvable("empty selection");
+  const unmapped = ids.filter((id) => !(id in map));
+  if (unmapped.length) return unresolvable(`option "${unmapped[0]}" has no approve/deny mapping`);
+  const values = ids.map((id) => map[id]!);
+  const rule = question.resolution ?? "unanimous";
+  if (rule === "any-deny") return { kind: "resolved", handle, approve: !values.includes(false) };
+  if (rule === "all-approve") {
+    const picked = new Set(ids);
+    const approvals = Object.keys(map).filter((id) => map[id]);
+    const approve = !values.includes(false) && approvals.length > 0 && approvals.every((id) => picked.has(id));
+    return { kind: "resolved", handle, approve };
+  }
+  if (values.every((v) => v === values[0])) return { kind: "resolved", handle, approve: values[0]! };
+  return unresolvable("mixed selection (approve and deny both ticked)");
+}
+
+/**
+ * #14149 §3: lossless radio -> checklist conversion. Adds options freely,
+ * never renames or removes an option id, and never touches the recorded
+ * answer, the broker mapping or the frozen resolution map, so an answer
+ * recorded before the conversion still resolves to the same handle.
+ */
+export function convertToChecklist(question: NeedsDrewQuestion, added: NeedsDrewOption[] = []): NeedsDrewQuestion {
+  const ids = new Set(question.options.map((o) => o.id));
+  for (const o of added) {
+    if (ids.has(o.id)) throw new Error(`option id "${o.id}" already exists; conversion never renames ids`);
+    ids.add(o.id);
+  }
+  return { ...question, options: [...question.options, ...added], answerType: "checkbox" };
 }
 
 export async function getNeedsDrew(file: string, ledgerId: string): Promise<NeedsDrewQuestion | null> {
@@ -565,16 +733,19 @@ export function needsDrewIncidentKey(ledgerId: string): string {
 export async function recordAnswer(
   file: string,
   ledgerId: string,
-  answer: { optionId?: string; freeText?: string; via?: string },
+  answer: { optionId?: string; optionIds?: string[]; freeText?: string; via?: string },
 ): Promise<NeedsDrewQuestion | null> {
   return serializeNeedsDrew(file, async () => {
     const items = await readNeedsDrewItems(file);
     const item = items.find((i) => i.ledgerId === ledgerId);
     if (!item) return null;
     if (item.answer) return item;
+    const optionIds = answer.optionIds ? [...new Set(answer.optionIds)] : undefined;
     item.answer = {
       ...(answer.optionId !== undefined ? { optionId: answer.optionId } : {}),
+      ...(optionIds !== undefined ? { optionIds } : {}),
       ...(answer.freeText !== undefined ? { freeText: answer.freeText } : {}),
+      ...(item.answerType !== undefined ? { answerType: item.answerType } : {}),
       at: new Date().toISOString(),
       via: answer.via ?? "api",
     };

@@ -265,6 +265,56 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
+        ClientFrame::SetPresentationPolicy {
+            admin_token,
+            policy,
+        } => match service
+            .set_presentation_policy(Some(&admin_token), policy)
+            .await
+        {
+            Ok(policy) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::PresentationPolicy {
+                        policy,
+                        message: PRESENTATION_POLICY_SAVED,
+                    },
+                )
+                .await;
+                audit_admin_frame(
+                    world_name,
+                    "SetPresentationPolicy",
+                    "accepted",
+                    serde_json::json!({}),
+                );
+            }
+            Err(error) => {
+                audit_admin_frame(
+                    world_name,
+                    "SetPresentationPolicy",
+                    "refused",
+                    serde_json::json!({}),
+                );
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::PresentationPolicyInfo {} => match service.presentation_policy().await {
+            Ok(policy) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::PresentationPolicy {
+                        policy,
+                        message: PRESENTATION_POLICY_CURRENT,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
         ClientFrame::SetSchedule {
             admin_token,
             id,

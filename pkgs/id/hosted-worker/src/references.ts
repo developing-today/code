@@ -311,6 +311,17 @@ export class ReferenceStore {
       .map(toReferenceRow);
   }
 
+  /** Every live (non-tombstoned) reference in this database, in
+   * content then reference order. This is the authoritative side of
+   * the derived index's reconciliation sweep (#12805); a full scan,
+   * meant for periodic partition sweeps, never the request path. */
+  liveReferences(): ReferenceRow[] {
+    return this.sql
+      .exec("SELECT * FROM content_reference WHERE tombstoned_at IS NULL ORDER BY content_id, reference_id")
+      .toArray()
+      .map(toReferenceRow);
+  }
+
   /** Outbox events after a consumer cursor (`seq`), oldest first.
    * Delivery is at-least-once; consumers dedupe by event_id. */
   outboxAfter(afterSeq: number, limit = 500): ReferenceEvent[] {

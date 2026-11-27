@@ -18,10 +18,10 @@
 //! - **Live reads (§5.2).** One request per page. Every [`LiveResult`]
 //!   states [`Consistency::PerRequest`] and the observation time of the
 //!   last page, and says whether the result is complete. A page is
-//!   complete when `Content-Range` says so or when it holds fewer rows
-//!   than the limit; otherwise the result is marked `truncated`. A failed
-//!   page is an error, never a short success, and nothing falls back to a
-//!   snapshot.
+//!   complete when `Content-Range` says so, or when it holds fewer rows
+//!   than the limit and the range does not explicitly say rows remain;
+//!   otherwise the result is marked `truncated`. A failed page is an
+//!   error, never a short success, and nothing falls back to a snapshot.
 //! - **Materialized snapshots (§5.3).** [`SnapshotStore::rebuild`] keyset
 //!   pages over the whole allowed set under [`SnapshotCaps`]. The caps are
 //!   checked before a page's rows are copied; exceeding one is
@@ -208,6 +208,13 @@ pub trait PageDecoder {
     /// order. The cursor of a page's last row is where the next page
     /// starts.
     fn cursor(&self, row: &Self::Row, ordering: &[OrderKey]) -> Result<Vec<Value>, DecodeError>;
+
+    /// Remove `columns` from `row`. The reader calls this with the
+    /// request's cursor-only columns once the row's cursor is no longer
+    /// needed, so a projection that leaves out an ordering key returns
+    /// only the columns it asked for (#15010). A column the row does
+    /// not carry is ignored.
+    fn drop_columns(&self, row: &mut Self::Row, columns: &[String]);
 }
 
 /// Why a read failed.
@@ -233,8 +240,9 @@ pub enum ReadError {
     Deadline,
     /// The connection failed.
     Connection,
-    /// The page broke the protocol: more rows than the limit, or a
-    /// `Content-Range` that cannot be parsed.
+    /// The page broke the protocol: more rows than the limit, a
+    /// `Content-Range` that cannot be parsed, or one that does not
+    /// describe the decoded body (#15742).
     MalformedPage,
     /// A value failed its declared type.
     TypeMapping {
@@ -411,6 +419,21 @@ impl ContentRange {
             Self::Rows { total: None, .. } => None,
         }
     }
+
+    /// Whether the range can describe a body of `rows` decoded rows
+    /// (#15742): an empty range needs an empty body, and a row range
+    /// needs exactly `last - first + 1` rows and, with a known total,
+    /// must end inside it. A range that disagrees with its body is a
+    /// broken page, never evidence about the rest of the result.
+    pub fn describes(self, rows: u64) -> bool {
+        match self {
+            Self::Empty { .. } => rows == 0,
+            Self::Rows { first, last, total } => {
+                total.is_none_or(|total| last < total)
+                    && last.checked_sub(first).and_then(|span| span.checked_add(1)) == Some(rows)
+            }
+        }
+    }
 }
 
 /// Whether a media type is JSON (`application/json`,
@@ -464,8 +487,13 @@ fn fetch_page<T: Transport, D: PageDecoder>(
     if row_count > u64::from(limit) {
         return Err(ReadError::MalformedPage);
     }
-    let complete = range.and_then(ContentRange::says_complete).unwrap_or(false)
-        || row_count < u64::from(limit);
+    if range.is_some_and(|range| !range.describes(row_count)) {
+        return Err(ReadError::MalformedPage);
+    }
+    let complete = match range.and_then(ContentRange::says_complete) {
+        Some(explicit) => explicit,
+        None => row_count < u64::from(limit),
+    };
     Ok(Page {
         rows,
         complete,
@@ -546,6 +574,8 @@ pub fn live_read<T: Transport, D: PageDecoder>(
     // Refusals come first and need no mode: they depend on the query text
     // alone, and nothing is sent until the query passes (§9 invariant 1).
     let mut request = translator.translate(query)?;
+    // The same for every page: later pages change only the cursor.
+    let cursor_only = request.cursor_only.clone();
     let collection = collection_for(endpoint, query)?;
     match modes.mode_for(&collection.relation)? {
         ReadMode::Live => {}
@@ -581,6 +611,11 @@ pub fn live_read<T: Transport, D: PageDecoder>(
             None => None,
         };
         if complete || next_cursor.is_none() || pages >= max_pages {
+            if !cursor_only.is_empty() {
+                for row in &mut rows {
+                    decoder.drop_columns(row, &cursor_only);
+                }
+            }
             return Ok(LiveResult {
                 rows,
                 consistency: Consistency::PerRequest,

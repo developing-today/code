@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 KEEPER = ROOT / "scripts" / "muse" / "fleet-binary-keeper.sh"
 ASSET = "fleet-x86_64-linux-musl"
 
-FAKE_GH = r'''
+FAKE_GH = r"""
 import json, os, shutil, sys
 from pathlib import Path
 
@@ -62,7 +62,7 @@ if args[0] == "release" and args[1] == "download":
     sys.exit(0)
 print(f"fake gh: unhandled argv {args}", file=sys.stderr)
 sys.exit(1)
-'''
+"""
 
 
 def sha256(data: bytes) -> str:
@@ -103,8 +103,12 @@ class KeeperTest(unittest.TestCase):
         """A newer non-fleet release and an older fleet-static release,
         both of which the keeper must ignore in favour of the newest
         fleet-static one served by each test."""
-        self.serve_release("pm-console-android-v999", "2026-11-25T09:00:00Z", b"android")
-        self.serve_release("fleet-static-aaaaaaa", "2026-11-20T05:41:00Z", b"stale fleet")
+        self.serve_release(
+            "pm-console-android-v999", "2026-11-25T09:00:00Z", b"android"
+        )
+        self.serve_release(
+            "fleet-static-aaaaaaa", "2026-11-20T05:41:00Z", b"stale fleet"
+        )
 
     def run_keeper(self, *extra, target_bytes=None):
         if target_bytes is not None:
@@ -113,9 +117,19 @@ class KeeperTest(unittest.TestCase):
         env["PATH"] = f"{self.bin_dir}:/usr/bin:/bin"
         env["FAKE_GH_HOME"] = str(self.gh_home)
         return subprocess.run(
-            ["bash", str(KEEPER), "--target", str(self.target),
-             "--log-file", str(self.log_file), *extra],
-            capture_output=True, text=True, env=env, timeout=60,
+            [
+                "bash",
+                str(KEEPER),
+                "--target",
+                str(self.target),
+                "--log-file",
+                str(self.log_file),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
         )
 
     def calls(self):
@@ -128,7 +142,9 @@ class KeeperTest(unittest.TestCase):
     # -- cases ------------------------------------------------------------
     def test_match_leaves_target_and_skips_binary_download(self):
         self.serve_decoys()
-        self.serve_release("fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet")
+        self.serve_release(
+            "fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet"
+        )
         result = self.run_keeper(target_bytes=b"current fleet")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.target.read_bytes(), b"current fleet")
@@ -140,7 +156,9 @@ class KeeperTest(unittest.TestCase):
 
     def test_drift_restores_verified_asset(self):
         self.serve_decoys()
-        self.serve_release("fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet")
+        self.serve_release(
+            "fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet"
+        )
         result = self.run_keeper(target_bytes=b"stale fleet")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.target.read_bytes(), b"current fleet")
@@ -148,7 +166,9 @@ class KeeperTest(unittest.TestCase):
         self.assertIn("restored tag=fleet-static-bbbbbbb", self.keeper_log())
 
     def test_missing_target_is_installed(self):
-        self.serve_release("fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet")
+        self.serve_release(
+            "fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet"
+        )
         result = self.run_keeper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.target.read_bytes(), b"current fleet")
@@ -156,7 +176,9 @@ class KeeperTest(unittest.TestCase):
 
     def test_corrupt_download_never_touches_target(self):
         self.serve_release(
-            "fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"tampered bytes",
+            "fleet-static-bbbbbbb",
+            "2026-11-25T05:41:00Z",
+            b"tampered bytes",
             sum_bytes=sha256(b"honest bytes"),
         )
         result = self.run_keeper(target_bytes=b"installed fleet")
@@ -165,14 +187,18 @@ class KeeperTest(unittest.TestCase):
         self.assertIn("failed sha256 verification", self.keeper_log())
 
     def test_check_only_reports_drift_without_restoring(self):
-        self.serve_release("fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet")
+        self.serve_release(
+            "fleet-static-bbbbbbb", "2026-11-25T05:41:00Z", b"current fleet"
+        )
         result = self.run_keeper("--check-only", target_bytes=b"stale fleet")
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(self.target.read_bytes(), b"stale fleet")
         self.assertIn("drift tag=fleet-static-bbbbbbb", self.keeper_log())
 
     def test_no_fleet_static_release_is_an_error(self):
-        self.serve_release("pm-console-android-v999", "2026-11-25T09:00:00Z", b"android")
+        self.serve_release(
+            "pm-console-android-v999", "2026-11-25T09:00:00Z", b"android"
+        )
         result = self.run_keeper(target_bytes=b"installed fleet")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(self.target.read_bytes(), b"installed fleet")

@@ -427,6 +427,31 @@ pub struct WorldProfileArgs {
     pub no_relay: bool,
 }
 
+/// The arguments of `id world presentation`, extracted into
+/// their own `Args` struct for the same reason as `ServeArgs`
+/// (#4751).
+#[derive(Args, Debug)]
+pub struct WorldPresentationArgs {
+    /// The host's node ID (64 hex characters).
+    pub node: String,
+    /// Replace the policy with the one in this JSON file (needs
+    /// `--admin-token`). A duplicated key is refused.
+    #[arg(long, value_name = "FILE")]
+    pub set: Option<PathBuf>,
+    /// Admin secret configured with `serve --world-admin-token`.
+    #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+    pub admin_token: Option<String>,
+    /// World on the host to use (default: the host's default world).
+    #[arg(long, env = "ID_WORLD")]
+    pub world: Option<String>,
+    /// Direct socket address of the host (repeatable); skips discovery.
+    #[arg(long = "addr")]
+    pub addrs: Vec<SocketAddr>,
+    /// Disable relay servers (direct connection only).
+    #[arg(long)]
+    pub no_relay: bool,
+}
+
 /// The arguments of `id world doctor`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`
 /// (#4751): keeping clap's derive-generated construction in its
@@ -960,6 +985,14 @@ pub enum WorldCommand {
     /// are specified, prints the current persisted profile (requires either
     /// `--admin-token` or a guest `--capability`).
     Profile(WorldProfileArgs),
+    /// View or replace a world's presentation policy.
+    ///
+    /// Without `--set` it prints the policy: what appearances the world
+    /// lets render (user uploads, the richest rung, filters, shaders,
+    /// its fallback art). Reading needs no token, because the policy is
+    /// public before anyone joins. `--set FILE` replaces it with the
+    /// policy in a JSON file and needs `--admin-token`.
+    Presentation(WorldPresentationArgs),
     /// Scaffold a new Roc world app directory.
     ///
     /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
@@ -1097,6 +1130,83 @@ pub enum WorldCommand {
         /// provenance; see `id world provenance`).
         #[arg(long)]
         template: bool,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export a durable world on disk as a template bundle (#8282).
+    ///
+    /// Writes the template as JSON: the active program as a bundle
+    /// reference and the `kv` entries named with `--keep-state`.
+    /// Capabilities, author keys and grants are stripped and only
+    /// counted. A program that was not installed from a bundle is
+    /// refused. Local only; no host is contacted.
+    TemplateExport {
+        /// Directory of the world to export (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// File to write the template to; it must not exist yet.
+        out: PathBuf,
+        /// A `kv` key to carry as template state (repeatable).
+        #[arg(long = "keep-state", value_name = "KEY")]
+        keep_state: Vec<String>,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a new durable world on disk from a template (#8282).
+    ///
+    /// The world gets a fresh id and starts with the template's state.
+    /// Each program the template names installs from a bundle file given
+    /// with `--bundle`, through the same verification as a sideloaded
+    /// bundle. A program with no matching bundle is recorded in the
+    /// world's `template-gaps.json` instead. Local only; no host or
+    /// network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateCreate {
+        /// Template file written by `id world template-export`.
+        template: PathBuf,
+        /// Directory to create the world in; it must be absent or empty.
+        dir: PathBuf,
+        /// The new world's id: `a-z`, `0-9`, `-` and `_`. Defaults to the
+        /// directory's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// A program bundle file the template may name (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the new world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install the programs a template-created world is still missing
+    /// (#8282).
+    ///
+    /// Reads the world's `template-gaps.json` and installs each recorded
+    /// program whose exact bundle is given with `--bundle`, through the
+    /// same verification as a sideloaded bundle. Programs still missing
+    /// stay recorded. Local only; no host or network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateResume {
+        /// Directory of the template-created world.
+        dir: PathBuf,
+        /// A program bundle file that may fill a gap (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
         /// Print one JSON object instead of text lines.
         #[arg(long)]
         json: bool,

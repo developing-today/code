@@ -4,8 +4,14 @@
 
 import {
   createHostedAccountRecord,
+  HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
   inventoryLegacyHostedAccount,
+  migrationShapeError,
+  planDirectoryTransition,
+  sameDirectoryRecord,
+  type DirectoryMigrationEvent,
   type HostedAccountRecord,
+  type HostedMigrationPhase,
   type LegacyHostedAccount,
   type LegacyHostedAccountInput,
   type NewHostedAccount,
@@ -25,6 +31,14 @@ export interface HostedDirectoryDatabase {
   prepare(query: string): HostedDirectoryStatement;
 }
 
+/** A coordinator's hold on one account's migration (#3404). */
+export interface MigrationLease {
+  owner: string;
+  /** Rises every time the lease changes hands: the fencing token. */
+  token: number;
+  expiresMs: number;
+}
+
 type StoredAccountRow = Record<string, unknown> & {
   subject_key: string;
   binding_id: string;
@@ -35,10 +49,27 @@ type StoredAccountRow = Record<string, unknown> & {
   routing_epoch: number;
 };
 
-const COLUMNS =
-  "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
+const COLUMNS = HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS.join(", ");
 
 const LEGACY_COLUMNS = "subject_key, binding_id, classification";
+
+/** A legacy-inventoried subject cannot sign up beside its legacy entry. */
+function legacySubjectRequiresMigration(): FailClosed {
+  return new FailClosed(
+    409,
+    "legacy_subject_requires_migration",
+    "subject has a legacy account of unknown jurisdiction; signup cannot relabel it — migration is a separately reviewed procedure",
+  );
+}
+
+/** A validated subject cannot also be inventoried as legacy. */
+function legacySubjectAlreadyRegistered(): FailClosed {
+  return new FailClosed(
+    409,
+    "legacy_subject_already_registered",
+    "subject already has a validated account record; it cannot be inventoried as legacy",
+  );
+}
 
 type StoredLegacyAccountRow = Record<string, unknown> & {
   subject_key: string;
@@ -77,23 +108,27 @@ function fromRow(row: StoredAccountRow): HostedAccountRecord {
       typeof row.subject_key !== "string" ||
       row.subject_key.trim() === "" ||
       typeof row.binding_id !== "string" ||
-      row.jurisdiction_pending !== null ||
-      row.migration_id !== null ||
-      row.phase !== "stable" ||
-      row.routing_epoch !== 0
+      typeof row.phase !== "string" ||
+      typeof row.routing_epoch !== "number" ||
+      (row.migration_id !== null && typeof row.migration_id !== "string")
     ) {
-      throw new Error("stored directory metadata is outside the stable account contract");
+      throw new Error("stored directory metadata has the wrong column types");
     }
 
-    return {
+    const record: HostedAccountRecord = {
       subjectKey: row.subject_key,
       bindingId: parseBindingId(row.binding_id),
       jurisdiction: parseJurisdiction(row.jurisdiction),
-      jurisdictionPending: null,
-      migrationId: null,
-      phase: "stable",
-      routingEpoch: 0,
+      jurisdictionPending: row.jurisdiction_pending === null ? null : parseJurisdiction(row.jurisdiction_pending),
+      migrationId: row.migration_id,
+      phase: row.phase as HostedMigrationPhase,
+      routingEpoch: row.routing_epoch,
     };
+    // Each phase has one valid shape (#3404); anything else fails closed.
+    if (migrationShapeError(record) !== null) {
+      throw new Error("stored directory metadata is outside the account contract");
+    }
+    return record;
   } catch {
     throw new FailClosed(
       503,
@@ -153,13 +188,7 @@ export class PersistentHostedAccountDirectory {
     // store beside its legacy entry: signup fails closed and the
     // separately reviewed migration procedure owns the way out.
     const legacy = await this.legacyInventory(input.subjectKey);
-    if (legacy) {
-      throw new FailClosed(
-        409,
-        "legacy_subject_requires_migration",
-        "subject has a legacy account of unknown jurisdiction; signup cannot relabel it — migration is a separately reviewed procedure",
-      );
-    }
+    if (legacy) throw legacySubjectRequiresMigration();
 
     // Match the directory contract: a duplicate subject reads its authoritative
     // row and never replaces its jurisdiction with a new signup's value.
@@ -169,9 +198,13 @@ export class PersistentHostedAccountDirectory {
     const candidate = createHostedAccountRecord(input);
     let inserted: StoredAccountRow | null;
     try {
+      // The legacy check above is advisory: an inventory can land between
+      // it and this write. The insert re-checks inside the one statement,
+      // so a subject never lands in both tables (#15661).
       inserted = await this.database
         .prepare(
-          `INSERT INTO hosted_accounts (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) ` +
+          `INSERT INTO hosted_accounts (${COLUMNS}) SELECT ?, ?, ?, ?, ?, ?, ? ` +
+            "WHERE NOT EXISTS (SELECT 1 FROM legacy_hosted_accounts WHERE subject_key = ?) " +
             "ON CONFLICT(subject_key) DO NOTHING " +
             `RETURNING ${COLUMNS}`,
         )
@@ -183,6 +216,7 @@ export class PersistentHostedAccountDirectory {
           candidate.migrationId,
           candidate.phase,
           candidate.routingEpoch,
+          candidate.subjectKey,
         )
         .first<StoredAccountRow>();
     } catch (error) {
@@ -206,6 +240,11 @@ export class PersistentHostedAccountDirectory {
     const winner = await this.get(candidate.subjectKey);
     if (winner) return this.existingSubject(winner, candidate.bindingId);
 
+    // Or a legacy inventory of the same subject landed first.
+    if (await this.legacyInventory(candidate.subjectKey)) {
+      throw legacySubjectRequiresMigration();
+    }
+
     const bindingOwner = await this.getByBindingId(candidate.bindingId);
     if (bindingOwner) {
       throw new FailClosed(
@@ -220,6 +259,119 @@ export class PersistentHostedAccountDirectory {
       "directory_write_conflict",
       "directory write did not produce a row or an authoritative conflict; failing closed",
     );
+  }
+
+  /**
+   * Apply one migration step by compare-and-set (#3404, design §7). The
+   * caller passes the record it read; the step is planned from it and
+   * written only if the stored row still equals it in every routed
+   * field, so two coordinators racing on one account cannot both win.
+   * A lost race rereads: if the stored row already equals the planned
+   * result (a retried step), that row is returned; otherwise the step
+   * fails with 409 `directory_cas_conflict`. A missing subject is 404.
+   */
+  async transition(
+    expected: HostedAccountRecord,
+    event: DirectoryMigrationEvent,
+    lease?: { lease: MigrationLease; nowMs: number },
+  ): Promise<HostedAccountRecord> {
+    const next = planDirectoryTransition(expected, event);
+    // With a lease, the same statement checks the lease is still held:
+    // a coordinator that lost it cannot move the record (#3404).
+    const leaseClause = lease
+      ? " AND EXISTS (SELECT 1 FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?)"
+      : "";
+    const leaseValues = lease
+      ? [expected.subjectKey, lease.lease.owner, lease.lease.token, lease.nowMs]
+      : [];
+    const updated = await this.database
+      .prepare(
+        "UPDATE hosted_accounts SET jurisdiction = ?, jurisdiction_pending = ?, migration_id = ?, phase = ?, routing_epoch = ? " +
+          "WHERE subject_key = ? AND binding_id = ? AND jurisdiction = ? AND jurisdiction_pending IS ? " +
+          "AND migration_id IS ? AND phase = ? AND routing_epoch = ?" +
+          leaseClause +
+          ` RETURNING ${COLUMNS}`,
+      )
+      .bind(
+        next.jurisdiction,
+        next.jurisdictionPending,
+        next.migrationId,
+        next.phase,
+        next.routingEpoch,
+        expected.subjectKey,
+        expected.bindingId,
+        expected.jurisdiction,
+        expected.jurisdictionPending,
+        expected.migrationId,
+        expected.phase,
+        expected.routingEpoch,
+        ...leaseValues,
+      )
+      .first<StoredAccountRow>();
+    if (updated) return fromRow(updated);
+
+    const current = await this.get(expected.subjectKey);
+    if (!current) {
+      throw new FailClosed(404, "directory_account_missing", "no hosted account record for this subject");
+    }
+    if (sameDirectoryRecord(current, next)) return current;
+    if (lease && !(await this.leaseHeld(expected.subjectKey, lease.lease, lease.nowMs))) {
+      throw new FailClosed(409, "lease_lost", "this coordinator no longer holds the migration lease");
+    }
+    throw new FailClosed(
+      409,
+      "directory_cas_conflict",
+      "the account record changed since it was read; reread it and retry the step",
+    );
+  }
+
+  /**
+   * Take or renew the account's migration lease (#3404) until
+   * `nowMs + ttlMs`. The holder renews and keeps its token; anyone else
+   * takes it only once it has expired, and the token rises. A lease
+   * held by another coordinator gives 409 `lease_held`.
+   */
+  async acquireLease(subjectKey: string, owner: string, nowMs: number, ttlMs: number): Promise<MigrationLease> {
+    if (typeof owner !== "string" || owner.trim() === "" || owner.length > 128) {
+      throw new FailClosed(400, "invalid_lease_owner", "a lease owner is 1 to 128 characters");
+    }
+    if (!Number.isSafeInteger(nowMs) || !Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
+      throw new FailClosed(400, "invalid_lease_ttl", "lease times are positive integer milliseconds");
+    }
+    const row = await this.database
+      .prepare(
+        "INSERT INTO migration_leases (subject_key, owner, token, expires_ms) VALUES (?, ?, 1, ?) " +
+          "ON CONFLICT(subject_key) DO UPDATE SET " +
+          "token = CASE WHEN migration_leases.owner = excluded.owner THEN migration_leases.token ELSE migration_leases.token + 1 END, " +
+          "owner = excluded.owner, expires_ms = excluded.expires_ms " +
+          "WHERE migration_leases.owner = excluded.owner OR migration_leases.expires_ms <= ? " +
+          "RETURNING owner, token, expires_ms",
+      )
+      .bind(subjectKey, owner, nowMs + ttlMs, nowMs)
+      .first<{ owner: string; token: number; expires_ms: number }>();
+    if (!row) {
+      throw new FailClosed(409, "lease_held", "another coordinator holds this account's migration lease");
+    }
+    return { owner: row.owner, token: Number(row.token), expiresMs: Number(row.expires_ms) };
+  }
+
+  /** Give the lease up early; a lease already taken over is left alone. */
+  async releaseLease(subjectKey: string, lease: MigrationLease): Promise<void> {
+    await this.database
+      .prepare(
+        "UPDATE migration_leases SET expires_ms = 0 WHERE subject_key = ? AND owner = ? AND token = ? RETURNING token",
+      )
+      .bind(subjectKey, lease.owner, lease.token)
+      .first();
+  }
+
+  /** Whether `lease` is still the account's live lease at `nowMs`. */
+  async leaseHeld(subjectKey: string, lease: MigrationLease, nowMs: number): Promise<boolean> {
+    const row = await this.database
+      .prepare("SELECT token FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?")
+      .bind(subjectKey, lease.owner, lease.token, nowMs)
+      .first();
+    return row !== null;
   }
 
   private existingSubject(
@@ -244,23 +396,20 @@ export class PersistentHostedAccountDirectory {
    */
   async inventoryLegacy(input: LegacyHostedAccountInput): Promise<LegacyHostedAccount> {
     const entry = inventoryLegacyHostedAccount(input);
-    if (await this.get(entry.subjectKey)) {
-      throw new FailClosed(
-        409,
-        "legacy_subject_already_registered",
-        "subject already has a validated account record; it cannot be inventoried as legacy",
-      );
-    }
+    if (await this.get(entry.subjectKey)) throw legacySubjectAlreadyRegistered();
 
     let inserted: StoredLegacyAccountRow | null;
     try {
+      // As in signup: the validated-row check above is advisory, so the
+      // insert re-checks in the same statement (#15661).
       inserted = await this.database
         .prepare(
-          `INSERT INTO legacy_hosted_accounts (${LEGACY_COLUMNS}) VALUES (?, ?, ?) ` +
+          `INSERT INTO legacy_hosted_accounts (${LEGACY_COLUMNS}) SELECT ?, ?, ? ` +
+            "WHERE NOT EXISTS (SELECT 1 FROM hosted_accounts WHERE subject_key = ?) " +
             "ON CONFLICT(subject_key) DO NOTHING " +
             `RETURNING ${LEGACY_COLUMNS}`,
         )
-        .bind(entry.subjectKey, entry.bindingId, entry.classification)
+        .bind(entry.subjectKey, entry.bindingId, entry.classification, entry.subjectKey)
         .first<StoredLegacyAccountRow>();
     } catch (error) {
       const winner = await this.legacyInventory(entry.subjectKey);
@@ -274,6 +423,9 @@ export class PersistentHostedAccountDirectory {
     // closed against the winner's binding.
     const winner = await this.legacyInventory(entry.subjectKey);
     if (winner) return this.existingLegacy(winner, entry.bindingId);
+
+    // Or a signup of the same subject landed first.
+    if (await this.get(entry.subjectKey)) throw legacySubjectAlreadyRegistered();
 
     throw new FailClosed(
       503,

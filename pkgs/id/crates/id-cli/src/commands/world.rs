@@ -29,6 +29,7 @@ mod announce;
 mod journal;
 mod owner;
 mod scaffold;
+mod template;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
@@ -402,6 +403,38 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 client
                     .execution_profile(admin_token.as_deref(), capability.as_deref())
                     .await
+            };
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
+        WorldCommand::Presentation(args) => {
+            let crate::cli::WorldPresentationArgs {
+                node,
+                set,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+            } = args;
+            // Read and check the file before connecting, so a bad file
+            // never costs a round trip.
+            let replacement = match set {
+                Some(path) => {
+                    let admin_token = admin_token.context(
+                        "the admin token is needed to replace the world's presentation policy",
+                    )?;
+                    Some((admin_token, read_presentation_policy(&path)?))
+                }
+                None => None,
+            };
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = match &replacement {
+                Some((admin_token, policy)) => {
+                    client.set_presentation_policy(admin_token, policy).await
+                }
+                None => client.presentation_policy().await,
             };
             client.close();
             endpoint.close().await;
@@ -1030,6 +1063,41 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             template,
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
+        WorldCommand::TemplateExport {
+            dir,
+            out,
+            keep_state,
+            json,
+        } => template::export_world_template(&dir, &out, &keep_state, json),
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateCreate {
+            template,
+            dir,
+            name,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => {
+            template::create_world_from_template_file(
+                &template,
+                &dir,
+                name.as_deref(),
+                &bundles,
+                &trust_keys,
+                seed,
+                json,
+            )
+            .await
+        }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::TemplateResume {
+            dir,
+            bundles,
+            trust_keys,
+            seed,
+            json,
+        } => template::resume_template_world_dir(&dir, &bundles, &trust_keys, seed, json).await,
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
         WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {
@@ -1248,6 +1316,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
+    // The presentation policy is public pre-join metadata, so it is read
+    // with no token at all.
+    let presentation: id_core::presentation_policy::PresentationPolicy =
+        serde_json::from_value(client.fresh_session().await?.presentation_policy().await?)
+            .context("host returned a malformed presentation policy")?;
     // The report carries the world's own ceiling as a list; the shared
     // fold turns a report equal to the default ceiling into None, which
     // means the default ceiling — the one meaning of None for a live
@@ -1264,6 +1337,7 @@ async fn current_world_state(
         grants: caps.granted,
         ceiling,
         profile,
+        presentation,
         schedules,
     })
 }
@@ -1281,6 +1355,7 @@ fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
             | ApplyStep::SetGrants { .. }
             | ApplyStep::SetCeiling { .. }
             | ApplyStep::SetProfile { .. }
+            | ApplyStep::SetPresentation { .. }
             | ApplyStep::ScheduleAt { .. }
             | ApplyStep::CancelSchedule { .. }
     )
@@ -1308,8 +1383,9 @@ fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
 /// operation per stream, so a second operation on the same stream would
 /// write to a session that no longer has a receiver.
 /// Order steps for reachability (see [`apply_steps`]): cancellations
-/// first, then profile, grants and ceiling, then the module install,
-/// and schedule additions last. The sort is stable, so steps of the
+/// first, then profile, grants and ceiling, then the presentation
+/// policy (it depends on nothing else and nothing depends on it), then
+/// the module install, and schedule additions last. The sort is stable, so steps of the
 /// same kind keep their plan order.
 fn ordered_steps<'a>(
     steps: &'a [id_caps::world_manifest::ApplyStep],
@@ -1321,8 +1397,9 @@ fn ordered_steps<'a>(
             ApplyStep::SetProfile { .. } => 1,
             ApplyStep::SetGrants { .. } => 2,
             ApplyStep::SetCeiling { .. } => 3,
-            ApplyStep::InstallModule { .. } => 4,
-            ApplyStep::ScheduleAt { .. } => 5,
+            ApplyStep::SetPresentation { .. } => 4,
+            ApplyStep::InstallModule { .. } => 5,
+            ApplyStep::ScheduleAt { .. } => 6,
         }
     }
     let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
@@ -1385,6 +1462,13 @@ async fn apply_steps(
                     .fresh_session()
                     .await?
                     .set_execution_profile(admin_token, *profile)
+                    .await?;
+            }
+            ApplyStep::SetPresentation { policy } => {
+                client
+                    .fresh_session()
+                    .await?
+                    .set_presentation_policy(admin_token, policy)
                     .await?;
             }
             ApplyStep::InstallModule { hash, source, seed } => {
@@ -2284,14 +2368,60 @@ fn read_execution_profile(
         .with_context(|| format!("parse execution profile {}", path.display()))
 }
 
+/// The presentation policy in the file at `path`, for
+/// `id world presentation --set`. A duplicated key is refused rather
+/// than read as its last value (#8794), and the policy is validated
+/// here so an oversized one is refused before it is sent.
+fn read_presentation_policy(
+    path: &std::path::Path,
+) -> Result<id_core::presentation_policy::PresentationPolicy> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read presentation policy {}", path.display()))?;
+    let policy: id_core::presentation_policy::PresentationPolicy =
+        id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+            .with_context(|| format!("parse presentation policy {}", path.display()))?;
+    policy
+        .validate()
+        .with_context(|| format!("invalid presentation policy {}", path.display()))?;
+    Ok(policy)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
         local_transcript_record, print_journal_check, pump_command, read_execution_profile,
-        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
+        read_presentation_policy, scaffold_world, step_is_applied, world_list_plain_row,
+        world_provenance,
     };
+
+    #[test]
+    fn a_presentation_policy_file_is_read_checked_and_refused_when_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        std::fs::write(
+            &path,
+            r#"{"assets":{"user_uploads":"deny","max_rung":"tileset"}}"#,
+        )
+        .unwrap();
+        let policy = read_presentation_policy(&path).unwrap();
+        assert_eq!(
+            policy.assets.max_rung,
+            id_core::presentation_policy::Rung::Tileset
+        );
+
+        // A duplicated key, an unknown field and an unregistered shader
+        // format are each refused.
+        for bad in [
+            r#"{"assets":{"max_rung":"rich","max_rung":"glyph"}}"#,
+            r#"{"assets":{"uploads":"deny"}}"#,
+            r#"{"shaders":{"enabled":true,"formats":["made.up/v9"]}}"#,
+        ] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(read_presentation_policy(&path).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn an_execution_profile_with_a_duplicated_key_is_refused() {
@@ -2589,9 +2719,17 @@ mod tests {
             r#"{"from": "server", "frame": {"type": "view", "sequence": 3, "data": "Harbor Controls", "view_revision": 3, "surface": {"kind": "widget", "version": 1, "title": "Harbor Controls", "controls": [{"kind": "toggle", "id": "lights", "label": "Lights", "action": "lights", "on": true}]}}}"#,
         ]
         .join("\n");
+        // Derive the expected contract version from the embedded
+        // contract, formatted the way check_contract formats it, so
+        // a contract revision bump cannot strand this expectation
+        // (#15330).
+        let contract = id_worlds::shell_contract::ShellContract::embedded().unwrap();
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.16"
+            format!(
+                "6 frames conform to shell contract v{}.{}",
+                contract.version, contract.revision
+            )
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

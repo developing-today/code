@@ -3195,8 +3195,8 @@ mod tests {
             format!("{CURSOR_SHOW}\x1b[25;1H")
         );
 
-        assert!(display_enter_bytes(DisplayMode::Text).is_empty());
-        assert!(display_exit_bytes(DisplayMode::Text, 24).is_empty());
+        assert_eq!(display_enter_bytes(DisplayMode::Text), "");
+        assert_eq!(display_exit_bytes(DisplayMode::Text, 24), "");
     }
 
     #[tokio::test]
@@ -3267,12 +3267,7 @@ mod tests {
 
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written: no display framing, no probe burst, plain text only.
-        let bytes = read_until_bytes(
-            &mut channel,
-            b"join denied",
-            Duration::from_secs(10),
-        )
-        .await;
+        let bytes = read_until_bytes(&mut channel, b"join denied", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&bytes).contains("join denied"),
             "refusal never arrived: {bytes:?}"
@@ -3306,12 +3301,7 @@ mod tests {
         // Oracle: issue #14937 — input in text mode stays line
         // oriented, parsed exactly like command mode's lines. The join
         // banner is the command mode's, in plain text.
-        let banner = read_until_bytes(
-            &mut channel,
-            b"world> ",
-            Duration::from_secs(10),
-        )
-        .await;
+        let banner = read_until_bytes(&mut channel, b"world> ", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&banner).contains("world> "),
             "text session never showed its banner: {banner:?}"
@@ -3338,12 +3328,7 @@ mod tests {
 
         // Slash commands are the shell's own, answered in plain text.
         channel.data(&b"/help\r"[..]).await.unwrap();
-        let help = read_until_bytes(
-            &mut channel,
-            b"Commands:",
-            Duration::from_secs(10),
-        )
-        .await;
+        let help = read_until_bytes(&mut channel, b"Commands:", Duration::from_secs(10)).await;
         assert!(
             String::from_utf8_lossy(&help).contains("Commands:"),
             "shell did not answer /help: {help:?}"
@@ -4902,12 +4887,12 @@ mod tests {
     #[test]
     fn world_line_buffer_handles_fragmented_packets_and_crlf_once() {
         let mut input = WorldLineBuffer::default();
-        assert!(input.push(b"hel").is_empty());
+        assert_eq!(input.push(b"hel"), [] as [WorldCommand; 0]);
         assert_eq!(
             input.push(b"lo\r"),
             vec![WorldCommand::Chat("hello".into())]
         );
-        assert!(input.push(b"\n").is_empty());
+        assert_eq!(input.push(b"\n"), [] as [WorldCommand; 0]);
         assert_eq!(
             input.push(b"next\n"),
             vec![WorldCommand::Chat("next".into())]
@@ -5008,7 +4993,10 @@ mod tests {
     #[test]
     fn world_line_buffer_discards_overlong_line_until_newline() {
         let mut input = WorldLineBuffer::default();
-        assert!(input.push(&vec![b'x'; MAX_LINE + 1]).is_empty());
+        assert_eq!(
+            input.push(&vec![b'x'; MAX_LINE + 1]),
+            [] as [WorldCommand; 0]
+        );
         assert_eq!(
             input.push(b"tail\nokay\n"),
             vec![WorldCommand::Chat("okay".into())]
@@ -5018,7 +5006,7 @@ mod tests {
     #[test]
     fn world_line_buffer_drops_fragmented_terminal_control_strings() {
         let mut input = WorldLineBuffer::default();
-        assert!(input.push(b"safe\x1b]52;c;secret").is_empty());
+        assert_eq!(input.push(b"safe\x1b]52;c;secret"), [] as [WorldCommand; 0]);
         assert_eq!(
             input.push(b"\x07still safe\r\n"),
             vec![WorldCommand::Chat("safestill safe".into())]

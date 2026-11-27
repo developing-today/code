@@ -17,8 +17,8 @@ use id_pg::{
     Audience, CollectionAllowlist, ColumnDecl, Consistency, ContentRange, DecodeError,
     EndpointConfig, EndpointProbe, Failure, HttpResponse, ModeChoices, ObjectKind, OrderKey,
     PageDecoder, Pagination, PostgrestRequest, Privilege, Query, ReadError, ReadMode, Refusal,
-    RegisteredEndpoint, RoleGrant, SnapshotCaps, SnapshotStore, Transport, TransportError, Value,
-    live_read, register,
+    RegisteredEndpoint, RoleGrant, SelectItem, SnapshotCaps, SnapshotStore, Transport,
+    TransportError, Value, live_read, register,
 };
 
 type Row = serde_json::Map<String, serde_json::Value>;
@@ -140,6 +140,12 @@ impl PageDecoder for JsonRows {
             })
             .collect()
     }
+
+    fn drop_columns(&self, row: &mut Row, columns: &[String]) {
+        for column in columns {
+            row.remove(column);
+        }
+    }
 }
 
 fn page(ids: &[i64], range: Option<&str>, at: u64) -> Result<HttpResponse, TransportError> {
@@ -204,6 +210,33 @@ fn live_short_page_is_complete_and_states_per_request_consistency() {
 }
 
 #[test]
+fn live_short_page_with_explicit_incomplete_range_continues_keyset_read() {
+    // Oracle: #15704 — a short body must not override an explicit
+    // Content-Range total that says more rows remain.
+    let mut transport = Scripted::new(vec![
+        page(&[1], Some("0-0/100"), 1_000),
+        page(&[2], Some("1-1/2"), 2_000),
+    ]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &Query::read("items"),
+        2,
+    )
+    .unwrap();
+
+    assert_eq!(ids(&result.rows), vec![1, 2]);
+    assert!(result.complete);
+    assert!(!result.truncated);
+    assert_eq!(result.pages, 2);
+    assert_eq!(result.next_cursor, None);
+    assert_eq!(transport.sent.len(), 2);
+    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.1)"));
+}
+
+#[test]
 fn live_full_page_without_a_total_is_truncated_with_a_cursor() {
     let mut transport = Scripted::new(vec![page(&[1, 2], Some("0-1/*"), 5)]);
     let result = live_read(
@@ -261,6 +294,67 @@ fn live_follows_the_keyset_cursor_one_request_per_page() {
     assert_eq!(result.observed_at_ms, 20);
     assert_eq!(param(&transport.sent[0], "or"), None);
     assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+}
+
+/// The query of #15010: project `title` alone from a collection whose
+/// unique key is `id`.
+fn title_only() -> Query {
+    let mut query = Query::read("items");
+    query.select = vec![SelectItem::Column("title".to_owned())];
+    query
+}
+
+fn titles(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row["title"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn projection_without_the_unique_key_reads_a_full_page_and_hides_the_key() {
+    // Oracle: #15010 — a full page used to fail as a malformed page
+    // because the cursor could not find `id` in the rows. The key is
+    // now fetched for the cursor and removed from the returned rows.
+    let mut transport = Scripted::new(vec![page(&[1, 2], Some("0-1/*"), 5)]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &title_only(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(param(&transport.sent[0], "select"), Some("title,id"));
+    assert_eq!(titles(&result.rows), vec!["t1", "t2"]);
+    assert!(result.rows.iter().all(|row| !row.contains_key("id")));
+    assert!(result.truncated);
+    assert_eq!(result.next_cursor, Some(vec![Value::Int(2)]));
+}
+
+#[test]
+fn projection_without_the_unique_key_continues_across_pages() {
+    let mut transport = Scripted::new(vec![
+        page(&[1, 2], Some("0-1/*"), 10),
+        page(&[3], Some("0-0/*"), 20),
+    ]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &title_only(),
+        5,
+    )
+    .unwrap();
+    assert_eq!(titles(&result.rows), vec!["t1", "t2", "t3"]);
+    assert!(result.rows.iter().all(|row| row.len() == 1));
+    assert!(result.complete);
+    assert_eq!(result.pages, 2);
+    // The second page continues after the first page's last key and
+    // still fetches the key for its own cursor.
+    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(param(&transport.sent[1], "select"), Some("title,id"));
 }
 
 #[test]
@@ -342,6 +436,81 @@ fn live_transport_and_body_failures_are_errors() {
 }
 
 #[test]
+fn live_content_range_must_describe_the_decoded_body() {
+    // Oracle: #15742 — a range that disagrees with the rows in the
+    // body is a broken page. `0-1/2` over one decoded row used to read
+    // as a complete result and silently drop the second row.
+    let run = |rows: &[i64], range: &str| {
+        let mut transport = Scripted::new(vec![page(rows, Some(range), 1)]);
+        live_read(
+            &endpoint(),
+            &modes(ReadMode::Live),
+            &mut transport,
+            &JsonRows,
+            &Query::read("items"),
+            5,
+        )
+    };
+    for (rows, range) in [
+        (&[1][..], "0-1/2"),
+        (&[1][..], "0-1/*"),
+        (&[1, 2][..], "0-0/2"),
+        (&[1, 2][..], "0-2/*"),
+        (&[][..], "0-0/1"),
+        (&[1][..], "*/*"),
+        (&[1][..], "*/1"),
+        (&[1, 2][..], "0-1/1"),
+        (&[1][..], "3-3/3"),
+    ] {
+        assert_eq!(
+            run(rows, range).unwrap_err(),
+            ReadError::MalformedPage,
+            "{} rows under {range}",
+            rows.len()
+        );
+    }
+
+    // Matching ranges still read, complete or not.
+    let complete = run(&[1, 2], "0-1/2").unwrap();
+    assert!(complete.complete);
+    assert_eq!(ids(&complete.rows), vec![1, 2]);
+    let empty = run(&[], "*/0").unwrap();
+    assert!(empty.complete);
+    assert_eq!(ids(&empty.rows), Vec::<i64>::new());
+    let unknown_total = run(&[], "*/*").unwrap();
+    assert!(unknown_total.complete);
+}
+
+#[test]
+fn content_range_describes_only_matching_bodies() {
+    let describes = |range: &str, rows: u64| ContentRange::parse(range).unwrap().describes(rows);
+    assert!(describes("0-1/2", 2));
+    assert!(describes("0-1/*", 2));
+    assert!(describes("0-0/100", 1));
+    assert!(describes("5-9/20", 5));
+    assert!(describes("*/0", 0));
+    assert!(describes("*/7", 0));
+    assert!(!describes("0-1/2", 1));
+    assert!(!describes("0-1/2", 3));
+    assert!(!describes("0-4/3", 5), "a range that ends past its total");
+    assert!(!describes("*/*", 1));
+    let backwards = ContentRange::Rows {
+        first: 4,
+        last: 1,
+        total: None,
+    };
+    assert!(!backwards.describes(0));
+    assert!(
+        !ContentRange::Rows {
+            first: 0,
+            last: u64::MAX,
+            total: None
+        }
+        .describes(u64::MAX)
+    );
+}
+
+#[test]
 fn reads_wait_for_the_owner_to_choose_a_mode() {
     let mut transport = Scripted::new(vec![]);
     let err = live_read(
@@ -417,7 +586,7 @@ fn refused_queries_send_nothing() {
     )
     .unwrap_err();
     assert_eq!(err.code(), "not_available");
-    assert!(transport.sent.is_empty());
+    assert_eq!(transport.sent, [] as [id_pg::PostgrestRequest; 0]);
 }
 
 // ---- materialized snapshots (§5.3) ----

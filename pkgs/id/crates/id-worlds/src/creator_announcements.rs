@@ -1083,7 +1083,7 @@ mod tests {
         let outcomes = log
             .evaluate(NOW + HOUR - 1, &worlds, &mut channel, None)
             .unwrap();
-        assert!(outcomes.is_empty());
+        assert_eq!(outcomes, [] as [EvaluationOutcome; 0]);
         assert_eq!(log.get(&id).unwrap().state, AnnouncementState::Scheduled);
 
         let outcomes = log
@@ -1109,10 +1109,10 @@ mod tests {
         );
 
         // A second evaluation does nothing more.
-        assert!(
+        assert_eq!(
             log.evaluate(NOW + 2 * HOUR, &worlds, &mut channel, None)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [EvaluationOutcome; 0]
         );
         assert_eq!(channel.delivered.len(), 1);
     }
@@ -1260,7 +1260,7 @@ mod tests {
             outcomes,
             vec![EvaluationOutcome::Skipped { id: id.clone() }]
         );
-        assert!(channel.delivered.is_empty());
+        assert_eq!(channel.delivered, [] as [String; 0]);
         assert_eq!(log.get(&id).unwrap().state.name(), "skipped");
     }
 

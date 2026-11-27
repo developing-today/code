@@ -28,6 +28,7 @@
 - [fleet search and fleet serve search](reference/fleet-search.md)
 - [The service HTTP API](reference/service-api.md)
 - [The Worker HTTP API](reference/worker-api.md)
+- [Retained objects and retention classes](reference/retained-objects.md)
 - [The Atlas MCP server](reference/mcp.md)
 - [Configuration and environment](reference/configuration.md)
 - [Data stores and schemas](reference/data-stores.md)
@@ -54,6 +55,7 @@
 - [Design: MCP and programmatic access, next steps](design/access-evolution.md)
   - [Consumer, cache and recommendation acceptance](design/consumer-acceptance.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
+- [Design: renaming the sensitivity ladder in code](design/sensitivity-ladder-rename.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
 - [High-level roadmap](design/high-level-roadmap.md)
 

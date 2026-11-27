@@ -131,7 +131,10 @@ fn an_expired_listed_share_drops_out() {
     req.duration = Duration::ExpiresAt(NOW + 10);
     book.publish(&mut grants, share(1), req).unwrap();
     assert_eq!(book.listing(&grants, NOW).len(), 1);
-    assert!(book.listing(&grants, NOW + 11).is_empty());
+    assert_eq!(
+        book.listing(&grants, NOW + 11),
+        [] as [id_grants::ListingEntry; 0]
+    );
 }
 
 #[test]
@@ -144,10 +147,12 @@ fn an_owner_with_nothing_listed_has_an_empty_listing() {
         request("drafts", DiscoveryMode::Unlisted, "Drafts"),
     )
     .unwrap();
-    assert!(book.listing(&grants, NOW).is_empty());
-    assert!(
-        Publications::new("someone")
-            .listing(&grants, NOW)
-            .is_empty()
+    assert_eq!(
+        book.listing(&grants, NOW),
+        [] as [id_grants::ListingEntry; 0]
+    );
+    assert_eq!(
+        Publications::new("someone").listing(&grants, NOW),
+        [] as [id_grants::ListingEntry; 0]
     );
 }

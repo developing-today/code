@@ -160,8 +160,16 @@ fn ensure_owner(t: &TursoBackend, owner: &str, cap: i64) -> Result<(), TErr> {
         ],
     )?;
     t.exec(
-        "UPDATE placement_owner_state SET cap = ?, updated_at = ? WHERE owner = ?",
-        &[Arg::Int(cap), Arg::Text(now), Arg::Text(owner.to_string())],
+        // Guarded: the sweep calls this every pass, and an unchanged
+        // cap must not cost a Turso row write.
+        "UPDATE placement_owner_state SET cap = ?, updated_at = ? \
+        WHERE owner = ? AND cap IS NOT ?",
+        &[
+            Arg::Int(cap),
+            Arg::Text(now),
+            Arg::Text(owner.to_string()),
+            Arg::Int(cap),
+        ],
     )?;
     Ok(())
 }
@@ -709,6 +717,10 @@ use std::collections::{HashMap, HashSet};
 /// How often the broker's coordinator thread runs the sweep.
 pub(crate) const COORD_SWEEP_INTERVAL_SECS: u64 = 20;
 
+/// How often an unchanged owner load reading is still written, so
+/// load_read_at keeps showing the sweep is alive.
+const LOAD_HEARTBEAT_SECS: i64 = 300;
+
 /// The sweep's GitHub surface: load counts and run states over the
 /// runner-host repos — the same reads `build_ctx` makes. The
 /// production implementation lives in queue_broker.rs (broker-owned
@@ -905,9 +917,18 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
             continue;
         }
         live_by_owner.insert(owner.clone(), live);
+        // Written only when the counts moved, or as a heartbeat once
+        // LOAD_HEARTBEAT_SECS has passed since the last write (so
+        // load_read_at still shows the reading is live). Every 20 s
+        // pass used to rewrite each owner row unconditionally.
+        let heartbeat_before = coord_parse_iso(now)
+            .map(|base| coord_iso_from_epoch(base - LOAD_HEARTBEAT_SECS))
+            .unwrap_or_else(|| now.to_string());
         let upd = t.exec(
             "UPDATE placement_owner_state SET gh_running = ?, gh_queued = ?, \
-            load_read_at = ?, load_source = ?, updated_at = ? WHERE owner = ?",
+            load_read_at = ?, load_source = ?, updated_at = ? WHERE owner = ? \
+            AND (gh_running IS NOT ? OR gh_queued IS NOT ? \
+            OR load_read_at IS NULL OR load_read_at < ?)",
             &[
                 Arg::Int(running),
                 Arg::Int(queued),
@@ -918,6 +939,9 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
                 ),
                 Arg::Text(now.to_string()),
                 Arg::Text(owner.clone()),
+                Arg::Int(running),
+                Arg::Int(queued),
+                Arg::Text(heartbeat_before),
             ],
         );
         match upd {
@@ -1113,11 +1137,13 @@ pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -
             }
         };
         if let Err(e) = t.exec(
-            "UPDATE placement_owner_state SET claims_active = ?, updated_at = ? WHERE owner = ?",
+            "UPDATE placement_owner_state SET claims_active = ?, updated_at = ? \
+            WHERE owner = ? AND claims_active IS NOT ?",
             &[
                 Arg::Int(active),
                 Arg::Text(now.to_string()),
                 Arg::Text(owner.clone()),
+                Arg::Int(active),
             ],
         ) {
             errors.push(json!(format!("recompute {owner}: {e}")));
@@ -1497,6 +1523,72 @@ mod placement_coord_tests {
         assert_eq!(st["claim"]["state"], "queued", "{st}");
     }
 
+    /// Proof-bar test 1 (#15594/1): two threads race the last
+    /// fleet-org slot through the real gate path — one shared
+    /// backend, barrier-released together so both gate UPDATEs
+    /// are in flight at once. Exactly one wins `claimed`, the
+    /// other waits `queued`: the slot gate is a single
+    /// conditional UPDATE, so the loser's counter never moves.
+    /// The sequential cap test above cannot show this; the
+    /// name-invariant oracle (one claimed + one queued across
+    /// the two handles, owner back at cap) pins the atomicity.
+    #[test]
+    fn slot_gate_last_slot_race_single_winner() {
+        use std::sync::Barrier;
+        let t = fake_backend();
+        for i in 0..19 {
+            let out = claim(
+                &t,
+                &format!("race-seed-{i:02}"),
+                "fleet-org",
+                json!({}),
+            );
+            assert_eq!(out["status"], "claimed", "{i}: {out}");
+        }
+        let barrier = Barrier::new(2);
+        let (ra, rb) = std::thread::scope(|s| {
+            let ta = s.spawn(|| {
+                barrier.wait();
+                claim(&t, "race-a", "fleet-org", json!({"seat": "seat-a"}))
+            });
+            let tb = s.spawn(|| {
+                barrier.wait();
+                claim(&t, "race-b", "fleet-org", json!({"seat": "seat-b"}))
+            });
+            (ta.join().unwrap(), tb.join().unwrap())
+        });
+        assert_eq!(ra["ok"], true, "{ra}");
+        assert_eq!(rb["ok"], true, "{rb}");
+        let mut statuses = [ra["status"].clone(), rb["status"].clone()];
+        statuses.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        assert_eq!(statuses, [json!("claimed"), json!("queued")], "{ra} {rb}");
+        // The winner holds the last slot and the loser waits:
+        // both rows resolve from either seat, and the owner is
+        // back at cap with nothing left to grant.
+        let winner = if ra["status"] == "claimed" {
+            "race-a"
+        } else {
+            "race-b"
+        };
+        let loser = if winner == "race-a" { "race-b" } else { "race-a" };
+        let w = verb_placement_claim_status(&t, &json!({"handle": winner}));
+        assert_eq!(w["found"], true, "{w}");
+        assert_eq!(w["claim"]["state"], "claimed", "{w}");
+        let l = verb_placement_claim_status(&t, &json!({"handle": loser}));
+        assert_eq!(l["found"], true, "{l}");
+        assert_eq!(l["claim"]["state"], "queued", "{l}");
+        let load = verb_placement_load(&t, &json!({}));
+        let dt = load["owners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["owner"] == "developing-today")
+            .cloned()
+            .unwrap();
+        assert_eq!(dt["claims_active"], 20, "{load}");
+        assert_eq!(dt["occupancy"], 20, "{load}");
+    }
+
     /// Test 2: the Blacksmith budget refuses terminally once spent,
     /// and settling converts a reservation to use. Budget is 3000
     /// free min/mo: reserve 2000, a second 2000 refuses with no
@@ -1544,6 +1636,92 @@ mod placement_coord_tests {
             json!({"est_minutes": 2600.0, "allow_paid": 0.0}),
         );
         assert_eq!(e["status"], "refused", "{e}");
+    }
+
+    /// Proof-bar test 2 (#15594/2): the sweep refreshes the true
+    /// view from nonzero GitHub counts, and admission gates on
+    /// the full occupancy — not just the claims half. FakeGh
+    /// reports developing-today/fleet at (5, 3) and
+    /// developing-today/code at (2, 1): 7 running + 4 queued
+    /// across the owner's two runner hosts. Nine held claims
+    /// fill the cap of 20, so a zero-coverage seat (seat-9,
+    /// never seen before) queues; the load verb returns the
+    /// exact counts to that seat; freeing one slot and sweeping
+    /// grants the waiter FIFO; draining the rest admits again.
+    #[test]
+    fn gh_seeded_load_gates_queues_then_drains() {
+        let t = fake_backend();
+        let gh = FakeGh {
+            loads: HashMap::from([
+                ("developing-today/fleet".to_string(), (5, 3)),
+                ("developing-today/code".to_string(), (2, 1)),
+            ]),
+            live: HashMap::new(),
+            terminal: HashMap::new(),
+        };
+        for i in 0..9 {
+            let out = claim(&t, &format!("gh{i:02}"), "fleet-org", json!({}));
+            assert_eq!(out["status"], "claimed", "{i}: {out}");
+        }
+        let now = now_iso();
+        let sum = coordinator_sweep(&t, &gh, &now);
+        assert_eq!(sum["ok"], true, "{sum}");
+        assert_eq!(sum["refreshed"], 3, "{sum}");
+        assert_eq!(sum["granted"], 0, "{sum}");
+        assert!(sum["errors"].as_array().unwrap().is_empty(), "{sum}");
+        // 7 running + 4 queued + 9 held = cap 20: the next
+        // claim, from a seat with no history, waits.
+        let w = claim(&t, "gh-full", "fleet-org", json!({"seat": "seat-9"}));
+        assert_eq!(w["status"], "queued", "{w}");
+        assert_eq!(w["position"], 1, "{w}");
+        // The load verb answers the full shape to that
+        // zero-coverage seat: exact GitHub counts included.
+        let load = verb_placement_load(&t, &json!({"seat": "seat-9"}));
+        let dt = load["owners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["owner"] == "developing-today")
+            .cloned()
+            .unwrap();
+        assert_eq!(dt["cap"], 20, "{load}");
+        assert_eq!(dt["gh_running"], 7, "{load}");
+        assert_eq!(dt["gh_queued"], 4, "{load}");
+        assert_eq!(dt["claims_active"], 9, "{load}");
+        assert_eq!(dt["occupancy"], 20, "{load}");
+        // One slot frees: the sweep grants exactly the waiter.
+        let r = verb_placement_release(&t, &json!({"handle": "gh00"}));
+        assert_eq!(r["state"], "released", "{r}");
+        let sum2 = coordinator_sweep(&t, &gh, &now_iso());
+        assert_eq!(sum2["ok"], true, "{sum2}");
+        assert_eq!(sum2["granted"], 1, "{sum2}");
+        assert!(sum2["errors"].as_array().unwrap().is_empty(), "{sum2}");
+        let g = verb_placement_claim_status(&t, &json!({"handle": "gh-full"}));
+        assert_eq!(g["claim"]["state"], "granted", "{g} {sum2}");
+        assert_eq!(g["owner_load"]["claims_active"], 9, "{g} {sum2}");
+        // Drain: release every held slot and the grant; the next
+        // claim admits and the owner shows only GitHub load.
+        for i in 1..9 {
+            let rr = verb_placement_release(&t, &json!({"handle": format!("gh{i:02}")}));
+            assert_eq!(rr["state"], "released", "{i}: {rr}");
+        }
+        let rg = verb_placement_release(&t, &json!({"handle": "gh-full"}));
+        assert_eq!(rg["state"], "released", "{rg}");
+        let sum3 = coordinator_sweep(&t, &gh, &now_iso());
+        assert_eq!(sum3["granted"], 0, "{sum3}");
+        let load2 = verb_placement_load(&t, &json!({}));
+        let dt2 = load2["owners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["owner"] == "developing-today")
+            .cloned()
+            .unwrap();
+        assert_eq!(dt2["claims_active"], 0, "{load2}");
+        assert_eq!(dt2["occupancy"], 11, "{load2}");
+        let n = claim(&t, "gh-next", "fleet-org", json!({}));
+        assert_eq!(n["status"], "claimed", "{n}");
+        assert_eq!(n["owner_load"]["occupancy"], 12, "{n}");
     }
 
     /// Test 3: confirm/release close the loop and free the slot.

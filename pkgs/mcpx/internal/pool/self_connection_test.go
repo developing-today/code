@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -107,6 +108,34 @@ func TestPoolRefusesSelfConnectionByIdentity(t *testing.T) {
 	}
 	if cached, _, _ := p.CachedSchemas(); len(cached) != 0 {
 		t.Fatalf("self entry left %d cached tools advertised", len(cached))
+	}
+}
+
+func TestPoolRefusesUnixSocketSelfConnection(t *testing.T) {
+	u := &selfUpstream{instance: pool.OwnInstanceID}
+	socket := filepath.Join(t.TempDir(), "self.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(u.serve)}
+	go func() { _ = server.Serve(ln) }()
+	t.Cleanup(func() { _ = server.Close() })
+	for _, transport := range []string{"", "unix"} {
+		t.Run("transport="+transport, func(t *testing.T) {
+			cfg := &config.Config{MCPServers: map[string]*config.Server{
+				"remote": {Name: "remote", URL: "unix://" + socket, Transport: transport},
+			}}
+			r, err := cfg.Resolve("remote")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := pool.New(r)
+			t.Cleanup(p.Close)
+			if _, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"}); err == nil || !strings.Contains(err.Error(), "self-connection") {
+				t.Fatalf("unix socket self-connection err=%v, want self-connection refusal", err)
+			}
+		})
 	}
 }
 

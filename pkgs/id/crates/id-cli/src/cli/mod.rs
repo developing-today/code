@@ -36,11 +36,15 @@
 //!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
+//!   host       Host mode: run a data root of world directories and operate it
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   nav          Navigate the typed object graph (neighbors, backlinks, threads, history, path)
+//!   talk         Talk pages: post on and list an object's discussion
+//!   hosted       Push to, pull from and read heads of a hosted instance over the bridge
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -110,9 +114,13 @@ pub mod claim;
 pub mod doc;
 pub mod gallery;
 pub mod groups;
+pub mod host;
+pub mod hosted;
 pub mod match_audit;
+pub mod nav;
 pub mod petname;
 pub mod tag;
+pub mod talk;
 pub mod walk;
 pub mod world;
 pub mod writer_sets;
@@ -121,18 +129,22 @@ pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
+pub use host::HostCommand;
+pub use hosted::{HostedCommand, HostedTarget};
 pub use match_audit::MatchAuditCommand;
+pub use nav::{NavArgs, NavOp};
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
+pub use talk::TalkCommand;
 pub use walk::WalkCommand;
 pub use world::{
     JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
     WorldCompileArgs, WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs,
     WorldDownloadArgs, WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs,
     WorldInviteArgs, WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs,
-    WorldLogsArgs, WorldLookupArgs, WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs,
-    WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs,
-    WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
+    WorldLogsArgs, WorldLookupArgs, WorldMeasureArgs, WorldMirrorArgs, WorldPresentationArgs,
+    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
+    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -223,7 +235,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub groups_log: Option<PathBuf>,
 
-    /// The event store that `doc` and `claim` read and append to.
+    /// The event store that `doc`, `claim` and `talk` read and append to.
     ///
     /// Defaults to `events` in the data directory. A relative path is relative to the data
     /// directory, so a store shared by several nodes is best given as an absolute path.
@@ -338,6 +350,21 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
         Ok(0) => Err("zero is not a valid limit: use at least 1".to_owned()),
         Ok(n) => Ok(n),
         Err(err) => Err(err.to_string()),
+    }
+}
+
+/// A `--world-partition` label: lowercase `[a-z0-9-]`, 1 to 63 bytes, the
+/// same syntax the journal partition fence accepts.
+fn parse_world_partition(raw: &str) -> Result<String, String> {
+    if !raw.is_empty()
+        && raw.len() <= 63
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        Ok(raw.to_owned())
+    } else {
+        Err("a partition label is 1 to 63 bytes of lowercase a-z, 0-9 and -".to_owned())
     }
 }
 
@@ -551,9 +578,32 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
     /// Close durable worlds that no session used for this many seconds
-    /// (they reopen from their journal on demand). `0` keeps them open.
-    #[arg(long, default_value_t = 600, requires = "world")]
-    pub world_idle_secs: u64,
+    /// (they reopen from their journal on demand). Defaults to 600, or to
+    /// 900 under `--world-host`. `0` keeps them open, and is refused under
+    /// `--world-host`, where `id host pin` keeps a world awake instead.
+    #[arg(long, requires = "world")]
+    pub world_idle_secs: Option<u64>,
+    /// Serve the worlds directory as a host-mode data root (#10693): keep
+    /// its `host.json`, wake asleep worlds when clients name them (unless
+    /// `id host wake-mode` set `operator`), never close `id host pin`
+    /// worlds for idleness or room, record idle closes as asleep, refuse
+    /// archived worlds, and reopen the worlds recorded live at startup.
+    /// `id host list` shows the states.
+    #[arg(long, requires = "world", conflicts_with = "ephemeral")]
+    pub world_host: bool,
+    /// Serve worlds inside one jurisdiction partition (#3898). Every world
+    /// this server creates is bound to the label before its first journal
+    /// byte; a world bound to another partition, or never bound, is treated
+    /// as absent: it is not listed, cannot be opened or created, and reads
+    /// exactly like a name that does not exist. The label is lowercase
+    /// `[a-z0-9-]`, at most 63 bytes, and comes only from the operator.
+    #[arg(
+        long,
+        requires = "world",
+        conflicts_with_all = ["ephemeral", "world_host"],
+        value_parser = parse_world_partition
+    )]
+    pub world_partition: Option<String>,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.
@@ -1416,6 +1466,11 @@ pub enum Command {
     /// federation exchange protocol, conflict reports (#12232).
     #[command(subcommand)]
     Walk(WalkCommand),
+    /// Host mode over a data root of world directories (#10693): run
+    /// the root's live worlds until Ctrl-C, or list every world's
+    /// lifecycle state and storage without opening any world.
+    #[command(subcommand)]
+    Host(HostCommand),
     /// Groups: create, show the policy, add, remove, set roles, and list (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
@@ -1484,6 +1539,71 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Walk a typed graph snapshot: neighbors, backlinks, threads,
+    /// history, or a bounded path (native graph navigation, #7612).
+    ///
+    /// The CLI runs the same executor as the script/API and agent
+    /// surfaces, so answers match them item for item; only the printing
+    /// differs. Pages end with a `next:` cursor to pass back with
+    /// `--cursor`, and a bound that cut a result is named, never silent.
+    ///
+    /// ```bash
+    /// id nav neighbors NOTE --graph graph.json
+    /// id nav backlinks NOTE --graph graph.json --edge references
+    /// id nav path NOTE --to REPLY --max-depth 4 --graph graph.json --json
+    /// ```
+    Nav(NavArgs),
+    /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
+    ///
+    /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
+    /// the object may post; a correction is a new post that supersedes the old one, which stays
+    /// listed and is marked superseded.
+    ///
+    /// The thread steps of a conversation group (#7849) are signed events in that group:
+    /// propose a change, resolve a thread, reject or withdraw a proposal, accept one by the
+    /// note revision that cites it, and read the group's threads back.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id talk post DOCUMENT "this section needs a source"
+    /// id talk post DOCUMENT "fixed wording" --supersedes POST
+    /// id talk list DOCUMENT --json
+    /// id talk propose GROUP NOTE/KEY --base REVISION --content BLOB/KEY --thread THREAD
+    /// id talk accept GROUP PROPOSAL edited.md --media-type text/markdown
+    /// id talk resolve GROUP THREAD --no-action
+    /// id talk threads GROUP
+    /// ```
+    Talk {
+        /// Print JSON instead of lines (one array for `list` and `threads`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The talk action to run.
+        #[command(subcommand)]
+        command: TalkCommand,
+    },
+    /// Push to and pull from your hosted ID store over the bridge.
+    ///
+    /// Every call proves possession of the ID key the binding names, so
+    /// run it with this node's key or pass `--key-file`. Refused calls
+    /// (a wrong key, an unknown binding, a full store) fail with the
+    /// hosted store's own error code.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id hosted heads --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// id hosted push --url https://id.example --binding 0123456789abcdef0123456789abcdef
+    /// ID_HOSTED_URL=https://id.example ID_HOSTED_BINDING=0123456789abcdef0123456789abcdef id hosted pull
+    /// ```
+    Hosted {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The hosted action to run.
+        #[command(subcommand)]
+        command: HostedCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).
@@ -1735,6 +1855,10 @@ pub enum KeysetCommand {
     },
     /// Enrol another device key. The device's 32-byte key file is read
     /// to countersign the enrolment, proving the device holds the key.
+    /// Prefer the `enrol-offer` / `enrol-accept` / `enrol-complete`
+    /// pairing flow when the secret must not travel: same record, but
+    /// the new device only reveals a countersignature over a scanned
+    /// offer.
     Enrol {
         /// The new device's key file (the `.iroh-key` it was created with).
         device_key_file: PathBuf,
@@ -1742,6 +1866,51 @@ pub enum KeysetCommand {
         #[arg(long)]
         label: String,
         /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Mint an enrolment offer for a new device to scan (#2380 packet
+    /// 2). Prints the `id:keyset-enrol?…` payload: show it as a QR
+    /// code or paste it to the new device. It names the exact head
+    /// the enrolment will extend, so a captured offer cannot enrol
+    /// twice across a moved head. The device answers with `id keyset
+    /// enrol-accept`; file its answer with `id keyset enrol-complete`.
+    EnrolOffer {
+        /// A name for the device, shown by `id keyset show`.
+        #[arg(long)]
+        label: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Answer an enrolment offer on the joining device. Countersigns
+    /// the scanned offer with this device's key and prints the accept
+    /// for the admin to file with `id keyset enrol-complete`. The
+    /// secret never leaves this device: only the public key and its
+    /// proof-of-possession signature travel.
+    EnrolAccept {
+        /// The offer string, as printed by `id keyset enrol-offer` or
+        /// scanned from its QR code.
+        offer: String,
+        /// This device's key file (the `.iroh-key` it was created with).
+        device_key_file: PathBuf,
+    },
+    /// File a scanned enrolment accept, printed by `id keyset
+    /// enrol-accept` on the new device, as a `DeviceEnrolled` record.
+    /// Stale accepts (the head moved on), accepts for another admin,
+    /// and bad countersignatures are refused and change nothing.
+    EnrolComplete {
+        /// The accept string, as printed or scanned.
+        accept: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Print this identity's device payload for an admin to scan
+    /// before `id keyset revoke`: the revocation half of pairing, so
+    /// no hex is typed. The payload names only the public key.
+    DeviceQr {
+        /// Show the client identity's payload instead of the server's.
         #[arg(long)]
         client: bool,
     },

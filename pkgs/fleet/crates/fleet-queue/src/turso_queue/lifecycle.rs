@@ -848,6 +848,28 @@ pub(crate) fn verb_claim_batch(
 }
 
 pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
+    // Reject malformed manual-override intent before the claim preamble
+    // can expire leases, touch lanes, or otherwise mutate the test/store.
+    if let Some(reason) = req.get("manual_override") {
+        if reason.as_str().map_or(true, |s| s.trim().is_empty()) {
+            return fail(
+                2,
+                "claim_repo_task: manual_override requires a non-empty reason",
+            );
+        }
+        if req_i64(req, "task_id").filter(|id| *id > 0).is_none()
+            || req.get("from_session").is_some()
+            || req.get("pick").is_some()
+            || req
+                .get("count")
+                .is_some_and(|count| count.as_i64() != Some(1))
+        {
+            return fail(
+                2,
+                "claim_repo_task: manual_override requires one --task and cannot combine with transfer, handoff, or batch",
+            );
+        }
+    }
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     // One-queue model (#8097, 2026-11-10): the request's queue
     // is OPTIONAL. Absent, empty, "*" or "all" names no stream:
@@ -1002,6 +1024,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 &model,
                 claim_session.as_deref(),
                 &pool,
+                req_str(req, "manual_override"),
             );
         }
         claim_pick_once(
@@ -1771,6 +1794,38 @@ pub(crate) fn foreign_lane_claim(row: &Value, req: &Value) -> Option<(String, St
     (caller != holder).then(|| (holder.to_string(), caller.to_string()))
 }
 
+/// #9487 (REL-02 design record §10): the holder guard every
+/// holder write carries. `claimed_by` reads the claim, then the
+/// write commits later; an unconditional `WHERE id = ?` let a
+/// writer whose claim lapsed and was re-taken in that window
+/// overwrite the new holder's row. The guard is the heartbeat's
+/// claim tuple (heartbeat.sql), so a write lands only while the
+/// claim it read is still the claim on the row. Lanes share one
+/// worker id, so worker_id alone would not tell two claims apart;
+/// claimed_at, lane_id and attempts do.
+pub(crate) const HOLDER_GUARD: &str = " AND status = 'claimed' AND worker_id = ? AND claimed_at IS ? AND lane_id IS ? AND attempts = ?";
+
+/// The four arguments that bind HOLDER_GUARD, taken from the row
+/// `claimed_by` returned.
+pub(crate) fn holder_guard_args(worker: &str, row: &Value) -> [Arg; 4] {
+    [
+        Arg::Text(worker.to_string()),
+        arg_str(row["claimed_at"].as_str()),
+        arg_str(row["lane_id"].as_str()),
+        Arg::Int(row["attempts"].as_i64().unwrap_or(0)),
+    ]
+}
+
+/// The refusal a guarded holder write returns when it matched no
+/// row: the claim changed between the read and the write, and
+/// nothing was written.
+pub(crate) fn claim_changed(verb: &str, task_id: i64) -> Value {
+    fail(
+        5,
+        format!("{verb}: claim for task {task_id} changed before the write committed"),
+    )
+}
+
 pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -1834,6 +1889,23 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
         ),
     );
     let work = (|| -> Result<Value, TErr> {
+        // #9487: the task row's progress write goes first and
+        // carries the holder guard, so a checkpoint from a claim
+        // that changed after claimed_by read it writes nothing --
+        // neither the task row nor the per-worker KV entry.
+        let mut args = vec![
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!("UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"),
+            &args,
+        )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("checkpoint_task", task_id));
+        }
         // PG checkpoints is a per-worker KV (worker_id, key, value):
         // the checkpoint lands under task:<id> with the stage +
         // progress as the value; the task row's progress merge above
@@ -1850,14 +1922,6 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Text(now_iso()),
             ],
         )?;
-        t.exec(
-            "UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
         touch_worker(t, &worker, Some(task_id))?;
         event(
             t,
@@ -1866,10 +1930,11 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
             "checkpoint",
             &json!({"stage": stage, "via": "checkpoint_task_turso"}),
         )?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+        let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok(ok(json!({"row": row})))
     })();
     match work {
-        Ok(row) => ok(json!({"row": row})),
+        Ok(v) => v,
         Err(e) => terr(e),
     }
 }
@@ -2048,46 +2113,60 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let explicit_delay = req.get("not_before").is_some_and(|v| !v.is_null())
         || req.get("delay_seconds").is_some_and(|v| !v.is_null());
     let work = (|| -> Result<Value, TErr> {
-        if to_sink {
+        // #9487: both landings carry the holder guard; a park from
+        // a claim that changed after claimed_by read it writes
+        // nothing.
+        let upd = if to_sink {
+            let mut args = vec![
+                if explicit_delay {
+                    Arg::Text(not_before.clone())
+                } else {
+                    Arg::Null
+                },
+                Arg::Text(now_iso()),
+                Arg::Text(progress.to_string()),
+                Arg::Text(result.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ];
+            args.extend(holder_guard_args(&worker, &row));
             t.exec(
-                "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
-                   not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
-                   required_budget_minutes = NULL, \
-                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
-                   updated_at = ? WHERE id = ?",
-                &[
-                    if explicit_delay {
-                        Arg::Text(not_before.clone())
-                    } else {
-                        Arg::Null
-                    },
-                    Arg::Text(now_iso()),
-                    Arg::Text(progress.to_string()),
-                    Arg::Text(result.to_string()),
-                    Arg::Text(now_iso()),
-                    Arg::Int(task_id),
-                ],
-            )?;
+                &format!(
+                    "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
+                       not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                       required_budget_minutes = NULL, \
+                       last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                       updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+                ),
+                &args,
+            )?
         } else {
+            let mut args = vec![
+                Arg::Text(not_before.clone()),
+                Arg::Text(park_kind.to_string()),
+                Arg::Text(wk.to_string()),
+                Arg::Text(condition.to_string()),
+                required_budget_arg,
+                Arg::Text(now_iso()),
+                Arg::Text(progress.to_string()),
+                Arg::Text(result.to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ];
+            args.extend(holder_guard_args(&worker, &row));
             t.exec(
-                "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
-                   not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
-                   required_budget_minutes = ?, \
-                   last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
-                   updated_at = ? WHERE id = ?",
-                &[
-                    Arg::Text(not_before.clone()),
-                    Arg::Text(park_kind.to_string()),
-                    Arg::Text(wk.to_string()),
-                    Arg::Text(condition.to_string()),
-                    required_budget_arg,
-                    Arg::Text(now_iso()),
-                    Arg::Text(progress.to_string()),
-                    Arg::Text(result.to_string()),
-                    Arg::Text(now_iso()),
-                    Arg::Int(task_id),
-                ],
-            )?;
+                &format!(
+                    "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
+                       not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
+                       required_budget_minutes = ?, \
+                       last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
+                       updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+                ),
+                &args,
+            )?
+        };
+        if upd.affected == 0 {
+            return Ok(claim_changed("park_task", task_id));
         }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         if let Some(old) = &cleared {
@@ -2161,6 +2240,12 @@ pub(crate) fn wake_eligible(status: &str) -> Result<(), String> {
 /// holder gives the item back to the pool NOW — no park timer, no
 /// attempt change (the claim happened; the `released` event
 /// carries the reason, and revive remains the cap-repair tool).
+/// One exception (#12901): when the released claim consumed the
+/// task's last attempt, a queued return would be a zombie — the
+/// claim pick (attempts < max_attempts) can never select the row
+/// again — so the release lands where an at-cap lease expiry
+/// lands (#6463): failed, with the release reason in last_error,
+/// and revive takes it from there.
 /// Holder-only, through the same claimed_by guard as checkpoint.
 /// This is the dispatch failure path: an item whose sub-task
 /// session failed to launch/bind returns to the pool immediately
@@ -2204,18 +2289,57 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
         // A released claim never leaves a binding behind
         // (migration 0023 §4's rule, mirrored from the claim path).
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
+        // #12901: where a released claim lands is the question
+        // lease expiry already answers — expire_leases'
+        // expiry_disposition oracle, computed on the same inputs
+        // (the sink shape is read from the progress BEFORE the
+        // binding is cleared, exactly as expire_leases reads it).
+        // Below the cap the row returns to queued as before. At
+        // the cap a queued return is the silent zombie of the
+        // claim→release churn (task 21418: four sessionless
+        // claim/release cycles in ~13 minutes left the row queued
+        // at attempts == max_attempts, unclaimable, counted as
+        // queued work, with nothing on the row recording why) —
+        // so an at-cap release fails the row with the release
+        // reason in last_error, and the audit event is the fail
+        // event, whose history transition (claimed → failed) is
+        // the true one. Sink rows are exempt, as in expire_leases:
+        // the sink pick serves them under its own rule.
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
+        let to_sink = expired_claim_returns_to_sink(&progress);
+        let fail_at_cap =
+            !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let (progress, cleared) = clear_binding(&progress, "release_repo_task");
-        t.exec(
-            "UPDATE tasks SET status = 'queued', worker_id = NULL, \
-               lease_until = NULL, not_before = NULL, park_kind = NULL, \
-               wait_kind = NULL, progress = ?, updated_at = ? \
-             WHERE id = ?",
-            &[
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
+        let cap_error = format!("released at attempt cap ({attempts}/{max_attempts}): {reason}");
+        let mut args = vec![];
+        let sql = if fail_at_cap {
+            args.push(Arg::Text(cap_error.clone()));
+            format!(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, \
+                   lease_until = NULL, not_before = NULL, park_kind = NULL, \
+                   wait_kind = NULL, last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ?{HOLDER_GUARD}"
+            )
+        } else {
+            format!(
+                "UPDATE tasks SET status = 'queued', worker_id = NULL, \
+                   lease_until = NULL, not_before = NULL, park_kind = NULL, \
+                   wait_kind = NULL, progress = ?, updated_at = ? \
+                 WHERE id = ?{HOLDER_GUARD}"
+            )
+        };
+        args.push(Arg::Text(progress.to_string()));
+        args.push(Arg::Text(now_iso()));
+        args.push(Arg::Int(task_id));
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(&sql, &args)?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("release_repo_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         // #14993: record the limitation on the task's lane ledger
         // (the row the claim pick reads). A claimed task may have
@@ -2262,25 +2386,47 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
         if let Some(old) = &cleared {
             on_binding_cleared(t, &worker, task_id, old, "release_repo_task")?;
         }
-        event(
-            t,
-            Some(&worker),
-            Some(task_id),
-            "released",
-            &with_marks(
-                &json!({
+        // #12901: an at-cap release records a `failed` event (the
+        // verb_fail shape: the error text plus the release's own
+        // marks), so the history transition written for the event
+        // is the true claimed → failed; a below-cap release keeps
+        // the `released` event.
+        let (kind, detail) = if fail_at_cap {
+            (
+                "failed",
+                json!({
+                    "reason": reason, "error": cap_error,
+                    "attempts": attempts, "max_attempts": max_attempts,
+                    "released_at_cap": true,
+                    "via": "release_repo_task_turso",
+                    "cleared_session_id": cleared,
+                    "platform_limit": limit_family,
+                    "platform_limit_reason": limit_reason,
+                }),
+            )
+        } else {
+            (
+                "released",
+                json!({
                     "reason": reason, "via": "release_repo_task_turso",
                     "cleared_session_id": cleared,
                     "platform_limit": limit_family,
                     "platform_limit_reason": limit_reason,
                 }),
-                &row,
-            ),
+            )
+        };
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            kind,
+            &with_marks(&detail, &row),
         )?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+        let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok(ok(json!({ "row": row })))
     })();
     match work {
-        Ok(row) => ok(json!({ "row": row })),
+        Ok(v) => v,
         Err(e) => terr(e),
     }
 }
@@ -2371,29 +2517,49 @@ mod reprioritize_tests {
     use std::sync::{Arc, Mutex};
 
     pub(super) fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
+        let (t, db, _) = fake_backend_with_race();
+        (t, db)
+    }
+
+    /// SQL the fake runs once, just before the next statement that
+    /// starts with `UPDATE tasks` (#9487): the race window between
+    /// a verb's claimed_by read and its first write, made
+    /// deterministic.
+    pub(super) type RaceHook = Arc<Mutex<Option<String>>>;
+
+    pub(super) fn fake_backend_with_race()
+    -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>, RaceHook) {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         for ddl in SCHEMA {
             conn.execute_batch(ddl).unwrap();
         }
         let db = Arc::new(Mutex::new(conn));
+        let hook: RaceHook = Arc::new(Mutex::new(None));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let base = format!("http://{addr}");
         let db_thread = db.clone();
+        let hook_thread = hook.clone();
         std::thread::spawn(move || {
             for sock in listener.incoming() {
                 let Ok(sock) = sock else { return };
                 let db_conn = db_thread.clone();
-                std::thread::spawn(move || handle_conn(sock, db_conn));
+                let hook_conn = hook_thread.clone();
+                std::thread::spawn(move || handle_conn(sock, db_conn, hook_conn));
             }
         });
         (
             TursoBackend::new(base, "test".to_string(), ureq::agent()),
             db,
+            hook,
         )
     }
 
-    fn handle_conn(mut sock: std::net::TcpStream, db: Arc<Mutex<rusqlite::Connection>>) {
+    fn handle_conn(
+        mut sock: std::net::TcpStream,
+        db: Arc<Mutex<rusqlite::Connection>>,
+        hook: RaceHook,
+    ) {
         let mut reader = BufReader::new(sock.try_clone().unwrap());
         loop {
             let mut request_line = String::new();
@@ -2420,7 +2586,7 @@ mod reprioritize_tests {
             if reader.read_exact(&mut body).is_err() {
                 return;
             }
-            let payload = run_pipeline(&db, &body);
+            let payload = run_pipeline(&db, &hook, &body);
             let text = payload.to_string();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
@@ -2434,7 +2600,7 @@ mod reprioritize_tests {
         }
     }
 
-    fn run_pipeline(db: &Arc<Mutex<rusqlite::Connection>>, body: &[u8]) -> Value {
+    fn run_pipeline(db: &Arc<Mutex<rusqlite::Connection>>, hook: &RaceHook, body: &[u8]) -> Value {
         let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let conn = db.lock().unwrap();
         let mut results = Vec::new();
@@ -2469,6 +2635,11 @@ mod reprioritize_tests {
                                 ),
                                 _ => rusqlite::types::Value::Null,
                             });
+                        }
+                    }
+                    if sql.trim_start().starts_with("UPDATE tasks ") {
+                        if let Some(race) = hook.lock().unwrap().take() {
+                            conn.execute_batch(&race).unwrap();
                         }
                     }
                     results.push(execute_sql(&conn, sql, &params));
@@ -3298,6 +3469,64 @@ mod task_history_tests {
         assert!(all_ids.contains(&other_queue), "{all}");
     }
 
+    /// #13068: `list --status dep_blocked` returns the rows health counts
+    /// as dep-blocked (blocked rows with a `blocked_deps` record) through
+    /// the broker `/list` route, while `--status blocked` still lists
+    /// every blocked row.
+    #[test]
+    fn list_dep_blocked_matches_health_count_13068() {
+        let (t, _) = fake_backend();
+        let queue = "dep-list-13068";
+        let dep_blocked = seed_consumer_task(&t, queue, "blocked", 3_000);
+        let plain_blocked = seed_consumer_task(&t, queue, "blocked", 2_000);
+        let queued_with_deps = seed_consumer_task(&t, queue, "queued", 1_000);
+        let other_queue = seed_consumer_task(&t, "dep-list-13068-other", "blocked", 1_000);
+        for id in [dep_blocked, queued_with_deps, other_queue] {
+            t.exec(
+                "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
+                &[
+                    Arg::Text(r#"[{"kind":"issue","ref":"developing-today/code#1"}]"#.into()),
+                    Arg::Int(id),
+                ],
+            )
+            .unwrap();
+        }
+
+        let ids = |resp: &Value| -> Vec<i64> {
+            let mut ids: Vec<i64> = resp["rows"]
+                .as_array()
+                .unwrap_or_else(|| panic!("no rows: {resp}"))
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let dep = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "dep_blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&dep), vec![dep_blocked], "{dep}");
+        assert_eq!(dep["total"], 1, "{dep}");
+
+        let blocked = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&blocked), vec![dep_blocked, plain_blocked], "{blocked}");
+
+        let health = super::super::verb_health(&t, &json!({"queue": queue}));
+        let entry = health["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["queue"] == queue))
+            .unwrap_or_else(|| panic!("no health row for {queue}: {health}"));
+        assert_eq!(entry["dep_blocked"], dep["total"], "{health}");
+        assert_eq!(entry["blocked"], 2, "{health}");
+    }
+
     /// Oracle (#14170 Q8, design §9): the needs-user read returns only
     /// blocked/parked tasks carrying a question metadata entry, lifts
     /// the question object out of the metadata, and counts blocked-by
@@ -3542,6 +3771,217 @@ mod task_labels_tests {
         );
         assert_eq!(full["ok"], true, "{full}");
         assert_eq!(full["row"]["labels_sync"]["scope"], "actionable", "{full}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod manual_claim_override_audit_tests {
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("manual claim oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "manual claim test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    #[test]
+    fn manual_override_records_full_audit_9178() {
+        // Oracle: the prior park state and explicit actor are auditable on
+        // both the task result and the claimed event; unrelated result data
+        // and historical attempt counts survive.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91781)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 2, max_attempts = 5, \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
+             wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"kind": "time", "until": "2027-01-01T00:00:00Z"}).to_string()),
+                Arg::Text(
+                    json!({"park_reason": "waiting on dependency", "unrelated": {"keep": true}})
+                        .to_string(),
+                ),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "manual-override-worker",
+                "queue": QUEUE,
+                "lane": "manual-override-lane",
+                "task_id": id,
+                "session_id": "ses_manual_override",
+                "manual_override": "  dependency independently verified  "
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["attempts"], 2);
+        assert_eq!(row["max_attempts"], 5);
+        for field in ["not_before", "park_kind", "wait_kind", "ready_condition"] {
+            assert!(row[field].is_null(), "{field}: {row}");
+        }
+        let expected_audit = json!({
+            "reason": "dependency independently verified",
+            "claimed_at": row["claimed_at"],
+            "worker_id": "manual-override-worker",
+            "lane_id": "manual-override-lane",
+            "session_id": "ses_manual_override",
+            "previous_status": "parked",
+            "previous_attempts": before["attempts"],
+            "previous_max_attempts": before["max_attempts"],
+            "previous_not_before": before["not_before"],
+            "previous_park_reason": before["result"]["park_reason"],
+            "previous_park_kind": before["park_kind"],
+            "previous_wait_kind": before["wait_kind"],
+            "previous_ready_condition": before["ready_condition"]
+        });
+        assert_eq!(row["result"]["manual_override"], expected_audit);
+        let mut expected_result = before["result"].clone();
+        expected_result["manual_override"] = expected_audit.clone();
+        assert_eq!(row["result"], expected_result);
+        let events = events_for(&t, id, "claimed");
+        assert_eq!(events.len(), 1);
+        let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["manual_override"], expected_audit);
+    }
+
+    #[test]
+    fn parked_by_id_claim_without_manual_override_still_refuses_9178() {
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91782)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 3, max_attempts = 5, \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
+             result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "ordinary-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(out["ok"], true, "refusal is a clean no-claim result: {out}");
+        assert!(out.get("row").is_none_or(Value::is_null), "{out}");
+        let row = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["attempts"], 3);
+        assert_eq!(row["result"]["park_reason"], "waiting on dependency");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod manual_claim_override_tests {
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("manual claim oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "manual claim test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    #[test]
+    fn manual_override_claims_parked_task_and_preserves_attempts_9178() {
+        // Oracle: a parked row under its cap is claimed with an explicit
+        // reason, but its historical attempts and cap remain unchanged.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91781)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 2, max_attempts = 5, \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff', \
+             wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"kind": "time", "until": "2027-01-01T00:00:00Z"}).to_string()),
+                Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+        let before = get_task(&t, id).unwrap().expect("parked task");
+        assert_eq!(claim_guard_reason(&before), None, "fixture must be claimable: {before}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "manual-override-worker",
+                "queue": QUEUE,
+                "lane": "manual-override-lane",
+                "task_id": id,
+                "session_id": "ses_manual_override",
+                "manual_override": "dependency independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["attempts"], 2);
+        assert_eq!(row["max_attempts"], 5);
     }
 }
 
@@ -3930,5 +4370,542 @@ mod task_notes_tests {
             .collect();
         assert_eq!(bodies, ["plain", "third"]);
         assert_eq!(latest["row"]["count"], 3);
+    }
+
+    #[test]
+    fn q6_normalized_link_and_dependency_tables_exist() {
+        let (t, _db) = fake_backend();
+        let tables = t
+            .query_objs(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('queue_links', 'task_deps') ORDER BY name",
+                &[],
+                &[],
+            )
+            .expect("Q6 tables are readable from the SQL store");
+        let names: Vec<&str> = tables
+            .iter()
+            .map(|row| row["name"].as_str().expect("table name is text"))
+            .collect();
+        assert_eq!(names, ["queue_links", "task_deps"]);
+    }
+
+    #[test]
+    fn q6_enqueue_seeds_issue_and_pull_request_links() {
+        let (t, _db) = fake_backend();
+        let packet = json!({
+            "title": "Q6 link seed",
+            "priority": 50,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14181",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "seed links",
+                "evidence": ["fixture"],
+                "acceptance": ["issue and PR links are normalized"],
+                "scope": {"include": ["Q6"], "exclude": ["other slices"]},
+                "tests": ["SQL link seed oracle"],
+                "risk": {"level": "low", "flags": []},
+                "priority_reason": "fixture",
+                "timebox_minutes": 45,
+                "max_attempts": 6,
+                "context_refs": [],
+                "issue": {"number": 14181},
+                "pr": {"number": 14441},
+                "dedupe": {"checked_at": "2026-11-25T00:00:00Z", "basis": "fixture"}
+            }
+        });
+        let enqueued = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet.clone()}),
+        );
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let task_id = enqueued["row"]["id"].as_i64().expect("task id");
+        let links = t
+            .query_objs(
+                "SELECT other_kind, other_repo, other_number, link_kind FROM queue_links \
+                 WHERE task_id = ? AND removed_at IS NULL ORDER BY other_kind",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized links are readable");
+        assert_eq!(links.len(), 2, "{links:?}");
+        assert_eq!(links[0]["other_kind"], "issue");
+        assert_eq!(links[0]["other_number"], 14181);
+        assert_eq!(links[0]["link_kind"], "implements");
+        assert_eq!(links[1]["other_kind"], "pr");
+        assert_eq!(links[1]["other_number"], 14441);
+        assert_eq!(links[1]["link_kind"], "pr_for");
+        let removed = verb_link_remove(
+            &t,
+            &json!({"task_id":task_id,"worker":"q6-test","link_kind":"implements",
+                "other_issue":{"repo":"developing-today/code","number":14181}}),
+        );
+        assert_eq!(removed["ok"], true, "{removed}");
+        t.exec(
+            "DELETE FROM queue_links WHERE task_id = ? AND other_kind = 'pr'",
+            &[Arg::Int(task_id)],
+        )
+        .expect("simulate a transiently failed link seed");
+        let retry = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet}),
+        );
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert_eq!(retry["row"]["id"], task_id);
+        let repaired = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("enqueue dedupe retry repairs missing packet links");
+        assert_eq!(repaired.len(), 1, "the removed issue link stays removed");
+        let tombstone = t
+            .query_objs(
+                "SELECT removed_at FROM queue_links WHERE task_id = ? AND other_kind = 'issue'",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("soft-removed packet link remains a tombstone");
+        assert_eq!(tombstone.len(), 1);
+        assert!(!tombstone[0]["removed_at"].is_null());
+        t.exec(
+            "DELETE FROM queue_schema_migrations WHERE name = 'q6-links-deps-v1'",
+            &[],
+        )
+        .expect("reset the migration marker to exercise the backfill path");
+        super::links::ensure_q6_backfill(&t).expect("backfill re-run is safe");
+        let still_two = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("seeded links remain queryable");
+        assert_eq!(still_two.len(), 1, "backfill preserves the link tombstone");
+    }
+
+    #[test]
+    fn q6_sql_census_reproduces_recorded_blocker_counts() {
+        let (t, _db) = fake_backend();
+        let mut task_id = 1i64;
+        let mut open_remaining = 241usize;
+        while open_remaining > 0 {
+            let count = if task_id <= 63 { 2 } else { 1 };
+            let count = count.min(open_remaining);
+            let deps: Vec<Value> = (0..count)
+                .map(|idx| {
+                    let number = if task_id <= 7 && idx == 0 {
+                        3399
+                    } else {
+                        5000 + task_id * 10 + idx as i64
+                    };
+                    json!({"kind":"issue", "repo":"developing-today/code", "number":number, "state":"open"})
+                })
+                .collect();
+            super::links::sync_task_deps(
+                &t,
+                task_id,
+                "census-fixture",
+                &deps,
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize open census edges");
+            open_remaining -= count;
+            task_id += 1;
+        }
+        for offset in 0..50i64 {
+            let dep = json!({"kind":"issue", "repo":"developing-today/code", "number":6000 + offset, "state":"cleared", "cleared_at":"2026-11-24T01:00:00Z"});
+            super::links::sync_task_deps(
+                &t,
+                1000 + offset,
+                "census-fixture",
+                &[dep],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize cleared census edges");
+        }
+        for task in [16024i64, 20343] {
+            let malformed = json!({"kind":"task", "state":"open"});
+            super::links::sync_task_deps(
+                &t,
+                task,
+                "census-fixture",
+                &[malformed],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("retain malformed task:None edge");
+        }
+        let counts = t
+            .query_objs(
+                "SELECT state, count(*) AS n FROM task_deps GROUP BY state ORDER BY state",
+                &[],
+                &[],
+            )
+            .expect("SQL-only blocker state census");
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "open").unwrap()["n"],
+            241
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "cleared").unwrap()["n"],
+            50
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "malformed").unwrap()["n"],
+            2
+        );
+        let top = t
+            .query_objs(
+                "SELECT ref_number, count(*) AS n FROM task_deps WHERE state = 'open' \
+                 AND ref_number IS NOT NULL GROUP BY ref_number ORDER BY n DESC, ref_number LIMIT 1",
+                &[],
+                &[],
+            )
+            .expect("SQL top blocker query");
+        assert_eq!(top[0]["ref_number"], 3399);
+        assert_eq!(top[0]["n"], 7);
+        let tasks = t
+            .query_objs(
+                "SELECT count(DISTINCT task_id) AS n FROM task_deps WHERE state = 'open'",
+                &[],
+                &[],
+            )
+            .expect("SQL distinct blocked task count");
+        assert_eq!(tasks[0]["n"], 178);
+    }
+
+    #[test]
+    fn q6_link_change_emits_history_without_changing_task_status() {
+        let (t, _db) = fake_backend();
+        let task_id = task(&t, None);
+        let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"parent",
+            "other_issue":{"repo":"developing-today/code","number":14170}});
+        assert_eq!(verb_link_add(&t, &request)["ok"], true);
+        assert_eq!(verb_link_remove(&t, &request)["ok"], true);
+        let events = t
+            .query_objs(
+                "SELECT kind FROM events WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("link transition event rows");
+        assert_eq!(
+            events
+                .iter()
+                .map(|r| r["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["linked", "unlinked"]
+        );
+        let history = t
+            .query_objs(
+                "SELECT kind, from_status, to_status, \
+                 json_extract(detail, '$.link_kind') AS link_kind, \
+                 json_extract(detail, '$.other_number') AS other_number \
+                 FROM task_history WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("parent change is visible in child history");
+        assert_eq!(history.len(), 2);
+        for row in &history {
+            assert_eq!(row["link_kind"], "parent");
+            assert_eq!(row["other_number"], 14170);
+            assert!(row["from_status"].is_null());
+            assert!(row["to_status"].is_null());
+        }
+        let task = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task["status"], "queued");
+    }
+
+    #[test]
+    fn q6_block_unblock_keeps_dependency_rows_and_cache_aligned() {
+        let (t, _db) = fake_backend();
+        let task_id = task(&t, Some("q6-worker"));
+        let blocked = verb_block(
+            &t,
+            &json!({
+                "task_id": task_id,
+                "worker": "q6-worker",
+                "reason_class": "dependency",
+                "blocker": "issue is still open",
+                "deps": [{"kind":"issue", "repo":"developing-today/code", "number":14170, "reason":"parent work"}]
+            }),
+        );
+        assert_eq!(blocked["ok"], true, "{blocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT dep_kind, ref_repo, ref_number, state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized edge after block");
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0]["dep_kind"], "blocked-by-issue");
+        assert_eq!(normalized[0]["ref_number"], 14170);
+        assert_eq!(normalized[0]["state"], "open");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task_row["blocked_deps"][0]["number"], 14170);
+        let block_id = task_row["dep_blocked_until"].as_str().unwrap().to_owned();
+
+        let unblocked = verb_unblock(
+            &t,
+            &json!({"task_id": task_id, "worker": "q6-worker", "reason": "parent resolved"}),
+        );
+        assert_eq!(unblocked["ok"], true, "{unblocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT state, cleared_by FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("cleared edge remains in normalized history");
+        assert_eq!(normalized[0]["state"], "cleared");
+        assert_eq!(normalized[0]["cleared_by"], "q6-worker");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert!(task_row["blocked_deps"].is_null());
+        let stale = json!({
+            "kind":"issue", "repo":"developing-today/code", "number":14170,
+            "state":"open", "recorded_at":"2026-11-25T00:00:00Z"
+        });
+        let (cache, writes) = super::links::prepare_task_deps(
+            task_id,
+            &block_id,
+            &[stale],
+            "2026-11-25T00:00:00Z",
+            "stale_recheck_fixture",
+        );
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.extend(super::links::guard_task_dep_writes(
+            writes,
+            task_id,
+            Some(&block_id),
+            &cache,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        t.exec_batch(&statements)
+            .expect("a stale recheck must be a safe no-op after unblock");
+        let final_deps = t
+            .query_objs(
+                "SELECT state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("final normalized edge remains readable");
+        assert_eq!(final_deps[0]["state"], "cleared");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (#9487, REL-02 design record §10): every holder write is
+// conditional on the claim it read. The race hook re-claims the row
+// between claimed_by's read and the verb's first `UPDATE tasks`, the
+// way a lapsed claim taken by another lane would; the verb must
+// refuse with exit 5 and leave the new holder's row, its lease, its
+// checkpoint KV and the event log exactly as they were.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod holder_guard_tests {
+    use super::super::verb_complete;
+    use super::reprioritize_tests::{events_for, fake_backend_with_race};
+    use super::*;
+
+    const QUEUE: &str = "repo-health-code-pilot";
+    const WORKER: &str = "guard-worker";
+
+    fn enqueue_claim(t: &TursoBackend, number: i64) -> i64 {
+        let packet = json!({
+            "title": format!("holder guard {number}"), "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1", "kind": "small_fix",
+                "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45, "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+            }
+        });
+        let enq = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet}));
+        assert_eq!(enq["ok"], true, "{enq}");
+        let id = enq["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            t,
+            &json!({
+                "worker": WORKER, "queue": QUEUE, "lane": "guard-lane-a",
+                "session_id": "ses_guard", "model_provider": "anthropic",
+                "model_id": "claude-haiku-5-5", "model_variant": "default"
+            }),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        assert_eq!(claimed["row"]["id"].as_i64(), Some(id), "{claimed}");
+        id
+    }
+
+    /// The other lane's re-claim, applied inside the race window.
+    fn reclaim_sql(id: i64) -> String {
+        format!(
+            "UPDATE tasks SET claimed_at = '2099-01-01T00:00:00Z', lane_id = 'guard-lane-b', \
+             attempts = attempts + 1, progress = '{{\"holder\":\"lane-b\"}}' WHERE id = {id}"
+        )
+    }
+
+    fn count(t: &TursoBackend, sql: &str, id: i64) -> i64 {
+        let rows = t.query_objs(sql, &[Arg::Int(id)], &[]).unwrap();
+        rows[0]["n"].as_i64().unwrap()
+    }
+
+    fn snapshot(t: &TursoBackend, id: i64) -> (Value, i64, i64, i64) {
+        (
+            get_task(t, id).unwrap().expect("task row"),
+            count(t, "SELECT COUNT(*) AS n FROM leases WHERE task_id = ?", id),
+            count(t, "SELECT COUNT(*) AS n FROM events WHERE task_id = ?", id),
+            count(
+                t,
+                "SELECT COUNT(*) AS n FROM checkpoints WHERE key = 'task:' || ?",
+                id,
+            ),
+        )
+    }
+
+    fn complete_req(id: i64, number: i64) -> Value {
+        let now = now_iso();
+        json!({
+            "task_id": id, "worker": WORKER,
+            "result": {
+                "evidence": "verified closure note",
+                "disposition": {
+                    "checked_at": now, "source": "fleet gh readback",
+                    "issue": {"number": number, "state": "closed", "closed_at": now},
+                    "pulls": [], "verdict": "closed_verified"
+                }
+            }
+        })
+    }
+
+    type Verb = fn(&TursoBackend, &Value) -> Value;
+    type Req = fn(i64, i64) -> Value;
+
+    fn cases() -> Vec<(&'static str, Verb, Req)> {
+        vec![
+            (
+                "release_repo_task",
+                verb_release as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "reason": "guard test"})) as Req,
+            ),
+            (
+                "park_task",
+                verb_park as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "reason": "guard test", "delay_seconds": 1200}))
+                    as Req,
+            ),
+            (
+                "checkpoint_task",
+                verb_checkpoint as Verb,
+                (|id, _| json!({"task_id": id, "worker": WORKER, "stage": "guard", "progress": {"step": 1}}))
+                    as Req,
+            ),
+            ("complete_task", verb_complete as Verb, complete_req as Req),
+        ]
+    }
+
+    #[test]
+    fn holder_writes_refuse_a_claim_changed_after_the_read_9487() {
+        let (t, _db, race) = fake_backend_with_race();
+        for (n, (verb, call, req)) in cases().into_iter().enumerate() {
+            let number = 948_700 + n as i64;
+            let id = enqueue_claim(&t, number);
+            let (_, leases_before, events_before, _) = snapshot(&t, id);
+            *race.lock().unwrap() = Some(reclaim_sql(id));
+            let out = call(&t, &req(id, number));
+            assert!(
+                race.lock().unwrap().is_none(),
+                "{verb}: race window reached"
+            );
+            let (after_row, leases, events, checkpoints) = snapshot(&t, id);
+            assert_eq!(out["ok"], false, "{verb}: {out}");
+            assert_eq!(out["exit"], 5, "{verb}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(&format!("{verb}: claim for task {id} changed")),
+                "{verb}: {out}"
+            );
+            // The new holder's claim stands untouched.
+            assert_eq!(after_row["status"], "claimed", "{verb}: {after_row}");
+            assert_eq!(after_row["lane_id"], "guard-lane-b", "{verb}: {after_row}");
+            assert_eq!(after_row["claimed_at"], "2099-01-01T00:00:00Z", "{verb}");
+            assert_eq!(after_row["progress"], json!({"holder": "lane-b"}), "{verb}");
+            assert!(after_row["resolution"].is_null(), "{verb}: {after_row}");
+            assert_eq!(checkpoints, 0, "{verb}: no checkpoint KV write");
+            // Nothing after the refused write ran: the lease is
+            // still there and no event was appended.
+            assert_eq!(leases, leases_before, "{verb}: lease kept");
+            assert_eq!(events, events_before, "{verb}: no event appended");
+            for kind in ["released", "parked", "checkpoint", "completed"] {
+                assert!(
+                    events_for(&t, id, kind).is_empty(),
+                    "{verb}: no {kind} event"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn holder_writes_land_on_an_unchanged_claim_9487() {
+        for (n, (verb, call, req)) in cases().into_iter().enumerate() {
+            // A fresh store per verb: a released task is queued
+            // again, and the next case's claim would pick it.
+            let (t, _db, _race) = fake_backend_with_race();
+            let number = 948_750 + n as i64;
+            let id = enqueue_claim(&t, number);
+            let out = call(&t, &req(id, number));
+            assert_eq!(out["ok"], true, "{verb}: {out}");
+            let row = get_task(&t, id).unwrap().expect("task row");
+            let want = match verb {
+                "release_repo_task" => "queued",
+                "park_task" => "parked",
+                "checkpoint_task" => "claimed",
+                _ => "done",
+            };
+            assert_eq!(row["status"], want, "{verb}: {row}");
+        }
+    }
+
+    #[test]
+    fn holder_guard_matches_the_heartbeat_tuple_9487() {
+        // Source oracle: the guard is the heartbeat statement's own
+        // claim tuple, and each holder verb's write carries it.
+        let hb = include_str!("heartbeat.sql");
+        for col in [
+            "status = 'claimed'",
+            "worker_id = ?5",
+            "claimed_at IS ?6",
+            "lane_id IS ?7",
+            "attempts = ?8",
+        ] {
+            assert!(hb.contains(col), "{col}");
+        }
+        for col in [
+            "status = 'claimed'",
+            "worker_id = ?",
+            "claimed_at IS ?",
+            "lane_id IS ?",
+            "attempts = ?",
+        ] {
+            assert!(HOLDER_GUARD.contains(col), "{col}");
+        }
+        assert_eq!(
+            HOLDER_GUARD.matches('?').count(),
+            holder_guard_args("w", &json!({})).len()
+        );
     }
 }
