@@ -16,8 +16,9 @@
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
 //!      read-only hosted-door probes at POST /door-health,
-//!      POST /door-list, and the POST /door-shadow dual-read
-//!      comparison for the CF-2b shadow comparison).
+//!      POST /door-list, the POST /door-shadow dual-read
+//!      comparison, and POST /door-timeline for per-task event
+//!      history in the CF-2b shadow comparison.
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
 //! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
@@ -65,9 +66,10 @@ struct TrustBundleClientReport {
 
 /// Authenticated client for the hosted queue door. This slice
 /// exposes diagnostic read-only probes (`/door-health`,
-/// `/door-list`, and the `/door-shadow` dual-read comparison)
-/// for the CF-2b shadow comparison; it deliberately does not switch
-/// the broker's authoritative store or forward queue writes.
+/// `/door-list`, the `/door-shadow` dual-read comparison, and
+/// `/door-timeline` per-task event history) for the CF-2b shadow
+/// comparison; it deliberately does not switch the broker's
+/// authoritative store or forward queue writes.
 struct HostedQueueDoor {
     base_url: String,
     token: String,
@@ -109,8 +111,8 @@ impl HostedQueueDoor {
     /// POST /v1/queue/<verb> with a Bearer service token and the
     /// original JSON request; the door's broker-envelope response is
     /// returned intact so a shadow comparison can diff it against the
-    /// Turso plane. Only `health` and `list` are exposed as broker
-    /// `/door-*` routes today.
+    /// Turso plane. Only `health`, `list`, `shadow`, and `timeline`
+    /// are exposed as broker `/door-*` routes today.
     fn forward(&self, verb: &str, request: &Value) -> Result<Value, String> {
         let url = format!("{}/v1/queue/{verb}", self.base_url);
         let mut response = self
@@ -1367,6 +1369,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             None => fail(3, "hosted queue door is not configured"),
         },
         "/door-shadow" => door_shadow(st, req),
+        "/door-timeline" => match &st.hosted_door {
+            Some(door) => door.forward("timeline", req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -2321,6 +2327,105 @@ mod tests {
             target: "/door-list".to_string(),
             headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
             body: br#"{"queue":"q"}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_timeline_forwards_authenticated_hosted_queue_contract() {
+        // Oracle (#14942 CF-2 shadow read): the broker forwards a
+        // read-only timeline probe as POST /v1/queue/timeline with a
+        // Bearer service token and the original JSON request; the
+        // door's broker-envelope response is returned intact so a
+        // shadow comparison can diff one task's event history
+        // against the Turso plane.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 23\r\nconnection: close\r\n\r\n{\"ok\":true,\"events\":[]}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .forward("timeline", &json!({"task_id": 23710}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/timeline HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("23710"),
+            "hosted request includes the requested task: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "events": []}));
+    }
+
+    #[test]
+    fn door_timeline_without_door_is_config_error() {
+        // Oracle: POST /door-timeline without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-timeline".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"task_id":23710}"#.to_vec(),
             transport: crate::uds_http::RequestTransport {
                 kind: crate::uds_http::RequestTransportKind::Uds,
                 peer_ip: None,
