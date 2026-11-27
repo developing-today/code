@@ -391,6 +391,9 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	} else if handled {
 		return r.CallAsk(ctx, id, target, targetTool, cc, merged)
 	}
+	if err := r.authorizeToolCall(ctx, server, tool); err != nil {
+		return nil, err
+	}
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
