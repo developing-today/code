@@ -687,6 +687,25 @@ fn audit_reports_hash_claim_lineage_and_note_tampering() {
 }
 
 #[test]
+fn audit_reports_pinned_replay_and_complete_unit_properties() {
+    // Oracle: the fixture audit advertises both remaining design properties
+    // independently, rather than silently treating its already-implemented
+    // correction/retirement checks as the whole conformance suite.
+    let f = fixture();
+    let actual = project_fixture(&f);
+    let report = audit_actual(&f, &actual);
+    let summary = report.summary();
+    assert!(
+        summary.contains("replay.pinned-inputs=PASS"),
+        "the report includes pinned replay status: {summary}"
+    );
+    assert!(
+        summary.contains("publication.complete-unit=PASS"),
+        "the report includes complete-unit status: {summary}"
+    );
+}
+
+#[test]
 fn audit_reports_exact_correction_clears_and_retirement_marker() {
     let f = fixture();
     let mut actual = project_fixture(&f);
