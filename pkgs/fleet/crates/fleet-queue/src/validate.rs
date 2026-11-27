@@ -1525,6 +1525,20 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     {
         errors.push("packet.manual_only: must be a boolean".to_string());
     }
+    // #9178 §1 (FDR-0001): the durable resume hint — the OpenCode
+    // session id a claim should continue. Absent/null means no hint
+    // (existing claim behavior, unchanged). When present it must be
+    // a non-empty string; the trimmed value is what the row stores,
+    // so a stored hint is always meaningful and NULL always means
+    // absent. No `ses_` format check here: the claim-wire slice
+    // checks existence against the server, where the id lives.
+    if let Some(value) = obj.get("resume_session_id").filter(|v| !v.is_null()) {
+        if !value.as_str().is_some_and(|s| !s.trim().is_empty()) {
+            errors.push(
+                "packet.resume_session_id: must be a non-empty string when present".to_string(),
+            );
+        }
+    }
     let Some(payload) = obj.get("payload").filter(|p| p.is_object()) else {
         return (
             vec!["packet.payload: required object (repo-task/v1 payload)".to_string()],
@@ -1757,6 +1771,12 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     json!({
         "queue": queue,
         "manual_only": packet.get("manual_only").and_then(Value::as_bool).unwrap_or(false),
+        "resume_session_id": packet.get("resume_session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(Value::String)
+            .unwrap_or(Value::Null),
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
         "body": packet.get("body").cloned().unwrap_or(Value::Null),
         "payload": payload,

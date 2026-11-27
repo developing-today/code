@@ -9,9 +9,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { blake3 as oneShot } from "../../../id/hosted-worker/src/blake3.ts";
+import { blake3 as oneShot } from "../../../hosted-primitives/src/blake3.ts";
 import { sha256Hex } from "../src/auth.ts";
-import { Blake3Hasher, hex } from "../src/blake3.ts";
+import { Blake3Hasher } from "../../../hosted-primitives/src/blake3.ts";
+import { bytesToHex } from "../../../hosted-primitives/src/encoding.ts";
 import { configFromEnv } from "../src/config.ts";
 import {
   CAPABILITY_TTL_MS,
@@ -44,7 +45,7 @@ function streamed(bytes: Uint8Array, piece: number): string {
   const hasher = new Blake3Hasher();
   for (let i = 0; i < bytes.length; i += piece) hasher.update(bytes.subarray(i, i + piece));
   assert.equal(hasher.length, bytes.length);
-  return hex(hasher.finalize());
+  return bytesToHex(hasher.finalize());
 }
 
 test("streaming BLAKE3 matches the official vectors", () => {
@@ -59,7 +60,7 @@ test("streaming BLAKE3 equals the one-shot hash at every chunk boundary and spli
   const sizes = [1, 63, 64, 65, 1023, 1024, 1025, 2047, 2048, 2049, 3072, 3073, 4096, 5121, 8193, 31745, 65536, 70000];
   for (const size of sizes) {
     const bytes = pattern(size);
-    const expected = hex(oneShot(bytes));
+    const expected = bytesToHex(oneShot(bytes));
     for (const piece of [1, 7, 64, 1000, 1024, 4096, size]) {
       assert.equal(streamed(bytes, piece), expected, `${size} bytes fed ${piece} at a time`);
     }
@@ -189,7 +190,7 @@ function uploadReq(token: string, upload: Upload): Request {
     scope: upload.scope ?? "shared:team",
     jurisdiction: upload.jurisdiction ?? "eu",
     tier: upload.tier ?? "standard",
-    digest: upload.digest ?? hex(oneShot(upload.bytes)),
+    digest: upload.digest ?? bytesToHex(oneShot(upload.bytes)),
     bytes_len: String(upload.bytesLen ?? upload.bytes.length),
   });
   return bearerReq(`/v1/kv/blobs?${q}`, token, {
@@ -218,7 +219,7 @@ test("the upload door verifies, publishes and returns the reference", async () =
   const bucket = new MemoryKvBlobBucket();
   const d = await deps({ primary, bucket });
   const bytes = pattern(70000);
-  const digest = hex(oneShot(bytes));
+  const digest = bytesToHex(oneShot(bytes));
   const res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d);
   assert.equal(res.status, 201, await res.clone().text());
   const body = (await res.json()) as Answer;
@@ -240,7 +241,7 @@ test("the upload door refuses bytes that differ from the assertion and keeps not
   const bucket = new MemoryKvBlobBucket();
   const d = await deps({ primary, bucket });
   const bytes = pattern(3000);
-  const wrongDigest = hex(oneShot(pattern(2999)));
+  const wrongDigest = bytesToHex(oneShot(pattern(2999)));
   let res = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes, digest: wrongDigest }), d);
   assert.equal(res.status, 422);
   assert.equal(((await res.json()) as { error: string }).error, "blob_digest_mismatch");
@@ -253,7 +254,7 @@ test("the upload door refuses bytes that differ from the assertion and keeps not
           scope: "shared:team",
           jurisdiction: "eu",
           tier: "standard",
-          digest: hex(oneShot(bytes)),
+          digest: bytesToHex(oneShot(bytes)),
           bytes_len: String(bytesLen),
         })}`,
         UPLOAD_TOKEN,
@@ -330,7 +331,7 @@ test("a purge removes the bytes of a fenced delete and the content publishes aga
   const bucket = new MemoryKvBlobBucket();
   const d = await deps({ primary, bucket });
   const bytes = pattern(3000);
-  const digest = hex(oneShot(bytes));
+  const digest = bytesToHex(oneShot(bytes));
   const key = publishedKey("eu", "standard", digest);
   assert.equal((await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).status, 201);
   await fencedDelete(primary, digest);
@@ -369,7 +370,7 @@ test("a purge never removes bytes a published row names, and a held purge refuse
   const bucket = new MemoryKvBlobBucket();
   const d = await deps({ primary, bucket });
   const bytes = pattern(4000);
-  const digest = hex(oneShot(bytes));
+  const digest = bytesToHex(oneShot(bytes));
   const key = publishedKey("eu", "standard", digest);
   assert.equal((await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d)).status, 201);
 
@@ -587,7 +588,7 @@ test("a capability that is tampered with or expired reads nothing", async () => 
   const { d, answer } = await uploadedAndHeaded(pattern(100));
   const minted = (await (await mint(d)).json()) as Minted;
   const url = new URL(minted.read_url, "https://fleet-hosted.test");
-  const other = hex(oneShot(pattern(99)));
+  const other = bytesToHex(oneShot(pattern(99)));
   for (const [name, value] of [
     ["digest", other],
     ["bytes_len", "99"],

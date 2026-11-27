@@ -192,10 +192,22 @@ def plan_actions(record, prior_sessions):
     escalated -> no action (the fleet has the case). Unbound
     stall -> "observed" (recorded, never driven)."""
     actions = []
+    round_no = record.get("round") if isinstance(record, dict) else None
     for sid, entry in sorted(error_stopped_sessions(record).items()):
         prior = prior_sessions.get(sid) or {}
         if prior.get("error_retried"):
             continue
+        # A failed retry backs off (#16066): it re-plans only once
+        # its cooldown round arrives, so a non-actionable recovery
+        # cannot consume intervention capacity every round.
+        next_round = prior.get("error_retry_next_round")
+        if (
+            isinstance(next_round, int)
+            and isinstance(round_no, int)
+            and round_no < next_round
+        ):
+            continue
+        failures = prior.get("error_retry_failures")
         actions.append(
             {
                 "session_id": sid,
@@ -203,6 +215,7 @@ def plan_actions(record, prior_sessions):
                 "task_id": entry["task_id"],
                 "outcome": entry.get("outcome"),
                 "binding": entry.get("binding") or {},
+                "error_retry_failures": failures if isinstance(failures, int) else 0,
             }
         )
     for sid, entry in sorted(confirmed_stalls(record).items()):
@@ -288,7 +301,17 @@ def split_plan(planned):
     burst is served before the sessions that consumed budget
     ahead of it, so overflow defers but never starves."""
     queue = [a for a in planned if a["kind"] in ("retry", "nudge", "escalate")]
-    queue.sort(key=lambda a: (a.get("nudges_sent") or 0, a["session_id"]))
+    # Executable stall work (nudges/escalations) is served before
+    # error-stopped retries (#16066): a retry carries no nudges_sent
+    # and previously sorted as least-served, so repeated recovery
+    # attempts could sort ahead of real nudges and starve them.
+    queue.sort(
+        key=lambda a: (
+            1 if a["kind"] == "retry" else 0,
+            a.get("nudges_sent") or 0,
+            a["session_id"],
+        )
+    )
     overflow_ids = {id(a) for a in queue[MAX_QUEUE_INTERVENTIONS_PER_ROUND:]}
     to_apply = [a for a in planned if id(a) not in overflow_ids]
     overflow = [a for a in planned if id(a) in overflow_ids]
@@ -380,6 +403,17 @@ def nudge_step(
                 and recover_error(sid, action["task_id"], action.get("binding") or {})
             )
             entry["error_retried"] = recovered
+            if not recovered:
+                # Backoff state (#16066): the failure count grows the
+                # cooldown (failures + 1 rounds) before plan_actions
+                # will re-plan this retry, so a persistently
+                # non-actionable recovery stops consuming the shared
+                # intervention cap while executable work proceeds.
+                failures = action.get("error_retry_failures")
+                failures = failures if isinstance(failures, int) else 0
+                entry["error_retry_failures"] = failures + 1
+                if isinstance(round_no, int):
+                    entry["error_retry_next_round"] = round_no + failures + 2
             outcomes.append(
                 dict(
                     action,

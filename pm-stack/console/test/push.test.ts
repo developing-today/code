@@ -475,6 +475,7 @@ describe("when a notification is owed", () => {
         agents: still,
         more: still,
         questions: still,
+        questionSets: still,
       };
       const live = (name: string) => ({ ttlMs: 1e12, load: async () => (now as Record<string, unknown>)[name] });
       const docs = new Docs({
@@ -623,6 +624,7 @@ test("a list of units that has stopped being read cannot make one failed run loo
           "asks",
           "questionCount",
           "questions",
+          "questionSets",
           "prs",
           "priorities",
           "done",

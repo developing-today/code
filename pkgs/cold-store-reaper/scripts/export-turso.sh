@@ -123,7 +123,14 @@
 # A database that fails any stage prints a loud ERROR line naming it;
 # the run continues with the remaining databases and exits non-zero
 # at the end if any database failed.
+# Arguments: none. Reject every argument before skip handling, lock
+# creation, network access or file writes.
 set -euo pipefail
+
+if (($# > 0)); then
+  printf 'export-turso.sh: unexpected argument: %s (usage: takes no arguments)\n' "$1" >&2
+  exit 2
+fi
 
 if [[ -z ${TURSO_PLATFORM_API_TOKEN:-} ]]; then
   echo "turso export: skipped (TURSO_PLATFORM_API_TOKEN not set)"

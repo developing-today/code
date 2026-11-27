@@ -108,9 +108,7 @@ export const WORKER_BINDINGS: WorkerBindingSpec[] = [
  * environment actually has, in roster order. A binding that is not
  * configured leaves its Worker out of the round — the deployed edge
  * declares them all; a local run may not. */
-export function workerCheckTargets(
-  resolve: (binding: string) => WorkerBinding | undefined,
-): WorkerCheckTarget[] {
+export function workerCheckTargets(resolve: (binding: string) => WorkerBinding | undefined): WorkerCheckTarget[] {
   const targets: WorkerCheckTarget[] = [];
   for (const spec of WORKER_BINDINGS) {
     const binding = resolve(spec.binding);
@@ -180,6 +178,23 @@ export function selfCheck(name: string, version: string | undefined, askedAt: nu
     via: "self",
     status: null,
   };
+}
+
+/** One scheduled round, without the runtime around it: resolve the
+ * configured bindings to targets, ask each, and add the edge's own
+ * record. The stateless part's `scheduled` handler runs this and
+ * hands the set to the object to keep; the console tests run it
+ * with stand-in bindings, which is the scheduled path exercised. */
+export async function runCheckRound(
+  resolve: (binding: string) => WorkerBinding | undefined,
+  edgeName: string,
+  version: string | undefined,
+  askedAt: number,
+): Promise<WorkerCheckSet> {
+  const set = await probeWorkers(workerCheckTargets(resolve), askedAt);
+  set.checks.push(selfCheck(edgeName, version, askedAt));
+  set.checks.sort((a, b) => a.name.localeCompare(b.name));
+  return set;
 }
 
 /** Read a stored set back, or null when what is stored is not one:

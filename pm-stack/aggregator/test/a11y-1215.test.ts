@@ -3,17 +3,23 @@
 // navigation model for the bar and the Pages dropdown, and captions /
 // scoped headers on every aggregator table.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PAGES } from "../src/pages.ts";
 import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
 import { FIXTURE_AA } from "../src/sources/fixtures.ts";
 import { addConsoleShortcut } from "../src/console-gate.ts";
 
+// The render layer is split across render.ts + render-*.ts (#13051); scan
+// the whole module set — the same code the single render.ts used to hold.
 const renderSource =
   readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8") +
   "\n" +
-  readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+  readdirSync(join(import.meta.dir, "..", "src"))
+    .filter((f) => f.startsWith("render") && f.endsWith(".ts"))
+    .sort()
+    .map((f) => readFileSync(join(import.meta.dir, "..", "src", f), "utf8"))
+    .join("\n");
 
 describe("light theme (#1215)", () => {
   const light = renderSource.slice(

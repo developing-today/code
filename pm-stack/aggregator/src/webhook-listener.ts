@@ -134,6 +134,14 @@ export interface MetadataWebhookDependencies {
   epicSlugs: (item: IngestionItem) => Promise<EpicSlugMap>;
   writeBack: (item: IngestionItem, body: string) => Promise<void>;
   enqueueTriage: (packet: Record<string, unknown>) => Promise<void>;
+  /**
+   * Re-read the live item before a body write-back (issue #16012). The
+   * snapshot above was captured before the awaited epic lookup, so a
+   * concurrent user edit would otherwise be overwritten by stale content.
+   * Return null when the item no longer exists (the write is skipped);
+   * throw when the re-read itself fails (the delivery retries).
+   */
+  readCurrent: (item: IngestionItem) => Promise<IngestionItem | null>;
   now?: () => string;
 }
 
@@ -182,16 +190,45 @@ export function createMetadataWebhookHandler(
 
     const now = (dependencies.now ?? (() => new Date().toISOString()))();
     try {
+      const epicSlugMap = await dependencies.epicSlugs(item);
       const outcome = runMetadataCheck(item, {
-        epicSlugs: await dependencies.epicSlugs(item),
+        epicSlugs: epicSlugMap,
         ingestedBy: WEBHOOK_INGESTOR,
         now,
       });
       if (outcome.kind === "needs-triage") {
         await dependencies.enqueueTriage(buildTriagePacket(outcome.evidence, WEBHOOK_INGESTOR, now));
-      } else {
-        storeOutcome(dependencies.db, outcome);
-        if (outcome.kind === "generated") await dependencies.writeBack(item, outcome.body);
+        return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
+      }
+      storeOutcome(dependencies.db, outcome);
+      if (outcome.kind === "generated") {
+        // Stale-snapshot protection (issue #16012): the check ran on the
+        // event payload captured before the epic lookup. Re-read the live
+        // item and compare body and version; when either moved, recompute
+        // from current data so a concurrent user edit is preserved instead
+        // of overwritten. A throw above (re-read failure) returns 500
+        // without writing, so GitHub retries the delivery.
+        const current = await dependencies.readCurrent(item);
+        if (current === null) {
+          // The item is gone (or unreadable as gone): the stored row
+          // stands, and there is nothing to write back to.
+          return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
+        }
+        if (current.body !== item.body || current.updatedAt !== item.updatedAt) {
+          const fresh = runMetadataCheck(current, {
+            epicSlugs: epicSlugMap,
+            ingestedBy: WEBHOOK_INGESTOR,
+            now,
+          });
+          if (fresh.kind === "needs-triage") {
+            await dependencies.enqueueTriage(buildTriagePacket(fresh.evidence, WEBHOOK_INGESTOR, now));
+          } else {
+            storeOutcome(dependencies.db, fresh);
+            if (fresh.kind === "generated") await dependencies.writeBack(current, fresh.body);
+          }
+          return Response.json({ accepted: true, outcome: fresh.kind }, { status: 202 });
+        }
+        await dependencies.writeBack(item, outcome.body);
       }
       return Response.json({ accepted: true, outcome: outcome.kind }, { status: 202 });
     } catch {

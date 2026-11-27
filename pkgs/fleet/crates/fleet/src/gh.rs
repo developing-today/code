@@ -92,7 +92,8 @@
 //! (piped), not streamed, because the failure text is what
 //! classifies a failover.
 //!
-//! Controls (environment):
+//! Controls (environment; each beats the same-named persistent
+//! setting in the fleet config file's `[gh]` table, code#10311):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
 //!   FLEET_GH_SHIM_ACTIVE set to 1 on every child `gh` fleet
 //!                       spawns: the gh-fleet shim's recursion
@@ -101,12 +102,14 @@
 //!                       re-entering a second fleet (#14650)
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
+//!                       (`[gh.owners] app` persists it)
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
-//!                       `personal`, `app:<owner>` (fleet App),
-//!                       `devtoday:<owner>`, `backup:<owner>`, or a
-//!                       configured `<slug>:<owner>` entry
+//!                       `personal`, built-in `app:`, `devtoday:`,
+//!                       `backup:` and configured `<slug>:` entries
+//!                       (`[gh] order` persists it)
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
+//!                       (`[gh.owners] devtoday` / `backup` persist them)
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
 //!   FLEET_GH_RAW=1      raw mode (same as a leading `--raw`):
 //!                       exec the real gh with ambient credentials,
@@ -772,8 +775,9 @@ fn owner_hint(args: &[String]) -> Option<String> {
     None
 }
 
-/// Per-App owner overrides, from the FLEET_GH_*_OWNERS environment
-/// variables; None for an App means its compiled-in defaults.
+/// Per-App owner overrides: env beats the fleet config file
+/// beats the compiled-in defaults. None for an App means its
+/// compiled-in defaults; Some(empty) disables that App's legs.
 #[derive(Default)]
 struct Owners {
     fleet: Option<Vec<String>>,
@@ -782,19 +786,14 @@ struct Owners {
 }
 
 impl Owners {
-    fn from_env() -> Owners {
-        let parse = |name: &str| {
-            std::env::var(name).ok().map(|list| {
-                list.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-        };
+    /// Resolve against the fleet config (code#10311 ask (a)): each
+    /// App's env variable wins when set, else the file's
+    /// `[gh.owners]` entry, else the compiled-in default (None).
+    fn from_config(config: &Config) -> Owners {
         Owners {
-            fleet: parse("FLEET_GH_APP_OWNERS"),
-            devtoday: parse("FLEET_GH_DEVTODAY_OWNERS"),
-            backup: parse("FLEET_GH_BACKUP_OWNERS"),
+            fleet: config.gh_owners_for("app"),
+            devtoday: config.gh_owners_for("devtoday"),
+            backup: config.gh_owners_for("backup"),
         }
     }
 
@@ -821,14 +820,17 @@ impl Owners {
 
 /// The rotation for one invocation: each App's owners with the
 /// hinted owner (if any) leading each App leg, then the personal
-/// token LAST. `FLEET_GH_ORDER` replaces the whole order when set.
+/// token LAST. The persistent `[gh] order` / `[gh.owners]`
+/// settings (code#10311 ask (a)) select the rotation; the
+/// `FLEET_GH_ORDER` / `FLEET_GH_*_OWNERS` env variables stay
+/// per-process overrides and win when set.
 /// Oracle: code#8887's rotation definition as extended by Drew
 /// 2026-11-12 (personal + all three fleet Apps' installations),
 /// hint-first per the installation-scope fact; personal moved last
 /// by Drew 2026-11-23 (code#13310).
 fn rotation(args: &[String], config: &Config) -> Vec<TokenSource> {
-    let order_env = std::env::var("FLEET_GH_ORDER").ok();
-    rotation_with_config(args, order_env.as_deref(), &Owners::from_env(), config)
+    let order = config.gh_rotation_order();
+    rotation_with_config(args, order.as_deref(), &Owners::from_config(config), config)
 }
 
 /// `rotation` with its environment inputs made explicit, so the
@@ -2074,9 +2076,9 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     // An explicit rotation is authoritative. Otherwise, when a call
     // names an owner outside an App's configured set, consult that
     // App's cached live installations and add its leg if present.
-    if std::env::var("FLEET_GH_ORDER").is_err() {
+    if config.gh_rotation_order().is_none() {
         if let Some(hint) = owner_hint(&call_args) {
-            let owners_env = Owners::from_env();
+            let owners_env = Owners::from_config(config);
             let mut discovered = Vec::new();
             for app in all_apps(config) {
                 if owners_env
@@ -2899,6 +2901,62 @@ mod tests {
             TokenSource::app(GhApp::Fleet, "dezren39").label(),
             "app:dezren39"
         );
+    }
+
+    // oracle: code#10311 ask (a) — the persistent `[gh] order` /
+    // `[gh.owners]` settings drive the rotation, and the
+    // `FLEET_GH_*` env variables stay per-process overrides.
+    // This is the only gh test that touches those env variables;
+    // no other test in this binary reads them, so the
+    // set/restore here cannot race a concurrent reader.
+    #[test]
+    fn rotation_reads_persistent_config_with_env_override() {
+        // SAFETY: this is the only test in the binary that reads
+        // these variables (all other rotation tests drive
+        // `rotation_with` with explicit inputs), so no concurrent
+        // reader can observe the transient values.
+        unsafe fn scrub(k: &str) {
+            unsafe { std::env::remove_var(k) };
+        }
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
+        let mut config = Config::default();
+        config.gh.order = Some(vec!["app:dezren39".to_string(), "personal".to_string()]);
+        config
+            .gh
+            .owners
+            .insert("backup".to_string(), vec!["layercloud".to_string()]);
+        let order = rotation(&[], &config);
+        assert_eq!(
+            order,
+            vec![
+                TokenSource::app(GhApp::Fleet, "dezren39"),
+                TokenSource::Personal,
+            ]
+        );
+        unsafe { std::env::set_var("FLEET_GH_ORDER", "personal") };
+        assert_eq!(rotation(&[], &config), vec![TokenSource::Personal]);
+        unsafe { std::env::remove_var("FLEET_GH_ORDER") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["layercloud".to_string()]));
+        assert_eq!(owners.fleet, None);
+        unsafe { std::env::set_var("FLEET_GH_BACKUP_OWNERS", "dezren39") };
+        let owners = Owners::from_config(&config);
+        assert_eq!(owners.backup, Some(vec!["dezren39".to_string()]));
+        for k in [
+            "FLEET_GH_ORDER",
+            "FLEET_GH_APP_OWNERS",
+            "FLEET_GH_DEVTODAY_OWNERS",
+            "FLEET_GH_BACKUP_OWNERS",
+        ] {
+            unsafe { scrub(k) };
+        }
     }
 
     #[test]

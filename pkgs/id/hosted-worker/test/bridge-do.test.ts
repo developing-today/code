@@ -11,7 +11,7 @@ import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
 import { BridgeStore, BRIDGE_SCHEMA } from "../src/bridge-store.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import type { CborValue } from "../src/canonical-cbor.ts";
+import type { CborValue } from "../../../hosted-primitives/src/canonical-cbor.ts";
 import {
   BridgeClient,
   decodeBatch,

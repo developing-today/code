@@ -120,6 +120,34 @@ describe("browser sessions (H3)", () => {
     ).toEqual({ ok: false, reason: "revoked_session" });
   });
 
+  test("revocation rejects the very next request and records session audit", async () => {
+    const store = new MemorySessions();
+    const events: Array<{ event: string; accountId: string; bindingId: string; sessionId: string }> = [];
+    let revoked = false;
+    const setCookie = await createBrowserSession(PRINCIPAL, {
+      store,
+      now: () => NOW,
+      audit: (event) => events.push(event),
+    });
+    const cookie = setCookie.split(";")[0]!;
+    const options = {
+      store,
+      now: () => NOW + 1_000,
+      resolveLivePrincipal: async () => (revoked ? null : PRINCIPAL),
+      audit: (event: (typeof events)[number]) => events.push(event),
+    };
+
+    expect((await authenticateBrowserSession(request(cookie), options)).ok).toBe(true);
+    revoked = true;
+    expect(await authenticateBrowserSession(request(cookie), options)).toEqual({
+      ok: false,
+      reason: "revoked_session",
+    });
+    expect(store.sessions.size).toBe(0);
+    expect(events.map(({ event }) => event)).toEqual(["login", "revoked"]);
+    expect(events[1]).toMatchObject({ accountId: "acct-1", bindingId: "bind-1" });
+  });
+
   test("logout deletes the server-side session and expires the cookie", async () => {
     const store = new MemorySessions();
     const setCookie = await createBrowserSession(PRINCIPAL, { store, now: () => NOW });

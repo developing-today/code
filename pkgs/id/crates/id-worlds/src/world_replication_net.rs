@@ -329,6 +329,86 @@ pub(crate) async fn send_snapshot(
     // its cursor and before the terminal commits it: the facts frame
     // is always sent (an empty one replaces the replica's facts with
     // none), the module only when the writer holds the active bytes.
+    let prev_frame_digest = send_sidecars_and_terminal(
+        send,
+        signing_key,
+        world_id,
+        source,
+        nonce,
+        snapshot.header_version,
+        cursor,
+        sidecars,
+        prev_frame_digest,
+    )
+    .await?;
+    Ok((cursor, snapshot.header_version, prev_frame_digest))
+}
+
+/// Send an incremental custody set (#13747 slice 1): the journal entries in
+/// `tail_bytes` as tail frames chained from `base`, then the sidecars and a
+/// terminal — the same frames a replica that had already reached `base`
+/// would receive, so a recipient verifies the set exactly like a snapshot
+/// batch and chains it to the snapshot (or incremental) set covering `base`.
+pub(crate) async fn send_incremental(
+    send: &mut impl FrameSink,
+    signing_key: &SigningKey,
+    world_id: &str,
+    source: [u8; 32],
+    nonce: [u8; 16],
+    header_version: u32,
+    base: ReplicationCursor,
+    tail_bytes: &[u8],
+    sidecars: &SnapshotSidecars,
+    prev_frame_digest: [u8; 32],
+) -> Result<(ReplicationCursor, [u8; 32])> {
+    let mut cursor = base;
+    let mut prev_frame_digest = prev_frame_digest;
+    if !tail_bytes.is_empty() {
+        let chunks = split_entry_payload(tail_bytes).context("split incremental journal tail")?;
+        for payload in chunks {
+            let envelope = ReplicationEnvelope::tail(
+                world_id,
+                source,
+                header_version,
+                nonce,
+                cursor,
+                prev_frame_digest,
+                payload,
+            )?;
+            cursor = envelope.cursor_after;
+            prev_frame_digest = write_envelope(send, signing_key, envelope).await?;
+        }
+    }
+    prev_frame_digest = send_sidecars_and_terminal(
+        send,
+        signing_key,
+        world_id,
+        source,
+        nonce,
+        header_version,
+        cursor,
+        sidecars,
+        prev_frame_digest,
+    )
+    .await?;
+    Ok((cursor, prev_frame_digest))
+}
+
+async fn send_sidecars_and_terminal(
+    send: &mut impl FrameSink,
+    signing_key: &SigningKey,
+    world_id: &str,
+    source: [u8; 32],
+    nonce: [u8; 16],
+    header_version: u32,
+    cursor: ReplicationCursor,
+    sidecars: &SnapshotSidecars,
+    mut prev_frame_digest: [u8; 32],
+) -> Result<[u8; 32]> {
+    // The sidecars ride inside the batch, after the journal reaches
+    // its cursor and before the terminal commits it: the facts frame
+    // is always sent (an empty one replaces the replica's facts with
+    // none), the module only when the writer holds the active bytes.
     let directory_chunks = if sidecars.directory.is_empty() {
         vec![Vec::new()]
     } else {
@@ -338,7 +418,7 @@ pub(crate) async fn send_snapshot(
         let envelope = ReplicationEnvelope::directory(
             world_id,
             source,
-            snapshot.header_version,
+            header_version,
             nonce,
             cursor,
             prev_frame_digest,
@@ -351,7 +431,7 @@ pub(crate) async fn send_snapshot(
             let envelope = ReplicationEnvelope::module(
                 world_id,
                 source,
-                snapshot.header_version,
+                header_version,
                 nonce,
                 cursor,
                 prev_frame_digest,
@@ -366,12 +446,12 @@ pub(crate) async fn send_snapshot(
         world_id,
         source,
         nonce,
-        snapshot.header_version,
+        header_version,
         cursor,
         prev_frame_digest,
     )
     .await?;
-    Ok((cursor, snapshot.header_version, prev_frame_digest))
+    Ok(prev_frame_digest)
 }
 
 async fn send_tail(

@@ -437,6 +437,20 @@ describe("events audit v2 (#3322 slice A)", () => {
     ).rejects.toThrow("asserted");
   });
 
+  test("an over-limit source.link is refused before anything is persisted (#16069)", async () => {
+    const { store } = tmpStore();
+    // Oracle: the 500-char schema maximum is accepted; 501 is
+    // refused, and the refusal journals nothing.
+    const boundary = `https://example.invalid/${"x".repeat(500 - "https://example.invalid/".length)}`;
+    expect(boundary).toHaveLength(500);
+    const ok = await store.record({ ...base, source: { identity: "dashboard", link: boundary } });
+    expect(ok.source.link).toBe(boundary);
+    await expect(store.record({ ...base, source: { identity: "dashboard", link: `${boundary}x` } })).rejects.toThrow(
+      "source.link",
+    );
+    expect(await store.list()).toHaveLength(1);
+  });
+
   test("v1 store files remain readable and migrate with deterministic ids", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-events-v1-"));
     const file = join(dir, "events.json");

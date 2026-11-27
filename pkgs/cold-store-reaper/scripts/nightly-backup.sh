@@ -59,7 +59,14 @@
 #   EXPORT_TURSO_BIN      optional; the export-turso script
 #                         (default: scripts/export-turso.sh next to
 #                         this script). Test seam.
+# Arguments: none. Reject every argument before creating the run log
+# directory or running backup steps.
 set -uo pipefail
+
+if (($# > 0)); then
+  printf 'nightly-backup.sh: unexpected argument: %s (usage: takes no arguments)\n' "$1" >&2
+  exit 2
+fi
 
 # run_step <name> <command...>: run one step, record (never propagate)
 # its failure, and print the per-step outcome.

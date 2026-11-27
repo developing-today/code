@@ -15,7 +15,9 @@ import { loadConfig } from "../src/config.ts";
 import { liveSource } from "../src/sources/live.ts";
 import {
   createHttpProjectorReader,
+  createStoreProjectorReader,
   type ProjectorReader,
+  type ProjectorStoreReaderDeps,
 } from "../src/sources/projector.ts";
 
 const FEED = {
@@ -163,6 +165,75 @@ describe("projector reader seam (#8570)", () => {
     const items = await src.items(["example-org/example-repo#42"]);
     expect(items.get("example-org/example-repo#42")?.resolution).toBe("projector");
     expect(src.provenance().items).toBe("live (projector)");
+  });
+
+  test("a store-backed reader maps projector rows and preserves fail-soft semantics", async () => {
+    const itemRef = "example-org/example-repo#42";
+    const store: ProjectorStoreReaderDeps = {
+      getItems: async (refs) =>
+        refs.map((ref) => ({
+          ref,
+          repo: "example-org/example-repo",
+          number: 42,
+          kind: "pr" as const,
+          url: "https://github.com/example-org/example-repo/pull/42",
+          title: "Stored item",
+          state: "closed" as const,
+          draft: 0,
+          merged: 1,
+          author: "store",
+          labels: '["phase-3"]',
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-02T00:00:00Z",
+        })),
+      getComments: async (refs) =>
+        refs.map((ref) => ({
+          id: `${ref}:comment`,
+          ref,
+          kind: "issue_comment" as const,
+          author: "store",
+          body: "stored comment",
+          created_at: "2026-01-02T00:00:00Z",
+          url: "https://github.com/example-org/example-repo/issues/42#issuecomment-1",
+          deleted: 0,
+        })),
+      getLinks: async () => [
+        {
+          subject: "kaneo:board-item",
+          ref: itemRef,
+          relation: "implements",
+          note: null,
+          created_by: null,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          subject: "kaneo:board-item",
+          ref: "bad-ref",
+          relation: "tracks",
+          note: null,
+          created_by: null,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    const reader = createStoreProjectorReader(store);
+
+    expect((await reader.items([itemRef]))?.get(itemRef)).toMatchObject({
+      state: "merged",
+      labels: ["phase-3"],
+      author: "store",
+    });
+    expect(await reader.comments([itemRef])).toMatchObject([{ id: `${itemRef}:comment`, body: "stored comment" }]);
+    expect(await reader.latestComments([itemRef])).toMatchObject([{ id: `${itemRef}:comment` }]);
+    expect(await reader.links("kaneo:board-item")).toEqual([{ ref: itemRef, relation: "implements" }]);
+
+    const failed = createStoreProjectorReader({
+      ...store,
+      getItems: async () => {
+        throw new Error("store unavailable");
+      },
+    });
+    await expect(failed.items([itemRef])).resolves.toBeNull();
   });
 
   test("the HTTP factory keeps the fail-soft contract: a dead projector reads as null", async () => {

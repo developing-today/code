@@ -61,9 +61,15 @@ loss, not from when work got convenient.
 
 1. **Declare.** Note the loss time and scope (whole host / single store).
    Fence the old writer if the old host is reachable at all: stop
-   `pm-stack-kaneo-1`, `pm-grist`, `pm-pad`. If unreachable, state that —
-   an unreachable host is fenced by definition, and it must be fenced
-   (services disabled) before it is allowed to rejoin later.
+   `pm-stack-kaneo-1`, `pm-stack-postgres-1`, `pm-grist`, `pm-pad`, and
+   stop the Kaneo manager user service and its retry timer
+   (`systemctl --user stop pm-kaneo.service pm-kaneo.timer`) — the
+   manager runs `deploy.sh` (`compose up`) and revives stopped
+   containers on its next run or timer elapse. Verify with
+   `pm-stack/scripts/fence-check.sh` (FENCED, exit 0). If unreachable,
+   state that — an unreachable host is fenced by definition, and it
+   must be fenced (services disabled) before it is allowed to rejoin
+   later.
 2. **Provision the restore host.** Any clean host with Docker + this repo:
    clone `developing-today/code`, check out the commit the plan names.
 3. **Kaneo.** Restore the `kaneo` database into the target Postgres

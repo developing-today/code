@@ -1,16 +1,22 @@
 // BLAKE3 (hash mode, 32-byte output) in pure TypeScript.
 //
-// The bridge needs operation IDs, and an operation ID is BLAKE3 over
-// the received event bytes (pkgs/id chain.rs / p2panda-core). Workers
-// have no BLAKE3 in WebCrypto and this package carries no runtime
-// dependencies, so the hash is implemented here from the BLAKE3
+// Shared by both hosted Workers (G2 of #9085). Unifies the two copies
+// this replaces: the one-shot hash from `pkgs/id/hosted-worker`
+// (operation IDs over received event bytes, per p2panda-core) and the
+// incremental {@link Blake3Hasher} from `pkgs/fleet/hosted-worker`
+// (the kv blob upload door recomputes length and BLAKE3-256 on receipt
+// in chunks, holding at most one 1024-byte chunk plus the chaining
+// stack). Workers have no BLAKE3 in WebCrypto and this package carries
+// no runtime dependencies; the hash is implemented here from the BLAKE3
 // reference specification: the compression function over the SHA-256
 // IV with the message permutation, 1024-byte chunks, and the binary
 // tree of parent nodes keyed by the chunk counter.
 //
 // Oracle: the official BLAKE3 test vectors (input byte i = i mod 251),
 // cross-checked against the Rust `blake3` crate in
-// pkgs/id/tests/bridge_fixtures.rs; see test/bridge-blake3.test.ts.
+// pkgs/id/tests/bridge_fixtures.rs; see
+// pkgs/id/hosted-worker/test/bridge-blake3.test.ts and the shared
+// fixture pkgs/id/tests/fixtures/hosted-second-version-g1.json (G1).
 
 const IV = new Uint32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -166,7 +172,13 @@ function parentOutput(leftCv: Uint32Array, rightCv: Uint32Array): Output {
   const block = new Uint8Array(BLOCK_LEN);
   wordsToBytes(leftCv, block, 0, 8);
   wordsToBytes(rightCv, block, 32, 8);
-  return { cv: new Uint32Array(IV), block, counter: 0n, blockLen: BLOCK_LEN, flags: PARENT };
+  return {
+    cv: new Uint32Array(IV),
+    block,
+    counter: 0n,
+    blockLen: BLOCK_LEN,
+    flags: PARENT,
+  };
 }
 
 /** BLAKE3 of `data`, 32 bytes. */
@@ -196,4 +208,61 @@ export function blake3(data: Uint8Array): Uint8Array {
     output = parentOutput(left, outputChainingValue(output));
   }
   return outputRootBytes(output, 32);
+}
+
+/** An incremental BLAKE3 hasher: feed bytes with `update`, read the
+ * 32-byte hash with `finalize`. `finalize` agrees with {@link blake3}
+ * on every input; the streaming form exists so large uploads hash in
+ * bounded memory. */
+export class Blake3Hasher {
+  private readonly pending = new Uint8Array(CHUNK_LEN);
+  private pendingLen = 0;
+  private chunkCounter = 0n;
+  private readonly cvStack: Uint32Array[] = [];
+  private total = 0;
+
+  /** Bytes fed so far. */
+  get length(): number {
+    return this.total;
+  }
+
+  update(data: Uint8Array): void {
+    let offset = 0;
+    while (offset < data.length) {
+      // A full pending chunk is only known not to be the last one once
+      // more bytes arrive, so it is folded into the tree here.
+      if (this.pendingLen === CHUNK_LEN) {
+        this.pushChunk(outputChainingValue(chunkOutput(this.pending, this.chunkCounter)));
+        this.pendingLen = 0;
+      }
+      const take = Math.min(CHUNK_LEN - this.pendingLen, data.length - offset);
+      this.pending.set(data.subarray(offset, offset + take), this.pendingLen);
+      this.pendingLen += take;
+      offset += take;
+    }
+    this.total += data.length;
+  }
+
+  private pushChunk(chunkCv: Uint32Array): void {
+    let cv = chunkCv;
+    this.chunkCounter += 1n;
+    let completed = this.chunkCounter;
+    while (completed % 2n === 0n) {
+      const left = this.cvStack.pop();
+      if (!left) throw new Error("blake3 tree stack underflow");
+      cv = outputChainingValue(parentOutput(left, cv));
+      completed /= 2n;
+    }
+    this.cvStack.push(cv);
+  }
+
+  /** The 32-byte hash of everything fed so far. The hasher can keep
+   * taking bytes afterwards. */
+  finalize(): Uint8Array {
+    let output = chunkOutput(this.pending.subarray(0, this.pendingLen), this.chunkCounter);
+    for (let i = this.cvStack.length - 1; i >= 0; i--) {
+      output = parentOutput(this.cvStack[i], outputChainingValue(output));
+    }
+    return outputRootBytes(output, 32);
+  }
 }

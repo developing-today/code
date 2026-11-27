@@ -20,8 +20,8 @@ describe("metadata-sweeper database startup (#13355)", () => {
     try {
       const dbPath = join(root, "new", "nested", "pm-metadata.sqlite");
       const fakeFleet = await makeFakeFleet(root);
-      execFileSync(process.execPath, ["run", script, "--repo", "example/repo", "--db", dbPath], {
-        env: { ...process.env, FLEET_BIN: fakeFleet },
+      execFileSync(process.execPath, ["run", script, "--repo", "example/repo"], {
+        env: { ...process.env, FLEET_BIN: fakeFleet, FLEET_METADATA_DB: dbPath },
         stdio: "pipe",
       });
       expect(existsSync(dbPath)).toBe(true);

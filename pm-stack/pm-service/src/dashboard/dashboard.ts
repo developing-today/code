@@ -11,6 +11,7 @@
  *   /board/<id>       one board's items
  *   /item/<ref>       item detail with the genealogy header + sentence
  *   /roadmap          per-project roadmap + the overall priorities view
+ *   /program          Epic groups and unassigned pool rows with snapshot freshness
  *   /releases         milestone snapshots and close-out cards
  *   /attention        needs-attention: open reconcile findings and the
  *                     collector-checked invariants over the snapshots
@@ -32,6 +33,7 @@ import {
   loadRoadmapRowsAsync,
 } from "../read-api/async-store.ts";
 import type { BoardSummary } from "../read-api/store.ts";
+import { freshnessFromSummaries, programFromPool, type ProgramView } from "../read-api/waves.ts";
 
 export interface DashboardDeps {
   db: AsyncSqlDb;
@@ -151,6 +153,7 @@ const itemLink = (ref: string, text = ref) => `<a href="${e(itemHref(ref))}">${e
 const NAV: [string, string][] = [
   ["/", "Boards"],
   ["/roadmap", "Roadmap"],
+  ["/program", "Program"],
   ["/releases", "Releases"],
   ["/attention", "Needs attention"],
   ["/quota", "Quota"],
@@ -296,6 +299,33 @@ export function renderRoadmap(rows: readonly RoadmapRow[], renderedAt: string): 
   return page("Roadmap", `<h2>Overall priorities</h2>${priorities}<h2>By project</h2>${projects}`, renderedAt);
 }
 
+/** Same lossless Epic partition and freshness derivation as /api/program.json.
+ * Editorial program and health data are deliberately not inferred from pool rows. */
+export function renderProgram(program: ProgramView, boards: readonly BoardSummary[], renderedAt: string): Response {
+  const table = (items: readonly ProjectPoolItem[], empty: string) => items.length
+    ? `<table><thead><tr><th>Item</th><th>Title</th><th>Board</th><th>Status</th><th>State</th></tr></thead><tbody>${items.map((item) =>
+      `<tr><td>${itemLink(item.ref)}</td><td>${e(item.title)}</td><td>${e(item.boardId ?? "")}</td><td>${e(item.status ?? "")}</td><td>${e(item.state)}</td></tr>`,
+    ).join("")}</tbody></table>`
+    : `<p class="muted">${e(empty)}</p>`;
+  const groups = program.epics.length
+    ? program.epics.map((group) => `<section><h2>${itemLink(group.ref)}</h2>
+<h3>Epic headers</h3>${table(group.headers, "No Epic header in the tenant pool.")}
+<h3>Items</h3>${table(group.items, "No child items in the tenant pool.")}</section>`).join("")
+    : '<p class="muted">No Epic groups in the tenant pool.</p>';
+  const freshness = freshnessFromSummaries(boards);
+  const latest = freshness.latestSnapshotAt
+    ? `Latest snapshot: ${e(freshness.latestSnapshotAt)}`
+    : "No snapshots have landed yet.";
+  const snapshots = boards.length
+    ? `<ul>${boards.map(({ board, snapshot }) => `<li>${e(board.id)}: ${snapshot
+      ? `${e(snapshot.snapshotId)} · ${e(snapshot.generatedAt)} · ${e(snapshot.writer)} epoch ${e(snapshot.epoch)}`
+      : "no snapshot yet"}</li>`).join("")}</ul>`
+    : '<p class="muted">The registry has no boards.</p>';
+  return page("Program", `<p>Epic groups from the Project pool. Editorial program and health summaries are not in this projection.</p>
+<p class="muted">${latest}</p>${snapshots}${groups}
+<h2>Unassigned</h2>${table(program.unassigned, "No unassigned items.")}`, renderedAt);
+}
+
 export function renderReleases(releases: readonly ReleaseSnapshot[], renderedAt: string): Response {
   if (releases.length === 0)
     return page("Releases", '<p class="muted">No milestones in the tenant store.</p>', renderedAt);
@@ -372,6 +402,7 @@ export function createDashboardHandler(deps: DashboardDeps): (req: Request) => P
     const owned =
       path === "/" ||
       path === "/roadmap" ||
+      path === "/program" ||
       path === "/releases" ||
       path === "/attention" ||
       path === "/quota" ||
@@ -383,6 +414,10 @@ export function createDashboardHandler(deps: DashboardDeps): (req: Request) => P
     if (path === "/") return renderBoards(await loadBoardSummariesAsync(deps.db), at);
     if (path === "/roadmap")
       return renderRoadmap(await loadRoadmapRowsAsync(deps.db, await loadPoolAsync(deps.db)), at);
+    if (path === "/program") {
+      const [boards, pool] = await Promise.all([loadBoardSummariesAsync(deps.db), loadPoolAsync(deps.db)]);
+      return renderProgram(programFromPool(pool), boards, at);
+    }
     if (path === "/releases") {
       return renderReleases(await loadReleaseSnapshotsAsync(deps.db, await loadPoolAsync(deps.db)), at);
     }

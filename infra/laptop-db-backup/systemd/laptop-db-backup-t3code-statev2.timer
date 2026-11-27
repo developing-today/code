@@ -1,0 +1,10 @@
+[Unit]
+Description=t3code statev2.sqlite local DB to Turso home import (weekly, mesh class E)
+
+[Timer]
+OnCalendar=Sun *-*-* 07:40:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

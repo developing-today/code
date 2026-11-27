@@ -3433,7 +3433,7 @@ class TestTursoExportScript(unittest.TestCase):
         )
         self.stub.chmod(0o755)
 
-    def run_export(self, with_token=True, extra_env=None):
+    def run_export(self, with_token=True, extra_env=None, args=()):
         script = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
         env = dict(os.environ)
         env.pop("TURSO_PLATFORM_API_TOKEN", None)
@@ -3456,13 +3456,30 @@ class TestTursoExportScript(unittest.TestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            ["bash", str(script)],
+            ["bash", str(script), *args],
             env=env,
             capture_output=True,
             text=True,
             timeout=120,
             check=False,
         )
+
+    def test_arguments_are_rejected_before_skip_lock_or_network(self):
+        work = self.tmp / "invalid-args-work"
+        for arg in ("--unexpected", "stray"):
+            for with_token in (False, True):
+                with self.subTest(arg=arg, with_token=with_token):
+                    proc = self.run_export(
+                        with_token=with_token,
+                        extra_env={"EXPORT_TURSO_WORK_DIR": str(work)},
+                        args=(arg,),
+                    )
+                    self.assertEqual(proc.returncode, 2, proc.stderr)
+                    self.assertIn(arg, proc.stderr)
+                    self.assertIn("usage: takes no arguments", proc.stderr)
+                    self.assertFalse(self.calls_log.exists())
+                    self.assertFalse(work.exists())
+                    self.assertFalse(Path(f"{work}.lock").exists())
 
     def test_files_every_database(self):
         proc = self.run_export()

@@ -38,7 +38,9 @@ class QuotaRecorderPipelineTests(unittest.TestCase):
             quota_recorder.subprocess,
             "run",
             side_effect=[
-                subprocess.CompletedProcess(["fleet", "secrets"], 0, "test-token\n", ""),
+                subprocess.CompletedProcess(
+                    ["fleet", "secrets"], 0, "test-token\n", ""
+                ),
                 subprocess.CompletedProcess(
                     ["curl"], curl_status, curl_stdout, curl_stderr
                 ),
@@ -61,7 +63,12 @@ class QuotaRecorderPipelineTests(unittest.TestCase):
             {"results": SUCCESS_RESPONSE["results"] + [SUCCESS_RESPONSE["results"][1]]},
             {"results": [SUCCESS_RESPONSE["results"][0], {"type": "ok"}]},
             {"results": [SUCCESS_RESPONSE["results"][0], {"type": "unexpected"}]},
-            {"results": [SUCCESS_RESPONSE["results"][0], {"type": "ok", "response": {"type": "execute"}}]},
+            {
+                "results": [
+                    SUCCESS_RESPONSE["results"][0],
+                    {"type": "ok", "response": {"type": "execute"}},
+                ]
+            },
             {"results": [None, SUCCESS_RESPONSE["results"][1]]},
         ]
         for response in incomplete:

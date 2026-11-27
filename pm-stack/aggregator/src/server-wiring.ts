@@ -11,6 +11,7 @@ import { EventsStore, emitEvent } from "./events.ts";
 import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
 import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
+import { createPmCoreProjectorReader } from "./pm-core-projector-reader.ts";
 import { IngestionStore, WatchdogEpisodeStabilizer, ingestActivity, type ActivitySourceStatus } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
@@ -50,6 +51,7 @@ import { type CommentFormOpts } from "./render.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
+import { createHttpProjectorReader } from "./sources/projector.ts";
 import { createDashboardResponseDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
@@ -338,6 +340,11 @@ export function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        projector:
+          createPmCoreProjectorReader(
+            process.env,
+            cfg.projector.baseUrl ? createHttpProjectorReader(cfg.projector.baseUrl) : undefined,
+          ) ?? undefined,
         onLaptopUnreachable: (detail) => {
           fireOpenCodeWorkingHook("aggregator-tick", detail);
         },

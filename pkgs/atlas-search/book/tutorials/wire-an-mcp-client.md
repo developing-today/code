@@ -21,7 +21,7 @@ The Worker itself holds no corpus credentials. On a cache miss it forwards the s
 
 ## Step 1 — Present the gate token
 
-Every gated Worker route — `/mcp`, `/v1/search`, `/v1/cache/inspect`, and `/v1/cache/purge` — checks the same shared secret. Its name on the Worker side is `GATE_TOKEN`. No token value appears in this book, in the mcpx configuration, or in the Nix store.
+REST/admin routes use the shared `GATE_TOKEN`. MCP uses that token only when the optional `AGENT_TOKENS` secret is not configured; with the map configured, `/mcp` accepts only the mapped per-agent tokens. No token value appears in this book, in the mcpx configuration, or in the Nix store.
 
 Present it on every request as an exact bearer header:
 
@@ -36,7 +36,7 @@ Where a client keeps the token depends on the client:
 - A direct HTTP client keeps it in its own secret store or environment, never in a checked-in config file, a prompt, or a tool argument.
 - The known production client, the laptop's mcpx daemon, keeps it in the daemon's environment. The mcpx configuration contains only an environment expansion (next step); the daemon expands it at runtime from the environment supplied through its environment file, so the value never lands in the rendered configuration or the Nix store. On the client side that expansion is named `ATLAS_SEARCH_GATE_TOKEN` in the mcpx settings — it is the client-side name for the same gate token, not a second credential.
 
-There are no per-route, per-caller, or per-agent tokens on this endpoint. A valid gate check yields a boolean and nothing else, so every MCP caller is the same identity to the Worker (see Step 5 for what that identity can see).
+When `AGENT_TOKENS` is configured, each MCP caller must present its own mapped bearer token; the Worker derives the audit identity from that credential, never from a client name or header. The current laptop mcpx example still uses `ATLAS_SEARCH_GATE_TOKEN`, so it resolves to the legacy `hosted-per-user` identity unless the server configuration is updated alongside the Worker secret. Authenticated identity is currently for audit only; the backend ceiling and disclosure context remain shared (see Step 5).
 
 ## Step 2 — Register the server in mcpx as the remote `atlas` server
 
@@ -132,7 +132,7 @@ No environment variable, request field, or header can change either value. Neith
 - The agent can see `shareable` and `personal` material, with sensitivity and disclosure filters applied inside the branch queries, before any ranking — not filtered out of a finished ranking afterwards.
 - It cannot see `local-only` or `secret-bearing` material at all through this surface: such chunks are not returned, counted, or down-ranked into visibility. Content marked `excluded_personal_life` is ineligible in every context.
 - The pin is enforced twice. The Worker states `personal` and `hosted-per-user` on every call to the laptop service, whose `cf-worker` client cap is also `personal`; then, before anything is cached, the Worker verifies the service reported `effective_ceiling` as `personal` and refuses with `502` if it did not. A result computed above `personal` can therefore never enter the cache. The ceiling and context are also fields of the cache key itself.
-- All MCP callers share this one hosted identity. Per-agent identity stamping, per-agent ceilings, corpus scoping, and a query audit log are later slices of #8625 and are deliberately not improvised in the current endpoint. If an agent needs a higher ceiling, the answer is a different, named surface with its own cap — for example a local client identity on the laptop service — not a flag on this one. See [Sensitivity tiers and client ceilings](../concepts/sensitivity.md).
+- With `AGENT_TOKENS`, the Worker can distinguish callers for query audit logs; the shipped laptop mcpx wiring still uses the legacy shared token unless separately configured. That identity does not yet change the outbound hosted context or ceiling, and corpus scoping remains unimplemented. If an agent needs a higher ceiling, the answer is a different, named surface with its own cap — for example a local client identity on the laptop service — not a flag on this one. See [Sensitivity tiers and client ceilings](../concepts/sensitivity.md).
 
 ## Step 6 — Verify with `/v1/cache/inspect`
 

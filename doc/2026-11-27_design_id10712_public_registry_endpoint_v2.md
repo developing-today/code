@@ -116,7 +116,7 @@ Derived mechanically from announcement fields; the endpoint holds no
 per-world server-side state:
 
 - **Expired is void.** `live_entries(now)` (`now <
-  expires_at`) is the only liveness gate. An expired announcement
+expires_at`) is the only liveness gate. An expired announcement
   does not appear softened, greyed, or "possibly stale" — it does
   not appear. Silence is self-cleaning (v1 §9.1) and the endpoint
   must not second-guess it.
@@ -146,20 +146,20 @@ per-client state). Exactly three qualify:
 1. **Curator inclusion, attributed by signature.** "Registry R,
    key K, includes this world under policy P" — verifiable by
    anyone holding R's list. Gaming it requires persuading (or
-   becoming) a curator whose key readers trust; that cost *is* the
+   becoming) a curator whose key readers trust; that cost _is_ the
    signal. The endpoint attributes every row to every subscribed
    list that carries it (§6), so inclusion is always somebody's
    stated opinion, never the endpoint's.
 2. **Tombstone-history transparency.** Delistings propagate with
    reasons (`Tombstone { world_id, removed_at, reason,
-   registry_seq }`). A world delisted-and-relisted, or delisted by
+registry_seq }`). A world delisted-and-relisted, or delisted by
    one curated registry while kept by another, shows that history.
    Gaming it (delist to suppress) fails openly: the tombstone is
    signed by the delister and the world remains listed wherever
    else it is listed.
 3. **Republication continuity.** The `seq` chain and `issued_at`
    freshness of a world's announcements, per §4. Faking liveness
-   requires the world key — which is to say, requires *being* the
+   requires the world key — which is to say, requires _being_ the
    world. Self-attested uptime is weak evidence of quality and is
    presented as exactly that: continuity, not endorsement.
 
@@ -175,7 +175,7 @@ them, which would centralize discovery around whoever already has
 traffic. This step was charged to overturn the exclusion with a
 gaming-resistant design or uphold it; it upholds it. Revisit only
 with a signal that is verifiable from lists alone — e.g. a future
-design where inclusion *policies* themselves become comparable
+design where inclusion _policies_ themselves become comparable
 objects, which is a new design step, not a parameter tweak.
 
 ## 6. Multi-registry disagreement semantics
@@ -266,18 +266,18 @@ is the only question the protocol asks.
 
 ## 10. Dependencies — named, not assumed (fresh states, 2026-11-27)
 
-| Dependency                    | State              | Bearing on v2                                                                                                                                     |
-| ----------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #812 world directory feed     | CLOSED (not built) | Still not built; the announcement remains the primitive (§2 of v1)                                                                                |
-| #1061 F12.4 provider registry | CLOSED             | Manifest/capability pattern stays a closed input                                                                                                  |
-| #1067 F12.10 fair scheduling  | OPEN               | Hosted-operation concern: governs the endpoint's operation (rate limits, abuse), not its protocol (§9)                                            |
-| #1068 F12.14 portals          | CLOSED 2026-11-16 | Mutual-grant messaging exists; a registry inclusion never overrides a portal grant (v1 §8 holds unchanged)                                        |
-| #1069 F12.17 trust            | CLOSED             | Signature-vs-admin-list pattern generalized per-registry in v1; v2's per-key attribution is the same pattern at display time                        |
-| #6283 hosted worlds v1        | CLOSED             | Predecessor step; the worlds this endpoint lists are the worlds that step hosts                                                                   |
-| #10707 registry publisher     | CLOSED             | `registry.rs`: list format, publisher, mirror import, tombstones — the objects §3–§8 query                                                        |
-| #10709 client settings        | CLOSED (#14671, #15694) | `discovery_client.rs`: subscription setting + visibility scopes — the reader side the endpoint mirrors                                        |
-| #10708 resolver               | CLOSED             | `discovery_resolver.rs`: `search`, `arbitrate`, `registry_offer` — the functions the endpoint reuses, not reimplements                            |
-| `pkgs/pkarr-worker`           | operational        | The pkarr layer under §4's freshness story                                                                                                        |
+| Dependency                    | State                   | Bearing on v2                                                                                                                |
+| ----------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| #812 world directory feed     | CLOSED (not built)      | Still not built; the announcement remains the primitive (§2 of v1)                                                           |
+| #1061 F12.4 provider registry | CLOSED                  | Manifest/capability pattern stays a closed input                                                                             |
+| #1067 F12.10 fair scheduling  | OPEN                    | Hosted-operation concern: governs the endpoint's operation (rate limits, abuse), not its protocol (§9)                       |
+| #1068 F12.14 portals          | CLOSED 2026-11-16       | Mutual-grant messaging exists; a registry inclusion never overrides a portal grant (v1 §8 holds unchanged)                   |
+| #1069 F12.17 trust            | CLOSED                  | Signature-vs-admin-list pattern generalized per-registry in v1; v2's per-key attribution is the same pattern at display time |
+| #6283 hosted worlds v1        | CLOSED                  | Predecessor step; the worlds this endpoint lists are the worlds that step hosts                                              |
+| #10707 registry publisher     | CLOSED                  | `registry.rs`: list format, publisher, mirror import, tombstones — the objects §3–§8 query                                   |
+| #10709 client settings        | CLOSED (#14671, #15694) | `discovery_client.rs`: subscription setting + visibility scopes — the reader side the endpoint mirrors                       |
+| #10708 resolver               | CLOSED                  | `discovery_resolver.rs`: `search`, `arbitrate`, `registry_offer` — the functions the endpoint reuses, not reimplements       |
+| `pkgs/pkarr-worker`           | operational             | The pkarr layer under §4's freshness story                                                                                   |
 
 ## 11. What breaks first — and the v2 mitigation for each
 
@@ -314,15 +314,15 @@ is the only question the protocol asks.
 
 ## 12. Open choices — decided here with defaults
 
-| Choice (deferred by #6288) | v2 decision |
-| --------------------------- | ----------- |
-| Query-layer scope | General tool over subscribed list copies; text/tag/occupancy filters, conjunctive; fixed name-then-key ordering (§3) |
-| Soft demotion before expiry | No — hard expiry only; age and heartbeat continuity displayed as facts (§4) |
-| Signal set | Curator inclusion + tombstone transparency + republication continuity; popularity/ranking excluded, v1 §12 upheld (§5) |
-| Multi-registry disagreement | Union of worlds, one row per world, per-registry attribution; tombstones never veto (§6) |
-| Listing honesty | Mandatory key provenance, lookalike flags, tags badged as hints, policy one action away (§7) |
-| Mirror presentation | No protocol distinction; attribute by signing key; origin declared in policy by convention (§8) |
-| First instance | Read-only HTTP over our curated subscription + same-code CLI; operation (limits/abuse) is the hosted step's, with #1067 named (§9) |
+| Choice (deferred by #6288)  | v2 decision                                                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Query-layer scope           | General tool over subscribed list copies; text/tag/occupancy filters, conjunctive; fixed name-then-key ordering (§3)               |
+| Soft demotion before expiry | No — hard expiry only; age and heartbeat continuity displayed as facts (§4)                                                        |
+| Signal set                  | Curator inclusion + tombstone transparency + republication continuity; popularity/ranking excluded, v1 §12 upheld (§5)             |
+| Multi-registry disagreement | Union of worlds, one row per world, per-registry attribution; tombstones never veto (§6)                                           |
+| Listing honesty             | Mandatory key provenance, lookalike flags, tags badged as hints, policy one action away (§7)                                       |
+| Mirror presentation         | No protocol distinction; attribute by signing key; origin declared in policy by convention (§8)                                    |
+| First instance              | Read-only HTTP over our curated subscription + same-code CLI; operation (limits/abuse) is the hosted step's, with #1067 named (§9) |
 
 ## 13. Implementation breakdown
 

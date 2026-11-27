@@ -10,7 +10,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
-import { probeWorkers, selfCheck, workerCheckTargets, type WorkerBinding } from "./worker-checks.ts";
+import { runCheckRound, type WorkerBinding } from "./worker-checks.ts";
+import { fetchQueueTransport } from "./queue-transport.ts";
 import { unread } from "../../src/timed.ts";
 
 interface Env {
@@ -311,10 +312,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const askedAt = Date.now();
     const byBinding = env as unknown as Record<string, WorkerBinding | undefined>;
-    const targets = workerCheckTargets((binding) => byBinding[binding]);
-    const set = await probeWorkers(targets, askedAt);
-    set.checks.push(selfCheck("pm-console-edge", env.VERSION, askedAt));
-    set.checks.sort((a, b) => a.name.localeCompare(b.name));
+    const set = await runCheckRound((binding) => byBinding[binding], "pm-console-edge", env.VERSION, askedAt);
     const stub = env.PM.get(env.PM.idFromName("pm"));
     ctx.waitUntil(
       stub.fetch(
@@ -325,5 +323,28 @@ export default {
         }),
       ),
     );
+    // The queue transport's health (#13503 slice 1): read the alert
+    // Worker's /status over the existing binding and hand the verdict
+    // to the object to keep. The Worker stays the probe; a Worker with
+    // no binding configured leaves the transport out of the round, and
+    // an answer that names no verdict keeps nothing.
+    const transportBinding = env.QUEUE_TRANSPORT_ALERT;
+    if (transportBinding !== undefined) {
+      const verdict = await fetchQueueTransport(
+        (request: Request) => transportBinding.fetch(request),
+        askedAt,
+      );
+      if (verdict !== null) {
+        ctx.waitUntil(
+          stub.fetch(
+            new Request("https://pm.internal/internal/queue-transport", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(verdict),
+            }),
+          ),
+        );
+      }
+    }
   },
 };

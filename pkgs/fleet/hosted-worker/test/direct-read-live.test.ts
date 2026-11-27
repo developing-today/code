@@ -157,7 +157,11 @@ test("live direct-read: sqld enforces minted metadata token and rejects other sc
     const wrongDb = await execute(server, "other-db", token, "SELECT 1");
     await assertRefused(wrongDb, "another database must refuse the metadata token");
 
-    const expiredToken = await mintDirectReadToken(config, { bindingId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ttlSeconds: 1, now: 1 });
+    const expiredToken = await mintDirectReadToken(config, {
+      bindingId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ttlSeconds: 1,
+      now: 1,
+    });
     const expired = await execute(server, "metadata-db", expiredToken, "SELECT 1");
     await assertRefused(expired, "sqld must refuse expired token");
   } finally {

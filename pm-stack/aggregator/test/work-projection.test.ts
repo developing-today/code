@@ -89,6 +89,17 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     expect(receipt.projection.column).toBe("Done");
   });
 
+  test("unverified_terminal_signal_projects_review_per_mob02_r5", () => {
+    // MOB-02 R5: terminal signal without a verified receipt is Review
+    // with `completion_unverified`, never Done and never Backlog.
+    const closed = projectWorkView({ ...base, github_state: { value: "closed", source: "github" } });
+    expect(closed.projection.column).toBe("Review");
+    expect(closed.projection.reason_codes).toContain("completion_unverified");
+    const merged = projectWorkView({ ...base, github_state: { value: "merged", source: "github" } });
+    expect(merged.projection.column).toBe("Review");
+    expect(merged.projection.conflicts.map((c) => c.code)).toContain("completion_unverified");
+  });
+
   test("parked_and_blocked_are_never_promoted_by_urgency", () => {
     const parked = projectWorkView({
       ...base,
@@ -132,7 +143,11 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     const claim = { state: "claimed", worker: "lane-1", fresh: true, session_binding: "verified" } as const;
     const cases: WorkProjectionInput[] = [
       { ...base, claim },
-      { ...base, claim, session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" } },
+      {
+        ...base,
+        claim,
+        session: { value: { provider: "opencode", state: "active" }, source: "session-adapter", freshness: "stale" },
+      },
       { ...base, claim, session: { value: { provider: "opencode", state: "terminal" }, source: "session-adapter" } },
     ];
     for (const input of cases) expect(projectWorkView(input).projection.column).not.toBe("In Progress");

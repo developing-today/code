@@ -175,9 +175,15 @@ describe("actions-exec applier (#14043 S3)", () => {
     expect(ledger.find((r) => r.handle === "delta")?.state).toBe("superseded");
   });
 
-  test("transient broker failure stays failed for retry", async () => {
+  test("transient broker failure stays failed for retry (past the backoff)", async () => {
     const { needsDrewFile, applyFile } = await files();
     await answerApprove(needsDrewFile, "actions-exec-ext:eps:1", "fleet-actions-exec", "actions-exec-ext:eps:1");
+    let nowMs = Date.parse("2026-11-27T03:00:00Z");
+    const failing = async () => ({
+      ok: false,
+      exit: 3,
+      error: "broker unreachable: reset",
+    });
     const first = await runApplierTick({
       needsDrewFile,
       applyFile,
@@ -185,13 +191,13 @@ describe("actions-exec applier (#14043 S3)", () => {
       brokerTokenFile: "unused",
       readTokenFn: async () => "tok",
       resolveKeyFn: async () => "secret",
-      decideFn: async () => ({
-        ok: false,
-        exit: 3,
-        error: "broker unreachable: reset",
-      }),
+      decideFn: failing,
+      raiseAlertFn: async () => ({ created: true }),
+      now: () => nowMs,
     });
     expect(first.failed).toBe(1);
+    // S4 backoff: the immediate next tick does not re-call decide.
+    nowMs += 61_000;
     const second = await runApplierTick({
       needsDrewFile,
       applyFile,
@@ -206,6 +212,8 @@ describe("actions-exec applier (#14043 S3)", () => {
         outcome: "approved",
         via: "signed-apply",
       }),
+      raiseAlertFn: async () => ({ created: true }),
+      now: () => nowMs,
     });
     expect(second.applied).toBe(1);
     const ledger = await readApplyLedger(applyFile);
@@ -285,6 +293,8 @@ describe("actions-exec applier (#14043 S3)", () => {
       rejected: 0,
       failed: 0,
       errors: [],
+      alertsRaised: 0,
+      alertsPending: 0,
     });
   });
 });

@@ -151,9 +151,15 @@ pub fn read_source(
         "WITH classified AS ( \
            SELECT c.id AS id, c.content_hash AS h, v.vec AS vec, \
                   CASE \
-                    WHEN c.sensitivity IN ('shareable','personal','local-only','secret-bearing') THEN c.sensitivity \
+                    WHEN c.sensitivity IN ('shareable','public') THEN 'shareable' \
+                    WHEN c.sensitivity IN ('personal','internal') THEN 'personal' \
+                    WHEN c.sensitivity IN ('local-only','private') THEN 'local-only' \
+                    WHEN c.sensitivity IN ('secret-bearing','sensitive') THEN 'secret-bearing' \
                     WHEN c.sensitivity IS NOT NULL THEN 'secret-bearing' \
-                    WHEN l.sensitivity IN ('shareable','personal','local-only','secret-bearing') THEN l.sensitivity \
+                    WHEN l.sensitivity IN ('shareable','public') THEN 'shareable' \
+                    WHEN l.sensitivity IN ('personal','internal') THEN 'personal' \
+                    WHEN l.sensitivity IN ('local-only','private') THEN 'local-only' \
+                    WHEN l.sensitivity IN ('secret-bearing','sensitive') THEN 'secret-bearing' \
                     ELSE 'secret-bearing' \
                   END AS sensitivity \
            FROM chunks c \
