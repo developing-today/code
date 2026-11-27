@@ -19,6 +19,7 @@ interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   PUBLIC_HOST: string;
   VERSION?: string;
+  DEPLOYED_AT?: string;
   /** What lets the edge do the core itself. The tokens are Worker
    * secrets, put there by scripts/expose.py on a machine that holds the
    * secret store; the flag is the switch, off unless it reads `on`. */
@@ -297,6 +298,7 @@ export default {
       act: (r, ms) => ask(r, ms, env.HOST_ORIGIN),
       publicHost: env.PUBLIC_HOST,
       version: env.VERSION ?? null,
+      deployedAt: env.DEPLOYED_AT ?? null,
       later: (work) => ctx.waitUntil(work),
       now: Date.now,
     });
