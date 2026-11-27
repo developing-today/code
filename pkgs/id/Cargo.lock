@@ -5405,8 +5405,12 @@ name = "id-tui-shell"
 version = "0.1.0"
 dependencies = [
  "id",
+ "id-worlds",
+ "iroh",
+ "iroh-blobs",
  "ratatui",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
