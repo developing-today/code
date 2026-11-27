@@ -15,17 +15,18 @@
 //!   not a competing spec section.
 //! This module implements the read-only half: `plan` renders the
 //! publication plan without touching live points, `verify` checks a
-//! published mirror read-only. `apply`/`status` (live mutation and
-//! live state) are explicitly deferred to a later production-gated
-//! slice per the #9155 gate map and must never execute here.
+//! published mirror read-only. `apply` stages public artifacts to an
+//! explicit local directory only (slice 2 of #13723); it never
+//! performs network I/O and never targets live endpoints. `status`
+//! (live state) stays deferred per the #9155 gate map.
 
 use crate::bundle::load_bundle;
 use crate::chain::Check;
-use crate::error::Result;
+use crate::error::{CertError, Result};
 use crate::model::{PublishPlanRequest, PublishVerifyRequest};
 use crate::timeparse::Rfc3339;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Schema id for the §4.4 publication plan.
 pub const PUBLISH_SCHEMA: &str = "fleet.pki.publish/v1";
@@ -325,6 +326,210 @@ pub fn render_plan_text(plan: &PublishPlan) -> String {
 
 pub fn published_path(published_dir: &Path, source: &str) -> std::path::PathBuf {
     published_dir.join(url_path_for(source))
+}
+
+/// `cert publish apply --staging-dir` request: stage the plan's public
+/// artifacts under one explicit local directory. There is deliberately
+/// no live-endpoint field: live publication stays behind the #9155
+/// production gate and is refused at the CLI layer before this runs.
+#[derive(Debug, Clone)]
+pub struct PublishApplyRequest {
+    pub bundle: PathBuf,
+    pub staging_dir: PathBuf,
+    pub host: Option<String>,
+}
+
+/// One staged file: the bundle source, its mirror path, and the
+/// integrity data it was verified against before writing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppliedFile {
+    /// Bundle-relative source path (e.g. `public/bundles/roots-all.pem`).
+    pub source: String,
+    /// Mirror path relative to the staging root.
+    pub path: String,
+    /// Target URL this mirror path serves (§4.4).
+    pub url: String,
+    pub media_type: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Report for a staging apply: every public artifact written to its
+/// URL-derived mirror path, plus the count of non-public manifest
+/// entries deliberately left behind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishApplyReport {
+    pub bundle: String,
+    pub staging_dir: String,
+    pub valid: bool,
+    pub files: Vec<AppliedFile>,
+    pub skipped_non_public: usize,
+}
+
+/// Resolve a bundle source to its destination inside a staging root.
+///
+/// The staging root must already be canonicalized (see
+/// [`apply_bundle`]); the returned path is guaranteed to stay under
+/// it: absolute sources, empty paths, and any `..` (including ones
+/// exposed by stripping the `public/` prefix) are refused. Symlink
+/// components are checked separately by [`refuse_symlink_escape`].
+pub fn staging_destination(staging: &Path, source: &str) -> Result<PathBuf> {
+    let rel = url_path_for(source);
+    if rel.is_empty() {
+        return Err(CertError::policy(format!(
+            "refusing to stage '{source}': empty mirror path"
+        )));
+    }
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return Err(CertError::policy(format!(
+            "refusing to stage '{source}': absolute mirror path"
+        )));
+    }
+    let mut depth = 0u32;
+    for c in p.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            _ => {
+                return Err(CertError::policy(format!(
+                    "refusing to stage '{source}': path escapes the staging directory"
+                )));
+            }
+        }
+    }
+    if depth == 0 {
+        return Err(CertError::policy(format!(
+            "refusing to stage '{source}': empty mirror path"
+        )));
+    }
+    Ok(staging.join(p))
+}
+
+/// Refuse symlink escapes: every existing path prefix of `dest` at or
+/// below the canonical staging root — including `dest` itself — must
+/// not be a symlink. Missing prefixes are fine (they will be created
+/// as real directories); an existing symlink anywhere on the route
+/// aborts before any write.
+fn refuse_symlink_escape(canonical_staging: &Path, dest: &Path) -> Result<()> {
+    let rest = dest.strip_prefix(canonical_staging).map_err(|_| {
+        CertError::policy(format!(
+            "refusing to stage '{}': destination escapes the staging directory",
+            dest.display()
+        ))
+    })?;
+    let mut cur = canonical_staging.to_path_buf();
+    for c in rest.components() {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(md) if md.file_type().is_symlink() => {
+                return Err(CertError::policy(format!(
+                    "refusing to stage through symlink {}",
+                    cur.display()
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Stage the publication plan's public artifacts to an explicit local
+/// directory: each public bundle file lands at its URL-derived mirror
+/// path with byte content verified against the §7.1 manifest index
+/// before writing. All destinations are validated (traversal +
+/// symlink refusal) before the first write, so a refusal leaves the
+/// staging tree untouched. Non-public manifest entries are never
+/// copied. No network I/O, ever.
+pub fn apply_bundle(req: &PublishApplyRequest) -> Result<PublishApplyReport> {
+    let bundle = load_bundle(&req.bundle)?;
+    let plan = plan_bundle(&PublishPlanRequest {
+        bundle: req.bundle.clone(),
+        host: req
+            .host
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PUBLISH_HOST.to_string()),
+        dns_target: None,
+    })?;
+    // Explicit local staging only: create (if missing), then
+    // canonicalize so every later check runs against the real root.
+    std::fs::create_dir_all(&req.staging_dir).map_err(|e| {
+        CertError::policy(format!(
+            "cannot create staging directory {}: {e}",
+            req.staging_dir.display()
+        ))
+    })?;
+    let staging = std::fs::canonicalize(&req.staging_dir).map_err(|e| {
+        CertError::policy(format!(
+            "cannot resolve staging directory {}: {e}",
+            req.staging_dir.display()
+        ))
+    })?;
+    // Pre-validate every destination before any write.
+    let mut jobs: Vec<(PublishArtifact, PathBuf, Vec<u8>)> = Vec::new();
+    for art in &plan.artifacts {
+        if art.visibility != "public" {
+            continue;
+        }
+        let dest = staging_destination(&staging, &art.source)?;
+        refuse_symlink_escape(&staging, &dest)?;
+        let bytes = crate::bundle::read_artifact(&bundle, &art.source)?;
+        if crate::bundle::sha256_hex(&bytes) != art.sha256
+            || bytes.len() as u64 != art.bytes
+        {
+            return Err(CertError::engine(format!(
+                "bundle artifact {} changed on disk: refusing to stage",
+                art.source
+            )));
+        }
+        jobs.push((art.clone(), dest, bytes));
+    }
+    let skipped_non_public = bundle
+        .manifest
+        .files
+        .iter()
+        .filter(|f| f.visibility != "public")
+        .count();
+    for (_art, dest, bytes) in &jobs {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CertError::engine(format!(
+                    "cannot create staging parent {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        // Re-check after creating parents: nothing on the final route
+        // may have become (or already be) a symlink.
+        refuse_symlink_escape(&staging, dest)?;
+        std::fs::write(dest, bytes).map_err(|e| {
+            CertError::engine(format!("cannot stage {}: {e}", dest.display()))
+        })?;
+    }
+    let rel_of = |dest: &Path| {
+        dest.strip_prefix(&staging)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| dest.display().to_string())
+    };
+    let mut files: Vec<AppliedFile> = jobs
+        .iter()
+        .map(|(art, dest, _)| AppliedFile {
+            source: art.source.clone(),
+            path: rel_of(dest),
+            url: art.url.clone(),
+            media_type: art.media_type.clone(),
+            sha256: art.sha256.clone(),
+            bytes: art.bytes,
+        })
+        .collect();
+    files.sort_by(|a, b| a.source.cmp(&b.source));
+    Ok(PublishApplyReport {
+        bundle: req.bundle.display().to_string(),
+        staging_dir: staging.display().to_string(),
+        valid: true,
+        files,
+        skipped_non_public,
+    })
 }
 
 #[cfg(test)]

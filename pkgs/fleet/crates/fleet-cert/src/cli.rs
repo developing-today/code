@@ -41,7 +41,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   format   convert | verify
   inventory list | show | search | audit
   key      generate | inspect
-  publish  plan | verify (apply | status deferred, production-gated)
+  publish  plan | verify | apply --staging-dir (status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status | inspect | pin | verify | install-plan
@@ -1550,14 +1550,70 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let code = emit(json_out, text, value);
             Ok(if report.valid { code } else { 1 })
         }
-        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+        "apply" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "bundle",
+                    "staging-dir",
+                    "host",
+                    "endpoint",
+                    "live-target",
+                    "production",
+                ],
+                &["json"],
+            )?;
+            // Production gate (#9155): apply has no live-target flag.
+            // The live-sounding options are parsed only so they can be
+            // refused here with a gate error — before any bundle read,
+            // staging write, or network effect.
+            if let Some(flag) = ["endpoint", "live-target", "production"]
+                .iter()
+                .find(|f| p.has(f))
+            {
+                return Err(CertError::policy(format!(
+                    "publish apply takes no live endpoint (--{flag} refused): this slice stages \
+                     to an explicit local directory only (--staging-dir); live publication stays \
+                     behind the #9155 production gate"
+                )));
+            }
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish apply needs a bundle directory"))?;
+            let staging = p.require("staging-dir", "publish apply")?;
+            let req = crate::publish::PublishApplyRequest {
+                bundle: PathBuf::from(&dir),
+                staging_dir: PathBuf::from(&staging),
+                host: p.get("host").map(|s| s.to_string()),
+            };
+            let report = crate::publish::apply_bundle(&req)?;
+            let mut text = format!(
+                "Publish staged: {} -> {}\n  files: {}\n  skipped non-public: {}\n",
+                report.bundle,
+                report.staging_dir,
+                report.files.len(),
+                report.skipped_non_public
+            );
+            for f in &report.files {
+                text.push_str(&format!("  {} -> {} ({} bytes)\n", f.source, f.path, f.bytes));
+            }
+            text.push_str("  note: local staging only; nothing uploaded (live publication stays #9155-gated).\n");
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            Ok(emit(json_out, text, value))
+        }
+        "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
             Err(CertError::policy(format!(
                 "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
-                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+                 slice 2 implements plan + verify read-only plus local staging `apply --staging-dir`; \
+                 use `publish verify --published-dir <staging>` to check a staged mirror; \
+                 never executes against live endpoints without gate clearance"
             )))
         }
         other => Err(CertError::usage(format!(
-            "unknown publish verb '{other}' (plan | verify; apply | status are a later gated slice)"
+            "unknown publish verb '{other}' (plan | verify | apply --staging-dir; status is a later gated slice)"
         ))),
     }
 }
@@ -2676,8 +2732,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish apply/status",
-        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
+        "publish status",
+        "live publication state (production-gated follow-up; slice 2 ships plan + verify read-only plus local staging apply)",
     ),
     (
         "key import/export/escrow/restore/rotate",
@@ -2695,7 +2751,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only, apply to local staging only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
@@ -2814,7 +2870,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify/apply-staging", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
