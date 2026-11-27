@@ -431,7 +431,7 @@ impl SshLeg {
         let empty = serde_json::json!({});
         let spec = req.body.as_ref().unwrap_or(&empty);
         let job_id = format!("{SSHFB_PREFIX}{}", crate::new_trip());
-        let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{job_id}");
+        let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{}", sh_quote(&job_id));
         let script = format!(
             "echo $$ > {d}/pid; date +%s > {d}/start; \
              bash -lc {} > {d}/out 2> {d}/err; echo $? > {d}/exit",
@@ -449,7 +449,7 @@ impl SshLeg {
         let out_off = query_u64(query, "out_off");
         let err_off = query_u64(query, "err_off");
         let wait_s = query_u64(query, "wait_s").min(30);
-        let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{job_id}");
+        let d = sshfb_job_dir(job_id)?;
         let remote = format!(
             "d={d}; end=$(( $(date +%s) + {wait_s} )); \
              while [ ! -f \"$d/exit\" ]; do \
@@ -504,7 +504,7 @@ impl SshLeg {
     }
 
     fn kill_job(&self, job_id: &str) -> Result<Reply, LegError> {
-        let d = format!("$HOME/{SSHFB_REMOTE_DIR}/{job_id}");
+        let d = sshfb_job_dir(job_id)?;
         let remote = format!(
             "d={d}; pg=$(cat \"$d/pid\" 2>/dev/null); \
              if [ -n \"$pg\" ]; then \
@@ -572,6 +572,36 @@ impl Leg for SshLeg {
             ))),
         }
     }
+}
+
+/// Canonical SSH fallback job ids are exactly what `launch_job`
+/// mints from `new_trip()`: `sshfb-` plus 12 lowercase hex
+/// characters. Oracle (#16122): only this exact shape may be
+/// interpolated into a remote shell command; anything else in a
+/// `/jobs/<id>` path is caller-controlled text that could carry
+/// command substitution, separators, or traversal into the laptop's
+/// shell.
+fn is_canonical_sshfb_job_id(job_id: &str) -> bool {
+    job_id.strip_prefix(SSHFB_PREFIX).is_some_and(|rest| {
+        rest.len() == 12
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// The remote spool directory for one job, or Absent — nothing tried,
+/// nothing sent — when the id is not canonical. Defence in depth:
+/// the id segment is shell-quoted even though validation already
+/// restricts it to shell-safe characters, so a validation regression
+/// alone cannot turn an id into shell syntax.
+fn sshfb_job_dir(job_id: &str) -> Result<String, LegError> {
+    if !is_canonical_sshfb_job_id(job_id) {
+        return Err(LegError::Absent(format!(
+            "invalid ssh fallback job id: {job_id}"
+        )));
+    }
+    Ok(format!("$HOME/{SSHFB_REMOTE_DIR}/{}", sh_quote(job_id)))
 }
 
 /// The job id segment of a `/jobs/<id>...` path.
@@ -857,6 +887,98 @@ mod tests {
         assert_eq!(body["uptime_s"], 12345);
         assert_eq!(body["jobs"], 7);
         assert_eq!(body["load1"], 0.25);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sshfb_job_id_validation_accepts_only_the_canonical_shape() {
+        // Oracle (#16122): `new_trip()` mints `sshfb-` + 12 lowercase
+        // hex; that shape and no other may reach a remote command.
+        assert!(is_canonical_sshfb_job_id("sshfb-0123456789ab"));
+        assert!(is_canonical_sshfb_job_id("sshfb-ffffffffffff"));
+        for bad in [
+            "",
+            "sshfb-",
+            "sshfb-0123456789a",     // too short
+            "sshfb-0123456789abc",   // too long
+            "sshfb-0123456789AB",    // uppercase hex
+            "sshfb-zzzzzzzzzzzz",    // non-hex
+            "0123456789ab",          // missing prefix
+            "$(touch${IFS}/tmp/pwn)", // command substitution
+            "x;touch${IFS}/tmp/pwn", // separator
+            "..",                    // traversal segment
+            "../sshfb-0123456789ab", // traversal prefix
+            "sshfb-0123'45678ab",    // quote break-out
+        ] {
+            assert!(
+                !is_canonical_sshfb_job_id(bad),
+                "accepted malformed id: {bad}"
+            );
+            assert!(matches!(sshfb_job_dir(bad), Err(LegError::Absent(_))));
+        }
+        // Canonical ids pass through sh_quote unchanged (safe alphabet).
+        assert_eq!(
+            sshfb_job_dir("sshfb-0123456789ab").unwrap(),
+            "$HOME/.local/state/laptop-agent/sshfb-jobs/sshfb-0123456789ab"
+        );
+    }
+
+    #[test]
+    fn ssh_poll_and_kill_reject_malformed_ids_before_any_ssh_invocation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("la-ssh-inj-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = dir.join("calls");
+        let script = dir.join("laptop-ssh-real.sh");
+        // The fake records every invocation, then answers with the
+        // magic line plus a minimal parseable poll reply.
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho called >> {}\nprintf '%s\\n' '__LAPTOP_AGENT_SSHFB_V1__' 'STATE running' 'EXIT ' 'DUR 0' 'OUTNEXT 0' 'ERRNEXT 0' 'OUTB64 ' 'ERRB64 ' 'ok'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let leg = SshLeg { script };
+        let mut req = health_req();
+        // Oracle (#16122): malformed ids are rejected before SSH
+        // execution — the fake script must never run for them.
+        for (method, path) in [
+            ("GET", "/jobs/$(touch${IFS}pwn)"),
+            ("GET", "/jobs/x;touch${IFS}pwn"),
+            ("GET", "/jobs/.."),
+            ("GET", "/jobs/sshfb-zzzzzzzzzzzz"),
+            ("POST", "/jobs/$(touch${IFS}pwn)/kill"),
+            ("POST", "/jobs/x;touch${IFS}pwn/kill"),
+            ("POST", "/jobs/../kill"),
+        ] {
+            req.method = method;
+            req.path = path.into();
+            assert!(
+                matches!(leg.call(&req), Err(LegError::Absent(_))),
+                "malformed id not rejected: {method} {path}"
+            );
+        }
+        assert!(
+            !calls.exists(),
+            "fake ssh script ran for a malformed job id"
+        );
+        // Canonical ids still poll and kill through the fake.
+        req.method = "GET";
+        req.path = "/jobs/sshfb-0123456789ab".into();
+        let reply = leg.call(&req).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!(body["job_id"], "sshfb-0123456789ab");
+        assert_eq!(body["state"], "running");
+        req.method = "POST";
+        req.path = "/jobs/sshfb-0123456789ab/kill".into();
+        let reply = leg.call(&req).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["job_id"], "sshfb-0123456789ab");
+        assert!(calls.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
