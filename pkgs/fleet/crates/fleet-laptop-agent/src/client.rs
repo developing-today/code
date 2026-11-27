@@ -19,7 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::ladder::{Answer, CallError, Failure, Ladder, Request};
 use crate::{
-    CANCEL_BUDGET_S, FILE_CHUNK_MAX, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip, offset_dir,
+    CANCEL_BUDGET_S, FILE_CHUNK_MAX, LONG_POLL_WAIT_S, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip,
+    offset_dir,
 };
 
 /// The wait for a reply when the verb has no deadline of its own: the
@@ -855,21 +856,43 @@ pub(crate) fn spool_cap_marker(body: &Value) -> Option<String> {
     (dropped > 0).then(|| format!("[spool cap reached: {dropped} bytes dropped]"))
 }
 
+/// Rest between long-poll trips (#5757): when the server already held
+/// the last fetch for (nearly) the full requested wait, it did the
+/// waiting, so the next trip starts at once instead of sleeping again
+/// (that sleep would only delay completion detection). Otherwise the
+/// usual backoff applies, e.g. after a fetch that returned early with
+/// fresh output.
+fn long_poll_rest(requested: Duration, waited: Duration, backoff: Duration) -> Duration {
+    if !requested.is_zero() && waited + Duration::from_secs(2) >= requested {
+        Duration::ZERO
+    } else {
+        backoff
+    }
+}
+
 pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(wait_s);
     let mut offs = load_offsets(job);
+    // How long the last fetch asked the server to hold the request, and
+    // how long the server actually held it: when the server waited out
+    // the request, the inter-poll sleep below is skipped.
+    let held = std::cell::Cell::new((Duration::ZERO, Duration::ZERO));
     let fetch = |o: &Offsets| {
         let trip = crate::new_trip();
         let wait = deadline
             .saturating_duration_since(Instant::now())
             .as_secs_f64()
             .ceil() as u64;
-        let wait = wait.min(10);
+        let wait = wait.min(LONG_POLL_WAIT_S);
         let path = format!(
             "/jobs/{job}?out_off={}&err_off={}&wait_s={wait}",
             o.out, o.err
         );
-        call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body)
+        let started = Instant::now();
+        let reply =
+            call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body);
+        held.set((Duration::from_secs(wait), started.elapsed()));
+        reply
     };
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
@@ -880,7 +903,10 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
         &mut out,
         &mut err,
         |o| save_offsets(job, o),
-        thread::sleep,
+        |backoff| {
+            let (requested, waited) = held.get();
+            thread::sleep(long_poll_rest(requested, waited, backoff))
+        },
     ) {
         Drained::Done(body) => {
             if let Some(marker) = spool_cap_marker(&body) {
@@ -1441,6 +1467,47 @@ mod tests {
             assert!(cur <= Duration::from_secs(10), "capped at poll {n}");
             prev = cur;
         }
+    }
+
+    /// #5757 long-poll follow-on: when the server held the last fetch
+    /// for (nearly) the full requested wait, the next trip starts at
+    /// once (the server did the waiting); otherwise the backoff stands.
+    #[test]
+    fn long_poll_rest_skips_sleep_after_a_full_server_wait_5757() {
+        // Quiet expiry: server held the whole 50 s request.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_secs(50),
+                Duration::from_secs(1)
+            ),
+            Duration::ZERO
+        );
+        // Within the 2 s transport slack still counts as a full wait.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_secs(49),
+                Duration::from_secs(2)
+            ),
+            Duration::ZERO
+        );
+        // Early return with fresh output: the backoff sleep stands.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_millis(300),
+                Duration::from_secs(1)
+            ),
+            Duration::from_secs(1)
+        );
+        // Zero requested wait (budget exhausted): never skip, so the
+        // drain still exits through its deadline path instead of
+        // spinning on immediate fetches.
+        assert_eq!(
+            long_poll_rest(Duration::ZERO, Duration::ZERO, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
     }
 
     /// code#16088 exec-batch parity slice: the legacy `_batch` exit

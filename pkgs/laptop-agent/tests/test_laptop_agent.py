@@ -489,6 +489,96 @@ class JobsListShapeTest(unittest.TestCase):
             os.unlink(token_path)
 
 
+class PollWaitCapTest(unittest.TestCase):
+    """Issue #5757 long-poll follow-on: the server holds one GET
+    /jobs/<job> up to JOBS_WAIT_MAX_S (50) seconds, returning sooner on
+    output or completion.
+    """
+
+    def _import_agent(self):
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def test_clamp_bounds_large_waits_at_50(self):
+        la = self._import_agent()
+        self.assertEqual(la.JOBS_WAIT_MAX_S, 50)
+        self.assertEqual(la.clamp_poll_wait(0), 0)
+        self.assertEqual(la.clamp_poll_wait(10), 10)
+        self.assertEqual(la.clamp_poll_wait(50), 50)
+        self.assertEqual(la.clamp_poll_wait(500), 50)
+
+    def test_large_wait_returns_early_on_completion(self):
+        la = self._import_agent()
+        self.assertGreaterEqual(la.JOBS_WAIT_MAX_S, 45)
+        token = "poll-wait-cap-token"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token + "\n")
+            token_path = f.name
+        port = free_port()
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+
+        def call(method, path, body=None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read())
+
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    if call("GET", "/health")["ok"]:
+                        break
+                except Exception:
+                    if time.time() > deadline:
+                        raise
+                    time.sleep(0.1)
+            job_id = call(
+                "POST",
+                "/jobs",
+                {
+                    "cwd": "/",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import time; time.sleep(3)",
+                    ],
+                },
+            )["job_id"]
+            # Above the old 30 s server cap: the request must return
+            # when the job completes (~3 s), not hold the full wait.
+            started = time.monotonic()
+            done = call("GET", f"/jobs/{job_id}?wait_s=45")
+            elapsed = time.monotonic() - started
+            self.assertEqual(done["state"], "done")
+            self.assertLess(elapsed, 10, f"completion took {elapsed:.1f}s")
+            self.assertGreaterEqual(elapsed, 2.5)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+            os.unlink(token_path)
+
+
 class JobSpoolSizeTest(unittest.TestCase):
     """Issue #15420: single-job replies carry the spool sizes.
 

@@ -351,6 +351,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [Social app reference model (design record for #9128)](../../doc/2026-11-23_design_id9128_social_app_reference_model.md)
 - [Rust practices & opinions: Frugal Async Rust considerations (alpha seed for #13779)](../../doc/2026-11-23T22-21-27Z_design_rust-practices/2026-11-23T22-21-27Z_design_rust-practices.md)
 - [Discovery, registry & federation — v2 design: the public registry endpoint (#10712)](../../doc/2026-11-27_design_id10712_public_registry_endpoint_v2.md)
+- [Discovery, registry & federation — v3 design: the federation protocol (#16051)](../../doc/2026-11-27_design_id16051_federation_protocol_v3.md)
 
 ## Package architecture docs (living, with the code)
 

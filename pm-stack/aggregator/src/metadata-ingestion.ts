@@ -84,7 +84,85 @@ export interface IngestionItem {
   updatedAt: string;
   closedAt?: string | null;
   /** Sub-issue parent when the caller already resolved it; absent means unknown. */
-  nativeParent?: { repo: string; number: number; kind: string } | null;
+  nativeParent?: NativeParentRef | null;
+}
+
+/**
+ * Sub-issue parent reference naming the authoritative native parent.
+ */
+export interface NativeParentRef {
+  repo: string;
+  number: number;
+  kind: string;
+}
+
+/**
+ * Authoritative native-parent lookup result contract, shared by the
+ * sweeper and the webhook listener (#16011):
+ * - a ref: the item is a sub-issue of that parent (authoritative, wins
+ *   over any label-derived parent);
+ * - null: the parent endpoint answered 404 for an existing item, so the
+ *   item has no native parent and label resolution may proceed;
+ * - undefined: the lookup itself failed (auth, transport, server error,
+ *   unreadable shape) — callers must retry later and must NOT finalize
+ *   a label-derived parent on this evidence.
+ */
+export type NativeParentLookup = NativeParentRef | null | undefined;
+
+/**
+ * Classify a failed `GET /repos/{repo}/issues/{number}/parent` call on
+ * the shared contract (#16011). True only for a confirmed 404 (no
+ * native parent); every other failure — auth, transport, rate limit,
+ * server error — is retryable.
+ */
+export function isConfirmedParentAbsent(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\b404\b/.test(message);
+}
+
+/**
+ * Parse a `gh api .../parent --jq "{number: .number, repo_url: .repository_url}"`
+ * stdout on the shared contract (#16011): a ref when the endpoint names
+ * a parent, null when the shape carries none, undefined when the shape
+ * is unreadable (retry — it proves nothing either way).
+ */
+export function parseNativeParentResponse(stdout: string): NativeParentLookup {
+  let parsed: { number?: unknown; repo_url?: unknown };
+  try {
+    parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") return null;
+  const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
+  if (!match?.[1]) return null;
+  return { repo: match[1], number: parsed.number as number, kind: "sub-issue" };
+}
+
+/**
+ * Build the epic slug catalog from `gh issue list --json number,labels`
+ * rows (#16011). Callers filter server-side with `--label kind/epic`;
+ * the client-side kind check stays as a guard. First row wins per slug.
+ * Shared by the sweeper and the webhook listener so both resolve labels
+ * against the same catalog shape.
+ */
+export function buildEpicSlugMap(
+  rows: readonly { number?: unknown; labels?: readonly (string | { name?: unknown })[] }[],
+  repo: string,
+): EpicSlugMap {
+  const slugs: EpicSlugMap = new Map();
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+    const names = (row.labels ?? [])
+      .map((label) => (typeof label === "string" ? label : String(label.name ?? "")))
+      .filter(Boolean);
+    if (!names.includes("kind/epic")) continue;
+    for (const name of names) {
+      const slug = /^epic\/(.+)$/.exec(name)?.[1]?.trim().toLowerCase();
+      if (slug && !slugs.has(slug)) slugs.set(slug, { repo, number: row.number as number });
+    }
+  }
+  return slugs;
 }
 
 /** Epic slug (from `epic/<slug>` labels) to the epic issue it names. */
