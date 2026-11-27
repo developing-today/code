@@ -277,6 +277,19 @@ impl FollowUpSink {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
     }
+
+    fn snapshot(&self) -> Vec<QueuedOperation> {
+        self.queued
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn from_queued(queued: Vec<QueuedOperation>) -> Self {
+        Self {
+            queued: Mutex::new(queued),
+        }
+    }
 }
 
 /// The immutable input a prepare hook sees: the gate's receipt
@@ -409,6 +422,9 @@ pub struct LedgerEntry {
     pub annotations: Vec<Annotation>,
     /// Index of the next prepare hook to run.
     pub prepare_cursor: usize,
+    /// Follow-up operations requested by completed prepare hooks.
+    /// Retained while admitted so commit retries do not lose them.
+    pub follow_ups: Vec<QueuedOperation>,
     /// The lifecycle state.
     pub state: OpState,
 }
@@ -827,6 +843,7 @@ impl AdmissionPipeline {
                         receipt: receipt.clone(),
                         annotations: Vec::new(),
                         prepare_cursor: 0,
+                        follow_ups: Vec::new(),
                         state: OpState::Admitted,
                     },
                 }
@@ -836,14 +853,16 @@ impl AdmissionPipeline {
                 receipt: receipt.clone(),
                 annotations: Vec::new(),
                 prepare_cursor: 0,
+                follow_ups: Vec::new(),
                 state: OpState::Admitted,
             },
         };
         self.ledger.record(operation_id.clone(), entry.clone());
 
         // Stage 3 — prepare hooks, in deterministic order,
-        // resuming at the recorded cursor.
-        let follow_ups = FollowUpSink::default();
+        // resuming at the recorded cursor. Persist requests alongside
+        // the cursor so a commit retry can deliver them without rerunning hooks.
+        let follow_ups = FollowUpSink::from_queued(entry.follow_ups.clone());
         while entry.prepare_cursor < self.prepare_hooks.len() {
             let hook = &self.prepare_hooks[entry.prepare_cursor];
             let input = PrepareInput {
@@ -870,6 +889,7 @@ impl AdmissionPipeline {
                 }
             }
             entry.prepare_cursor += 1;
+            entry.follow_ups = follow_ups.snapshot();
             self.ledger.record(operation_id.clone(), entry.clone());
         }
 
