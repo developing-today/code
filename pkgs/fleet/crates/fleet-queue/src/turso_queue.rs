@@ -2930,6 +2930,92 @@ mod tests {
     }
 
     #[test]
+    fn sweep_revalidation_active_by_default_16006() {
+        // #16006 oracle (oracle: the default scheduled /sweep path,
+        // named here): the daily timer's revalidation request
+        // carries no observe_only field, so the default decides —
+        // and the default is now LIVE, so a satisfied
+        // broker-condition park becomes claimable instead of
+        // logging would_release forever (the #13143 exclusion
+        // leaves the sweeper as the only release path for these
+        // parks).
+        assert!(!sweep_observe_only(&json!({"revalidate": true})));
+        // Observe-only is an explicit opt-in; an explicit live
+        // request stays live.
+        assert!(sweep_observe_only(
+            &json!({"revalidate": true, "observe_only": true})
+        ));
+        assert!(!sweep_observe_only(
+            &json!({"revalidate": true, "observe_only": false})
+        ));
+        // The release rule under the default (live) mode: each
+        // satisfied broker condition releases, an unsatisfied one
+        // only confirms (the task stays parked), and a
+        // person_answer park never releases — it still waits for
+        // the person's /wake.
+        assert_eq!(
+            revalidate_outcome(Some("task_terminal"), Some("done"), None, false),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(
+                Some("task_status"),
+                Some("blocked"),
+                Some("blocked"),
+                false
+            ),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(Some("event_seen"), None, None, true),
+            "released"
+        );
+        assert_eq!(
+            revalidate_outcome(Some("task_terminal"), Some("queued"), None, false),
+            "confirmed"
+        );
+        assert_ne!(
+            revalidate_outcome(Some("person_answer"), None, None, false),
+            "released"
+        );
+        // Wiring oracle: verb_sweep resolves the mode through the
+        // #16006 default and hands it to revalidate_parked, whose
+        // released branch is the mutation that makes the task
+        // claimable again.
+        let src = test_source();
+        let sweep_seg = src
+            .split("fn verb_sweep(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// `/coverage`").next())
+            .unwrap_or("");
+        assert!(
+            sweep_seg.contains("let observe_only = sweep_observe_only(req);"),
+            "verb_sweep must resolve observe_only through the #16006 default"
+        );
+        assert!(
+            sweep_seg.contains("revalidate_parked("),
+            "verb_sweep must run the revalidator"
+        );
+        let reval_seg = src
+            .split("fn revalidate_parked(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// #16006: whether a /sweep request").next())
+            .unwrap_or("");
+        assert!(
+            reval_seg.contains("UPDATE tasks SET status = 'queued'"),
+            "a released park must become queued (claimable)"
+        );
+        assert!(
+            reval_seg.contains("\"park_released\""),
+            "a release must leave the park_released event"
+        );
+        assert!(
+            reval_seg.contains("if observe_only"),
+            "the observe branch must remain for explicit observe cycles"
+        );
+    }
+
+    #[test]
     fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
         let rows = vec![
             json!({"id": 1, "status": "done"}),

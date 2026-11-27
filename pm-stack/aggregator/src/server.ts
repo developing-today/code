@@ -42,6 +42,7 @@ import { listStackHealthDown, readStackHealthStates } from "./stack-health.ts";
 import { buildHealth, pageRenderHealth, recordRender } from "./health.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import { fleetMetadataDbPath } from "./metadata-db.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { requireHome } from "./home.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
@@ -237,9 +238,7 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
   }
 }
 
-const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ??
-  join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDbPath = fleetMetadataDbPath();
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),

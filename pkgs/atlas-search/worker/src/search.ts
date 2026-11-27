@@ -8,7 +8,7 @@
  * and the cache keying can never drift between surfaces.
  */
 import { queryKey } from "./key";
-import { CONTEXT } from "./space";
+import { CEILING, CONTEXT, type Ceiling, type DisclosureContext } from "./space";
 import { tryServeFromHotCache, type HotCacheReader, type SkipLog } from "./read_path";
 import type { WatermarkSource } from "./freshness";
 
@@ -71,13 +71,22 @@ export interface SearchOutcome {
 /**
  * Run one search. `query` must already be normalized and
  * non-empty (the callers' validation owns that); `k` must
- * already be clamped. On success the payload is the REST
- * envelope `{ cache, key, query, result, meta }`; on an
- * upstream failure it is the Durable Object's error payload,
- * with its status.
+ * already be clamped. The ceiling/context default to the
+ * surface pins (the REST surface always searches under them);
+ * the MCP surface passes its caller's policy ceiling. On success
+ * the payload is the REST envelope `{ cache, key, query, result,
+ * meta }`; on an upstream failure it is the Durable Object's
+ * error payload, with its status.
  */
-export async function executeSearch(env: SearchEnv, query: string, k: number): Promise<SearchOutcome> {
-  const key = await queryKey({ q: query, k, context: CONTEXT });
+export async function executeSearch(
+  env: SearchEnv,
+  query: string,
+  k: number,
+  opts?: { ceiling?: Ceiling; context?: DisclosureContext },
+): Promise<SearchOutcome> {
+  const ceiling = opts?.ceiling ?? CEILING;
+  const context = opts?.context ?? CONTEXT;
+  const key = await queryKey({ q: query, k, ceiling, context });
   if (env.hotCache) {
     const hot = env.hotCache;
     const outcome = await tryServeFromHotCache({
@@ -98,7 +107,7 @@ export async function executeSearch(env: SearchEnv, query: string, k: number): P
   const resp = await stub.fetch("https://do/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, k }),
+    body: JSON.stringify({ query, k, ceiling, context }),
   });
   const payload = await doJsonObject(resp);
   if (payload === null) return { status: 502, payload: malformedDoPayload("query") };

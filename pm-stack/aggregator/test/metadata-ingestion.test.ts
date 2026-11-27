@@ -18,7 +18,8 @@ import {
   type IngestionItem,
   type MetadataCheckContext,
 } from "../src/metadata-ingestion.ts";
-import { createPmMetadataStore, getPmMetadata } from "../src/metadata-store.ts";
+import { fleetMetadataDbPath } from "../src/metadata-db.ts";
+import { createPmMetadataStore, getPmMetadata, upsertPmMetadata } from "../src/metadata-store.ts";
 
 const EPICS: EpicSlugMap = new Map([
   ["pm-board", { repo: "developing-today/code", number: 9060 }],
@@ -78,7 +79,7 @@ describe("runMetadataCheck: the one check both watchers share", () => {
     const outcome = runMetadataCheck(item({ body: `description\n\n${block}\n` }), CONTEXT);
     expect(outcome.kind).toBe("current");
     if (outcome.kind !== "current") return;
-    expect(outcome.record.artifactId).toBe("github:developing-today/code#issue/9999");
+    expect(outcome.record.artifactId).toBe("gh:developing-today/code#issue:9999");
     expect(outcome.record.sourceUrl).toBe(sourceUrlFor(item()));
     expect(outcome.record.parsed.metadata.direct_parent).toEqual({
       repo: "developing-today/code",
@@ -195,9 +196,59 @@ describe("runMetadataCheck: the one check both watchers share", () => {
     expect(outcome.kind).toBe("generated");
     if (outcome.kind !== "generated") return;
     expect(outcome.record.itemKind).toBe("pr");
-    expect(outcome.record.artifactId).toBe("github:developing-today/code#pr/12371");
+    expect(outcome.record.artifactId).toBe("gh:developing-today/code#pr:12371");
     expect(outcome.record.sourceUrl).toBe("https://github.com/developing-today/code/pull/12371");
   });
+});
+
+describe("Fleet metadata create-path compatibility (#16010)", () => {
+  test("uses the Fleet database override and default path", () => {
+    expect(fleetMetadataDbPath({ FLEET_METADATA_DB: "/tmp/fleet-metadata.db", HOME: "/home/test" })).toBe(
+      "/tmp/fleet-metadata.db",
+    );
+    expect(fleetMetadataDbPath({ XDG_STATE_HOME: "/state/test", HOME: "/home/test" })).toBe(
+      "/state/test/fleet/metadata.db",
+    );
+    expect(fleetMetadataDbPath({ HOME: "/home/test" })).toBe("/home/test/.local/state/fleet/metadata.db");
+    expect(fleetMetadataDbPath({ FLEET_METADATA_DB: " ", XDG_STATE_HOME: "relative", HOME: "/home/test" })).toBe(
+      "/home/test/.local/state/fleet/metadata.db",
+    );
+  });
+
+  test("ingestion refreshes the existing Fleet create row in place", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleet-metadata-create-"));
+    const path = join(root, "metadata.db");
+    const db = openMetadataStore(path, (dbPath) => new Database(dbPath));
+    try {
+      const created = runMetadataCheck(item({ updatedAt: "2026-11-20T00:00:00Z" }), CONTEXT);
+      expect(created.kind).toBe("generated");
+      if (created.kind !== "generated") return;
+      // Fleet gh create-path conformance: gh_metadata::artifact_id uses this
+      // key and writes the same pm_metadata_items store contract.
+      upsertPmMetadata(db, {
+        ...created.record,
+        artifactId: "gh:developing-today/code#issue:9999",
+        sourceUpdatedAt: "2026-11-20T00:00:00Z",
+      });
+
+      const replay = runMetadataCheck(item({ updatedAt: "2026-11-21T00:00:00Z" }), CONTEXT);
+      expect(replay.kind).toBe("generated");
+      if (replay.kind !== "generated") return;
+      storeOutcome(db, replay);
+
+      const rows = db.query("SELECT artifact_id, source_updated_at FROM pm_metadata_items").all() as {
+        artifact_id: string;
+        source_updated_at: string;
+      }[];
+      expect(rows).toEqual([
+        { artifact_id: "gh:developing-today/code#issue:9999", source_updated_at: "2026-11-21T00:00:00Z" },
+      ]);
+      expect(getPmMetadata(db, artifactIdFor(item()))?.sourceUpdatedAt).toBe("2026-11-21T00:00:00Z");
+    } finally {
+      db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("buildTriagePacket: the broker's required fields, pinned", () => {
