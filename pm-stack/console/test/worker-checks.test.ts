@@ -15,6 +15,7 @@ import {
   parseWorkerCheckSet,
   probeWorker,
   probeWorkers,
+  runCheckRound,
   selfCheck,
   WORKER_BINDINGS,
   WORKER_CHECKS_KEY,
@@ -31,7 +32,7 @@ function answering(body: unknown, status = 200): typeof fetch {
     new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 }
 
 function byPath(routes: Record<string, { body?: unknown; status?: number; text?: string }>): typeof fetch {
@@ -78,7 +79,7 @@ describe("probeWorker", () => {
   test("a binding that reaches nothing is not answering", async () => {
     const fetcher = (async () => {
       throw new Error("no such worker");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const check = await probeWorker({ name: "gone", fetcher }, AT);
     expect(check).toEqual({
       name: "gone",
@@ -158,6 +159,30 @@ describe("the binding roster", () => {
     expect(targets.map((t) => t.name)).toEqual(["message-bridge", "github-ci", "pkarr"]);
     const check = await probeWorker(targets[0], AT);
     expect(check).toMatchObject({ name: "message-bridge", answering: true, commit: "c-BRIDGE" });
+  });
+
+  test("scheduled round records pm-service health and a failed binding with one timestamp", async () => {
+    const set = await runCheckRound(
+      (binding) => {
+        if (binding === "PM_SERVICE") {
+          return { fetch: byPath({ "/health": { body: { ok: true, service: "pm-service", version: "full-commit-42" } } }) };
+        }
+        if (binding === "DECISION_EVENTS") {
+          return { fetch: async () => { throw new Error("binding unavailable"); } };
+        }
+        return undefined;
+      },
+      "pm-console-edge",
+      "edge-commit-9",
+      AT,
+    );
+
+    expect(set.askedAt).toBe(AT);
+    expect(set.checks).toEqual([
+      { name: "decision-events", answering: false, commit: null, askedAt: AT, via: null, status: null },
+      { name: "pm-console-edge", answering: true, commit: "edge-commit-9", askedAt: AT, via: "self", status: null },
+      { name: "pm-service", answering: true, commit: "full-commit-42", askedAt: AT, via: "/health", status: 200 },
+    ]);
   });
 
   test("with every binding configured the round covers the whole roster", () => {

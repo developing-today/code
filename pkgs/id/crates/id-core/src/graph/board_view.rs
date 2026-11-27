@@ -10,9 +10,10 @@
 //!
 //! Tree shape comes from `parent_ref`, sibling order from the accept
 //! sequence (#9127 server order); sequences are stable server
-//! identities. Tombstone filtering (slice 2), freshness tokens (slice
-//! 3) and paging budgets / cursor continuation (slice 4) are out of
-//! scope here and compose later without changing this assembly.
+//! identities. Tombstone filtering is applied after forest assembly so
+//! visible descendants of a hidden comment are promoted as flagged roots
+//! without changing their stable sequences. Freshness tokens (slice 3)
+//! and paging budgets / cursor continuation (slice 4) remain out of scope.
 
 use std::collections::{HashMap, HashSet};
 
@@ -66,25 +67,38 @@ pub struct BoardThreadView {
     pub topics: Vec<TopicNode>,
 }
 
-/// Project the board thread view (design §2.3 steps 1–5, slice-1 subset).
-///
-/// `topics` arrives already paged, so only in-page topics incur comment
-/// reads; the caller reads each topic's comments (accepted only) and
-/// hands them over by topic id.
-///
-/// Entries of the wrong kind are skipped (topics keep
-/// [`SocialObjectKind::Topic`], comments keep
-/// [`SocialObjectKind::Comment`]); duplicate listings of one object
-/// id keep the first, matching [`super::social::traverse`].
+/// Project the board thread view without applying any tombstones.
 #[must_use]
 pub fn project_board(
     board: &ObjectRef,
     topics: &[AcceptedEntry],
     comments_by_topic: &HashMap<ObjectRef, Vec<AcceptedEntry>>,
 ) -> BoardThreadView {
+    project_board_with_tombstones(board, topics, comments_by_topic, &HashSet::new())
+}
+
+/// Project the board thread view while hiding tombstoned topic/comment IDs.
+///
+/// `topics` arrives already paged, so only in-page topics incur comment
+/// reads; the caller reads each topic's comments (accepted only) and
+/// hands them over by topic id. Entries of the wrong kind are skipped;
+/// duplicate listings keep the first. A hidden comment's visible children
+/// are promoted to the nearest visible ancestor and flagged orphaned, so
+/// hiding one object does not silently hide unrelated descendants. All
+/// promoted entries retain their original accept sequence.
+#[must_use]
+pub fn project_board_with_tombstones(
+    board: &ObjectRef,
+    topics: &[AcceptedEntry],
+    comments_by_topic: &HashMap<ObjectRef, Vec<AcceptedEntry>>,
+    tombstones: &HashSet<ObjectRef>,
+) -> BoardThreadView {
     let mut topic_nodes: Vec<TopicNode> = topics
         .iter()
-        .filter(|entry| entry.object.kind == SocialObjectKind::Topic)
+        .filter(|entry| {
+            entry.object.kind == SocialObjectKind::Topic
+                && !tombstones.contains(&entry.object.object_id)
+        })
         .map(|entry| {
             let empty = Vec::new();
             let comments = comments_by_topic
@@ -93,7 +107,7 @@ pub fn project_board(
             TopicNode {
                 seq: entry.seq,
                 topic: entry.object.clone(),
-                children: assemble_topic(&entry.object.object_id, comments),
+                children: assemble_topic(&entry.object.object_id, comments, tombstones),
             }
         })
         .collect();
@@ -108,11 +122,17 @@ pub fn project_board(
 /// each comment under its `parent_ref` (the topic id is a root), sort
 /// siblings by accept seq. Unresolvable parents — absent, self,
 /// cross-topic, or cyclic — attach at the root flagged `orphaned`.
-fn assemble_topic(topic_id: &ObjectRef, entries: &[AcceptedEntry]) -> Vec<CommentNode> {
+fn assemble_topic(
+    topic_id: &ObjectRef,
+    entries: &[AcceptedEntry],
+    tombstones: &HashSet<ObjectRef>,
+) -> Vec<CommentNode> {
     let mut seq_of: HashMap<ObjectRef, u64> = HashMap::new();
     let mut obj_of: HashMap<ObjectRef, &SocialObject> = HashMap::new();
     for entry in entries {
-        if entry.object.kind != SocialObjectKind::Comment {
+        if entry.object.kind != SocialObjectKind::Comment
+            || tombstones.contains(&entry.object.object_id)
+        {
             continue;
         }
         if obj_of.contains_key(&entry.object.object_id) {

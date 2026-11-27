@@ -119,6 +119,7 @@ var EffectProbes = map[string]string{
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
 	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
+	"script.checkJs":                     "TestScriptCheckJsDecidesWhetherJavaScriptIsChecked",
 	"script.checkOnError":                "TestScriptCheckOnErrorDecidesOnACheckError",
 	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",

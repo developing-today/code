@@ -303,6 +303,8 @@ let
         claude-code
         latestCli.codex
         pkgs.antigravity-cli
+        # GitHub MCP stdio server for the mcpx failover pool (#8017).
+        pkgs.github-mcp-server
         pkgs.git
         pkgs.openssh
       ]
@@ -1856,6 +1858,8 @@ in
         # carries the newest agy on PATH ahead of the system profile
         # copy; both resolve to the same overlaid package.
         antigravity-cli
+        # GitHub MCP server used by the mcpx failover pool (#8017).
+        github-mcp-server
         libnotify
         # On-screen keyboard (wvkbd-mobintl) for touch use over the
         # Sunshine/Moonlight stream: launched only while a stream is

@@ -139,6 +139,7 @@ describe("/health snapshot + reconcile gate (#9850 round 2)", () => {
     const res = await handleRequest(new Request("http://127.0.0.1:7801/health"), wedgedDb, env, {
       healthDb: wedgedDb,
       healthSnapshot: () => ({ items: 11, comments: 22, links: 33, at: Date.now() }),
+      reconcileStatus: () => ({ running: true, mode: "backfill", startedAt: "2026-11-27T05:00:00.000Z" }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -147,12 +148,14 @@ describe("/health snapshot + reconcile gate (#9850 round 2)", () => {
       comments: number;
       links: number;
       snapshotAgeMs: number;
+      reconcile: { running: boolean; mode?: string; startedAt?: string };
     };
     expect(body.ok).toBe(true);
     expect(body.items).toBe(11);
     expect(body.comments).toBe(22);
     expect(body.links).toBe(33);
     expect(body.snapshotAgeMs).toBeGreaterThanOrEqual(0);
+    expect(body.reconcile).toEqual({ running: true, mode: "backfill", startedAt: "2026-11-27T05:00:00.000Z" });
   });
 
   test("a stale snapshot answers 503, not a healthy answer", async () => {
@@ -163,6 +166,33 @@ describe("/health snapshot + reconcile gate (#9850 round 2)", () => {
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body.ok).toBe(false);
     expect(body.error).toBe("health_snapshot_stale");
+  });
+
+  test("a backfill trigger reports its mode when a pass is already running", async () => {
+    const res = await handleRequest(
+      new Request("http://127.0.0.1:7801/reconcile?mode=backfill", {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+      }),
+      db,
+      { PM_PROJECTOR_API_TOKEN: "test-token", PM_REPOS: "" },
+      { beginReconcile: () => false, endReconcile: () => {} },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, mode: "backfill", skipped: "reconcile_in_progress" });
+  });
+
+  test("a /reconcile trigger rejects unknown modes", async () => {
+    const res = await handleRequest(
+      new Request("http://127.0.0.1:7801/reconcile?mode=full", {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+      }),
+      db,
+      { PM_PROJECTOR_API_TOKEN: "test-token", PM_REPOS: "" },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_reconcile_mode", allowed: ["steady_state", "backfill"] });
   });
 
   test("a /reconcile trigger during an in-flight pass is a no-op success", async () => {

@@ -175,6 +175,8 @@ type Options struct {
 	// TypeCheckOnError and TypeCheckOnUnsupported carry the caller's preflight policies.
 	TypeCheckOnError       string `json:"checkOnError,omitempty"`
 	TypeCheckOnUnsupported string `json:"checkOnUnsupported,omitempty"`
+	// CheckJs false suppresses JavaScript checking; absent takes the default.
+	CheckJs *bool `json:"checkJs,omitempty"`
 	// TypeCheckDefaulted says TypeCheck is on only because the
 	// caller's per-command default switched it on (#1868 point 4):
 	// the Deno-only notice is suppressed for a defaulted check.
@@ -734,6 +736,7 @@ type Limits struct {
 	Typecheck              string
 	TypeCheckOnError       string
 	TypeCheckOnUnsupported string
+	CheckJs                bool
 	Imports                string
 	ImportsOnDynamic       string
 	ImportsOnMissing       string
@@ -993,6 +996,10 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	if opts.CaptureConsole != nil {
 		capture = *opts.CaptureConsole
 	}
+	checkJs := s.Limits.CheckJs
+	if opts.CheckJs != nil {
+		checkJs = *opts.CheckJs
+	}
 	ropts := runner.Options{
 		Source:                 req.Source,
 		File:                   req.File,
@@ -1015,6 +1022,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		TypeCheck:              firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
 		TypeCheckOnError:       firstNonEmpty(opts.TypeCheckOnError, s.Limits.TypeCheckOnError),
 		TypeCheckOnUnsupported: firstNonEmpty(opts.TypeCheckOnUnsupported, s.Limits.TypeCheckOnUnsupported),
+		CheckJs:                checkJs,
 		TypeCheckDefaulted:     opts.TypeCheck != "" && opts.TypeCheckDefaulted,
 		Imports:                firstNonEmpty(opts.Imports, s.Limits.Imports),
 		ImportsOnDynamic:       firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),

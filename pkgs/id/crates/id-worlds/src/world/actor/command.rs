@@ -31,6 +31,7 @@ impl WorldCommand {
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
             Self::HandoffWriteLease { .. } => "HandoffWriteLease",
+            Self::RecoverExpiredLease { .. } => "RecoverExpiredLease",
             Self::FailoverWriteLease { .. } => "FailoverWriteLease",
             Self::DispatchSpillCopy { .. } => "DispatchSpillCopy",
             Self::Snapshot { .. } => "Snapshot",
@@ -162,6 +163,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        caller_account: Option<String>,
         device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
@@ -208,6 +210,14 @@ pub(crate) enum WorldCommand {
         to: String,
         epoch: u64,
         expires_at_ms: Option<u64>,
+        reply: oneshot::Sender<Result<u64>>,
+    },
+    /// DO-authority control request. Recover an expired native lease by
+    /// journaling revoke then grant back to the DO (#13938 slice 1).
+    /// The live lease tracks the journaled prefix after each entry, so
+    /// a failed grant append between them leaves the world holder-less
+    /// (writers refused `holder-lost`), never split-brained.
+    RecoverExpiredLease {
         reply: oneshot::Sender<Result<u64>>,
     },
     /// DO-authority control request. The actor plans a spill v2

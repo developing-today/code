@@ -3,7 +3,7 @@
 // the projector's /items and /comments for live ref state and the comment
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
@@ -127,6 +127,7 @@ import { getJson } from "./http.ts";
 import {
   LatestCommentsCache,
   createHttpProjectorReader,
+  createStoreProjectorReader,
   mergeLinks,
   type ProjectorReader,
 } from "./projector.ts";
@@ -134,8 +135,10 @@ export {
   LATEST_COMMENTS_TTL_MS,
   LatestCommentsCache,
   createHttpProjectorReader,
+  createStoreProjectorReader,
   latestPerRef,
   mapProjectorComment,
+  mapProjectorLinks,
   mapProjectorItem,
   mergeLinks,
   parseProjectorLabels,
@@ -144,7 +147,13 @@ export {
   projectorLatestComments,
   projectorLinks,
 } from "./projector.ts";
-export type { ProjectorCommentRow, ProjectorItemRow, ProjectorLinkRow, ProjectorReader } from "./projector.ts";
+export type {
+  ProjectorCommentRow,
+  ProjectorItemRow,
+  ProjectorLinkRow,
+  ProjectorReader,
+  ProjectorStoreReaderDeps,
+} from "./projector.ts";
 
 // --- Kaneo --------------------------------------------------------------
 
@@ -901,8 +910,26 @@ export function liveSource(
   // so the coverage note describes reality rather than config.
   let lastFeed: FleetFeed | null = null;
   let laptopSeen: boolean | null = null;
+  // The collector publishes snapshots by atomic replacement. Compare file
+  // identity/metadata before parsing so a stable feed does not sanitize its
+  // full 28k-session registry again on every search request.
+  let feedCache: { fingerprint: string; value: FleetFeed | null } | null = null;
   async function getFeed(): Promise<FleetFeed | null> {
+    let fingerprint: string | null = null;
+    try {
+      const info = await stat(cfg.feedFile, { bigint: true });
+      fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+    } catch {
+      // Keep the existing fail-soft read path below for missing/unreadable
+      // feed files; no cache key means the next call retries the stat.
+    }
+    if (fingerprint !== null && feedCache?.fingerprint === fingerprint) {
+      if (feedCache.value) lastFeed = feedCache.value;
+      return feedCache.value;
+    }
     const feed = await loadFeed(cfg.feedFile);
+    if (fingerprint !== null && feed) feedCache = { fingerprint, value: feed };
+    else feedCache = null;
     if (feed) lastFeed = feed;
     return feed;
   }
@@ -1209,6 +1236,18 @@ export function liveSource(
   let registryNeedsPersist = false;
   let registryWriteChain: Promise<void> = Promise.resolve();
   let registryWriteSeq = 0;
+  // Registry consumers include search, which builds a query index over
+  // this array. Keep the same immutable snapshot while the input feed
+  // generation and cached laptop map are unchanged; otherwise repeated
+  // reads would redo the merge and invalidate that index on every query.
+  let registrySnapshotInitialized = false;
+  let registrySnapshotFeed: FleetFeed | null = null;
+  let registrySnapshotLaptop: MappedSessions | null = null;
+  function rememberRegistrySnapshot(feed: FleetFeed | null, mapped: MappedSessions | null): void {
+    registrySnapshotInitialized = true;
+    registrySnapshotFeed = feed;
+    registrySnapshotLaptop = mapped;
+  }
   async function loadRegistryStore(): Promise<SessionRecord[]> {
     if (registryStore) return registryStore;
     try {
@@ -1265,6 +1304,7 @@ export function liveSource(
         await write;
         registryNeedsPersist = false;
       } catch {
+        registryNeedsPersist = true;
         /* durability is best-effort; the in-memory merge still serves */
       }
     }
@@ -2196,21 +2236,12 @@ export function liveSource(
       // Slice 3 (#906 §3): feed records (sandbox OpenCode +
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
-      const incoming: SessionRecord[] = [];
       let droppedSessionElements = 0;
       const feed = await getFeed();
-      if (feed?.registry) {
-        for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
-      }
+      let mapped: MappedSessions | null = null;
       try {
-        const mapped = await laptopMapped();
-        if (mapped) {
-          // Element-wise drops are surfaced, never swallowed (#2543).
-          droppedSessionElements = mapped.droppedElements;
-          for (const e of mapped.entries) {
-            incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
-          }
-        }
+        mapped = await laptopMapped();
+        if (mapped) droppedSessionElements = mapped.droppedElements;
       } catch {
         /* laptop part fails soft, like attention */
       }
@@ -2218,8 +2249,34 @@ export function liveSource(
         droppedSessionElements > 0
           ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
           : "";
+      const unchangedSnapshot =
+        registrySnapshotInitialized &&
+        !registryNeedsPersist &&
+        feed === registrySnapshotFeed &&
+        mapped === registrySnapshotLaptop;
+      if (unchangedSnapshot) {
+        const existing = await loadRegistryStore();
+        lastRegistryMergedCount = existing.length;
+        const incomingCount = (feed?.registry?.length ?? 0) + (mapped?.entries.length ?? 0);
+        provenance.registry =
+          incomingCount > 0
+            ? `live (${existing.length} session records · ${incomingCount} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`
+            : `store only (no live registry source reachable)${droppedNote}`;
+        return existing;
+      }
+
+      const incoming: SessionRecord[] = [];
+      if (feed?.registry) {
+        for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
+      }
+      if (mapped) {
+        for (const e of mapped.entries) {
+          incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+        }
+      }
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
+        rememberRegistrySnapshot(feed, mapped);
         lastRegistryMergedCount = merged.length;
         // #1138: the headline number is the MERGED total — the same
         // count the /sessions header renders — with the latest feed's
@@ -2230,6 +2287,7 @@ export function liveSource(
         return merged;
       }
       const store = await mergeIntoRegistry([]);
+      rememberRegistrySnapshot(feed, mapped);
       lastRegistryMergedCount = store.length;
       provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;

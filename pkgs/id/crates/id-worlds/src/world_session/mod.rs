@@ -221,6 +221,10 @@ impl<I: SessionIo> SessionIo for SendDeadlineIo<'_, I> {
             self.inner.mark_authorized();
         }
     }
+
+    fn authenticated_caller_account(&self) -> Option<&str> {
+        self.inner.authenticated_caller_account()
+    }
 }
 
 /// The admin secret a first frame carries, if it is an administrative one.
@@ -264,6 +268,7 @@ async fn run_session_with_send_deadline<I: SessionIo>(
 }
 
 async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    let caller_account = io.authenticated_caller_account().map(str::to_owned);
     // Frames sent before a world lease exists belong to no world, so
     // their bytes go to a throwaway meter rather than being attributed
     // to a world that did not send them.
@@ -484,6 +489,7 @@ async fn run_session_inner<I: SessionIo>(hub: &WorldHub, io: &mut I, config: Ses
         frame,
         lease.name(),
         config.documents_store.clone(),
+        caller_account,
     )
     .await;
 }
@@ -1176,6 +1182,7 @@ async fn joined<I: SessionIo>(
     agent_profile: bool,
     device_input: Option<serde_json::Value>,
     documents_store: Option<Store>,
+    caller_account: Option<String>,
 ) {
     let world = service.world();
     let session_id = service.next_session_id();
@@ -1356,6 +1363,7 @@ async fn joined<I: SessionIo>(
                         &mut pending_view_deadline,
                         world_name,
                         documents_store.as_ref(),
+                        caller_account.as_deref(),
                     ).await {
                         break;
                     }
@@ -1589,6 +1597,7 @@ async fn handle_client_frame<I: SessionIo>(
     pending_view_deadline: &mut Option<tokio::time::Instant>,
     world_name: &str,
     documents_store: Option<&Store>,
+    caller_account: Option<&str>,
 ) -> bool {
     let world = service.world();
     let Ok(value) = parse_json_without_duplicate_keys(text) else {
@@ -1903,13 +1912,25 @@ async fn handle_client_frame<I: SessionIo>(
                 .await;
             };
             world
-                .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
+                .input_from_session(
+                    token.clone(),
+                    bytes,
+                    session_id,
+                    device_input.cloned(),
+                    caller_account.map(str::to_owned),
+                )
                 .await
         }
         ClientFrame::Input { data_hex, .. } => match decode_hex(&data_hex) {
             Some(data) => {
                 world
-                    .input_from_session(token.clone(), data, session_id, device_input.cloned())
+                    .input_from_session(
+                        token.clone(),
+                        data,
+                        session_id,
+                        device_input.cloned(),
+                        caller_account.map(str::to_owned),
+                    )
                     .await
             }
             None => {
@@ -1980,7 +2001,13 @@ async fn handle_client_frame<I: SessionIo>(
             match serde_json::to_vec(&encoded) {
                 Ok(bytes) => {
                     world
-                        .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
+                        .input_from_session(
+                            token.clone(),
+                            bytes,
+                            session_id,
+                            device_input.cloned(),
+                            caller_account.map(str::to_owned),
+                        )
                         .await
                 }
                 Err(_) => {

@@ -1,10 +1,12 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -440,4 +442,137 @@ func TestPointRunAtPreparedEnvManifestScopeUnderTheDepsLock(t *testing.T) {
 			t.Errorf("the stale prepared link at %s is cleared, stat err = %v", dir, err)
 		}
 	}
+}
+
+func TestRunUsesTheForeignProjectsPreparedSubset(t *testing.T) {
+	// Oracle: Node resolves bare imports by walking up from each importing
+	// file and using the nearest node_modules. This deterministic runtime
+	// probe exercises that public launch path without requiring Node on the
+	// Fleet runner; it also accepts Node's transform-types capability probe.
+	// The entry project and foreign helper pin conflicting versions, and
+	// the output reports the version found at each importing scope.
+	root := t.TempDir()
+	entryDir := filepath.Join(root, "entry")
+	foreignDir := filepath.Join(entryDir, "foreign")
+	for _, dir := range []string{entryDir, foreignDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := filepath.Join(entryDir, "main.mjs")
+	helper := filepath.Join(foreignDir, "helper.mjs")
+	if err := os.WriteFile(filepath.Join(entryDir, "package.json"), []byte("{\"dependencies\":{\"shared\":\"1.0.0\"}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreignDir, "package.json"), []byte("{\"dependencies\":{\"shared\":\"2.0.0\"}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("import { value as entryValue } from \"shared\";\nimport { value as foreignValue } from \"./foreign/helper.mjs\";\nconsole.log(`${entryValue}:${foreignValue}`);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helper, []byte("import { value } from \"shared\";\nexport { value };\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	span := map[string]any{
+		"start": map[string]any{"line": 0, "character": 0},
+		"end":   map[string]any{"line": 0, "character": 6},
+	}
+	fileEdge := map[string]any{
+		"specifier": "./foreign/helper.mjs",
+		"code":      map[string]any{"specifier": fileURL(helper), "span": span},
+	}
+	missingEdge := func() map[string]any {
+		return map[string]any{
+			"specifier": "shared",
+			"code":      map[string]any{"error": "Module not found: shared", "span": span},
+		}
+	}
+	graph, err := json.Marshal(map[string]any{
+		"roots": []string{fileURL(entry)},
+		"modules": []any{
+			map[string]any{
+				"kind": "esm", "specifier": fileURL(entry), "local": entry,
+				"dependencies": []any{missingEdge(), fileEdge},
+			},
+			map[string]any{
+				"kind": "esm", "specifier": fileURL(helper), "local": helper,
+				"dependencies": []any{missingEdge()},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphFile := filepath.Join(root, "deno-info.json")
+	if err := os.WriteFile(graphFile, graph, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(binDir, "deno"), "#!/bin/sh\ncat "+shellQuote(graphFile)+"\n")
+	writeExecutable(t, filepath.Join(binDir, "npm"), `#!/bin/sh
+set -eu
+version=$(sed -n 's/.*"shared": "\([^"]*\)".*/\1/p' package.json)
+case "$version" in
+  1.0.0) value=entry-1.0.0 ;;
+  2.0.0) value=foreign-2.0.0 ;;
+  *) echo "unexpected shared pin: $version" >&2; exit 11 ;;
+esac
+mkdir -p node_modules/shared
+printf '{"name":"shared","version":"%s","type":"module","exports":"./index.mjs"}\n' "$version" > node_modules/shared/package.json
+printf 'export const value = "%s";\n' "$value" > node_modules/shared/index.mjs
+`)
+	writeExecutable(t, filepath.Join(binDir, "node"), `#!/bin/sh
+set -eu
+for arg do script=$arg; done
+case "$script" in *mcpx-node-transform-probe*) exit 0 ;; esac
+entry_dir=$(dirname "$script")
+entry_version=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$entry_dir/node_modules/shared/package.json")
+foreign_version=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$entry_dir/foreign/node_modules/shared/package.json")
+printf 'entry-%s:foreign-%s\n' "$entry_version" "$foreign_version"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MCPX_CACHE_DIR", filepath.Join(root, "cache"))
+
+	var stdout, stderr bytes.Buffer
+	_, err = Run(context.Background(), Options{
+		File:                entry,
+		Runtime:             "node",
+		Permissions:         "all",
+		ClientSource:        "// test client\n",
+		Imports:             "prepare",
+		ImportsOnMissing:    "install",
+		ImportsCrossProject: "isolate",
+		ImportsNetwork:      "off",
+		Launcher:            LauncherNone,
+		WorkRoot:            filepath.Join(root, "work"),
+		Dir:                 entryDir,
+		Timeout:             20 * time.Second,
+		Stdout:              &stdout,
+		Stderr:              &stderr,
+	})
+	if err != nil {
+		t.Fatalf("prepare-mode runner failed: %v; stderr: %s", err, stderr.String())
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "entry-1.0.0:foreign-2.0.0"; got != want {
+		t.Fatalf("each importing project must resolve its own pins: got %q, want %q", got, want)
+	}
+	if _, err := os.Lstat(filepath.Join(foreignDir, "node_modules")); !os.IsNotExist(err) {
+		t.Errorf("the runner removes its temporary foreign-scope link after execution: stat error = %v", err)
+	}
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

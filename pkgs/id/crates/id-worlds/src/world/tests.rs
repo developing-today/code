@@ -9276,7 +9276,7 @@ mod tests {
         assert_eq!(committed_inputs(&w.journal), 0);
 
         // Expiry does not grant the DO ownership. Normal expiry recovery
-        // (journaled revoke then grant) is a separate slice; a handoff cannot
+        // journals revoke then grant (#13938 slice 1); a handoff cannot
         // silently turn an expired term into a live one.
         assert!(
             w.handle
@@ -9287,6 +9287,124 @@ mod tests {
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
+
+        // Recovery journals the fence before the grant (handoff 1,
+        // revoke 2, grant 3) and reopens DO writes only after the
+        // grant is durable.
+        assert_eq!(w.handle.recover_expired_lease().await.unwrap(), 3);
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == DO_WRITE_LEASE_HOLDER
+        ));
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
+
+        // Replay is the oracle: the journal alone rebuilds the DO
+        // holding epoch 3 at the grant position.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+    }
+
+    #[tokio::test]
+    async fn expired_lease_recovery_requires_an_expired_native_term() {
+        // A live native term cannot recover: expiry is the gate, and a
+        // recovery attempt journals nothing.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let before = w.journal.entries().len();
+        assert!(w.handle.recover_expired_lease().await.is_err());
+        assert_eq!(w.journal.entries().len(), before);
+        // The live term still fences the DO executor.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_native_lease_grant_append_failure_leaves_the_world_holderless() {
+        // A grant append failure between the two recovery transitions
+        // must leave the world holder-less and read-only: the revoke is
+        // durable, the grant is not, and DO writes stay refused.
+        struct FailGrantJournal {
+            inner: TransferJournal,
+        }
+        impl WorldJournal for FailGrantJournal {
+            fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+                if matches!(entry, JournalEntry::LeaseGranted { .. }) {
+                    bail!("injected grant append failure");
+                }
+                self.inner.append(entry)
+            }
+        }
+        let clock = Arc::new(ManualClock::new(1_000));
+        let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+        let shared = TransferJournal(Arc::new(std::sync::Mutex::new(vec![lease_header()])));
+        let journal = FailGrantJournal {
+            inner: shared.clone(),
+        };
+        let program_updates = Arc::new(AtomicU64::new(0));
+        let handle = WorldHandle::spawn_durable(
+            core,
+            Box::new(LeaseTestProgram(program_updates)),
+            Some(Box::new(journal)),
+        );
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        clock.advance(60_000);
+        assert!(handle.recover_expired_lease().await.is_err());
+        // Only the revoke is durable; the grant never landed.
+        let entries = shared.entries();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            }) if former_holder == "native-1"
+        ));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::LeaseGranted { .. }))
+        );
+        // The world is holder-less and read-only, not granted: DO
+        // writes stay refused and the failure is latched.
+        let refused = handle.input(token.clone(), b"0".to_vec()).await;
+        assert!(refused.is_err());
+        let again = handle.recover_expired_lease().await.unwrap_err();
+        assert!(format!("{again:#}").contains("storage failed"), "{again:#}");
+        assert_eq!(committed_inputs(&shared), 0);
     }
 
     #[tokio::test]
@@ -10570,6 +10688,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -10675,6 +10794,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                caller_account: None,
                 device_input: None,
                 signed_move: None,
                 reply,
@@ -11122,6 +11242,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    caller_account: None,
                     device_input: None,
                     signed_move: None,
                     reply,

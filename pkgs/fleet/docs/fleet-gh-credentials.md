@@ -11,9 +11,8 @@ developing-today/code#10744.
 
 Every `fleet gh` invocation resolves one token **by name** from the
 fleet secrets broker, exports it as `GH_TOKEN` to **one child `gh`
-process**, and throws everything away on exit. There is no cache, no
-state file, and no cross-invocation reuse of anything (see
-[No caching](#no-caching-across-invocations)).
+process**. Rotation policy can persist in the fleet config file,
+but credential values are resolved by name and never written there.
 
 ## Step 1 — secret resolution by name
 
@@ -102,6 +101,33 @@ Compiled-in owner lists (`gh.rs:104-110`):
 - developing.today App: `developing-today`, `dezren39`
 - Backup App: `developing-today`
 
+### Persistent rotation config (code#10311 ask (a))
+
+The same two knobs live in the fleet config file, so the rotation survives
+shells and machines. Env beats the file per process; the file
+beats the compiled-in lists above.
+
+```toml
+[gh]
+# Replaces the whole rotation exactly, same grammar as
+# FLEET_GH_ORDER. Enumerating the entries also selects the
+# enabled set: an App left out is not tried.
+order = ["app:developing-today", "app:dezren39", "personal"]
+
+[gh.owners]
+# Replaces one App's compiled-in owners (empty list disables it).
+app = ["developing-today", "dezren39"]
+```
+
+A blank order/owner entry and an unknown `[gh.owners]` slug are
+loud config-load errors (the #5460/#6405 rules); an empty owner
+list (`app = []`) is allowed and disables that App.
+
+#### Environment overrides
+
+Environment overrides are per-process and beat the persistent
+`[gh]` rotation settings above.
+
 ### Additional Apps from fleet config (`code#10311`)
 
 Declare additional GitHub Apps in the fleet TOML config; no binary
@@ -151,7 +177,10 @@ slug is an error; a daemon answering with an error is authoritative and
 does not trigger local minting. Existing cache lifetimes, secret
 resolution, signing and installation minting behavior are unchanged.
 
-Environment overrides (per-process, nothing persists):
+The environment variables `FLEET_GH_APP_OWNERS`,
+`FLEET_GH_DEVTODAY_OWNERS` and `FLEET_GH_BACKUP_OWNERS` override
+the matching built-in App owner list. Configured Apps use their
+`owners` arrays in `[[gh.apps]]`.
 
 | Variable                   | Effect (`gh.rs:74-86`, `gh.rs:352-378`)                                                                                                                                                                                                                                                   |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
