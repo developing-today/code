@@ -34,8 +34,8 @@
 //! another function.
 //!
 //! Not here, and arriving with later slices: crash recovery after a
-//! trapping call (the sandbox already poisons an
-//! instance whose call trapped; re-instantiating from the last good version
+//! trapping call (the sandbox already poisons an instance whose call
+//! trapped; re-instantiating from the last good version
 //! and its last good snapshot is §4's next step), draining in-flight calls
 //! before the old instance is dropped (calls are synchronous here, so none
 //! are in flight at a boundary), per-function limits and the world's
@@ -500,7 +500,10 @@ mod tests {
         // host returns the guest's rendered state.
         let v1 = interface("counter-u32");
         let mut host = host_expecting(&v1);
-        assert!(host.call(USER, NAME, b"A").is_err());
+        assert_eq!(
+            host.call(USER, NAME, b"A").unwrap_err().to_string(),
+            "no active function instance for (alice, counter)"
+        );
         host.publish(
             USER,
             NAME,
@@ -508,12 +511,15 @@ mod tests {
             7,
         )
         .unwrap();
-        assert!(host.call(USER, NAME, b"A").is_err());
+        assert_eq!(
+            host.call(USER, NAME, b"A").unwrap_err().to_string(),
+            "no active function instance for (alice, counter)"
+        );
         assert!(matches!(
             host.tick_boundary(USER, NAME),
             BoundaryOutcome::Activated { version: 1, .. }
         ));
-        assert_eq!(host.call(USER, NAME, b"A").unwrap(), 72_u32.to_le_bytes());
+        assert_eq!(host.call(USER, NAME, b"A").unwrap(), 73_u32.to_le_bytes());
     }
 
     #[test]
@@ -523,6 +529,7 @@ mod tests {
         // still answer calls.
         let v1 = interface("counter-u32");
         let mut host = host_expecting(&v1);
+        host.set_expectation("bob", FunctionBinding::expecting(&v1));
         host.publish(
             USER,
             NAME,
