@@ -109,6 +109,7 @@ import {
   eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { startActionsExecApplier } from "./actions-exec-apply.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
 import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
@@ -1999,6 +2000,17 @@ if (cfg.source === "live") {
 // Shutdown is tied to process signals inside the wiring.
 if (cfg.source === "live") {
   startPmCoreSchedulers({ feedFile: cfg.feedFile });
+}
+
+// #14043 S3: the answer applier carries recorded broker answers to the
+// queue broker's signed decide verb (live mode only).
+if (cfg.source === "live") {
+  startActionsExecApplier({
+    needsDrewFile: cfg.needsDrewFile,
+    applyFile: cfg.actionsExecApplyFile,
+    brokerUrl: cfg.queueBrokerUrl,
+    brokerTokenFile: cfg.queueBrokerTokenFile,
+  });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
