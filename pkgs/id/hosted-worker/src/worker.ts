@@ -14,7 +14,7 @@
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type BlobsEnv, type ObjectNamespaceLike } from "./routing.ts";
 import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
-import { handleMigrationOperatorRequest } from "./migration-operator.ts";
+import { handleMigrationOperatorRequest, migrationOperatorEnabled } from "./migration-operator.ts";
 import { workerMigrationPorts } from "./migration-coordinator.ts";
 import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
@@ -49,7 +49,7 @@ export default {
     try {
       const url = new URL(req.url);
       if (url.pathname.startsWith("/v1/internal/migrations/")) {
-        if (!env.MIGRATION_OPERATOR_TOKEN) {
+        if (!migrationOperatorEnabled(env)) {
           throw new FailClosed(503, "migration_operator_disabled", "migration operator route is disabled");
         }
         if (!env.HOSTED_DIRECTORY) {

@@ -15,6 +15,14 @@ export interface MigrationOperatorEnv {
   MIGRATION_OPERATOR_TOKEN?: string;
 }
 
+/** Match the bearer-token grammar at the configuration gate too, so a
+ * whitespace-only or oversized secret remains cleanly disabled. */
+export function migrationOperatorEnabled(
+  env: MigrationOperatorEnv,
+): env is MigrationOperatorEnv & { MIGRATION_OPERATOR_TOKEN: string } {
+  return typeof env.MIGRATION_OPERATOR_TOKEN === "string" && /^\S{1,4096}$/.test(env.MIGRATION_OPERATOR_TOKEN);
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -99,7 +107,7 @@ export async function handleMigrationOperatorRequest(
   try {
     const url = new URL(req.url);
     if (!url.pathname.startsWith(PATH_PREFIX)) return json({ error: "not_found" }, 404);
-    if (env.MIGRATION_OPERATOR_TOKEN === undefined || env.MIGRATION_OPERATOR_TOKEN === "") {
+    if (!migrationOperatorEnabled(env)) {
       throw new FailClosed(503, "migration_operator_disabled", "migration operator route is disabled");
     }
     const authorization = req.headers.get("authorization") ?? "";
@@ -115,7 +123,15 @@ export async function handleMigrationOperatorRequest(
     }
     const body = await bodyObject(req);
     exactKeys(body, action === "abort" ? ["binding_id", "migration_id"] : ["binding_id", "migration_id", "target_jurisdiction"]);
-    const bindingId = parseBindingId(typeof body.binding_id === "string" ? body.binding_id : null);
+    if (typeof body.binding_id !== "string") {
+      throw new FailClosed(400, "invalid_binding_id", "binding_id must be a minted 32-character hexadecimal ID");
+    }
+    let bindingId: string;
+    try {
+      bindingId = parseBindingId(body.binding_id);
+    } catch {
+      throw new FailClosed(400, "invalid_binding_id", "binding_id must be a minted 32-character hexadecimal ID");
+    }
     if (!isMigrationId(body.migration_id)) {
       throw new FailClosed(400, "invalid_migration_id", "migration_id must be 1 to 128 of A-Z a-z 0-9 . _ : -");
     }

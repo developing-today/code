@@ -70,6 +70,14 @@ test("operator route refuses when disabled and does not inspect client binding h
   );
   assert.equal(response.status, 503);
   assert.equal((await response.json() as { error: string }).error, "migration_operator_disabled");
+  const whitespaceSecret = await worker.fetch(
+    new Request("https://hosted.internal/v1/internal/migrations/start", { method: "POST" }),
+    {
+      USERS: { idFromName: () => { throw new Error("must not route to a user object"); } },
+      MIGRATION_OPERATOR_TOKEN: "   ",
+    } as never,
+  );
+  assert.equal(whitespaceSecret.status, 503);
 });
 
 test("operator route requires the dedicated bearer credential", async () => {
@@ -89,6 +97,18 @@ test("operator route rejects unknown or missing command fields", async () => {
   );
   assert.equal(response.status, 400);
   assert.equal((await response.json() as { error: string }).error, "invalid_body");
+  assert.equal(calls.length, 0);
+});
+
+test("operator command reports malformed binding ids as request errors", async () => {
+  const { ports, calls } = fixture();
+  const response = await handleMigrationOperatorRequest(
+    request("start", { binding_id: "not-a-binding", migration_id: "m1", target_jurisdiction: "eu" }),
+    { MIGRATION_OPERATOR_TOKEN: TOKEN },
+    ports,
+  );
+  assert.equal(response.status, 400);
+  assert.equal((await response.json() as { error: string }).error, "invalid_binding_id");
   assert.equal(calls.length, 0);
 });
 
