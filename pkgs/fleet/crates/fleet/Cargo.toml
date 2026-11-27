@@ -229,6 +229,7 @@ id = [
   "dep:iroh",
   "dep:postcard",
   "dep:serde",
+  "dep:sha2",
   "dep:tokio",
   "dep:url",
 ]
