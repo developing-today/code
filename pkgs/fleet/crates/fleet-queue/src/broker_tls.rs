@@ -41,7 +41,7 @@ pub type BoxedStream = Box<dyn IoStream>;
 #[cfg(feature = "client")]
 pub use client::BrokerTlsClient;
 #[cfg(feature = "queue-broker")]
-pub use server::BrokerTlsServer;
+pub use server::{BrokerStream, BrokerTlsServer};
 
 #[cfg(feature = "queue-broker")]
 mod server {
@@ -68,6 +68,28 @@ mod server {
     pub enum BrokerStream {
         Plain(TcpStream),
         Tls(Box<StreamOwned<ServerConnection, TcpStream>>),
+    }
+
+    impl BrokerStream {
+        /// Server-observed transport metadata for the HTTP adapter.
+        /// The peer address comes from the accepted socket; clients cannot
+        /// supply or override either the TLS classification or peer IP.
+        pub(crate) fn request_transport(&self) -> crate::uds_http::RequestTransport {
+            let (kind, peer) = match self {
+                Self::Plain(stream) => (
+                    crate::uds_http::RequestTransportKind::TcpPlain,
+                    stream.peer_addr(),
+                ),
+                Self::Tls(stream) => (
+                    crate::uds_http::RequestTransportKind::TcpTls,
+                    stream.sock.peer_addr(),
+                ),
+            };
+            crate::uds_http::RequestTransport {
+                kind,
+                peer_ip: peer.ok().map(|address| address.ip()),
+            }
+        }
     }
 
     impl Read for BrokerStream {
@@ -661,7 +683,7 @@ mod tests {
     /// not evidence that the TLS adapter propagated the handshake).
     fn serve_estate_observing_transport(
         estate: &Estate,
-        observed: std::sync::mpsc::Sender<crate::uds_http::RequestTransport>,
+        observed: std::sync::mpsc::Sender<(crate::uds_http::RequestTransport, Option<String>)>,
     ) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -680,7 +702,10 @@ mod tests {
                     }
                 },
                 move |req| {
-                    let _ = observed.send(req.transport);
+                    let version = req
+                        .header("X-Fleet-Trust-Bundle-Version")
+                        .map(str::to_string);
+                    let _ = observed.send((req.transport, version));
                     (200, b"{\"ok\":true}".to_vec())
                 },
             );
@@ -706,8 +731,12 @@ mod tests {
             .unwrap();
         let mut stream = mode.wrap(stream, BROKER_IP)?;
         let body = b"{}";
+        let bundle_version = mode
+            .bundle_version()
+            .map(|version| format!("X-Fleet-Trust-Bundle-Version: {version}\r\n"))
+            .unwrap_or_default();
         let head = format!(
-            "POST /healthz HTTP/1.1\r\nHost: {addr}\r\nX-Agent-Token: {token}\r\n\
+            "POST /healthz HTTP/1.1\r\nHost: {addr}\r\nX-Agent-Token: {token}\r\n{bundle_version}\
              Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
@@ -753,7 +782,7 @@ mod tests {
 
         let response = roundtrip(addr, &mode, TOKEN).unwrap();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        let transport = rx
+        let (transport, version) = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("handler observes the accepted request");
         assert_eq!(
@@ -761,6 +790,30 @@ mod tests {
             crate::uds_http::RequestTransportKind::TcpTls
         );
         assert_eq!(transport.peer_ip, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(version.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn break_glass_tls_request_does_not_present_a_bundle_version() {
+        // Oracle: break-glass still uses TLS, but BrokerTlsClient does not
+        // present a trust-bundle version because it skipped validation.
+        let tmp = TempDir::new("breakglass-version");
+        let estate = build_estate(&tmp, "a", "Test Org A LLC");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = serve_estate_observing_transport(&estate, tx);
+        let mode = BrokerTlsClient::break_glass();
+        assert_eq!(mode.bundle_version(), None);
+
+        let response = roundtrip(addr, &mode, TOKEN).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let (transport, version) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("handler observes the accepted request");
+        assert_eq!(
+            transport.kind,
+            crate::uds_http::RequestTransportKind::TcpTls
+        );
+        assert_eq!(version, None);
     }
 
     #[test]
@@ -796,7 +849,8 @@ mod tests {
         // port while capable clients take the verified path.
         let tmp = TempDir::new("dual");
         let estate = build_estate(&tmp, "a", "Test Org A LLC");
-        let addr = serve_estate(&estate);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = serve_estate_observing_transport(&estate, tx);
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
@@ -805,6 +859,7 @@ mod tests {
             .write_all(
                 format!(
                     "POST /healthz HTTP/1.1\r\nHost: {addr}\r\nX-Agent-Token: {TOKEN}\r\n\
+                     X-Fleet-Trust-Bundle-Version: 99\r\n\
                      Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
                 )
                 .as_bytes(),
@@ -813,6 +868,14 @@ mod tests {
         let mut raw = String::new();
         stream.read_to_string(&mut raw).unwrap();
         assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        let (transport, version) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("handler observes the accepted request");
+        assert_eq!(
+            transport.kind,
+            crate::uds_http::RequestTransportKind::TcpPlain
+        );
+        assert_eq!(version.as_deref(), Some("99"));
     }
 
     #[test]

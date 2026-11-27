@@ -565,10 +565,15 @@ mod tests {
         std::thread::spawn(move || {
             serve(listener, |req| {
                 let body = format!(
-                    "{{\"method\":\"{}\",\"target\":\"{}\",\"token\":\"{}\"}}",
+                    "{{\"method\":\"{}\",\"target\":\"{}\",\"token\":\"{}\",\"transport\":\"{:?}\",\"peer_ip\":{}}}",
                     req.method,
                     req.target,
-                    req.header("X-Agent-Token").unwrap_or("")
+                    req.header("X-Agent-Token").unwrap_or(""),
+                    req.transport.kind,
+                    req.transport
+                        .peer_ip
+                        .map(|ip| format!("\"{ip}\""))
+                        .unwrap_or_else(|| "null".to_string())
                 );
                 (200, body.into_bytes())
             });
@@ -585,6 +590,8 @@ mod tests {
         assert!(resp.contains("\"method\":\"POST\""), "resp: {resp}");
         assert!(resp.contains("\"target\":\"/healthz\""), "resp: {resp}");
         assert!(resp.contains("\"token\":\"t0ken\""), "resp: {resp}");
+        assert!(resp.contains("\"transport\":\"Uds\""), "resp: {resp}");
+        assert!(resp.contains("\"peer_ip\":null"), "resp: {resp}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
