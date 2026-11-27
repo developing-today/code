@@ -26,6 +26,7 @@ mod tests {
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
         outbound: mpsc::Sender<String>,
+        authenticated_caller_account: Option<String>,
     }
 
     impl SessionIo for ChannelIo {
@@ -34,6 +35,10 @@ mod tests {
         }
         async fn send(&mut self, frame: String) -> bool {
             self.outbound.send(frame).await.is_ok()
+        }
+
+        fn authenticated_caller_account(&self) -> Option<&str> {
+            self.authenticated_caller_account.as_deref()
         }
     }
 
@@ -65,10 +70,22 @@ mod tests {
         }
 
         fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
+            Self::connect_hub_with_account(hub, config, None)
+        }
+
+        fn connect_hub_with_account(
+            hub: WorldHub,
+            config: SessionConfig,
+            authenticated_caller_account: Option<String>,
+        ) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
             let task = tokio::spawn(async move {
-                let mut io = ChannelIo { inbound, outbound };
+                let mut io = ChannelIo {
+                    inbound,
+                    outbound,
+                    authenticated_caller_account,
+                };
                 run_session_with(&hub, &mut io, config).await;
             });
             Self {
@@ -146,6 +163,78 @@ mod tests {
     struct NoProgram;
 
     impl crate::world::WorldProgram for NoProgram {}
+
+    #[derive(Clone)]
+    struct CallerAccountProbe {
+        current: Option<String>,
+        seen: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        events: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl crate::world::WorldProgram for CallerAccountProbe {
+        fn set_caller_account(&mut self, account: Option<&str>) {
+            self.current = account.map(str::to_owned);
+        }
+
+        fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+            self.seen.lock().unwrap().push(self.current.clone());
+            self.events
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(event)?);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_session_account_reaches_input_update_without_becoming_durable() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(CallerAccountProbe {
+                current: None,
+                seen: Arc::clone(&seen),
+                events: Arc::clone(&events),
+            }),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let peer = Peer::connect_hub_with_account(
+            WorldHub::single(WorldService::new(world, None)),
+            SessionConfig::default(),
+            Some("acct-ada".to_owned()),
+        );
+        let mut peer = peer;
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "00",
+        }))
+        .await;
+
+        tokio::time::timeout(SESSION_FRAME_TIMEOUT, async {
+            loop {
+                if !seen.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("input update reaches the program");
+
+        assert_eq!(seen.lock().unwrap().as_slice(), &[Some("acct-ada".to_owned())]);
+        let event = events.lock().unwrap()[0].clone();
+        assert_eq!(event["participant_id"], 1);
+        assert!(event.get("caller_account").is_none());
+        assert!(event.get("authenticated_caller_account").is_none());
+        peer.close().await;
+    }
 
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).

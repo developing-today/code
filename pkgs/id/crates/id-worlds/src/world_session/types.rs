@@ -90,6 +90,14 @@ pub trait SessionIo: Send {
     /// Mark this session authorized after its application-level
     /// capability or admin credential has been validated.
     fn mark_authorized(&mut self) {}
+
+    /// An authenticated account supplied by the server-side transport.
+    /// This is billing context only; it never grants world authority and
+    /// must not be derived from a client frame. Capability-only transports
+    /// leave it unset.
+    fn authenticated_caller_account(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Tunables for [`run_session_with`].
