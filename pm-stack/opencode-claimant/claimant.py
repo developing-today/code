@@ -178,9 +178,38 @@ def _get_session(session_id: str):
     return "unknown", None
 
 
+def _resume_session_for_task(task):
+    """Resolve a task's optional resume hint before creating a session.
+
+    A missing or wrong-worktree session follows FDR-0001's recorded
+    fallback rule: create fresh in the task worktree and report why.
+    Unknown reads and active sessions fail closed; neither is proof
+    that it is safe to substitute or reuse the session.
+    """
+    requested = task.get("resume_session_id")
+    if not isinstance(requested, str) or not requested.strip():
+        return None, None, None
+    requested = requested.strip()
+    verdict, session = _get_session(requested)
+    if verdict == "gone":
+        return None, requested, "missing_session"
+    if verdict != "ok" or session.get("id") != requested:
+        return None, requested, "session_state_unknown"
+    location = session.get("location")
+    directory = location.get("directory") if isinstance(location, dict) else None
+    if directory != str(PRIMARY_CLONE):
+        return None, requested, "worktree_mismatch"
+    active_ids = _fetch_active_ids()
+    if active_ids is None:
+        return None, requested, "session_activity_unknown"
+    if requested in active_ids:
+        return None, requested, "busy_session"
+    return requested, requested, None
+
+
 def _delete_session(session_id: str) -> bool:
     """DELETE through the verified transport: True only on a 2xx
-    verdict. A non-2xx delete did not happen, whatever curl said."""
+    verdict. A non-2xx delete did not happen."""
     status, _payload = _server_request(
         "DELETE", f"/api/session/{session_id}", timeout=5
     )
@@ -1746,7 +1775,7 @@ def launch_step(
     hand_back_out=None,
 ) -> List[Dict]:
     """
-    Step 4: Launch - create sessions and bind tasks.
+    Step 4: Launch - create or resume sessions and bind tasks.
 
     Returns (launched, skips): the successfully launched sessions and
     a skip record for every candidate that was not launched, so the
@@ -1985,7 +2014,20 @@ def launch_step(
                     )
                     continue
 
-            # Step 4b: Create worker session
+            # Step 4b: Continue a requested session when it is present,
+            # in this task's worktree, and idle. Missing or mismatched
+            # sessions use the documented fresh-session fallback.
+            resume_session_id, requested_session_id, resume_fallback = (
+                _resume_session_for_task(task)
+            )
+            if resume_fallback in (
+                "session_state_unknown",
+                "session_activity_unknown",
+                "busy_session",
+            ):
+                skips.append({"task_id": task_id, "reason": resume_fallback})
+                continue
+
             session_create_body = {
                 "location": {"directory": str(PRIMARY_CLONE)},
                 "title": f"Queue task {task_id} - {issue}",
@@ -1994,46 +2036,54 @@ def launch_step(
             }
 
             try:
-                # Create session through the verified transport,
-                # with the server's Basic auth - unauthenticated
-                # calls are rejected (#7367).
-                status, create_payload = _server_request(
-                    "POST", "/api/session", body=session_create_body, timeout=10
-                )
-                create_wall = _provider_wall_error(create_payload)
-                if create_wall is not None:
-                    # #8166: the route is walled. This candidate was
-                    # never bound or launched, so no attempt is
-                    # consumed; the gate closes for the rest of the
-                    # fire and the wall is recorded verbatim.
-                    provider_wall = _provider_wall_record(create_wall)
-                    _fire_provider_wall = provider_wall
-                    skips.append({"task_id": task_id, "reason": "provider_wall"})
-                    continue
-                if not _is_2xx(status):
-                    raise RuntimeError(
-                        f"Session creation failed: http status "
-                        f"{status if status is not None else 'unknown'}"
-                        + (" (unauthorized)" if status == 401 else "")
+                session_id = resume_session_id
+                if session_id is None:
+                    # Create session through the verified transport,
+                    # with the server's Basic auth - unauthenticated
+                    # calls are rejected (#7367).
+                    status, create_payload = _server_request(
+                        "POST", "/api/session", body=session_create_body, timeout=10
                     )
+                    create_wall = _provider_wall_error(create_payload)
+                    if create_wall is not None:
+                        # #8166: the route is walled. This candidate was
+                        # never bound or launched, so no attempt is
+                        # consumed; the gate closes for the rest of the
+                        # fire and the wall is recorded verbatim.
+                        provider_wall = _provider_wall_record(create_wall)
+                        _fire_provider_wall = provider_wall
+                        skips.append({"task_id": task_id, "reason": "provider_wall"})
+                        continue
+                    if not _is_2xx(status):
+                        raise RuntimeError(
+                            f"Session creation failed: http status "
+                            f"{status if status is not None else 'unknown'}"
+                            + (" (unauthorized)" if status == 401 else "")
+                        )
 
-                session = _unwrap_envelope(create_payload)
-                session_id = session.get("id") if isinstance(session, dict) else None
-                if not session_id:
-                    raise RuntimeError(
-                        f"Session creation returned no id: {str(create_payload)[:200]}"
-                    )
+                    session = _unwrap_envelope(create_payload)
+                    session_id = session.get("id") if isinstance(session, dict) else None
+                    if not session_id:
+                        raise RuntimeError(
+                            f"Session creation returned no id: {str(create_payload)[:200]}"
+                        )
 
-                # Verify location before proceeding
-                if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
-                    # Wrong location - delete and skip
-                    _delete_session(session_id)
-                    skips.append(
-                        {"task_id": task_id, "reason": "session_wrong_location"}
-                    )
-                    continue
+                    # Verify location before proceeding
+                    if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
+                        # Wrong location - delete and skip
+                        _delete_session(session_id)
+                        skips.append(
+                            {"task_id": task_id, "reason": "session_wrong_location"}
+                        )
+                        continue
 
-                # Step 4c: Bind the session (atomic operation)
+                # Step 4c: Bind the session (atomic operation). The
+                # binding event stores both the actual session id and,
+                # for fallbacks, a stable reason in launched_by; the
+                # task's resume_session_id remains the original request.
+                launched_by = "opencode-claimant"
+                if resume_fallback is not None:
+                    launched_by += f":resume-fallback:{resume_fallback}"
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
@@ -2044,7 +2094,7 @@ def launch_step(
                         "--session-id",
                         session_id,
                         "--launched-by",
-                        "opencode-claimant",
+                        launched_by,
                     ],
                     capture_output=True,
                     text=True,
@@ -2136,6 +2186,10 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "queue": candidate.get("queue"),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
+                if requested_session_id is not None:
+                    entry["requested_session_id"] = requested_session_id
+                if resume_fallback is not None:
+                    entry["resume_fallback"] = resume_fallback
                 _take_prompt_wall()
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True

@@ -287,6 +287,148 @@ class TestLaunchStep(unittest.TestCase):
             ],
         )
 
+    def test_resume_hint_uses_matching_idle_session_without_creating_one(self):
+        # Oracle: the launch record and bind command must name the hinted
+        # session, while no POST /api/session creates a replacement.
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_resume")
+        existing = {
+            "id": "ses_resume",
+            "location": {"directory": str(claimant.PRIMARY_CLONE)},
+        }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+                return Result(0, "{}")
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", existing)),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_send_prompt", return_value=True) as send_prompt,
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.args[0], "ses_resume")
+        self.assertEqual(launched[0]["session_id"], "ses_resume")
+        self.assertEqual(launched[0]["requested_session_id"], "ses_resume")
+        self.assertEqual(len(binds), 1)
+        self.assertIn("ses_resume", binds[0])
+
+    def test_missing_resume_session_falls_back_and_records_substitution(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_missing")
+        creates = []
+
+        def server_request(method, path, body=None, timeout=5):
+            creates.append((method, path))
+            return 201, {
+                "id": "ses_new1",
+                "location": {"directory": str(claimant.PRIMARY_CLONE)},
+            }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("gone", None)),
+            patch.object(claimant, "_server_request", side_effect=server_request),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(creates, [("POST", "/api/session")])
+        self.assertEqual(launched[0]["requested_session_id"], "ses_missing")
+        self.assertEqual(launched[0]["session_id"], "ses_new1")
+        self.assertEqual(launched[0]["resume_fallback"], "missing_session")
+        self.assertIn(
+            "opencode-claimant:resume-fallback:missing_session", binds[0]
+        )
+        self.assertIn("ses_new1", binds[0])
+
+    def test_wrong_worktree_resume_session_falls_back_without_reusing_it(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_other_tree")
+        creates = []
+        other_tree = {
+            "id": "ses_other_tree",
+            "location": {"directory": "/other/worktree"},
+        }
+
+        def server_request(method, path, body=None, timeout=5):
+            creates.append((method, path))
+            return 201, {
+                "id": "ses_new1",
+                "location": {"directory": str(claimant.PRIMARY_CLONE)},
+            }
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(argv)
+            return Result(0, "{}")
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", other_tree)),
+            patch.object(claimant, "_server_request", side_effect=server_request),
+            patch.object(claimant, "_send_prompt", return_value=True),
+            patch.object(claimant, "_post_launch_agent_note", return_value=True),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(skips, [])
+        self.assertEqual(creates, [("POST", "/api/session")])
+        self.assertEqual(launched[0]["requested_session_id"], "ses_other_tree")
+        self.assertEqual(launched[0]["session_id"], "ses_new1")
+        self.assertEqual(launched[0]["resume_fallback"], "worktree_mismatch")
+        self.assertIn(
+            "opencode-claimant:resume-fallback:worktree_mismatch", binds[0]
+        )
+
+    def test_active_resume_session_is_skipped_without_stealing_it(self):
+        binds = []
+        candidate = dict(CANDIDATE, resume_session_id="ses_busy")
+        session = {
+            "id": "ses_busy",
+            "location": {"directory": str(claimant.PRIMARY_CLONE)},
+        }
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant, "_get_session", return_value=("ok", session)),
+            patch.object(claimant, "_fetch_active_ids", return_value={"ses_busy"}),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "busy_session"}])
+        self.assertEqual(binds, [])
+
     def test_valid_candidate_launches_and_binds(self):
         binds = []
         with (

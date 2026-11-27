@@ -38,11 +38,13 @@ Main execution script that implements the 6-step process:
      value is unchanged by #5016)
    - Returns cap_room (available slots) or -1 if unknown
 
-4. **Launch** (Step 4): Creates sessions and binds tasks
-   - Creates worker sessions via OpenCode server API
-   - Verifies session location matches requested directory
-   - Atomically binds session to task using `repo-queue bind`
-   - Sends execution prompt to bound session
+4. **Launch** (Step 4): Creates or resumes sessions and binds tasks
+   - For tasks with `resume_session_id`, continues that session only when its location matches the claimant worktree and the server reports it idle
+   - A missing or wrong-worktree hinted session falls back to a fresh session; the launch record includes the requested id, actual id, and fallback reason
+   - Unknown session/activity reads and active hinted sessions are skipped rather than substituted or taken over
+   - Tasks without a resume hint retain the fresh-session path
+   - Atomically binds the actual session to the task using `repo-queue bind`
+   - Sends the execution prompt to the bound session
    - Respects queue priority (order in QUEUES list)
 
 5. **Terminal States** (Step 5): Handled by worker sessions
