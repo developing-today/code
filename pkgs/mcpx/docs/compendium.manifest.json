@@ -1222,6 +1222,13 @@
       "note": "Claude Code adapter feasibility research; findings and assumptions, not an adapter design"
     },
     {
+      "path": "docs/record-and-replay.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 73,
+      "note": "transport-boundary call trace capture and deterministic replay design"
+    },
+    {
       "path": "worker/README.md",
       "chapter": null,
       "role": "not-compendium",
