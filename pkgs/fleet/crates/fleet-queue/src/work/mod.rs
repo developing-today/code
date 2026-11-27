@@ -4,6 +4,7 @@
 //! slice's contract and its tests; slices land independently as
 //! their design gates clear.
 
+pub mod activity;
 pub mod authority;
 pub mod completion;
 pub mod context;
