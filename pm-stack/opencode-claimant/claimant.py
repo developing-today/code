@@ -2078,12 +2078,8 @@ def launch_step(
                         continue
 
                 # Step 4c: Bind the session (atomic operation). The
-                # binding event stores both the actual session id and,
-                # for fallbacks, a stable reason in launched_by; the
-                # task's resume_session_id remains the original request.
-                launched_by = "opencode-claimant"
-                if resume_fallback is not None:
-                    launched_by += f":resume-fallback:{resume_fallback}"
+                # bind records the actual id; the task's stored
+                # resume_session_id remains the original request.
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
@@ -2094,7 +2090,7 @@ def launch_step(
                         "--session-id",
                         session_id,
                         "--launched-by",
-                        launched_by,
+                        "opencode-claimant",
                     ],
                     capture_output=True,
                     text=True,

@@ -359,9 +359,7 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(launched[0]["requested_session_id"], "ses_missing")
         self.assertEqual(launched[0]["session_id"], "ses_new1")
         self.assertEqual(launched[0]["resume_fallback"], "missing_session")
-        self.assertIn(
-            "opencode-claimant:resume-fallback:missing_session", binds[0]
-        )
+        self.assertIn("opencode-claimant", binds[0])
         self.assertIn("ses_new1", binds[0])
 
     def test_wrong_worktree_resume_session_falls_back_without_reusing_it(self):
@@ -404,9 +402,7 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(launched[0]["requested_session_id"], "ses_other_tree")
         self.assertEqual(launched[0]["session_id"], "ses_new1")
         self.assertEqual(launched[0]["resume_fallback"], "worktree_mismatch")
-        self.assertIn(
-            "opencode-claimant:resume-fallback:worktree_mismatch", binds[0]
-        )
+        self.assertIn("opencode-claimant", binds[0])
 
     def test_active_resume_session_is_skipped_without_stealing_it(self):
         binds = []
