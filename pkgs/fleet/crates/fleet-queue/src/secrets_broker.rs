@@ -1586,6 +1586,7 @@ fn url_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::handle_http;
     use super::{
         CachedSecret, DEFAULT_TTL_S, DeltaOutcome, MIN_TTL_S, State, WATERMARK_SKEW_S,
         apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
@@ -1594,7 +1595,6 @@ mod tests {
         parse_list_entries, parse_peer_secrets, parse_rfc3339_unix, parse_ttl_s, persist_watermark,
         pre_body_refusal, resolve_list_id, secrets_list_prefix, secrets_list_project, url_decode,
     };
-    use super::handle_http;
     use serde_json::{Value, json};
     use std::time::Duration;
 
