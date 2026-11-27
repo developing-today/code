@@ -50,7 +50,7 @@ The presentation design separates what a program means from how a shell draws it
 - `2026-11-08_design_id6012_visual_feature_cost_ranking.md` ranks visual features by cost, so a shell with a small budget can drop features in a designed order instead of failing at random.
 - `2026-11-08_decision_id5910_kdl_presentation_surfaces.md` and `2026-11-14_decision_id5907_triple_decomposition.md` cover the KDL presentation surfaces — export, hand upload, agent statements — and the rules for decomposing KDL statements into triples.
 
-The fallback rule is uniform across the design and the shipped shells: a shell without a renderer for a surface keeps that surface's text projection. Scene, audio and widget surfaces degrade to text; they never block the session.
+A recognized versioned surface has a deterministic, escape-free text projection, so a shell without its specialized renderer can still present readable content. Scene, audio, widget and `media/1` surfaces degrade to text rather than blocking the session. The media projection retains each item's label, closed sort, and any optional dimensions or duration even when a presenter cannot resolve its typed artifact reference; media documents themselves contain no embedded bytes, URLs, scripts or free-form MIME strings. This is the safe fallback contract, not a claim that every shell ships a media renderer. If the host does not recognize a surface kind at all, it drops the document to the legacy text path.
 
 ## Query and client parity
 

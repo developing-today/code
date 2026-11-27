@@ -174,6 +174,40 @@ pub enum HostCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show or set scheduled snapshots (#13739): how often a running
+    /// host takes a signed export of each live world, and how many sets
+    /// it keeps. With no `--world` this is the host-wide default; with
+    /// one, that world's own policy and its sets on disk. Give `--every`
+    /// and `--keep` to set a policy, `--off` to turn snapshots off,
+    /// `--inherit` to drop a world's own policy. With none of these it
+    /// only shows. Acts on the running host when one answers on
+    /// `host.sock`; otherwise edits the host file.
+    Snapshots {
+        /// The data root.
+        root: PathBuf,
+        /// One world instead of the host-wide default.
+        #[arg(long)]
+        world: Option<String>,
+        /// Time between sets, such as `90m`, `6h` or `1d` (at least 60s).
+        #[arg(long, requires = "keep", conflicts_with_all = ["off", "inherit"])]
+        every: Option<String>,
+        /// Newest sets kept.
+        #[arg(long, requires = "every")]
+        keep: Option<u32>,
+        /// Also prune sets older than this, such as `30d`; the newest set
+        /// is always kept.
+        #[arg(long, requires = "every")]
+        max_age: Option<String>,
+        /// Turn scheduled snapshots off (sets already taken stay).
+        #[arg(long, conflicts_with = "inherit")]
+        off: bool,
+        /// Drop the world's own policy so it follows the host default.
+        #[arg(long, requires = "world")]
+        inherit: bool,
+        /// Print the settings and sets as JSON instead of lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one world's record without opening it: lifecycle state and
     /// every recorded transition, journal entries, version and torn
     /// tail, module count, storage bytes, and what the last restart
