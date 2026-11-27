@@ -128,6 +128,17 @@ pub struct AttachmentDecl {
     pub mode: Option<String>,
 }
 
+/// A `migrate` state-migration declaration (`#12640`): version X's
+/// manifest names an older minor version whose live state X adopts
+/// when the upgrade lands at a tick boundary. Carried structurally;
+/// running the migration is registry work, not this parser's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationDecl {
+    /// The source version whose state this version migrates (e.g.
+    /// `1.0.0` for the manifest of `1.1.0`).
+    pub from: String,
+}
+
 /// A parsed, validated library manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryManifest {
@@ -150,6 +161,10 @@ pub struct LibraryManifest {
     pub subtypes: Vec<SubtypeDecl>,
     /// Declared entity attachments (`#5969` §3).
     pub attachments: Vec<AttachmentDecl>,
+    /// Declared state migrations (`#12640`): the older minor versions
+    /// this version adopts state from. Empty means no migration is
+    /// declared, so a minor upgrade keeps the state inert.
+    pub migrations: Vec<MigrationDecl>,
     /// The external URL, for `url-library` manifests only (`#5969` §6).
     pub source_url: Option<String>,
 }
@@ -186,6 +201,7 @@ impl LibraryManifest {
         let mut requirements = Vec::new();
         let mut subtypes = Vec::new();
         let mut attachments = Vec::new();
+        let mut migrations = Vec::new();
         let mut source_url = None;
         let mut platform_seen = false;
 
@@ -205,6 +221,17 @@ impl LibraryManifest {
                 }
                 "subtype" => subtypes.push(parse_subtype(child)?),
                 "attach" => attachments.push(parse_attach(child)?),
+                "migrate" => {
+                    let decl = parse_migrate(&name, child)?;
+                    ensure!(
+                        !migrations
+                            .iter()
+                            .any(|prior: &MigrationDecl| prior.from == decl.from),
+                        "duplicate migrate from {:?} in library {name:?}",
+                        decl.from,
+                    );
+                    migrations.push(decl);
+                }
                 "source" => {
                     ensure!(
                         source_url.is_none(),
@@ -264,6 +291,7 @@ impl LibraryManifest {
             requirements,
             subtypes,
             attachments,
+            migrations,
             source_url,
         })
     }
@@ -371,6 +399,24 @@ fn parse_attach(node: &Node) -> Result<AttachmentDecl> {
         target,
         mode: node.prop_string("mode").map(str::to_string),
     })
+}
+
+/// Parse a `migrate` node (`#12640`): a required `from` property
+/// naming the source version. The shape is validated here; the
+/// version itself is validated where the offer is built, which owns
+/// the version grammar.
+fn parse_migrate(library: &str, node: &Node) -> Result<MigrationDecl> {
+    let from = node
+        .prop_string("from")
+        .ok_or_else(|| {
+            anyhow::anyhow!("migrate node in library {library:?} requires a from property")
+        })?
+        .to_string();
+    ensure!(
+        !from.is_empty(),
+        "migrate from in library {library:?} must not be empty"
+    );
+    Ok(MigrationDecl { from })
 }
 
 /// One node of the KDL subset this profile uses.
@@ -803,6 +849,53 @@ library "pure-lib" version="0.1.0" {
         let err = LibraryManifest::parse(&text).unwrap_err().to_string();
         assert!(err.contains("unknown node"), "{err}");
         assert!(err.contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn migrate_declarations_parse() {
+        // Oracle: #12640 — a version declares the older minor versions
+        // it adopts state from; the manifest carries the declaration,
+        // the registry runs it later.
+        let text = GREETER.replace(
+            "license \"MIT\"",
+            "license \"MIT\"\n    migrate from=\"1.0.0\"\n    migrate from=\"1.0.5\"",
+        );
+        let m = LibraryManifest::parse(&text).unwrap();
+        assert_eq!(
+            m.migrations,
+            vec![
+                MigrationDecl {
+                    from: "1.0.0".to_string()
+                },
+                MigrationDecl {
+                    from: "1.0.5".to_string()
+                },
+            ]
+        );
+        let bare = LibraryManifest::parse(GREETER).unwrap();
+        assert_eq!(bare.migrations, []);
+    }
+
+    #[test]
+    fn migrate_without_from_is_refused() {
+        // Oracle: fail-closed — a migrate node naming no source
+        // version declares nothing, so it is refused, not ignored.
+        let text = GREETER.replace("license \"MIT\"", "license \"MIT\"\n    migrate");
+        let err = LibraryManifest::parse(&text).unwrap_err().to_string();
+        assert!(err.contains("from"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_migrate_from_is_refused() {
+        // Oracle: one declaration per source version — a repeated
+        // from names no second migration, so it is refused.
+        let text = GREETER.replace(
+            "license \"MIT\"",
+            "license \"MIT\"\n    migrate from=\"1.0.0\"\n    migrate from=\"1.0.0\"",
+        );
+        let err = LibraryManifest::parse(&text).unwrap_err().to_string();
+        assert!(err.contains("duplicate migrate"), "{err}");
+        assert!(err.contains("1.0.0"), "{err}");
     }
 
     #[test]
