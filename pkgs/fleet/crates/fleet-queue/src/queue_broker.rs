@@ -1201,7 +1201,6 @@ fn record_trust_bundle_client(
     clients
         .entry((client_ip, version))
         .and_modify(|report| {
-            report.version = version;
             report.last_seen_unix = report.last_seen_unix.max(now_unix);
         })
         .or_insert(TrustBundleClientReport {
