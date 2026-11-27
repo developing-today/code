@@ -16,6 +16,7 @@
 //! readiness), DEP-04 (GitHub projection, hierarchy) and CLI-13 (the
 //! commands) consume it.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use serde_json::{Map, Value};
@@ -1739,6 +1740,107 @@ pub fn active_hard_blocker_count(edges: &[Edge]) -> usize {
     edges.iter().filter(|edge| edge.gates_readiness()).count()
 }
 
+/// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
+/// The SQL insert carries its own `:max_reach`; this constant is the
+/// pure-model default the tests and callers without a measured broker
+/// bound use.
+pub const BLOCKS_REACH_DEFAULT_BOUND: usize = 1024;
+
+/// A bounded BFS over active hard `blocks` edges from `from_key`,
+/// returning the path `from_key → … → to_key` when one exists
+/// (DEP-03 §5.1: `u → v` is a cycle iff `u == v` or a path
+/// `v → u` exists). Only `relation == blocks`, `hardness == hard`
+/// and `status == active` edges are followed; soft, non-`blocks`,
+/// resolved, removed and quarantined edges are not part of the path.
+/// The walk visits each key at most once (the SQL `UNION` semantics),
+/// so it terminates even when the committed graph already holds a
+/// cycle. When the reachable set reaches `max_reach` before the walk
+/// finishes, the check is refused with `graph_evaluation_incomplete`
+/// rather than answered from a partial walk (DEP-03 §5.3).
+pub fn blocks_reachable_path(
+    edges: &[Edge],
+    from_key: &str,
+    to_key: &str,
+    max_reach: usize,
+) -> Result<Option<Vec<String>>, RelationError> {
+    if from_key == to_key {
+        return Ok(Some(vec![from_key.to_string()]));
+    }
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in edges {
+        if !edge.gates_readiness() {
+            continue;
+        }
+        adjacency
+            .entry(edge.source.key())
+            .or_default()
+            .push(edge.target.key());
+    }
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut parent: HashMap<String, String> = HashMap::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    visited.insert(from_key.to_string());
+    queue.push_back(from_key.to_string());
+    while let Some(current) = queue.pop_front() {
+        if current == to_key {
+            let mut path = vec![current.clone()];
+            let mut node = current;
+            while let Some(prev) = parent.get(&node) {
+                path.push(prev.clone());
+                node = prev.clone();
+            }
+            path.reverse();
+            return Ok(Some(path));
+        }
+        // The walk did not finish within its bound: refuse, never
+        // assume. The target was not popped, and unexpanded nodes may
+        // remain, so no admission decision may rest on this walk.
+        if visited.len() >= max_reach {
+            return Err(RelationError::GraphEvaluationIncomplete {
+                detail: format!(
+                    "blocks reachability from {from_key:?} hit bound {max_reach} after {} visited",
+                    visited.len(),
+                ),
+            });
+        }
+        if let Some(nexts) = adjacency.get(&current) {
+            for next in nexts {
+                if visited.insert(next.clone()) {
+                    parent.insert(next.clone(), current.clone());
+                    queue.push_back(next.clone());
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The DEP-03 §5.1 insertion predicate for a proposed active hard
+/// `blocks` edge `proposed_source_key → proposed_target_key` against
+/// the committed `edges`. Rejects `u == v` as `self_edge` (the
+/// `WHERE :u <> :v` term) and a closing path `v → … → u` as
+/// `dependency_cycle` carrying the path as evidence; a truncated
+/// walk surfaces `graph_evaluation_incomplete`. Returns `Ok(())`
+/// when the edge may be admitted.
+pub fn check_blocks_insert(
+    edges: &[Edge],
+    proposed_source_key: &str,
+    proposed_target_key: &str,
+    max_reach: usize,
+) -> Result<(), RelationError> {
+    if proposed_source_key == proposed_target_key {
+        return Err(RelationError::SelfEdge {
+            key: proposed_source_key.to_string(),
+        });
+    }
+    match blocks_reachable_path(edges, proposed_target_key, proposed_source_key, max_reach)? {
+        Some(path) => Err(RelationError::DependencyCycle {
+            detail: path.join(" -> "),
+        }),
+        None => Ok(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D9. Legacy blocked_deps
 // ---------------------------------------------------------------------------
@@ -2846,6 +2948,101 @@ mod tests {
         assert!(!blockers_ready(true, 1));
         assert!(!blockers_ready(false, 0));
         assert!(!blockers_ready(false, 2));
+    }
+
+    fn hard_blocks(source_id: &str, target_id: &str) -> Edge {
+        let mut out = edge(Relation::Blocks, work(source_id), work(target_id));
+        out.hardness = Hardness::Hard;
+        out.validate().unwrap();
+        out
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_insert_rejects_closing_path() {
+        // Oracle: DEP-03 §5.1. `u → v` is a cycle iff `u == v` or a
+        // path `v → u` of active hard `blocks` edges exists.
+        let committed = vec![hard_blocks("1", "2"), hard_blocks("2", "3")];
+        // 3 → 1 would close 1 → 2 → 3: refused with the path as evidence.
+        let err = check_blocks_insert(
+            &committed,
+            &work("3").key(),
+            &work("1").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "dependency_cycle");
+        let RelationError::DependencyCycle { detail } = err else {
+            panic!("expected dependency_cycle");
+        };
+        assert!(detail.contains(&work("1").key()), "{detail}");
+        assert!(detail.contains(&work("3").key()), "{detail}");
+        // 1 → 3 follows the DAG: admitted.
+        check_blocks_insert(
+            &committed,
+            &work("1").key(),
+            &work("3").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap();
+        // Self edge is refused, not admitted.
+        assert_eq!(
+            check_blocks_insert(
+                &committed,
+                &work("1").key(),
+                &work("1").key(),
+                BLOCKS_REACH_DEFAULT_BOUND,
+            )
+            .unwrap_err()
+            .code(),
+            "self_edge"
+        );
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_walk_ignores_non_gating_edges() {
+        // Oracle: DEP-03 §5.1. Soft, non-`blocks`, resolved and
+        // quarantined edges are not part of the path.
+        let mut soft = edge(Relation::Blocks, work("1"), work("2"));
+        assert_eq!(soft.hardness, Hardness::Soft);
+        let mut related = edge(Relation::RelatedTo, work("2"), work("3"));
+        related.validate().unwrap();
+        let mut resolved_edge = hard_blocks("2", "3");
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+        let committed = vec![soft, related, resolved_edge];
+        assert_eq!(
+            blocks_reachable_path(
+                &committed,
+                &work("1").key(),
+                &work("3").key(),
+                BLOCKS_REACH_DEFAULT_BOUND,
+            )
+            .unwrap(),
+            None
+        );
+        check_blocks_insert(
+            &committed,
+            &work("3").key(),
+            &work("1").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_walk_fails_closed_on_bound() {
+        // Oracle: DEP-03 §5.3. An unfinished walk refuses with
+        // `graph_evaluation_incomplete`, never an admission.
+        let committed = vec![hard_blocks("1", "2"), hard_blocks("2", "3")];
+        let err =
+            blocks_reachable_path(&committed, &work("1").key(), &work("9").key(), 1).unwrap_err();
+        assert_eq!(err.code(), "graph_evaluation_incomplete");
+        assert_eq!(
+            check_blocks_insert(&committed, &work("9").key(), &work("4").key(), 1)
+                .unwrap_err()
+                .code(),
+            "graph_evaluation_incomplete"
+        );
     }
 
     #[test]
