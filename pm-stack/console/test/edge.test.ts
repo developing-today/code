@@ -2296,6 +2296,7 @@ describe("actions", () => {
     expect(first.machines).toEqual([
       {
         name: "nixos",
+        kid: expect.any(String),
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
@@ -2418,6 +2419,7 @@ describe("actions", () => {
     expect((await machines()).machines).toEqual([
       {
         name: "A machine",
+        kid: expect.any(String),
         seen: w.now.t,
         quiet: false,
         version: "0123abcd4567",
