@@ -26,7 +26,7 @@ function browser() {
   const frame = new Map(["ask", "ask-input", "ask-ok", "ask-title", "ask-text", "ask-label", "toast"].map((id) => [id, new Input(id)]));
   let result: any = { state: "refused", note: "No connection" };
   const sent: any[] = [];
-  let completeSend = () => {};
+  const completions: (() => void)[] = [];
   const document = {
     getElementById: (id: string) => frame.get(id) ?? null,
     createElement: (tag: string) => new Input(tag),
@@ -36,8 +36,8 @@ function browser() {
   const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8")
     .replace(/^import .*;$/gm, "").replaceAll("export ", "");
   const hooks = runInNewContext(`${ui}\n${app}\nloadDoc = async () => {}; draw = () => completeSend();\n({ questionCard, setStore: (store) => { outbox = store; } });`, {
-    document, PAGES: {}, navigator: {}, setTimeout: () => 0, clearTimeout: () => {},
-    completeSend: () => completeSend(),
+    document, PAGES: [], navigator: {}, setTimeout: () => 0, clearTimeout: () => {},
+    completeSend: () => completions.shift()?.(),
     self: { PMOutbox: {
       make: (kind: string, args: unknown) => ({ id: "answer-id", kind, args }),
       rule: () => "keep",
@@ -57,7 +57,7 @@ function browser() {
   }
   async function settle() { await Promise.resolve(); }
   async function answer(q: any, words: string) {
-    const done = new Promise<void>((resolve) => { completeSend = resolve; });
+    const done = new Promise<void>((resolve) => { completions.push(resolve); });
     open(q);
     input.value = words;
     dialog.returnValue = "ok";
@@ -71,6 +71,25 @@ function browser() {
 }
 
 const first = { set: "board", ledger: "decisions", qid: "q1" };
+
+test("answer draft: an older acceptance cannot erase a newer failed submission, even with identical words", async () => {
+  const b = browser();
+  let accept!: (out: any) => void;
+  let refuse!: (out: any) => void;
+  b.outcome(new Promise((resolve) => { accept = resolve; }));
+  const older = b.answer(first, "same exact words");
+  await b.settle();
+  b.outcome(new Promise((resolve) => { refuse = resolve; }));
+  const newer = b.answer(first, "same exact words");
+  await b.settle();
+  accept({ state: "done" });
+  await older;
+  refuse({ state: "failed", note: "Not accepted" });
+  await newer;
+  b.open(first);
+  expect(b.input.value).toBe("same exact words");
+  b.cancel();
+});
 
 test("answer draft: refused and failed sends reopen the exact words without crossing question keys", async () => {
   const b = browser();
@@ -96,9 +115,11 @@ for (const state of ["done", "held", "kept"]) {
     const other = { ...first, qid: "q2" };
     await b.answer(first, "first draft");
     await b.answer(other, "other draft");
-    if (state === "kept") b.hooks.setStore({ put: async () => {}, all: async () => [] });
+    const stored: any[] = [];
+    if (state === "kept") b.hooks.setStore({ put: async (entry: any) => { stored.push(entry); }, all: async () => stored });
     b.outcome({ state: state === "kept" ? "waiting" : state, note: "Accepted" });
     await b.answer(first, "accepted draft");
+    if (state === "kept") expect(stored[0].args).toEqual({ ...first, text: "accepted draft" });
     b.open(first);
     expect(b.input.value).toBe("");
     b.cancel();

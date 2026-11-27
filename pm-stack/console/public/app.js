@@ -1139,6 +1139,7 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
+  const draft = answerDrafts.get(key);
   // Out of the list while it is on its way, whatever is read meanwhile.
   sendingAnswers.add(key);
   let out;
@@ -1163,7 +1164,9 @@ async function sendAnswer(kind, args, key, said) {
     else if (out.state === "kept") toast(out.note);
     else if (said) toast(said);
     picks.delete(key);
-    answerDrafts.delete(key);
+    // An older send must not erase words submitted while it was away,
+    // even if the person submitted the same words twice.
+    if (answerDrafts.get(key) === draft) answerDrafts.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
@@ -1253,9 +1256,9 @@ function questionCard(q) {
         {
           class: "small ghost",
           onclick: async () => {
-            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true, value: answerDrafts.get(key), trim: false });
+            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true, value: answerDrafts.get(key)?.text, trim: false });
             if (text?.trim()) {
-              answerDrafts.set(key, text);
+              answerDrafts.set(key, { text });
               sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
             }
           },
