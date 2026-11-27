@@ -49,6 +49,7 @@ fn agreement_for(x: &SigningKey, o: &SigningKey, variant: u8, window: u64) -> Ge
         players: [player_id(x), player_id(o)],
         witness: None,
         objection_window_secs: window,
+        witness_terms: None,
     }
 }
 

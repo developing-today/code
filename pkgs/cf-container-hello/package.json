@@ -7,6 +7,6 @@
     "test": "python3 -m unittest discover -s test -p \"test_*.py\""
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.0.31"
+    "@cloudflare/containers": "^0.3.7"
   }
 }

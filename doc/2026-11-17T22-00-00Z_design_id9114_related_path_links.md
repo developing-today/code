@@ -47,8 +47,15 @@ LinkTarget = ContentRef(ContentId)
 A `PathRef` is a path, not an ID, so it can name things that have no
 hash (a file in a namespace, a folder, a not-yet-hashed object).
 
-- Encoded as UTF-8 text with `/` as the only separator. Stored in
-  Unicode NFC; a non-NFC input is normalised at write, never rejected.
+- Encoded as UTF-8 text with `/` as the only separator. Stored with
+  the author's spelling: never Unicode-normalised at write, and never
+  rejected for being non-NFC. Comparison follows the namespace's
+  comparison policy (A-9121.1): by default it is exact, so `é`
+  (U+00E9) and `e` + U+0301 name different targets; a namespace that
+  opts in to Unicode normalisation compares path references by their
+  NFC form, still without changing the stored text. (Amended for
+  #14208: an earlier revision normalised to NFC unconditionally, which
+  could silently redirect a link in a namespace without the opt-in.)
 - **Relative to the namespace root** of the sidecar's `namespace_id`
   (A-9114.1), never to the location of the sidecar. A leading `/` is
   rejected. (Chosen default; Q2.)

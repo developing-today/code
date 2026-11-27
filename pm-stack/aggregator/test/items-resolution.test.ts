@@ -74,12 +74,13 @@ const gh = (ref: RefKey, resolution?: GhItem["resolution"]): GhItem => ({
 });
 
 describe("items() resolution tagging (#1141)", () => {
-  test("pool refs tag pool; refs outside the pool fall back to fixtures and tag fixture", async () => {
+  test("pool refs tag pool; refs outside the pool stay unresolved in live mode (#14065)", async () => {
     const src = liveSource(await liveCfg("off", true));
     const items = await src.items(["dezren39/nix#508", "developing-today/code#752", "developing-today/code#999999"]);
     expect(items.get("dezren39/nix#508")?.resolution).toBe("pool");
-    // developing-today/code#752 exists only in the fixture data.
-    expect(items.get("developing-today/code#752")?.resolution).toBe("fixture");
+    // developing-today/code#752 exists only in the fixture data, which
+    // live mode no longer serves.
+    expect(items.has("developing-today/code#752")).toBe(false);
     expect(items.has("developing-today/code#999999")).toBe(false);
   });
 

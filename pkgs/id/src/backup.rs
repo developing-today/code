@@ -963,9 +963,23 @@ mod tests {
         key_envelope::encrypt(PASSPHRASE, secret).unwrap()
     }
 
+    /// The envelope every uploaded store starts with, built once
+    /// for the whole test process. Building it runs an Argon2id
+    /// derivation, and the download-budget property test creates a
+    /// fresh store for each of its 256 generated cases — with a
+    /// per-case envelope, that derivation dominated the pkgs/id
+    /// unit suite's execution time (#15142). The store and the
+    /// budget estimator never distinguish one valid envelope from
+    /// another, so all cases share this one; each caller receives
+    /// its own copy, free to mutate.
+    fn shared_envelope() -> Vec<u8> {
+        static ENVELOPE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        ENVELOPE.get_or_init(|| envelope_for(&[7; 32])).clone()
+    }
+
     fn uploaded_store() -> (BackupStore, SigningKey, [u8; 32], Vec<u8>) {
-        let (signing, public, secret) = identity(7);
-        let envelope = envelope_for(&secret);
+        let (signing, public, _secret) = identity(7);
+        let envelope = shared_envelope();
         let mut store = BackupStore::new();
         let sig = sign_upload(&signing, &envelope, 1).unwrap();
         store.upload(&public, &envelope, 1, &sig, 1_000).unwrap();

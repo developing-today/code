@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
+use p2panda_auth::traits::AuthorizationActor;
 use p2panda_core::Hash;
 use thiserror::Error;
 
@@ -556,6 +557,8 @@ pub(super) enum Effect {
 pub(super) struct Decision {
     pub(super) group: Hash,
     pub(super) action: Option<GroupAction<AuthId, ()>>,
+    /// Caller-verified authorization for a membership action. The signed author remains intact.
+    pub(super) authorization_actor: Option<AuthorizationActor<AuthId>>,
     pub(super) effect: Effect,
 }
 
@@ -616,6 +619,7 @@ impl Engine {
         let role = match &decision.action {
             Some(action) => Placed::Auth {
                 author: effective_author,
+                authorization_actor: decision.authorization_actor,
                 group: Some(decision.group),
                 action: action.clone(),
             },
@@ -840,6 +844,7 @@ impl Engine {
             ),
         ];
         Ok(Decision {
+            authorization_actor: None,
             group,
             action: Some(GroupAction::Create {
                 initial_members: initial,
@@ -864,6 +869,7 @@ impl Engine {
             return Err(Refusal::AlreadyPresent);
         }
         Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Present(author),
@@ -902,6 +908,7 @@ impl Engine {
             return Err(Refusal::OverCap { cap });
         }
         Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Policy(policy.clone()),
@@ -939,12 +946,8 @@ impl Engine {
             None => return Err(Refusal::NotActive),
         };
         let is_admin = author_role == Role::Admin;
-        let is_manager = author_role >= Role::Manage;
         match op {
             MemberOp::Add { member, role } => {
-                if !is_manager {
-                    return Err(Refusal::NotManager);
-                }
                 if role == Role::Admin && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
@@ -957,6 +960,7 @@ impl Engine {
                     return Err(Refusal::OverCap { cap });
                 }
                 Ok(Decision {
+                    authorization_actor: None,
                     group,
                     action: Some(GroupAction::Add {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -991,6 +995,7 @@ impl Engine {
                 }
                 if entangled {
                     return Ok(Decision {
+                        authorization_actor: None,
                         group,
                         action: Some(GroupAction::Remove {
                             member: GroupMember::Individual(AuthId::Key(member)),
@@ -1006,14 +1011,12 @@ impl Engine {
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
                 }
-                if member != author && !is_manager {
-                    return Err(Refusal::NotManager);
-                }
                 // Manage removes members at or below its own level. Admin is above it (design §5.2).
                 if member != author && record.admins.contains(&member) && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
                 Ok(Decision {
+                    authorization_actor: None,
                     group,
                     action: Some(GroupAction::Remove {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -1046,6 +1049,7 @@ impl Engine {
                     Ordering::Equal => None,
                 };
                 Ok(Decision {
+                    authorization_actor: None,
                     group,
                     action,
                     effect: Effect::Grant {
@@ -1418,6 +1422,7 @@ impl Engine {
                     return Ok(Err(Refusal::Attenuated));
                 }
                 Ok(Ok(Decision {
+                    authorization_actor: None,
                     group,
                     action: None,
                     effect: Effect::DeviceAdd {
@@ -1428,6 +1433,7 @@ impl Engine {
                 }))
             }
             DeviceOp::Revoke { device } => Ok(Ok(Decision {
+                authorization_actor: None,
                 group,
                 action: None,
                 effect: Effect::DeviceRevoke {
@@ -1633,6 +1639,7 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         dissolved_by: None,
     };
     Ok(Decision {
+        authorization_actor: None,
         group: event.id,
         action: Some(GroupAction::Create {
             initial_members: initial,

@@ -44,6 +44,7 @@ excluded=(
   default
   test-e2e
   nixos-serve
+  nixos-world-host
   nixos-e2e
   nixos-playwright-e2e
   nixos-integration

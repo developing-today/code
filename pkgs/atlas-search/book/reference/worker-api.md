@@ -10,9 +10,13 @@ POST /v1/search
 GET  /v1/cache/inspect?query=<query>&k=<k>
 POST /v1/cache/purge
 POST /mcp
+POST /v1/admin/retained/audit
+GET  /v1/admin/retained/compare?object=<id>&from=<version>&to=<version>
+POST /v1/admin/retained/report
+POST /v1/admin/retained/promote
 ```
 
-That is the whole public surface: **5 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below.
+That is the whole public surface: **9 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below. The four retained-object admin routes are gated like the others, answer 503 `retained_off` when no retained-object store is configured, and are covered in [Retained objects and retention classes](retained-objects.md).
 
 ## The shared gate
 
@@ -27,7 +31,7 @@ Every route except `GET /health` sits behind one shared gate:
 
 The gate failure shape is the shared error envelope (below) with code `unauthorized` and message `missing or invalid gate token`.
 
-One token serves all gated routes — `/v1/search`, `/v1/cache/inspect`, `/v1/cache/purge` and `/mcp`. There are no per-route, per-caller or per-agent tokens in the Worker, and no caller identity is extracted from the token: a passed gate yields a boolean, nothing else. Every gated caller is therefore the same identity to the Worker. What that identity is — disclosure context `hosted-per-user`, ceiling `personal`, both pinned at compile time — is covered in [The Atlas MCP server](mcp.md) and [Sensitivity tiers and client ceilings](../concepts/sensitivity.md); no env var, request field or header can change either value.
+One token serves all gated routes — `/v1/search`, `/v1/cache/inspect`, `/v1/cache/purge`, `/mcp` and the four `/v1/admin/retained/*` routes. There are no per-route, per-caller or per-agent tokens in the Worker, and no caller identity is extracted from the token: a passed gate yields a boolean, nothing else. Every gated caller is therefore the same identity to the Worker. What that identity is — disclosure context `hosted-per-user`, ceiling `personal`, both pinned at compile time — is covered in [The Atlas MCP server](mcp.md) and [Sensitivity tiers and client ceilings](../concepts/sensitivity.md); no env var, request field or header can change either value.
 
 Where the gate sits in each route's validation order matters and differs by route; each route below states it.
 

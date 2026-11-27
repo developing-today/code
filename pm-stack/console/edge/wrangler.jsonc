@@ -17,7 +17,7 @@
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true },
-  "vars": { "PUBLIC_HOST": "pm.security.cab" },
+  "vars": { "PUBLIC_HOST": "pm.security.cab", "LEDGER_PAGES": "on", "LEDGER_STORE": "d1" },
   // The app's files, put together by build.mjs. Every request reaches
   // the Worker first; it serves a file only after checking who asks.
   "assets": {
@@ -31,7 +31,17 @@
   // sends the owner's messages through it with the PM stack's own
   // bridge credential, and reads the agents list and the message log
   // from it, instead of waiting for a machine's fleet binary.
-  "services": [{ "binding": "BRIDGE", "service": "message-bridge" }],
+  "services": [
+    { "binding": "BRIDGE", "service": "message-bridge" },
+    // The platform's Workers the edge checks on its schedule (#15793):
+    // asked by binding for the commit each was deployed from, the
+    // answers kept by the object and shown in its health answer.
+    { "binding": "PM_SERVICE", "service": "pm-service" },
+    { "binding": "DECISION_EVENTS", "service": "decision-events" }
+  ],
+  // The Worker checks above run on this trigger (#15793); registered
+  // in doc/fleet-schedule-registry.md (Surface 7).
+  "triggers": { "crons": ["*/15 * * * *"] },
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
   // linked phones. Three secrets are optional, put there by
@@ -43,5 +53,14 @@
   // called with; expose.py uploads it in the same pass when the vault
   // holds it, and without it the bridge verbs stay a machine's.
   "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
+  // The fleet-platform ledger's D1 home (#14968, owner ruling
+  // 2026-11-26 on #14866): the hosted ledger surfaces read it when
+  // LEDGER_PAGES reads `on` and LEDGER_STORE reads `d1`. The database
+  // holds the ledger tables under their SQLite names, schema-identical
+  // to the fleet-platform Turso they were copied from; the Turso read
+  // path remains beside it as the rollback.
+  "d1_databases": [
+    { "binding": "LEDGER_DB", "database_name": "fleet-platform", "database_id": "57d15925-b0b8-4466-a92c-c200a6af4c45" }
+  ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
 }

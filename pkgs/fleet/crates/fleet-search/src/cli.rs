@@ -75,6 +75,7 @@ pub const SEARCH_USAGE: &str = "\
 usage: fleet search <query> [options]
        fleet search search <query> [options]   (atlas-search's own shape)
        fleet search get-chunk <chunk-id> [--neighbors N] [--text]
+       fleet search backup [--date YYYY-MM-DD] [--skip-dedupe]
 
 Hybrid FTS+vector search over the Atlas corpus, with classification
 filters — the atlas-search client surface (step 5, #5433).
@@ -510,6 +511,7 @@ fn proto_request(parsed: &SearchArgs) -> Result<SearchRequest, CliError> {
             client: split_csv(parsed.client_filter.as_deref()),
             since: parsed.since.clone(),
             until: parsed.until.clone(),
+            dimensions: Default::default(),
         },
         // An unrecognized ceiling name is NOT silently clamped
         // here: atlas-search declines the via-service attempt and
@@ -702,6 +704,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             EXIT_USAGE
         }
         Some("get-chunk") => cmd_get_chunk(config, args),
+        Some("backup") => crate::backup::run_cmd(args),
         Some("serve") => {
             // Unreachable through the fleet binary, which routes
             // `search serve` to the serve role before this client

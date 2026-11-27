@@ -30,6 +30,54 @@ export interface SearchExtras {
   tierItems?: TierItem[];
 }
 
+/** #14060 slice 2: search results are paginated and capped so a
+ * common-word query cannot ship an unbounded payload (measured:
+ * `q=fleet` returned 901 KB of JSON / 941 KB of HTML). The full match
+ * count is always reported as `total`; callers render/ship one page. */
+export const SEARCH_DEFAULT_LIMIT = 50;
+export const SEARCH_MAX_LIMIT = 200;
+
+export interface SearchPagination {
+  limit: number;
+  offset: number;
+}
+
+export interface SearchPage {
+  page: SearchResult[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Matches after this page (0 on the final page). */
+  remainingAfterPage: number;
+}
+
+function parseSearchInt(raw: string | null, fallback: number): number {
+  // Strict decimal grammar, same rule as parseRegistryQuery (#3717):
+  // prefix-parsing would silently select a different page than spelled.
+  if (raw === null || !/^\d+$/.test(raw)) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+export function parseSearchPagination(params: URLSearchParams): SearchPagination {
+  const rawLimit = parseSearchInt(params.get("limit"), SEARCH_DEFAULT_LIMIT);
+  const limit = Math.min(SEARCH_MAX_LIMIT, Math.max(1, rawLimit || SEARCH_DEFAULT_LIMIT));
+  return { limit, offset: parseSearchInt(params.get("offset"), 0) };
+}
+
+/** Pure page slice over a full result set. Oracle: page is exactly
+ * results[offset, offset+limit) and total is the unpaginated count. */
+export function paginateSearchResults(results: SearchResult[], pagination: SearchPagination): SearchPage {
+  const page = results.slice(pagination.offset, pagination.offset + pagination.limit);
+  return {
+    page,
+    total: results.length,
+    limit: pagination.limit,
+    offset: pagination.offset,
+    remainingAfterPage: Math.max(0, results.length - (pagination.offset + pagination.limit)),
+  };
+}
+
 function includesQuery(query: string, values: unknown[]): boolean {
   // Codex P2 on PR #7331: accepted records can carry non-string optional
   // fields (an unvalidated registry `model: 7`, a DNS `registrar`, ...);

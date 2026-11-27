@@ -28,8 +28,8 @@
 // (events with ts after it), or absent (all events for the set).
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { requireHome } from "./home.ts";
 
 export const DECISION_EVENT_TYPES = [
   "set.created",
@@ -88,7 +88,7 @@ export function defaultDecisionEventsFile(
   const v = env.PM_AGG_DECISION_EVENTS_FILE?.trim();
   if (v) return v;
   if (decisionsFile) return join(dirname(decisionsFile), "decision-events.jsonl");
-  return join(homedir(), ".local", "state", "pm-aggregator", "decision-events.jsonl");
+  return join(requireHome("PM_AGG_DECISION_EVENTS_FILE"), ".local", "state", "pm-aggregator", "decision-events.jsonl");
 }
 
 /** Default outbox file: env override, else next to the decisions store. */
@@ -99,7 +99,13 @@ export function defaultDecisionOutboxFile(
   const v = env.PM_AGG_DECISION_OUTBOX_FILE?.trim();
   if (v) return v;
   if (decisionsFile) return join(dirname(decisionsFile), "decision-events-outbox.jsonl");
-  return join(homedir(), ".local", "state", "pm-aggregator", "decision-events-outbox.jsonl");
+  return join(
+    requireHome("PM_AGG_DECISION_OUTBOX_FILE"),
+    ".local",
+    "state",
+    "pm-aggregator",
+    "decision-events-outbox.jsonl",
+  );
 }
 
 const PAYLOAD_MAX_BYTES = 16384;
@@ -260,9 +266,7 @@ export async function readDecisionEvents(
 }
 
 /** Validate one client-reported event (POST /api/decisions/<id>/events). */
-export function validateDecisionEventInput(
-  value: unknown,
-):
+export function validateDecisionEventInput(value: unknown):
   | {
       ok: true;
       value: { type: DecisionEventType; questionRef?: DecisionEventQuestionRef; payload: Record<string, unknown> };

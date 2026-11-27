@@ -1,0 +1,13 @@
+[app]
+id = "checkers"
+name = "Checkers"
+version = "0.1.0"
+description = "A Roc world checkers game against a deliberately weak AI."
+
+[program]
+kind = "roc-world"
+source = "program/"
+
+[interfaces.web]
+mode = "adapter"
+route = "/checkers"

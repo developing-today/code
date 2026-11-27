@@ -118,6 +118,15 @@ class StartupEnvValidationTest(unittest.TestCase):
                 self.assertIn(repr(value), p.stderr)
                 self.assertNotIn("Traceback", p.stderr)
 
+    def test_invalid_spool_cap_refuses_to_start(self):
+        for value in ("abc", "0", "-1"):
+            with self.subTest(LAPTOP_AGENT_SPOOL_CAP=value):
+                p = self._run_with_env({"LAPTOP_AGENT_SPOOL_CAP": value})
+                self.assertEqual(p.returncode, 3, p.stderr)
+                self.assertIn("invalid LAPTOP_AGENT_SPOOL_CAP=", p.stderr)
+                self.assertIn(repr(value), p.stderr)
+                self.assertNotIn("Traceback", p.stderr)
+
     def test_invalid_slots_refuses_to_start(self):
         for value in ("abc", "0", "-1"):
             with self.subTest(LAPTOP_AGENT_SLOTS=value):
@@ -441,12 +450,15 @@ class JobsListShapeTest(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 2.0)
             self.assertEqual(early["stdout"], "k" * 64)
             self.assertEqual(early["state"], "running")
-            quiet_id = call("POST", "/jobs", {"cwd": "/", "argv": [
-                sys.executable, "-c", "import time; time.sleep(2)"]})["job_id"]
+            quiet_id = call(
+                "POST",
+                "/jobs",
+                {"cwd": "/", "argv": [sys.executable, "-c", "import time; time.sleep(2)"]},
+            )["job_id"]
             started = time.monotonic()
             quiet = call("GET", f"/jobs/{quiet_id}?wait_s=1")
             elapsed = time.monotonic() - started
-            self.assertGreaterEqual(elapsed, .8)
+            self.assertGreaterEqual(elapsed, 0.8)
             self.assertLess(elapsed, 1.5)
             self.assertEqual(quiet["state"], "running")
             deadline = time.time() + 10
@@ -472,6 +484,465 @@ class JobsListShapeTest(unittest.TestCase):
             proc.terminate()
             proc.wait(timeout=10)
             os.unlink(token_path)
+
+
+class JobSpoolSizeTest(unittest.TestCase):
+    """Issue #15420: single-job replies carry the spool sizes.
+
+    A finished job with more than MAX_OUT (1 MiB) spooled used to read
+    as done after the first page, so a client stopped there. With
+    out_size/err_size on every reply, paging until the cursors reach
+    the sizes returns every byte.
+    """
+
+    def _import_agent(self):
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
+            f.write("spool-size-test-token\n")
+            token_path = f.name
+        os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def test_paging_a_done_job_to_its_sizes_returns_every_byte(self):
+        la = self._import_agent()
+        out_bytes = bytes(ord("a") + i % 26 for i in range(3 * la.MAX_OUT + 123))
+        err_bytes = b"e" * (la.MAX_OUT + 7)
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job_id = "job-spool-size"
+                spool = la.job_dir(job_id)
+                spool.mkdir(parents=True)
+                (spool / "stdout").write_bytes(out_bytes)
+                (spool / "stderr").write_bytes(err_bytes)
+                job = {
+                    "id": job_id,
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                first = la.job_public(job)
+                self.assertEqual(first["out_size"], len(out_bytes))
+                self.assertEqual(first["err_size"], len(err_bytes))
+                self.assertEqual(first["out_next"], la.MAX_OUT)
+                got_out, got_err = [], []
+                out_off = err_off = 0
+                pages = 0
+                while True:
+                    page = la.job_public(job, out_off, err_off)
+                    pages += 1
+                    got_out.append(page["stdout"])
+                    got_err.append(page["stderr"])
+                    out_off, err_off = page["out_next"], page["err_next"]
+                    if out_off >= page["out_size"] and err_off >= page["err_size"]:
+                        break
+                    self.assertLess(pages, 10)
+        self.assertEqual("".join(got_out).encode(), out_bytes)
+        self.assertEqual("".join(got_err).encode(), err_bytes)
+        self.assertEqual(pages, 4)
+
+    def test_missing_spool_reports_zero_sizes(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job = {
+                    "id": "job-no-spool",
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                public = la.job_public(job)
+        self.assertEqual(public["out_size"], 0)
+        self.assertEqual(public["err_size"], 0)
+
+
+class SpoolCapTest(unittest.TestCase):
+    """Issue #15420 (design #10356 section 3.3): the spool cap.
+
+    Each stream's spool stops appending at LAPTOP_AGENT_SPOOL_CAP; the
+    process keeps running, the bytes past the cap are counted, and
+    every reply carries the counts so attach can print a marker.
+    """
+
+    def _import_agent(self):
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
+            f.write("spool-cap-test-token\n")
+            token_path = f.name
+        os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def test_pump_stores_up_to_the_cap_and_counts_the_rest(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("stdout", "stderr"):
+                Path(d, name).write_bytes(b"")
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            pump = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    la.SPOOL_PUMP_SRC,
+                    "10",
+                    d,
+                    str(out_r),
+                    str(err_r),
+                ],
+                pass_fds=(out_r, err_r),
+            )
+            os.close(out_r)
+            os.close(err_r)
+            os.write(out_w, b"0123456789abcdefghijklmno")
+            os.write(err_w, b"warn\n")
+            os.close(out_w)
+            os.close(err_w)
+            self.assertEqual(pump.wait(timeout=20), 0)
+            self.assertEqual(Path(d, "stdout").read_bytes(), b"0123456789")
+            self.assertEqual(Path(d, "stdout.dropped").read_text(), "15")
+            self.assertEqual(Path(d, "stderr").read_bytes(), b"warn\n")
+            self.assertFalse(Path(d, "stderr.dropped").exists())
+
+    def test_replies_carry_the_dropped_counts(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            with patch.object(la, "STATE_DIR", Path(state_dir)):
+                job_id = "job-spool-cap"
+                spool = la.job_dir(job_id)
+                spool.mkdir(parents=True)
+                (spool / "stdout").write_bytes(b"x" * 8)
+                (spool / "stderr").write_bytes(b"")
+                (spool / "stdout.dropped").write_text("4000")
+                (spool / "stderr.dropped").write_text("not a number")
+                job = {
+                    "id": job_id,
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
+                public = la.job_public(job)
+                summary = la.job_summary(job)
+        for reply in (public, summary):
+            self.assertEqual(reply["out_dropped"], 4000)
+            self.assertEqual(reply["err_dropped"], 0)
+            self.assertEqual(reply["bytes_dropped"], 4000)
+
+    def test_job_past_the_cap_keeps_running_and_reports_drops(self):
+        token = "spool-cap-http-token"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token + "\n")
+            token_path = f.name
+        port = free_port()
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+            LAPTOP_AGENT_SPOOL_CAP="1000",
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+
+        def call(method, path, body=None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    if call("GET", "/health")["ok"]:
+                        break
+                except Exception:
+                    if time.time() > deadline:
+                        raise
+                    time.sleep(0.1)
+            # The job writes 5000 bytes past a 1000-byte cap, then
+            # more after it, and exits 7 on its own: a job killed for
+            # its output would never reach the exit or the last write.
+            job_id = call(
+                "POST",
+                "/jobs",
+                {
+                    "cwd": "/",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write('k' * 5000); "
+                        "sys.stdout.flush(); sys.stderr.write('tail'); "
+                        "sys.exit(7)",
+                    ],
+                },
+            )["job_id"]
+            deadline = time.time() + 20
+            single = None
+            while time.time() < deadline:
+                single = call("GET", f"/jobs/{job_id}")
+                if single["state"] == "done":
+                    break
+                time.sleep(0.1)
+            self.assertEqual(single["state"], "done")
+            self.assertEqual(single["exit"], 7)
+            self.assertEqual(single["stdout"], "k" * 1000)
+            self.assertEqual(single["stderr"], "tail")
+            self.assertEqual(single["out_size"], 1000)
+            self.assertEqual(single["out_dropped"], 4000)
+            self.assertEqual(single["err_dropped"], 0)
+            self.assertEqual(single["bytes_dropped"], 4000)
+            listing = call("GET", "/jobs")
+            entry = [j for j in listing["jobs"] if j["job_id"] == job_id]
+            self.assertEqual(len(entry), 1)
+            self.assertEqual(entry[0]["bytes_dropped"], 4000)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+            os.unlink(token_path)
+
+
+class ExecGraceTest(unittest.TestCase):
+    """Issue #15420 (design #10356 section 3.4): the exec grace window.
+
+    With grace_s > 0 the client's trip id is the job id. A connected
+    client gets the usual /exec reply; a client that drops can attach
+    with GET /jobs/<trip> inside the window; otherwise the command is
+    reaped and stays listed as reaped. grace_s 0 keeps the old reap.
+    """
+
+    @contextlib.contextmanager
+    def _daemon(self):
+        token = "exec-grace-token"
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(token + "\n")
+            token_path = f.name
+        port = free_port()
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+
+        def call(method, path, body=None, trip=None):
+            data = json.dumps(body).encode() if body is not None else None
+            h = dict(headers)
+            if trip:
+                h["X-Trip-Id"] = trip
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}", data=data, headers=h, method=method
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+
+        def drop(path, body, trip):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps(body).encode()
+            conn.request(
+                "POST",
+                path,
+                body=payload,
+                headers=dict(headers, **{"X-Trip-Id": trip}),
+            )
+            time.sleep(0.5)
+            conn.close()
+
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    if call("GET", "/health")[1].get("ok"):
+                        break
+                except Exception:
+                    pass
+                if time.time() > deadline:
+                    raise AssertionError("daemon did not start")
+                time.sleep(0.1)
+            yield call, drop
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+            os.unlink(token_path)
+
+    @staticmethod
+    def _listed(call, job_id):
+        status, listing = call("GET", "/jobs")
+        rows = [j for j in listing.get("jobs", []) if j["job_id"] == job_id]
+        return rows[0] if rows else None
+
+    def test_connected_client_gets_the_exec_reply_under_its_trip(self):
+        with self._daemon() as (call, _drop):
+            status, reply = call(
+                "POST",
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import sys; print('hi'); sys.exit(3)",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 30,
+                    "grace_s": 30,
+                },
+                trip="gracetrip1",
+            )
+            self.assertEqual(status, 200, reply)
+            result = reply["results"][0]
+            self.assertEqual(result["exit"], 3)
+            self.assertEqual(result["stdout"], "hi\n")
+            self.assertEqual(result["job_id"], "gracetrip1")
+            self.assertFalse(result["truncated"])
+            row = self._listed(call, "gracetrip1")
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "done")
+            self.assertFalse(row["reaped"])
+            # The trip is now a job id: a second exec under it is refused.
+            status, reply = call(
+                "POST",
+                "/exec",
+                {"cmds": [{"argv": ["true"]}], "grace_s": 30},
+                trip="gracetrip1",
+            )
+            self.assertEqual(status, 409, reply)
+
+    def test_dropped_client_attaches_inside_the_window(self):
+        with self._daemon() as (call, drop):
+            drop(
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(3); print('after-drop')",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 60,
+                    "grace_s": 60,
+                },
+                "gracedrop1",
+            )
+            deadline = time.time() + 10
+            row = None
+            while time.time() < deadline:
+                row = self._listed(call, "gracedrop1")
+                if row and row["state"] == "grace":
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "grace")
+            deadline = time.time() + 20
+            page = None
+            while time.time() < deadline:
+                status, page = call("GET", "/jobs/gracedrop1")
+                self.assertEqual(status, 200, page)
+                self.assertNotEqual(page["state"], "grace")
+                if page["state"] == "done":
+                    break
+                time.sleep(0.2)
+            self.assertEqual(page["state"], "done")
+            self.assertEqual(page["exit"], 0)
+            self.assertEqual(page["stdout"], "after-drop\n")
+            self.assertFalse(page["reaped"])
+
+    def test_dropped_client_past_the_window_is_reaped_with_its_spool(self):
+        with self._daemon() as (call, drop):
+            drop(
+                "/exec",
+                {
+                    "cmds": [
+                        {
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                "import sys, time; print('before-reap'); "
+                                "sys.stdout.flush(); time.sleep(60)",
+                            ]
+                        }
+                    ],
+                    "timeout_s": 120,
+                    "grace_s": 1,
+                },
+                "gracereap1",
+            )
+            deadline = time.time() + 20
+            row = None
+            while time.time() < deadline:
+                row = self._listed(call, "gracereap1")
+                if row and row["state"] == "done":
+                    break
+                time.sleep(0.2)
+            self.assertIsNotNone(row)
+            self.assertEqual(row["state"], "done")
+            self.assertTrue(row["reaped"])
+            self.assertEqual(row["out_bytes"], len("before-reap\n"))
+
+    def test_bad_grace_is_a_usage_error(self):
+        with self._daemon() as (call, _drop):
+            for grace in (601, -1, "30", True, 1.5):
+                with self.subTest(grace_s=grace):
+                    status, reply = call(
+                        "POST",
+                        "/exec",
+                        {"cmds": [{"argv": ["true"]}], "grace_s": grace},
+                    )
+                    self.assertEqual(status, 400, reply)
+                    self.assertIn("grace_s", reply["error"])
+            status, reply = call(
+                "POST",
+                "/exec",
+                {"cmds": [{"argv": ["true"]}, {"argv": ["true"]}], "grace_s": 5},
+            )
+            self.assertEqual(status, 400, reply)
+            self.assertIn("exactly one cmd", reply["error"])
+
 
 class JobSlotsTest(unittest.TestCase):
     """Issue #1545: POST /jobs shares the LAPTOP_AGENT_SLOTS pool.
@@ -872,7 +1343,6 @@ class MalformedRequestTest(unittest.TestCase):
         job_id = body["job_id"]
         self._assert_400_then_health("GET", f"/jobs/{job_id}?out_off=abc")
         self._assert_400_then_health("GET", f"/jobs/{job_id}?err_off=-1")
-        self._assert_400_then_health("GET", f"/jobs/{job_id}?wait_s=abc")
 
 
 class PersistedJobTimestampTest(unittest.TestCase):
@@ -1402,9 +1872,11 @@ class PersistedJobTimestampTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as state_dir:
             err = io.StringIO()
-            with patch.object(la, "STATE_DIR", Path(state_dir)), patch.object(
-                la.os, "replace", side_effect=OSError("disk full")
-            ), contextlib.redirect_stderr(err):
+            with (
+                patch.object(la, "STATE_DIR", Path(state_dir)),
+                patch.object(la.os, "replace", side_effect=OSError("disk full")),
+                contextlib.redirect_stderr(err),
+            ):
                 la._write_meta(job)
             self.assertIn("cannot write meta for job unwritable-job", err.getvalue())
             self.assertIn("disk full", err.getvalue())
@@ -1662,6 +2134,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ],
         )
         for row in la.RESTORE_FIELD_TABLE:
@@ -1669,6 +2142,8 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
         by_field = {row[0]: row for row in la.RESTORE_FIELD_TABLE}
         for field in ("exit", "cwd", "cmd"):
             self.assertIn("#1568", by_field[field][3])
+        self.assertIn("#14186", by_field["ctx"][1])
+        self.assertIn("#14186", by_field["ctx"][3])
 
     def test_malformed_matrix_rows_are_skipped(self):
         la = self._import_agent()
@@ -1850,6 +2325,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
             "exit": 3,
             "state": "done",
             "interrupted": False,
+            "ctx": {"FLEET_CTX_TASK_ID": "23046"},
             "_files": (),
         }
         with tempfile.TemporaryDirectory() as state_dir:
@@ -1867,6 +2343,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ):
                 self.assertEqual(restored[key], job[key], key)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
@@ -1881,11 +2358,18 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "cmd": "echo hi",
                     "started_at": 100.0,
                     "interrupted": False,
+                    "ctx": {"FLEET_CTX_TASK_ID": "23046"},
                     "duration_ms": 50000,
                     "stdout": "",
                     "stderr": "",
                     "out_next": 0,
                     "err_next": 0,
+                    "out_size": 0,
+                    "err_size": 0,
+                    "out_dropped": 0,
+                    "err_dropped": 0,
+                    "bytes_dropped": 0,
+                    "reaped": False,
                 },
             )
 

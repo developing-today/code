@@ -350,6 +350,7 @@ required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
 required file aggregator/events.json
 optional file aggregator/events.json.outbox.jsonl
+optional tree aggregator/events.json.segments
 optional tree aggregator/events.json.archive
 optional file aggregator/activity-ingestion.json
 required file aggregator/coverage-snapshot.json
@@ -361,6 +362,7 @@ required file aggregator/decision-events.jsonl
 optional file aggregator/decision-events-outbox.jsonl.sync-state.json
 optional file aggregator/decision-events-outbox.jsonl
 optional file aggregator/needs-drew.json
+optional file aggregator/needs-user.json
 optional file aggregator/notifications.jsonl
 optional file aggregator/issue_pr_links.json
 optional file aggregator/prefix-program.json
@@ -377,6 +379,11 @@ conditional file turso/alerts_incident_events.json
 conditional file turso/alerts_push_subscriptions.json
 conditional file turso/alerts_notification_sends.json
 conditional file turso/orch_runs.json
+optional file turso/push_endpoints.json
+optional file turso/push_preferences.json
+optional file turso/push_item_stages.json
+optional file turso/push_item_stage_events.json
+optional file turso/push_registry_meta.json
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
@@ -418,6 +425,15 @@ for f in activity-ingestion.json events.json.outbox.jsonl; do
       fail "dataset copy failed: $AGG/$f"
   else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
+# Audit event segments (#14958): the hot stream's records live in
+# events.json.segments/ and events.json is its manifest/checkpoint.
+# Copy the segments BEFORE events.json (the same ordering
+# discipline as the outbox above): a generation may hold segment
+# records its manifest checkpoint still lags — the store adopts
+# chained extras on load — but never a checkpoint ahead of its
+# segments, which would restore as missing history.
+if [ -d "$AGG/events.json.segments" ]; then cp -a "$AGG/events.json.segments" "$STAGE/aggregator/events.json.segments" ||
+  fail "dataset copy failed: $AGG/events.json.segments"; fi
 for f in actions.json comments.json fleet-feed.json quota-current.json \
   registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
   events.json \
@@ -432,15 +448,16 @@ done
 # REQUIRED (a missing one fails the run at verify). The outbox's sync
 # cursor is copied BEFORE the outbox, so a restored cursor can lag the
 # restored outbox (records re-sent, which the sync dedupes by event id)
-# but never run ahead of it (records skipped). needs-drew.json holds
-# Drew's answers, notifications.jsonl the notification history (its
+# but never run ahead of it (records skipped). needs-drew.json and
+# needs-user.json hold the question answers during the state-path
+# compatibility window, notifications.jsonl the notification history (its
 # dedupe memory), issue_pr_links.json and prefix-program.json hand-kept
 # state, digests/ the daily digest archive: none can be rebuilt from
 # GitHub or the projector, so all ride the archive. They are optional:
 # each appears only once its feature has written to it.
 for f in decisions.json decision-events.jsonl \
   decision-events-outbox.jsonl.sync-state.json decision-events-outbox.jsonl \
-  needs-drew.json notifications.jsonl issue_pr_links.json prefix-program.json; do
+  needs-drew.json needs-user.json notifications.jsonl issue_pr_links.json prefix-program.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -621,6 +638,14 @@ import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for name in ('agg_actions','agg_activity_ingestion','agg_activity_gaps','agg_usage_snapshots','agg_store_documents','alerts_incidents','alerts_incident_events','alerts_push_subscriptions','alerts_notification_sends','orch_runs'):
     rows = json.loads((root / (name + '.json')).read_text())
+    if not isinstance(rows, list): raise SystemExit(name + ': not a JSON array')
+    print(name + '=' + str(len(rows)))
+# The push registry (#14084 S1): optional while an older exporter
+# that predates it may still be the installed one; validated when present.
+for name in ('push_endpoints','push_preferences','push_item_stages','push_item_stage_events','push_registry_meta'):
+    path = root / (name + '.json')
+    if not path.exists(): continue
+    rows = json.loads(path.read_text())
     if not isinstance(rows, list): raise SystemExit(name + ': not a JSON array')
     print(name + '=' + str(len(rows)))
 PYEOF

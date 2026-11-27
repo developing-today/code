@@ -2,8 +2,8 @@
 
 The _session proxy_ is how a sandbox seat reaches the laptop's services. The
 proxy domain's verbs are `serve`, `connect`, `init`, `ssh`, `splice`,
-`get`, and `put`, gated per verb on the capabilities `proxy-serve` (serve),
-`proxy-connect` (connect/init/get/put/ssh), and `proxy-raw-splice`
+`get`, `put`, and `copy`, gated per verb on the capabilities `proxy-serve` (serve),
+`proxy-connect` (connect/init/get/put/copy/ssh), and `proxy-raw-splice`
 (splice). The proxy succeeds an earlier Python trio of broker/connect
 scripts, behaviour for behaviour. The wire is the `fleet-proxy-proto`
 protocol alone: **8-byte big-endian length-prefixed JSON** frames.

@@ -14,12 +14,19 @@ import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts"
 
 type Args = Record<string, unknown>;
 export interface Action {
-  run: (args: Args) => Promise<unknown>;
+  /** `by` is who asked, where the side running it knows (the edge's
+   * own actions that record who changed something need it). */
+  run: (args: Args, by?: string) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
   /** What the audit log keeps of the arguments. */
   audit: (args: Args) => Args;
 }
+
+/** How a queue packet is handed over. Given by whoever runs these
+ * actions, so that the edge can file it without a machine's fleet
+ * binary while a machine goes on running `fleet queue enqueue`. */
+export type Enqueue = (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 const ids =
   (...keys: string[]) =>
@@ -70,6 +77,7 @@ export function actions(
   push?: Push,
   devices?: Devices,
   plan: Plan = new Plan(ops, work),
+  enqueue: Enqueue = (packet) => ops.enqueue(packet),
 ): Record<string, Action> {
   return {
     ...ownActions(push, devices),
@@ -132,7 +140,7 @@ export function actions(
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
+        const queued = await enqueue(
           promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
         );
         if (queued.code !== 0) {
@@ -194,6 +202,17 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
+    // Start a Turso management operation (create-db / mint-token) in
+    // its workflow (#14257). The audit keeps names only — the operation,
+    // the database and the secret's name — never a token value.
+    "store.admin": {
+      run: (a) => ops.tursoAdmin(a),
+      touch: [],
+      audit: ids("operation", "database", "secret_name"),
+    },
+    // Start a store migration in its workflow (#14256). The audit keeps
+    // the store's name only.
+    "store.migrate": { run: (a) => ops.storeMigrate(a), touch: [], audit: ids("store") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],
@@ -203,13 +222,31 @@ export function actions(
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
-    // The owner's switch for the edge doing the core itself. Done on a
-    // machine, where the tokens are, and never held.
-    "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
-    "message.send": {
-      run: (a) => ops.send(a.to, a.text, a.command),
+    // Persist the desired direct-mode state, then ask Actions to apply it.
+    // Refresh is explicit because it replaces secrets whose values cannot be read back.
+    "edge.direct": {
+      run: (a) => ops.edgeDirect(a.on, a.refreshTokens ?? false),
       touch: [],
-      audit: (a) => ({ to: a.to, command: a.command === true }),
+      audit: (a) => ({ on: a.on === true, refreshTokens: a.refreshTokens === true }),
+    },
+    "message.send": {
+      run: (a) => ops.send(a.to, a.text, a.command, a.limit),
+      touch: [],
+      audit: (a) => ({ to: a.to, command: a.command === true, limit: a.limit ?? null }),
+    },
+    // Broaden and offer are the composer's other two acts (#14375):
+    // broaden delivers a pattern send's remainder on its own batch;
+    // offer posts the text as a claim offer. Neither audit carries
+    // the text, like message.send.
+    "message.broaden": {
+      run: (a) => ops.broaden(a.batch, a.limit),
+      touch: [],
+      audit: (a) => ({ batch: a.batch, limit: a.limit ?? null }),
+    },
+    "message.offer": {
+      run: (a) => ops.offer(a.to, a.text, a.command, a.slots),
+      touch: [],
+      audit: (a) => ({ to: a.to, command: a.command === true, slots: a.slots }),
     },
     // Revoke an agent's bridge credentials from the Agents screen
     // (#14374): the per-agent kill switch. It changes no document
@@ -252,6 +289,23 @@ export function actions(
       run: (a) => ops.revokeEnrollTokens(a.agent),
       touch: [],
       audit: ids("agent"),
+    },
+    // Wake hooks (#14544): the Agents screen is the bridge's owner
+    // surface for them, now the standalone page is retired. Setting
+    // one is never held (edge-proto.ts): its arguments carry the
+    // hook's token, a value, and a held copy would keep that value
+    // at the edge to be used late. Removing one carries no value
+    // and is held for a machine like agent.revoke-enroll. Neither
+    // audit carries the URL or the token — the address is the act.
+    "agent.wake-hook-set": {
+      run: (a) => ops.setWakeHook({ address: a.address, url: a.url, token: a.token }),
+      touch: [],
+      audit: ids("address"),
+    },
+    "agent.wake-hook-remove": {
+      run: (a) => ops.removeWakeHook(a.address),
+      touch: [],
+      audit: ids("address"),
     },
   };
 }
