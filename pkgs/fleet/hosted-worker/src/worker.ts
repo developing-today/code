@@ -9,8 +9,8 @@
 // (#12587), the queue front door (#12589), the ingestion
 // receiver + sweeper (#12590), and the sync door (#12591) are
 // real over the same plumbing — every component-C door is live.
-// What remains is production wiring, owned elsewhere: #9074's
-// metadata DB behind the store interfaces and #12583's deploy.
+// QUEUE_D1 wires durable metadata, backfill, session and queue stores
+// (#15456, #14866); unbound fixtures are for local development only.
 
 import type { AuthDeps } from "./auth.ts";
 import { FixtureBackfillRunStore, type BackfillRunStore } from "./backfill.ts";
@@ -111,8 +111,8 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   const config = configFromEnv(env);
   // Queue backend selection (#14866): a bound D1 database wins over
   // the Turso/libSQL backends \u2014 the binding's presence is the
-  // operator's explicit Cloudflare-first choice, and no deployment
-  // binds it yet, so existing shapes are unchanged until one does.
+  // operator's explicit Cloudflare-first choice. wrangler.toml binds
+  // the deployed Worker to fleet-queue.
   const resolvedQueueStore = env.QUEUE_D1 ? openD1QueueStore(env.QUEUE_D1) : queueStoreFor(config, opener);
   // Session registry selection (#12584): the same bound D1
   // database holds the fleet_sessions table; absent the binding,
@@ -129,7 +129,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // The hosted rotation point (#12585): with fleet App material
   // configured, GitHub writes go through the App installation-token
   // rotation; without it, the fixture writer stands in (local/dev
-  // semantics — this package is not deployed, see wrangler.toml).
+  // semantics; production requires real App configuration).
   const githubWriter = config.github ? new AppRotationGitHubWriter(config.github) : new FixtureGitHubWriter();
   // The query door's read path (#12587), the queue door's
   // fallback-claim surface (#12589), the ingestion door's

@@ -19,7 +19,7 @@ const tracked = Bun.spawnSync(["git", "ls-files", "--", "pm-stack"], { cwd: ROOT
   .stdout.toString()
   .split("\n")
   .filter((file) => CODE.test(file) && !file.includes("node_modules") && file !== STORES_FILE);
-const HOST = /https:\/\/([a-z0-9-]+)-dezren39\.aws-[a-z0-9-]+\.turso\.io/g;
+const HOST = /https:\/\/(?:(?<turso>[a-z0-9-]+)-dezren39\.aws-[a-z0-9-]+\.turso\.io|d1-gateway\.developing-today\.workers\.dev\/db\/(?<gateway>[a-z0-9-]+))/g;
 const sources = tracked.map((file) => readFileSync(join(ROOT, file), "utf8"));
 
 test("the list reads whole: every store is well formed, and no name is there twice", () => {
@@ -30,7 +30,12 @@ test("the list reads whole: every store is well formed, and no name is there twi
 
 test("every store the code addresses is in the list, and nothing in the list is unnamed by the code", () => {
   const named = new Set<string>();
-  for (const source of sources) for (const m of source.matchAll(HOST)) named.add(m[1]);
+  for (const source of sources) {
+    for (const m of source.matchAll(HOST)) {
+      const name = m[1] ?? m[2];
+      if (name) named.add(name);
+    }
+  }
   expect(named.size).toBeGreaterThan(0);
   expect([...named].sort()).toEqual(listed.stores.map((s) => s.name).sort());
 });

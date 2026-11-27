@@ -272,11 +272,17 @@ so it does not appear in the capabilities `doors` list.
   (`FixtureSessionRegistry`; the worker entry holds one instance at
   module scope). A DB-backed implementation replaces it behind the
   same interface.
-- **Metadata store**: the create path's insert target is #9074's
-  metadata DB, which does not exist yet, so `MetadataStore`
-  (`src/stamping.ts`) is an interface with a fixture in-memory
-  implementation, wired like the session registry. A Turso-backed
-  store replaces it behind the same interface.
+- **Metadata and backfill stores**: `QUEUE_D1` selects `D1MetadataStore`
+  and `D1BackfillRunStore` (`src/d1-metadata-stores.ts`, #15456).
+  Stamp create, query, ingestion and backfill share `fleet_metadata`
+  in the bound `fleet-queue` D1 database. Each row stores the full
+  `MetadataRecord` JSON (including complete Metadata and extracted
+  keys), keyed by `(repo, kind, number)`, with a binding index for
+  tenant-scoped reads. Remaining filters run over those rows in memory;
+  this is not #9074's aggregator table or its normalized link indexes.
+  Schema creation is lazy/idempotent and retries after transient failure.
+  Only unbound local/dev runs use the isolate-lifetime fixture.
+  See [the restart and deployment verification record](doc/metadata-durability-16096.md).
 - **Queue record source**: queue facts (queue id, scheduled start,
   pickup / work-start times) come from the queue record behind the
   `QueueRecordSource` seam (`src/stamping.ts`). Wired by #12589:
@@ -321,5 +327,7 @@ npm run typecheck
 npm run dev     # wrangler dev (set RP_ISSUER / TENANCY_FIXTURE_JSON first)
 ```
 
-Local-only: `wrangler.toml` authorizes no account deployment; a later
-C issue owns production deployment.
+Deployment uses `wrangler.toml` and the Cloudflare versions release workflow.
+Production D1 wiring is separate from enabling authenticated doors; see the
+[#16096 live verification gate](doc/metadata-durability-16096.md) before
+enabling authenticated create traffic.

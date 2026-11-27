@@ -100,6 +100,7 @@ const data: Record<string, unknown> = {
   asks: [],
   questionCount: { total: 5000, sets: 1 },
   questions: big,
+  questionSets: null,
   prs: [],
   priorities: { issues: [], truncated: false },
   // The stand-in machine's own copy says nothing was finished.
