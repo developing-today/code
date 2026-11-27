@@ -233,11 +233,20 @@ proptest! {
                 }
                 "order" => {
                     for term in value.split(',') {
-                        let (column, direction) = term
-                            .rsplit_once('.')
-                            .expect("order term is column.direction");
+                        // Order terms are column.direction with an
+                        // explicit NULL placement suffix (#16132):
+                        // `asc.nullslast` or `desc.nullsfirst`.
+                        let mut parts = term.split('.');
+                        let column = parts.next().expect("order term names a column");
+                        let direction = parts.next().expect("order term is column.direction");
                         prop_assert!(declared.contains(column));
                         prop_assert!(direction == "asc" || direction == "desc");
+                        let placement = parts.next().expect("order term names NULL placement");
+                        prop_assert!(
+                            (direction == "asc" && placement == "nullslast")
+                                || (direction == "desc" && placement == "nullsfirst")
+                        );
+                        prop_assert!(parts.next().is_none());
                         order_columns.push(column.to_string());
                     }
                 }

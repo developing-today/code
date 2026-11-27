@@ -359,13 +359,19 @@ fn render_leaf_value(leaf: &FilterLeaf) -> Result<String, Refusal> {
 }
 
 /// Render the `order` parameter value over the effective ordering.
+///
+/// NULL placement is explicit (#16132) and matches the PostgreSQL
+/// defaults the keyset continuation in [`keyset_or`] is built
+/// against: ascending keys sort NULLs last, descending keys sort
+/// NULLs first. Naming the placement in the request pins the
+/// semantics instead of relying on the source's defaults.
 fn render_order(ordering: &[OrderKey]) -> String {
     ordering
         .iter()
         .map(|key| {
             let direction = match key.direction {
-                Direction::Asc => "asc",
-                Direction::Desc => "desc",
+                Direction::Asc => "asc.nullslast",
+                Direction::Desc => "desc.nullsfirst",
             };
             format!("{}.{direction}", key.column)
         })
@@ -383,30 +389,72 @@ fn render_order(ordering: &[OrderKey]) -> String {
 /// `k0..kn` with cursor values `v0..vn`, the terms are
 /// `k0 <cmp0> v0`, `and(k0.eq.v0, k1 <cmp1> v1)`, … where `<cmp>` is
 /// `gt` for ascending keys and `lt` for descending ones.
+///
+/// NULL ordering values are first-class (#16132; oracle:
+/// PostgreSQL/PostgREST ordering semantics with the explicit
+/// placement [`render_order`] emits — ascending NULLS LAST,
+/// descending NULLS FIRST). Plain `gt`/`lt`/`eq` comparisons against
+/// NULL are never true in SQL, so a continuation built from them
+/// alone silently drops the NULL bucket and reports a truncated read
+/// as complete. The NULL-aware rules, per key:
+///
+/// - prefix equality against a NULL cursor component is
+///   `k.is.null`, not `k.eq.…`;
+/// - strictly after a non-NULL value on an ascending (NULLS LAST)
+///   key is `k.gt.v` **or** `k.is.null` — the whole NULL bucket sorts
+///   after every non-NULL value, so it contributes a second term;
+/// - strictly after a non-NULL value on a descending (NULLS FIRST)
+///   key is only `k.lt.v` — the NULL bucket sorts before it;
+/// - strictly after NULL on an ascending key is empty — NULL is the
+///   last bucket, so position `j` contributes no term (later keys
+///   still contribute theirs, under the `k.is.null` prefix);
+/// - strictly after NULL on a descending key is `k.not.is.null` —
+///   every non-NULL value sorts after the NULL bucket.
 fn keyset_or(ordering: &[OrderKey], cursor: &[Value]) -> Result<String, Refusal> {
     if cursor.len() != ordering.len() {
         return Err(Refusal::shape(Feature::FieldUnsupported));
     }
-    let mut terms: Vec<String> = Vec::with_capacity(ordering.len());
+    let mut terms: Vec<String> = Vec::new();
     for j in 0..ordering.len() {
-        let mut parts: Vec<String> = Vec::with_capacity(j + 1);
+        // Prefix: equality on every earlier key, NULL-aware.
+        let mut prefix: Vec<String> = Vec::with_capacity(j);
         for (i, key) in ordering.iter().enumerate().take(j) {
-            parts.push(format!("{}.eq.{}", key.column, cursor[i].quoted_literal()?));
+            prefix.push(match &cursor[i] {
+                Value::Null => format!("{}.is.null", key.column),
+                value => format!("{}.eq.{}", key.column, value.quoted_literal()?),
+            });
         }
-        let cmp = match ordering[j].direction {
-            Direction::Asc => "gt",
-            Direction::Desc => "lt",
+        // Strict step at position j: one or two alternative parts.
+        let key = &ordering[j];
+        let strict_parts: Vec<String> = match (&cursor[j], key.direction) {
+            (Value::Null, Direction::Asc) => Vec::new(),
+            (Value::Null, Direction::Desc) => vec![format!("{}.not.is.null", key.column)],
+            (value, Direction::Asc) => vec![
+                format!("{}.gt.{}", key.column, value.quoted_literal()?),
+                format!("{}.is.null", key.column),
+            ],
+            (value, Direction::Desc) => {
+                vec![format!("{}.lt.{}", key.column, value.quoted_literal()?)]
+            }
         };
-        parts.push(format!(
-            "{}.{cmp}.{}",
-            ordering[j].column,
-            cursor[j].quoted_literal()?
-        ));
-        if parts.len() == 1 {
-            terms.push(parts.remove(0));
-        } else {
-            terms.push(format!("and({})", parts.join(",")));
+        for strict in strict_parts {
+            let mut parts = prefix.clone();
+            parts.push(strict);
+            if parts.len() == 1 {
+                terms.push(parts.remove(0));
+            } else {
+                terms.push(format!("and({})", parts.join(",")));
+            }
         }
+    }
+    if terms.is_empty() {
+        // Every key's cursor component is NULL on an ascending
+        // (NULLS LAST) key: the cursor tuple is the very last row of
+        // the ordering, so the continuation is empty by construction.
+        // Emit a never-true term rather than an empty `or=()`, so the
+        // next page is a well-formed empty page (read complete).
+        let column = &ordering[0].column;
+        terms.push(format!("and({column}.is.null,{column}.not.is.null)"));
     }
     Ok(format!("({})", terms.join(",")))
 }
@@ -465,7 +513,7 @@ mod tests {
         query.select = vec![SelectItem::Column("title".to_string())];
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "select"), Some("title,id"));
-        assert_eq!(param(&request, "order"), Some("id.asc"));
+        assert_eq!(param(&request, "order"), Some("id.asc.nullslast"));
         assert_eq!(request.cursor_only, vec!["id".to_string()]);
     }
 
@@ -479,7 +527,7 @@ mod tests {
         }];
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "select"), Some("body,title,id"));
-        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
+        assert_eq!(param(&request, "order"), Some("title.desc.nullsfirst,id.asc.nullslast"));
         assert_eq!(
             request.cursor_only,
             vec!["title".to_string(), "id".to_string()]
@@ -507,7 +555,7 @@ mod tests {
         assert_eq!(request.path, "/items");
         assert_eq!(request.accept_profile, "public");
         assert_eq!(param(&request, "select"), Some("id,title,body"));
-        assert_eq!(param(&request, "order"), Some("id.asc"));
+        assert_eq!(param(&request, "order"), Some("id.asc.nullslast"));
         assert_eq!(param(&request, "limit"), Some("50"));
     }
 
@@ -519,7 +567,7 @@ mod tests {
             direction: Direction::Desc,
         }];
         let request = translator().translate(&query).unwrap();
-        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
+        assert_eq!(param(&request, "order"), Some("title.desc.nullsfirst,id.asc.nullslast"));
     }
 
     #[test]
@@ -535,7 +583,117 @@ mod tests {
         let request = translator().translate(&query).unwrap();
         assert_eq!(
             param(&request, "or"),
-            Some("(title.lt.m,and(title.eq.m,id.gt.42))")
+            Some("(title.lt.m,and(title.eq.m,id.gt.42),and(title.eq.m,id.is.null))")
+        );
+    }
+
+    fn keyset_query(direction: Direction, cursor: Vec<Value>) -> Query {
+        let mut query = Query::read("items");
+        query.order = vec![OrderKey {
+            column: "title".to_string(),
+            direction,
+        }];
+        query.pagination = Pagination::Keyset { cursor };
+        query
+    }
+
+    #[test]
+    fn keyset_asc_continuation_includes_the_null_bucket() {
+        // Oracle: #16132 — PostgreSQL ASC NULLS LAST semantics. After
+        // a non-NULL cursor value, the NULL bucket still remains, so
+        // the continuation must carry the `is.null` alternatives or
+        // those rows are silently dropped and the read lies complete.
+        let request = translator()
+            .translate(&keyset_query(
+                Direction::Asc,
+                vec![Value::Text("m".to_string()), Value::Int(42)],
+            ))
+            .unwrap();
+        assert_eq!(
+            param(&request, "or"),
+            Some(
+                "(title.gt.m,title.is.null,\
+                 and(title.eq.m,id.gt.42),and(title.eq.m,id.is.null))"
+            )
+        );
+        assert_eq!(
+            param(&request, "order"),
+            Some("title.asc.nullslast,id.asc.nullslast")
+        );
+    }
+
+    #[test]
+    fn keyset_asc_null_cursor_continues_within_the_null_bucket() {
+        // Oracle: #16132 — a page ending on a NULL ordering value
+        // must continue inside the NULL bucket via the later keys,
+        // under an `is.null` prefix (NULL equality is not `eq`).
+        let request = translator()
+            .translate(&keyset_query(
+                Direction::Asc,
+                vec![Value::Null, Value::Int(42)],
+            ))
+            .unwrap();
+        assert_eq!(
+            param(&request, "or"),
+            Some("(and(title.is.null,id.gt.42),and(title.is.null,id.is.null))")
+        );
+    }
+
+    #[test]
+    fn keyset_desc_null_cursor_transitions_out_of_the_null_bucket() {
+        // Oracle: #16132 — PostgreSQL DESC NULLS FIRST semantics.
+        // After NULL, every non-NULL value remains; before this fix
+        // the NULL cursor value was refused as `field_unsupported`.
+        let request = translator()
+            .translate(&keyset_query(
+                Direction::Desc,
+                vec![Value::Null, Value::Int(42)],
+            ))
+            .unwrap();
+        assert_eq!(
+            param(&request, "or"),
+            Some(
+                "(title.not.is.null,\
+                 and(title.is.null,id.gt.42),and(title.is.null,id.is.null))"
+            )
+        );
+        assert_eq!(
+            param(&request, "order"),
+            Some("title.desc.nullsfirst,id.asc.nullslast")
+        );
+    }
+
+    #[test]
+    fn keyset_desc_continuation_has_no_null_term() {
+        // Oracle: #16132 — DESC NULLS FIRST: after a non-NULL cursor
+        // value the NULL bucket is already behind, so no `is.null`
+        // term may appear for that key.
+        let request = translator()
+            .translate(&keyset_query(
+                Direction::Desc,
+                vec![Value::Text("m".to_string()), Value::Int(42)],
+            ))
+            .unwrap();
+        assert_eq!(
+            param(&request, "or"),
+            Some("(title.lt.m,and(title.eq.m,id.gt.42),and(title.eq.m,id.is.null))")
+        );
+    }
+
+    #[test]
+    fn keyset_all_null_asc_cursor_is_a_wellformed_empty_continuation() {
+        // Oracle: #16132 — the cursor tuple is the last row of the
+        // ordering; the continuation must be a well-formed empty
+        // page, never an empty `or=()` and never a refusal.
+        let request = translator()
+            .translate(&keyset_query(
+                Direction::Asc,
+                vec![Value::Null, Value::Null],
+            ))
+            .unwrap();
+        assert_eq!(
+            param(&request, "or"),
+            Some("(and(title.is.null,title.not.is.null))")
         );
     }
 
