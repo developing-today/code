@@ -3,6 +3,7 @@
  * Tests the content mode types, schema selection, and editor initialization.
  */
 
+import { redo, undo } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -17,7 +18,9 @@ import {
   parseOrderedListStart,
   rawSchema,
   richSchema,
+  splitOversizedTextInsertion,
 } from "./editor";
+import { MAX_STEPS_MESSAGE_BYTES, stepWireSize } from "./collab-step-budget";
 
 // ============================================================================
 // Content Mode Type Tests
@@ -707,6 +710,48 @@ describe("getSendableSteps", () => {
     expect(result).toHaveProperty("clientID");
     expect(Array.isArray(result!.steps)).toBe(true);
     expect(result!.steps.length).toBeGreaterThan(0);
+  });
+});
+
+describe("oversized text insertion dispatch (#4119)", () => {
+  const views: EditorView[] = [];
+
+  afterEach(() => {
+    for (const view of views) view.destroy();
+    views.length = 0;
+  });
+
+  it("leaves an under-budget insertion on the original transaction path", () => {
+    const container = document.createElement("div");
+    const { view } = initEditor(container, undefined, 0, "raw");
+    views.push(view);
+    const transaction = view.state.tr.insertText("small paste", 1);
+
+    expect(stepWireSize(transaction.steps[0])).toBeLessThanOrEqual(MAX_STEPS_MESSAGE_BYTES);
+    expect(splitOversizedTextInsertion(view.state, transaction)).toBe(transaction);
+  });
+
+  it("splits a large text insertion into bounded steps in one undoable transaction", () => {
+    const container = document.createElement("div");
+    const { view } = initEditor(container, undefined, 0, "raw");
+    views.push(view);
+    const text = "a😀".repeat(250_000);
+    const transaction = view.state.tr.insertText(text, 1);
+    const rewritten = splitOversizedTextInsertion(view.state, transaction);
+
+    expect(rewritten).not.toBe(transaction);
+    expect(rewritten.steps.length).toBeGreaterThan(1);
+    expect(rewritten.steps.every((step) => stepWireSize(step) <= MAX_STEPS_MESSAGE_BYTES)).toBe(true);
+    expect(rewritten.doc.eq(transaction.doc)).toBe(true);
+
+    view.dispatch(transaction);
+    expect(view.state.doc.textContent).toBe(text);
+    expect(view.state.selection.head).toBe(text.length + 1);
+
+    expect(undo(view.state, (tr) => view.dispatch(tr))).toBe(true);
+    expect(view.state.doc.textContent).toBe("");
+    expect(redo(view.state, (tr) => view.dispatch(tr))).toBe(true);
+    expect(view.state.doc.textContent).toBe(text);
   });
 });
 

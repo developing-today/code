@@ -263,6 +263,11 @@ ancestor of the head they hold — no new versioning machinery. Two sets interle
 costs nothing here: `set_id` is in the body, so which versions belong to which set is decided by
 the signed body, not by adjacency.
 
+**Enforcement (#6484):** `WriterSet::check` — applied by both `encode_writer_body` and
+`decode_writer_body` — refuses a set with `scope: Some(purpose)` whose `set_id` is not
+`derive_set_id(owner, purpose)`. A set with `scope: None` has no purpose to derive from, so its
+`set_id` is an owner-chosen opaque value that is unverifiable by design.
+
 **Rejected:** a mutable "current set" row. There is no mutation path in the substrate
 (`event_store/mod.rs:1-30`, append-only) and a mutable set would make §D2's "which set version
 produced this number" unanswerable.

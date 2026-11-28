@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use std::sync::OnceLock;
 
 /// The sensitivity ladder, least to most restricted. The ordering
 /// is the security ordering used by the server-side clamp.
@@ -137,11 +138,60 @@ pub struct FilterSpec {
 }
 
 fn default_k() -> usize {
-    10
+    SearchParametersV1::default_k()
 }
 
 fn default_pool() -> usize {
-    100
+    SearchParametersV1::default_pool()
+}
+
+fn default_expand() -> usize {
+    SearchParametersV1::default_expand()
+}
+
+fn query_defaults() -> &'static Json {
+    static DEFAULTS: OnceLock<Json> = OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        serde_json::from_str(include_str!("../query-parameters-v1.json"))
+            .expect("query-parameters-v1.json must be valid JSON")
+    })
+}
+
+fn default_usize(name: &str) -> usize {
+    query_defaults()[name]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .expect("query-parameters-v1.json is missing an unsigned default")
+}
+
+fn default_u32(name: &str) -> u32 {
+    query_defaults()[name]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .expect("query-parameters-v1.json is missing a u32 default")
+}
+
+fn default_f64(name: &str) -> f64 {
+    query_defaults()[name]
+        .as_f64()
+        .expect("query-parameters-v1.json is missing a numeric default")
+}
+
+fn default_bool(name: &str) -> bool {
+    query_defaults()[name]
+        .as_bool()
+        .expect("query-parameters-v1.json is missing a boolean default")
+}
+
+fn default_query_hint() -> Option<String> {
+    query_defaults()["query_class_hint"]
+        .as_str()
+        .map(str::to_string)
+}
+
+fn default_variant() -> QueryVariant {
+    serde_json::from_value(query_defaults()["variant"].clone())
+        .expect("query-parameters-v1.json has an invalid variant default")
 }
 
 fn default_model() -> String {
@@ -150,6 +200,153 @@ fn default_model() -> String {
 
 fn default_embedder() -> String {
     "auto".to_string()
+}
+
+/// Query-time controls shared by the CLI, raw JSON request and atlas-core.
+/// The shape and provisional production defaults are versioned together in
+/// `query-parameters-v1.json`. Controls for stages not implemented yet
+/// remain representable but are rejected when set to non-default values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchParametersV1 {
+    #[serde(default = "default_parameters_version")]
+    pub parameters_version: u32,
+    #[serde(default = "default_shard_top_k")]
+    pub shard_top_k: usize,
+    #[serde(default = "default_global_top_k")]
+    pub global_top_k: usize,
+    #[serde(default = "default_fts_weight")]
+    pub fts_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_jaccard_depth")]
+    pub jaccard_depth: usize,
+    #[serde(default = "default_jaccard_threshold")]
+    pub jaccard_threshold: f64,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: usize,
+    #[serde(default = "default_planner_enabled")]
+    pub planner_enabled: bool,
+    #[serde(default = "default_spell_enabled")]
+    pub spell_enabled: bool,
+    #[serde(default = "default_query_hint")]
+    pub query_class_hint: Option<String>,
+    #[serde(default = "default_variant")]
+    pub variant: QueryVariant,
+    #[serde(default = "default_raw")]
+    pub raw: bool,
+}
+
+fn default_parameters_version() -> u32 {
+    default_u32("parameters_version")
+}
+fn default_shard_top_k() -> usize {
+    default_usize("shard_top_k")
+}
+fn default_global_top_k() -> usize {
+    default_usize("global_top_k")
+}
+fn default_fts_weight() -> f64 {
+    default_f64("fts_weight")
+}
+fn default_vector_weight() -> f64 {
+    default_f64("vector_weight")
+}
+fn default_jaccard_depth() -> usize {
+    default_usize("jaccard_depth")
+}
+fn default_jaccard_threshold() -> f64 {
+    default_f64("jaccard_threshold")
+}
+fn default_rrf_k() -> usize {
+    default_usize("rrf_k")
+}
+fn default_planner_enabled() -> bool {
+    default_bool("planner_enabled")
+}
+fn default_spell_enabled() -> bool {
+    default_bool("spell_enabled")
+}
+fn default_raw() -> bool {
+    default_bool("raw")
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryVariant {
+    #[default]
+    Raw,
+    Rewritten,
+    Both,
+}
+
+impl Default for SearchParametersV1 {
+    fn default() -> Self {
+        serde_json::from_str(include_str!("../query-parameters-v1.json"))
+            .expect("query-parameters-v1.json must match SearchParametersV1")
+    }
+}
+
+impl SearchParametersV1 {
+    pub fn default_k() -> usize {
+        default_usize("k")
+    }
+
+    pub fn default_pool() -> usize {
+        default_usize("pool")
+    }
+
+    pub fn default_expand() -> usize {
+        default_usize("expand")
+    }
+
+    /// Validate controls available on this implementation. Unsupported
+    /// non-default controls fail explicitly rather than being ignored.
+    pub fn validate(&self, expand: usize) -> Result<(), String> {
+        if self.parameters_version != 1 {
+            return Err(format!(
+                "parameters_version {} is unsupported (expected 1)",
+                self.parameters_version
+            ));
+        }
+        for (name, value) in [
+            ("shard_top_k", self.shard_top_k),
+            ("global_top_k", self.global_top_k),
+        ] {
+            if !(1..=400).contains(&value) {
+                return Err(format!("{name} must be between 1 and 400"));
+            }
+        }
+        if self.rrf_k == 0 || self.rrf_k > 10_000 {
+            return Err("rrf_k must be between 1 and 10000".to_string());
+        }
+        for (name, value) in [
+            ("fts_weight", self.fts_weight),
+            ("vector_weight", self.vector_weight),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!("{name} must be a finite non-negative number"));
+            }
+        }
+        if self.fts_weight == 0.0 && self.vector_weight == 0.0 {
+            return Err("at least one of fts_weight or vector_weight must be positive".to_string());
+        }
+        if self.jaccard_depth != 0 || self.jaccard_threshold != 0.0 {
+            return Err("Jaccard controls are not implemented yet".to_string());
+        }
+        if self.planner_enabled || self.spell_enabled {
+            return Err("planner/spell stages are not implemented yet".to_string());
+        }
+        if self.query_class_hint.is_some() {
+            return Err("query_class_hint is not implemented yet".to_string());
+        }
+        if self.variant != QueryVariant::Raw {
+            return Err("rewritten/both query variants are not implemented yet".to_string());
+        }
+        if self.raw && expand != 0 {
+            return Err("raw mode cannot be combined with non-zero expand".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// A search job submission. This is the complete one-shot CLI
@@ -177,8 +374,12 @@ pub struct SearchRequest {
     pub pool: usize,
     #[serde(default)]
     pub group_by_session: bool,
-    #[serde(default)]
+    #[serde(default = "default_expand")]
     pub expand: usize,
+    /// Flattened on the wire so each JSON parameter name matches its CLI
+    /// spelling without the leading `--`.
+    #[serde(flatten)]
+    pub parameters: SearchParametersV1,
     #[serde(default)]
     pub with_message: bool,
     #[serde(default = "default_model")]
@@ -206,7 +407,8 @@ impl Default for SearchRequest {
             k: default_k(),
             pool: default_pool(),
             group_by_session: false,
-            expand: 0,
+            expand: default_expand(),
+            parameters: SearchParametersV1::default(),
             with_message: false,
             model: default_model(),
             embedder: default_embedder(),
@@ -422,9 +624,48 @@ pub struct HealthResponse {
     pub active_jobs: usize,
 }
 
+/// `POST /v1/embed` request (#6788): embed one query text in the
+/// production query-vector space. `trunc` absent/0 = full width.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EmbedRequest {
+    pub query: String,
+    #[serde(default)]
+    pub trunc: Option<usize>,
+}
+
+/// `POST /v1/embed` response (#6788): the production-shaped query
+/// vector (prompt applied, truncated, renormalized by atlas-core)
+/// and the space it lives in, named so a caller can refuse a
+/// vector from the wrong space before storing or using it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EmbedResponse {
+    pub model: String,
+    pub dims: usize,
+    pub vector: Vec<f32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_wire_roundtrip() {
+        // #6788: a missing trunc is the full-width request; the
+        // response names its model space and dimension so the
+        // Worker can pin both before caching the vector.
+        let req: EmbedRequest = serde_json::from_str(r#"{"query": "alpha"}"#).unwrap();
+        assert_eq!(req.query, "alpha");
+        assert_eq!(req.trunc, None);
+        let resp = EmbedResponse {
+            model: "m".to_string(),
+            dims: 2,
+            vector: vec![1.0, 0.0],
+        };
+        let wire = serde_json::to_value(&resp).unwrap();
+        assert_eq!(wire["model"], serde_json::json!("m"));
+        assert_eq!(wire["dims"], serde_json::json!(2));
+        assert_eq!(wire["vector"], serde_json::json!([1.0, 0.0]));
+    }
 
     #[test]
     fn sensitivity_clamp_uses_ladder() {
@@ -450,6 +691,59 @@ mod tests {
         assert_eq!(req.k, 10);
         assert_eq!(req.pool, 100);
         assert_eq!(req.vector_backend, VectorBackend::Scan);
+        assert_eq!(req.parameters, SearchParametersV1::default());
+    }
+
+    #[test]
+    fn query_parameters_are_flattened_and_keep_cli_json_names() {
+        let raw = r#"{
+            "query":"atlas",
+            "parameters_version":1,
+            "shard_top_k":32,
+            "global_top_k":8,
+            "fts_weight":1.5,
+            "vector_weight":0.75,
+            "jaccard_depth":0,
+            "jaccard_threshold":0.0,
+            "rrf_k":20,
+            "planner_enabled":false,
+            "spell_enabled":false,
+            "query_class_hint":null,
+            "variant":"raw",
+            "raw":true
+        }"#;
+        let req: SearchRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.parameters.shard_top_k, 32);
+        assert_eq!(req.parameters.global_top_k, 8);
+        assert_eq!(req.parameters.rrf_k, 20);
+        assert!(req.parameters.raw);
+        let wire = serde_json::to_value(req).unwrap();
+        assert_eq!(wire["shard_top_k"], 32);
+        assert_eq!(wire["global_top_k"], 8);
+        assert_eq!(wire["rrf_k"], 20);
+        assert_eq!(wire["raw"], true);
+        assert!(wire.get("parameters").is_none());
+    }
+
+    #[test]
+    fn unsupported_or_invalid_query_parameters_are_rejected() {
+        let defaults = SearchParametersV1::default();
+        assert!(defaults.validate(0).is_ok());
+        let mut p = defaults.clone();
+        p.jaccard_depth = 10;
+        assert!(p.validate(0).unwrap_err().contains("Jaccard"));
+        let mut p = defaults.clone();
+        p.planner_enabled = true;
+        assert!(p.validate(0).unwrap_err().contains("not implemented"));
+        let mut p = defaults.clone();
+        p.rrf_k = 0;
+        assert!(p.validate(0).unwrap_err().contains("rrf_k"));
+        let mut p = defaults.clone();
+        p.fts_weight = f64::NAN;
+        assert!(p.validate(0).unwrap_err().contains("finite"));
+        let mut p = defaults;
+        p.raw = true;
+        assert!(p.validate(1).unwrap_err().contains("raw mode"));
     }
 
     #[test]

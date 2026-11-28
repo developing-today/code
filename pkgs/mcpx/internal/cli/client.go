@@ -373,9 +373,10 @@ func NewInProcessClient(paths daemon.Paths, configPath string, rt http.RoundTrip
 	return c
 }
 
-// Remote reports whether this client talks to a daemon it cannot start.
 // Socket is the unix socket this client is actually using, or "" when the
 // daemon is somewhere else.
+//
+// Remote reports whether this client talks to a daemon it cannot start.
 //
 // Asked of the connection rather than recomputed from the configuration.
 // Inline mode listens on a private temporary socket, so deriving the path
@@ -489,7 +490,7 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 // readReply reads a whole response, turning a non-2xx status into an
 // *HTTPError.
 func (c *Client) readReply(resp *http.Response) ([]byte, int, error) {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, 0, err
@@ -639,7 +640,7 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	cmd := exec.Command(exe, args...)
 	// A daemon auto-started by this invocation must resolve the
@@ -921,7 +922,7 @@ func (c *Client) CallRelayed(ctx context.Context, server, tool string, cc config
 		var out CallResult
 		return &out, json.Unmarshal(b, &out)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	dec := json.NewDecoder(resp.Body)
 	for {
 		var f daemon.RelayFrame
@@ -1296,7 +1297,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 				}
 			}
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	return ctx.Err()
 }

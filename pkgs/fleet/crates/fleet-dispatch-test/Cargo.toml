@@ -1,0 +1,17 @@
+[package]
+name = "fleet-dispatch-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet dispatch-test domain: explicit-dispatch CI test — scan fleet repos for free GitHub Actions capacity, submit a job to the Turso-backed jobs store, dispatch the pilot workflow, and track the job's stored status."
+
+[dependencies]
+fleet-config = { workspace = true }
+fleet-secrets = { workspace = true }
+serde = { workspace = true }
+# preserve_order, as in fleet-dispatch: stored-row JSON key order is
+# the schema's column order, part of the output shape agents consume.
+serde_json = { version = "1", features = ["preserve_order"] }
+# Same pin as fleet-search / fleet-queue.
+ureq = { version = "3", features = ["rustls", "json"] }

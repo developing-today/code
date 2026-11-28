@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { CoverageSnapshotFile } from "../src/coverage.ts";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import {
   PROJECT_CONFIGS,
@@ -13,7 +14,7 @@ import {
   type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
-import { renderProgram, renderProgramProject } from "../src/render.ts";
+import { projectsBodyHtml, renderProgram, renderProgramProject } from "../src/render.ts";
 import { FIXTURE_ROADMAP, fixtureSource } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
@@ -29,6 +30,61 @@ const PROV: Provenance = {
   registry: "x",
   aa: "x",
 };
+
+describe("stale issue coverage panel", () => {
+  test("shows per-repo count, collection time, and stale/error/unavailable states honestly", () => {
+    const coverage: CoverageSnapshotFile = {
+      baseline: null,
+      current: {
+        generatedAt: "2026-11-01T12:00:00.000Z",
+        repos: [
+          {
+            repo: "org/stale",
+            openIssues: 10,
+            gateNow: 0,
+            gateNext: 0,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: 4,
+            staleIssuesCollectedAt: "2026-10-01T12:00:00.000Z",
+            staleIssuesError: null,
+          },
+          {
+            repo: "org/error",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+            staleIssuesError: "search 503 <retry>",
+          },
+          {
+            repo: "org/missing",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: null,
+            staleIssuesError: null,
+          },
+        ],
+      },
+    };
+    const html = projectsBodyHtml([], { coverage });
+    expect(html).toContain("Open issues untouched &gt;90 days");
+    expect(html).toContain(">4</td><td><time datetime=\"2026-10-01T12:00:00.000Z\">2026-10-01T12:00:00.000Z</time></td><td>STALE — collection is over 7 days old</td>");
+    expect(html).toContain("Collection error: search 503 &lt;retry&gt;");
+    expect(html).toContain("Unavailable — collection failed or not collected");
+    expect(html).toContain(">—</td>");
+  });
+});
 
 function poolItem(partial: Partial<ProjectPoolItem>): ProjectPoolItem {
   return {
@@ -200,7 +256,7 @@ describe("project registry", () => {
     // tracked and explained, and the Grist-vs-Project status disagreement
     // for #1080/#1081 is surfaced as an honest gap naming both readings.
     for (const n of [501, 502, 503, 504, 505, 506, 507, 508]) {
-      expect(lab.trackedRefs).toContain(`dezren39/nix#${n}`);
+      expect(lab.trackedRefs).toContain(`dezren39/darwin-nix#${n}`);
     }
     expect(labGaps).toContain("dezren39/nix (#501-#508)");
     expect(labGaps).toContain("Hardware inventory + firmware/BMC audit");
@@ -209,8 +265,8 @@ describe("project registry", () => {
     const disagreement = (lab.editorial?.gaps ?? []).find((e) => e.title.includes("Status sources disagree"));
     expect(disagreement?.refs).toContain("developing-today/code#1080");
     expect(disagreement?.refs).toContain("developing-today/code#1081");
-    expect(disagreement?.refs).toContain("dezren39/nix#501");
-    expect(disagreement?.refs).toContain("dezren39/nix#502");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#501");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#502");
 
     const id = projectConfigById("id")!;
     for (const n of [1076, 1077, 1078, 1235, 1239, 1240]) {
@@ -291,9 +347,9 @@ describe("project registry", () => {
     const cards = fleet.repoCards ?? [];
     expect(cards.map((c) => c.repo)).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
-      "dezren39/nix",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
     ]);
     for (const card of cards) {
       expect(card.role.length).toBeGreaterThan(0);
@@ -314,9 +370,9 @@ describe("project registry", () => {
     expect(gaps).toContain("does not claim pool completeness");
     // Card + sweep-health refs resolve through the shared ref set.
     const refs = allProjectRefs();
-    expect(refs).toContain("developing-today/opencode#365");
-    expect(refs).toContain("developing-today/openchamber#214");
-    expect(refs).toContain("dezren39/nix#512");
+    expect(refs).toContain("developing-today-forks/opencode#365");
+    expect(refs).toContain("developing-today-forks/openchamber#214");
+    expect(refs).toContain("dezren39/darwin-nix#512");
   });
 
   test("validation catches duplicates, malformed refs, and impossible dates", () => {
@@ -430,7 +486,7 @@ describe("project registry", () => {
     for (const r of TRACKED_REFS) expect(refs).toContain(r);
     expect(refs).toContain("developing-today/code#1080"); // lab-cluster epic
     expect(refs).toContain("developing-today/code#911"); // repo-fleet + pm next
-    expect(refs).toContain("dezren39/nix#254"); // mcpx editorial
+    expect(refs).toContain("dezren39/darwin-nix#254"); // mcpx editorial
     expect(new Set(refs).size).toBe(refs.length);
   });
 });
@@ -496,9 +552,9 @@ describe("renderProgramProject", () => {
     expect(fleetHtml).toContain("Per-repo cards");
     for (const repo of [
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
-      "dezren39/nix",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
     ]) {
       expect(fleetHtml).toContain(repo);
     }
@@ -528,17 +584,17 @@ describe("renderProgramProject", () => {
     const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);
     expect(detail.repoCards.map((c) => c.card.repo)).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
-      "dezren39/nix",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
     ]);
     const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
     expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
     expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
-    expect(byRepo.get("developing-today/opencode")?.poolItems).toEqual([]);
+    expect(byRepo.get("developing-today-forks/opencode")?.poolItems).toEqual([]);
     // Fixture roadmap rows name their repo in the title / links.
-    expect(byRepo.get("developing-today/opencode")?.roadmapRows.length).toBeGreaterThan(0);
-    expect(byRepo.get("developing-today/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today-forks/opencode")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today-forks/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
   });
 
   test("pm-dashboard page retains the full #1046 document", async () => {

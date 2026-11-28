@@ -40,5 +40,5 @@ $WASM_OPT -Os --all-features roc-grid.wasm -o roc-grid.wasm.opt
 mv roc-grid.wasm.opt roc-grid.wasm
 $WASM_TOOLS strip roc-grid.wasm -o roc-grid.wasm.stripped
 mv roc-grid.wasm.stripped roc-grid.wasm
-"${WASM_TOOLS}" validate roc-grid.wasm
+$WASM_TOOLS validate roc-grid.wasm
 echo "Built roc-grid.wasm (import-free Roc world module)"

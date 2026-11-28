@@ -18,7 +18,7 @@ func open(t *testing.T) *elicit.Broker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	return b
 }
 
@@ -109,13 +109,13 @@ func TestAnsweringAfterTheProcessDiedStillWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := ask(t, first, elicit.Request{Session: "s1"})
-	first.Close() // the asking process goes away
+	_ = first.Close() // the asking process goes away
 
 	second, err := elicit.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 
 	pending, err := second.Pending(elicit.Filter{Session: "s1"})
 	if err != nil {

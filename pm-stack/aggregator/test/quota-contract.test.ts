@@ -80,6 +80,18 @@ describe("/api/quota.json hub contract (#1119)", () => {
     }
   });
 
+  test("uninstrumentedServices: tracker registry rides the JSON twin (#1172)", () => {
+    expect(Array.isArray(doc.uninstrumentedServices)).toBe(true);
+    for (const svc of doc.uninstrumentedServices) {
+      expect(typeof svc.name).toBe("string");
+      expect(typeof svc.whatFor).toBe("string");
+      expect(typeof svc.status).toBe("string");
+      expect(isStrOrNull(svc.checkedAt)).toBe(true);
+      expect(typeof svc.overageBehavior).toBe("string");
+      expect(typeof svc.guardrailNotes).toBe("string");
+    }
+  });
+
   test("saas: service cards carry required fields with enum group/status/sourceClass", () => {
     expect(doc.saas.length).toBeGreaterThan(0);
     for (const svc of doc.saas) {

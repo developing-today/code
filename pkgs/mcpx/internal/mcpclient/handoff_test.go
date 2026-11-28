@@ -116,8 +116,7 @@ func TestClientHandoffCommitsOnlyWhenActivated(t *testing.T) {
 		t.Fatalf("before handoff: %v", err)
 	}
 
-	h, err := first.Detach()
-	if err != nil {
+	if _, err := first.Detach(); err != nil {
 		t.Fatal(err)
 	}
 	first.Reattach()
@@ -125,7 +124,7 @@ func TestClientHandoffCommitsOnlyWhenActivated(t *testing.T) {
 		t.Fatalf("after a reattach that was not handed on: %v", err)
 	}
 
-	h, err = first.Detach()
+	h, err := first.Detach()
 	if err != nil {
 		t.Fatal(err)
 	}

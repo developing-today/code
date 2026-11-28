@@ -279,7 +279,10 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     codex_usage?: { usage?: { rate_limit?: { primary_window?: unknown; secondary_window?: unknown } } };
   };
   const ts = typeof s.generated_at === "string" ? s.generated_at : null;
-  if (!ts || Number.isNaN(Date.parse(ts))) return [];
+  // Strict gate, same as isSnapshotRecord's isIsoDate check on r.ts:
+  // Date.parse alone accepts impossible dates (2026-02-30) and non-ISO
+  // strings the store then refuses, silently dropping the snapshot (#5140).
+  if (!ts || parseIsoDate(ts) === null) return [];
   const out: SnapshotRecord[] = [];
   if (Array.isArray(s.sessions)) {
     out.push({

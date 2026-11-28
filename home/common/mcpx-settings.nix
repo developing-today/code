@@ -94,17 +94,32 @@
       ];
       "command" = "npx";
     };
+    # readOnlyTools (#6116): fff-mcp publishes no tool annotations, so
+    # the specification's defaults made every search a possibly
+    # destructive write and the write-policy gate (default ask)
+    # refused them all in headless/API sessions, where the
+    # confirmation question has no answerer. All three fff tools are
+    # searches; the operator declares them read-only here.
     "fff" = {
       "args" = [ ];
       "command" = "/home/user/.local/bin/fff-mcp";
+      "mcpx" = {
+        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+      };
     };
     "fff-nix" = {
       "args" = [ "/home/user/code" ];
       "command" = "/home/user/.local/bin/fff-mcp";
+      "mcpx" = {
+        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+      };
     };
     "fff-worktree" = {
       "args" = [ "/home/user/.local/share/opencode/worktree" ];
       "command" = "/home/user/.local/bin/fff-mcp";
+      "mcpx" = {
+        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+      };
     };
     "gopls-mcp-server" = {
       "args" = [

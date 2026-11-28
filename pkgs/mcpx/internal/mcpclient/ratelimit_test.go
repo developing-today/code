@@ -35,7 +35,8 @@ var (
 func TestWindowCounter(t *testing.T) {
 	w := newWindowCounter(2, time.Minute)
 	now := time.Now()
-	if !w.allow(now) || !w.allow(now) {
+	first, second := w.allow(now), w.allow(now)
+	if !first || !second {
 		t.Fatal("first two admissions refused")
 	}
 	if w.allow(now) {

@@ -13,7 +13,7 @@ export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today-forks/opencode",
   "developing-today-forks/openchamber",
-  "dezren39/nix",
+  "dezren39/darwin-nix",
   "developing-today/zettel",
   "dezren39/dezren39",
 ] as const;
@@ -23,7 +23,7 @@ export const REPO_QUEUES: Record<string, string> = {
   "developing-today/code": "repo-health-code-pilot",
   "developing-today-forks/opencode": "repo-health-opencode-pilot",
   "developing-today-forks/openchamber": "repo-health-openchamber-pilot",
-  "dezren39/nix": "repo-health-nix-pilot",
+  "dezren39/darwin-nix": "repo-health-nix-pilot",
   "developing-today/zettel": "repo-health-zettel-pilot",
   "dezren39/dezren39": "repo-health-dezren39-pilot",
 };
@@ -33,19 +33,19 @@ export const REPO_DIRS: Record<string, string> = {
   "developing-today/code": "/home/user/git/code",
   "developing-today-forks/opencode": "/home/user/git/opencode",
   "developing-today-forks/openchamber": "/home/user/git/openchamber-fork",
-  "dezren39/nix": "/home/user/git/nix",
+  "dezren39/darwin-nix": "/home/user/git/nix",
   "developing-today/zettel": "/home/user/git/zettel",
   "dezren39/dezren39": "/home/user/dezren39",
 };
 
 /** Repos where the pm-stack GitHub App is installed (issue creation works):
  * the developing-today installation covers code, and the dezren39
- * installation covers dezren39/nix. developing-today/zettel and
+ * installation covers dezren39/darwin-nix. developing-today/zettel and
  * dezren39/dezren39 are NOT covered, and neither are opencode and
  * openchamber since their move to developing-today-forks (the app is not
  * installed on that org yet — grants item G2) — dispatch skips issue
  * creation in all of those and returns a warning instead of failing. */
-export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set(["developing-today/code", "dezren39/nix"]);
+export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set(["developing-today/code", "dezren39/darwin-nix"]);
 
 export interface Config {
   port: number;

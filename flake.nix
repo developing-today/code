@@ -25,6 +25,7 @@ rec {
       lib.make-mcpx-modules
       lib.make-laptop-backups-checks
       lib.make-fleet
+      lib.make-deploy
     ];
   inputs = {
     nixgl = {

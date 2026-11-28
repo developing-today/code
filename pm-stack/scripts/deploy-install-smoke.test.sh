@@ -112,14 +112,21 @@ printf 'systemctl %s\n' "$*" >>"${PM_TEST_COMMAND_LOG:?}"
 # Model ExecMainStartTimestampMonotonic: a value that changes on restart,
 # so installers that prove a fresh process start (ready-for-agent) can pass.
 start_ts_file="${PM_TEST_ROOT:?}/.systemctl-start-ts"
+main_pid_file="${PM_TEST_ROOT:?}/.systemctl-main-pid"
 case " $* " in
   *' restart '*)
     cur=1000
     if [[ -f "$start_ts_file" ]]; then cur="$(cat "$start_ts_file")"; fi
     printf '%s\n' "$((cur + 1000))" >"$start_ts_file"
+    pid=1000
+    if [[ -f "$main_pid_file" ]]; then pid="$(cat "$main_pid_file")"; fi
+    printf '%s\n' "$((pid + 1))" >"$main_pid_file"
     ;;
   *' show '*ExecMainStartTimestampMonotonic*)
     if [[ -f "$start_ts_file" ]]; then cat "$start_ts_file"; else printf '1000\n'; fi
+    ;;
+  *' show '*MainPID*)
+    if [[ -f "$main_pid_file" ]]; then cat "$main_pid_file"; else printf '1000\n'; fi
     ;;
   *' is-active '*|*' status '*) printf 'active\n' ;;
 esac
@@ -295,7 +302,8 @@ if "$BASH_BIN" -n "$READY_INSTALL"; then pass 'ready-for-agent/install.sh syntax
 # runs entirely inside a disposable HOME. Side-effecting tools are stubbed.
 AGG_SRC="$TMP/aggregator-src"
 AGG_HOME="$TMP/aggregator-home"
-mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/pm-stack/systemd"
+AGG_EXPECTED_SRC="$AGG_HOME/git/code/pm-stack/aggregator"
+mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/git/code/pm-stack/systemd"
 cp "$AGG_INSTALL" "$AGG_SRC/install.sh"
 printf '%s\n' '{"name":"smoke-aggregator","version":"1.0.0"}' >"$AGG_SRC/package.json"
 printf '%s\n' 'fake lockfile' >"$AGG_SRC/bun.lock"
@@ -308,30 +316,31 @@ printf '%s\n' '# fixture' >"$AGG_SRC/scripts/smoke.sh"
 printf '%s\n' '// fixture' >"$AGG_SRC/opencode-tools/smoke.ts"
 printf '%s\n' '[Service]' >"$AGG_SRC/systemd/quota-gatherer.service"
 printf '%s\n' '[Timer]' >"$AGG_SRC/systemd/quota-gatherer.timer"
-printf '%s\n' '[Service]' >"$AGG_HOME/pm-stack/systemd/pm-aggregator.service"
+printf '%s\n' '[Service]' >"$AGG_HOME/git/code/pm-stack/systemd/pm-aggregator.service"
 printf '%s\n' 'fake encrypted aggregator fixture' >"$AGG_HOME/secrets/pm-stack.sops.yaml"
+ln -s "$AGG_SRC" "$AGG_EXPECTED_SRC"
 AGG_SOPS_LOG="$TMP/aggregator-sops.log"
 AGG_OUTPUT="$TMP/aggregator-install.out"
 if env HOME="$AGG_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_SECRETS="$AGG_HOME/secrets/pm-stack.sops.yaml" \
   PM_TEST_COMMAND_LOG="$COMMAND_LOG" PM_TEST_SOPS_LOG="$AGG_SOPS_LOG" \
   PM_TEST_BUILD_VERSION=smoke-build-v1 TAILNET_IP=100.64.20.21 \
-  "$BASH_BIN" "$AGG_SRC/install.sh" >"$AGG_OUTPUT" 2>&1; then
+  "$BASH_BIN" "$AGG_EXPECTED_SRC/install.sh" >"$AGG_OUTPUT" 2>&1; then
   pass 'aggregator install smoke completes using temporary HOME and stubs'
 else
   cat "$AGG_OUTPUT"
   fail 'aggregator install smoke completes using temporary HOME and stubs'
 fi
-if contains "$AGG_HOME/pm-stack/aggregator/.env" 'KANEO_ADMIN_EMAIL=smoke-admin@example.invalid' &&
-  contains "$AGG_HOME/pm-stack/aggregator/.env" 'GRIST_API_KEY=fake-grist-key' &&
-  contains "$AGG_HOME/pm-stack/aggregator/.env" 'PM_AGG_BUILD_VERSION=smoke-build-v1'; then
+if contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'KANEO_ADMIN_EMAIL=smoke-admin@example.invalid' &&
+  contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'GRIST_API_KEY=fake-grist-key' &&
+  contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'PM_AGG_BUILD_VERSION=smoke-build-v1'; then
   pass 'aggregator renders environment from stubbed SOPS fields'
 else
   fail 'aggregator renders environment from stubbed SOPS fields'
 fi
 if [[ -f "$AGG_HOME/.config/systemd/user/pm-aggregator.service" &&
   -f "$AGG_HOME/.config/systemd/user/quota-gatherer.service" &&
-  -f "$AGG_HOME/pm-stack/aggregator/.deploy-tree-hash" ]]; then
+  -f "$AGG_HOME/.local/state/pm-aggregator/.deploy-tree-hash" ]]; then
   pass 'aggregator copies package and unit files only under temporary HOME'
 else
   fail 'aggregator copies package and unit files only under temporary HOME'
@@ -348,14 +357,27 @@ READY_ROOT="$TMP/ready-src"
 READY_HOME="$TMP/ready-home"
 mkdir -p "$READY_ROOT/systemd" "$READY_HOME/.local/bin"
 cp "$READY_INSTALL" "$READY_ROOT/install.sh"
-printf '%s\n' '[Service]' >"$READY_ROOT/systemd/ready-for-agent.service"
+cp "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" "$READY_ROOT/systemd/ready-for-agent.service"
+# install.sh runs ./apply-config.sh unconditionally once the new process is
+# verified serving (#1203). Mirror the sibling harness (ready-for-agent/
+# test-install.sh, #5368): a recording stub plus the config it would read,
+# so the smoke proves the call happens instead of dying on a missing file.
+cat >"$READY_ROOT/apply-config.sh" <<'APPLY_CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apply-config\n' >>"${PM_TEST_COMMAND_LOG:?}"
+APPLY_CONFIG
+chmod +x "$READY_ROOT/apply-config.sh"
+cat >"$READY_ROOT/config.json" <<'JSON'
+{"repositories":[{"projectPath":"developing-today/code","localDir":"code","cloneUrl":"https://github.com/developing-today/code.git"}]}
+JSON
 cat >"$READY_HOME/.local/bin/ready-for-agent" <<'FAKE'
 #!/usr/bin/env bash
 printf 'ready-for-agent 1.1.0\n'
 FAKE
 chmod +x "$READY_HOME/.local/bin/ready-for-agent"
 READY_OUTPUT="$TMP/ready-install.out"
-if env HOME="$READY_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$READY_HOME" XDG_STATE_HOME="$READY_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_COMMAND_LOG="$COMMAND_LOG" \
   "$BASH_BIN" "$READY_ROOT/install.sh" >"$READY_OUTPUT" 2>&1; then
   pass 'ready-for-agent install smoke completes using temporary HOME and stubs'
@@ -364,11 +386,13 @@ else
   fail 'ready-for-agent install smoke completes using temporary HOME and stubs'
 fi
 if [[ -f "$READY_HOME/.config/systemd/user/ready-for-agent.service" ]] &&
+  cmp -s "$READY_HOME/.config/systemd/user/ready-for-agent.service" "$PM_STACK_DIR/ready-for-agent/systemd/ready-for-agent.service" &&
   contains "$READY_OUTPUT" 'is running after restart'; then
   pass 'ready-for-agent copies its unit and passes the fake UI health check'
 else
   fail 'ready-for-agent copies its unit and passes the fake UI health check'
 fi
+if grep -Fxq 'apply-config' "$COMMAND_LOG"; then pass 'ready-for-agent smoke invokes apply-config.sh after verified serving'; else fail 'ready-for-agent smoke invokes apply-config.sh after verified serving'; fi
 if ! grep -Fq 'npm ' "$COMMAND_LOG"; then pass 'ready-for-agent smoke makes no package-manager call'; else fail 'ready-for-agent smoke makes no package-manager call'; fi
 
 if ((FAILURES)); then

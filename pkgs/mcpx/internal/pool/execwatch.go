@@ -353,7 +353,7 @@ func (p *Pool) replaceable(in *Instance) bool {
 	if strings.HasPrefix(in.key, "call:") {
 		return false
 	}
-	return !(p.cfg.Scope.WatchesPID() && !keyPIDAlive(in.key))
+	return !p.cfg.Scope.WatchesPID() || keyPIDAlive(in.key)
 }
 
 // drain waits until the calls running on in have finished, or d has passed,

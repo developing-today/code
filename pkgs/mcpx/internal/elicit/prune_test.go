@@ -62,7 +62,7 @@ func TestOpenPrunesTerminalRowsPastTheAgeBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b2.Close()
+	defer func() { _ = b2.Close() }()
 	if _, ok, err := b2.Get("elc-aged"); err != nil || ok {
 		t.Errorf("aged terminal row survived the prune (ok=%v, err=%v)", ok, err)
 	}
@@ -101,7 +101,7 @@ func TestOpenPrunesTerminalSamplingRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b2.Close()
+	defer func() { _ = b2.Close() }()
 	if _, ok, err := b2.Get("elc-sample-aged"); err != nil || ok {
 		t.Errorf("aged sampling row survived the prune (ok=%v, err=%v)", ok, err)
 	}
@@ -135,7 +135,7 @@ func TestOpenPrunesTerminalRowsPastTheCountBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b2.Close()
+	defer func() { _ = b2.Close() }()
 	// Oldest-first out: the two oldest are gone, the newest three stay.
 	for _, id := range ids[:2] {
 		if _, ok, err := b2.Get(id); err != nil || ok {

@@ -62,6 +62,7 @@ CANDIDATES=(
   "$HOME/.config/cloudflare/gateway-id"
   "$HOME/.config/cloudflare/ai-inference-token"
   "$HOME/.claude/settings.json"
+  "$HOME/.claude/.credentials.json"
   "$HOME/.claude.json"
   "$HOME/.codex/config.toml"
   "$HOME/.codex/auth.json"
@@ -102,7 +103,12 @@ done < <({
   printf '%s\n' "$STAMP"
 } | LC_ALL=C sort -u)
 
-if [ -n "$PREV" ] && diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1; then
+if [ -n "$PREV" ] &&
+  diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1 &&
+  diff -q \
+    <(find "$ROOT/$PREV" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    <(find "$DEST" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    >/dev/null 2>&1; then
   rm -rf "$DEST"
   echo "agent-backup: no change since $PREV" >&2
   exit 0

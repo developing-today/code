@@ -23,7 +23,7 @@ func TestConcurrentOpenOfAFreshIndexWaitsRatherThanFailing(t *testing.T) {
 					errs <- err
 					return
 				}
-				s.Close()
+				_ = s.Close()
 			}()
 		}
 		wg.Wait()

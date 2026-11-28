@@ -56,3 +56,19 @@ Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client
 | Worlds on Cloudflare Workers        | idea    | A pkarr option for running on Workers. Design is merged; implementation and deployment deferred.                               | #793       |
 | Native TUI client                   | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.                                            | #1071      |
 | Native GUI client                   | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.                                            | #1072      |
+
+## Later — Phase 14: hosted, federated, local-first (plan of record #6312)
+
+Decided by Drew on 2026-11-05 in the next-horizons discussion #1240: **all seven themes are planned**, each as a research-and-design core topic with a v1 first-iteration design issue and v2/v3/v4 follow-up outline issues. First implementation items: hosted worlds + discovery; agents-in-worlds is the differentiating spike. Principles: local-first always, a hosted tier as an explicit goal, everything hostable by anyone at any scale, p2p behavior identical to hosted behavior, our hosted instance is the public backstop and never a requirement.
+
+| Topic                               | Core   | Ladder (v1 design → v4)        |
+| ----------------------------------- | ------ | ------------------------------ |
+| Hosted worlds & always-on hosting   | #6276  | #6283, #6284, #6285, #6286     |
+| Discovery, registry & federation    | #6277  | #6287, #6288, #6289, #6290     |
+| Program ecosystem (share/fork/gallery) | #6278 | #6291, #6293, #6294, #6295   |
+| More shells (mobile, native, hardware) | #6279 | #6296, #6297, #6298, #6299   |
+| Agents in worlds (MCP bridge)       | #6280  | #6300, #6301, #6302, #6303     |
+| Scale & performance hardening       | #6281  | #6304, #6305, #6306, #6307     |
+| Creator tooling & insight           | #6282  | #6308, #6309, #6310, #6311     |
+
+Design order: F12.4 (#1061) and F12.10 (#1067) designs first, then Phase 14 v1 designs in the order hosted worlds → discovery → agents spike → ecosystem → shells → scale → creators. Implementation follows Phase 13.

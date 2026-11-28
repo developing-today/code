@@ -575,10 +575,30 @@ fn trailing_placeholder_error() -> anyhow::Error {
 // Here-string content is removed before pipes are processed. In particular,
 // unquoted content consumes the rest of the line, including any `|>`.
 fn source_pipe_position(line: &str) -> Option<usize> {
+    // A `|>` or `<<<` inside a substitution body is shell code or data
+    // for the substitution, not an outer REPL operator (issue #4427).
+    // `substitution_spans` uses the same delimiter and escape semantics
+    // as the expansion stages below — quote-aware paren matching with no
+    // backslash escapes for `$(...)`, and next-backtick closing for
+    // backticks — so a crafted body (e.g. `$(touch x # \)`) cannot make
+    // this source-level scan skip a genuine outer pipe and let the
+    // substitution run before pipe validation rejects the line.
+    let spans = substitution_spans(line);
     let mut from = 0;
     loop {
         let pipe = find_unquoted_from(line, "|>", &[], from);
         let here = find_unquoted_from(line, "<<<", &[], from);
+        // The earliest operator decides. If it lies inside a substitution
+        // body, skip that whole body and keep scanning after it.
+        if let Some(e) = pipe.into_iter().chain(here).min() {
+            if let Some(&(_, end)) = spans.iter().find(|&&(a, b)| e >= a && e < b) {
+                from = end;
+                if from >= line.len() {
+                    return None;
+                }
+                continue;
+            }
+        }
         match (pipe, here) {
             (Some(p), Some(h)) if p < h => return Some(p),
             (Some(p), None) => return Some(p),
@@ -609,14 +629,38 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
-            let delimiter = after.trim().to_owned();
-            if !delimiter.is_empty() {
+            let after = after.trim_start();
+            if !after.is_empty() {
+                let delimiter_end = after
+                    .char_indices()
+                    .find(|(_, ch)| ch.is_whitespace())
+                    .map(|(index, _)| index)
+                    .unwrap_or(after.len());
+                let raw_delimiter = &after[..delimiter_end];
+                let trailing = after[delimiter_end..].trim();
+                if !trailing.is_empty() {
+                    bail!("unexpected trailing text after heredoc delimiter: {trailing}");
+                }
+
+                let delimiter = raw_delimiter
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| {
+                        raw_delimiter
+                            .strip_prefix('"')
+                            .and_then(|value| value.strip_suffix('"'))
+                    })
+                    .unwrap_or(raw_delimiter);
+                if delimiter.is_empty() {
+                    bail!("heredoc delimiter cannot be empty");
+                }
+
                 let original_line = line[..heredoc_start].trim().to_owned();
                 if has_trailing_placeholder(&original_line) {
                     return Err(trailing_placeholder_error());
                 }
                 return Ok(ReplInput::NeedMore {
-                    delimiter,
+                    delimiter: delimiter.to_owned(),
                     lines: Vec::new(),
                     original_line,
                 });
@@ -1004,6 +1048,30 @@ mod tests {
     }
 
     #[test]
+    fn test_preprocess_heredoc_single_quoted_delimiter() {
+        match preprocess_repl_line("put - name <<'EOF'").unwrap() {
+            ReplInput::NeedMore { delimiter, .. } => assert_eq!(delimiter, "EOF"),
+            _ => panic!("expected NeedMore"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_double_quoted_delimiter() {
+        match preprocess_repl_line("put - name <<\"EOF\"").unwrap() {
+            ReplInput::NeedMore { delimiter, .. } => assert_eq!(delimiter, "EOF"),
+            _ => panic!("expected NeedMore"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_refuses_trailing_tokens() {
+        let error = preprocess_repl_line("put - name <<EOF extra tokens")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("extra tokens"), "{error}");
+    }
+
+    #[test]
     fn test_preprocess_here_string() {
         match preprocess_repl_line("put - name <<< 'hello'").unwrap() {
             ReplInput::Ready(s) => assert!(s.contains("__STDIN_CONTENT__:hello")),
@@ -1144,6 +1212,55 @@ mod tests {
                 .to_string()
                 .contains("trailing '-' content placeholder")
         );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_inside_substitution_is_not_outer_pipe() {
+        // Issue #4427 (Codex P2 on PR #3096): a `|>` inside a
+        // substitution body — here in a shell comment — is not an
+        // outer REPL pipe, so the source-level trailing-placeholder
+        // check must skip the body and the line preprocesses as
+        // before #3096.
+        for line in ["get $(echo filename # |>) -", "get `echo filename # |>` -"] {
+            match preprocess_repl_line(line).unwrap() {
+                ReplInput::Ready(s) => assert_eq!(s, "get filename -", "{line}"),
+                _ => panic!("expected Ready for {line}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_preprocess_outer_pipe_after_substitution_still_rejected() {
+        // Skipping substitution bodies must not weaken the #3096
+        // rejection: a genuine outer pipe after a substitution body
+        // that itself contains `|>` is still caught before execution.
+        let result = preprocess_repl_line("echo $(echo a # |>) hi |> put name -");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_escape_does_not_hide_outer_pipe() {
+        // Codex P2 on PR #4436: the substitution parser does not
+        // interpret backslash escapes, so `\)` closes `$(...)` and
+        // `\`` closes a backtick span. The genuine outer pipe after such
+        // a body must still be rejected before the substitution runs;
+        // an escape-aware scanner would treat the delimiter as escaped,
+        // skip the real pipe, and let the substitution execute first.
+        for line in [
+            "echo $(touch /tmp/marker # \\) |> put name -",
+            "echo `touch /tmp/marker # \\` |> put name -",
+        ] {
+            let err = preprocess_repl_line(line).unwrap_err().to_string();
+            assert!(
+                err.contains("trailing '-' content placeholder"),
+                "{line}: expected trailing-placeholder rejection, got {err}"
+            );
+        }
     }
 
     #[test]

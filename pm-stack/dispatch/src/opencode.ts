@@ -22,8 +22,24 @@ export class OpenCodeClient {
     } catch {
       throw new OpenCodeError(`opencode auth file unreadable: ${this.authFile}`);
     }
-    const data = JSON.parse(raw) as { password?: string };
-    if (!data.password) throw new OpenCodeError("opencode auth file carries no password");
+    // The parse and the shape are part of the boundary (#7085): a
+    // truncated/mid-write state file, a non-object document, or a
+    // non-string password must surface as an OpenCodeError naming the
+    // problem - never a raw Type/SyntaxError, and never a credential
+    // silently coerced from a number or object.
+    let parsedAuth: unknown;
+    try {
+      parsedAuth = JSON.parse(raw);
+    } catch {
+      throw new OpenCodeError(`opencode auth file is not valid JSON: ${this.authFile}`);
+    }
+    if (typeof parsedAuth !== "object" || parsedAuth === null || Array.isArray(parsedAuth)) {
+      throw new OpenCodeError(`opencode auth file does not hold a JSON object: ${this.authFile}`);
+    }
+    const data = parsedAuth as { password?: unknown };
+    if (typeof data.password !== "string" || !data.password) {
+      throw new OpenCodeError("opencode auth file carries no password");
+    }
     return `Basic ${Buffer.from(`opencode:${data.password}`).toString("base64")}`;
   }
 
@@ -41,7 +57,12 @@ export class OpenCodeClient {
       throw new OpenCodeError(`opencode ${method} ${path} failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     if (!text.trim()) return null;
-    const parsed: unknown = JSON.parse(text);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new OpenCodeError(`opencode ${method} ${path} returned a non-JSON response (HTTP ${res.status})`);
+    }
     // The v2 API wraps responses in a {data: …} envelope.
     if (typeof parsed === "object" && parsed !== null && "data" in parsed) {
       return (parsed as { data: unknown }).data;

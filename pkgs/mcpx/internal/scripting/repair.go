@@ -42,7 +42,7 @@ func Repair(ctx context.Context, src string, failureErr error, diags []diagnose.
 		catSummary.WriteString("Available Tools:\n")
 		for _, t := range cat.Tools {
 			reqStr := strings.Join(t.Shape.Required, ", ")
-			catSummary.WriteString(fmt.Sprintf("  - %s.%s(args: {%s})\n", t.Namespace, t.Func, reqStr))
+			fmt.Fprintf(&catSummary, "  - %s.%s(args: {%s})\n", t.Namespace, t.Func, reqStr)
 		}
 	}
 

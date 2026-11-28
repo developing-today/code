@@ -6,6 +6,7 @@
 //! plain Ed25519 over the message, with no domain prefix, as `kbcrypto`'s `NaclSigningKeyPrivate.Sign` does.
 
 use std::fmt;
+use std::io::Cursor;
 
 use anyhow::{Context as _, Result};
 use ed25519_dalek::{Signature, Signer, VerifyingKey};
@@ -110,13 +111,22 @@ pub fn sign(token: &Token, uid: &str, eldest_seqno: u64, ctime_ms: u64) -> Resul
 }
 
 /// Decodes an accept message. Any stage other than "accept", any version other than 2, and any malformed field is an
-/// error.
+/// error, as are any trailing bytes after the first complete msgpack value: the message is the whole input or it
+/// is not an accept message.
 ///
 /// # Errors
 ///
 /// Returns [`ProofError::Malformed`] for any message that is not a version 2 accept with a valid invite ID.
 pub fn parse(message: &[u8]) -> Result<Fields, ProofError> {
-    let wire: Wire = rmp_serde::from_slice(message).map_err(|_| ProofError::Malformed)?;
+    // Decode through a cursor so the consumed length is observable: the message must be
+    // exactly one msgpack value. `rmp_serde::from_slice` stops after the first complete
+    // value and would silently ignore any trailing bytes, giving one `Fields` value many
+    // byte spellings (a stray byte, a second value, even a second accept map).
+    let mut de = rmp_serde::Deserializer::new(Cursor::new(message));
+    let wire: Wire = Wire::deserialize(&mut de).map_err(|_| ProofError::Malformed)?;
+    if de.position() != message.len() as u64 {
+        return Err(ProofError::Malformed);
+    }
     if wire.stage != "accept" || wire.version != VERSION {
         return Err(ProofError::Malformed);
     }

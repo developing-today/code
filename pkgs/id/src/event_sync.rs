@@ -21,10 +21,14 @@
 //! reads. Sharing the instance (rather than opening the same directory twice) is also
 //! the only option: the store's database admits one opener at a time.
 //!
-//! The pull gate is [`PullPolicy::Open`], the documented default for sync: `id serve`
-//! does not read a per-world pull policy from config yet, and there is no world whose
-//! membership this store belongs to. An open gate never consults membership, so the
-//! [`WorldAccess`] it carries is a formality that is never read.
+//! The pull gate is built from the operator server config's `[policy] pull_policy`
+//! ([`crate::server_config::ServerConfig::pull_policy`]) when `id serve` has one, and
+//! is [`PullPolicy::Open`] otherwise — so with no `--server-config` behaviour is
+//! exactly as before. This store is not a world and has no membership source: under
+//! [`PullPolicy::Members`] [`gate`] therefore refuses every pull (fail closed, see
+//! [`NoWorlds`]) rather than silently admitting peers. That is the explicit safe
+//! behaviour for the no-world case; a membership source can replace it when the
+//! store grows one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,9 +57,11 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// `EventSyncProtocol::accept`).
 pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
-/// Membership answers for a gate that never asks. [`PullPolicy::Open`] admits every
-/// peer without reading membership (see the module docs), so these answers are never
-/// used; the type exists only because a [`PullGate`] is built over a [`WorldAccess`].
+/// Membership answers for this store, which is not a world and has no membership
+/// source. [`PullPolicy::Open`] admits every peer without reading membership, so
+/// under the default policy these answers are never used. Under
+/// [`PullPolicy::Members`] they are read, and every answer is `false`: the no-world
+/// case fails closed and refuses every pull instead of silently serving open.
 #[derive(Debug)]
 struct NoWorlds;
 
@@ -69,10 +75,22 @@ impl WorldAccess for NoWorlds {
     }
 }
 
-/// The pull gate for the node's own event store: open, per the module docs.
+/// The pull gate for the node's own event store under the configured `policy`.
+///
+/// [`PullPolicy::Open`] (the default when there is no server config) admits every
+/// peer. [`PullPolicy::Members`] reads [`NoWorlds`], which answers `false` for every
+/// peer because this store has no membership source: the configured members policy
+/// refuses every pull rather than silently serving open (see the module docs).
+#[must_use]
+pub fn gate(policy: PullPolicy) -> PullGate {
+    PullGate::new(policy, "local-events", Arc::new(NoWorlds))
+}
+
+/// The pull gate for the node's own event store when no policy is configured: open,
+/// per the module docs.
 #[must_use]
 pub fn open_gate() -> PullGate {
-    PullGate::new(PullPolicy::Open, "local-events", Arc::new(NoWorlds))
+    gate(PullPolicy::Open)
 }
 
 /// Serves range-sync sessions over the node's shared [`LocalEvents`] store.
@@ -100,6 +118,13 @@ impl EventSyncProtocol {
             events,
             gate: open_gate(),
         }
+    }
+
+    /// Serves `events` under `gate` — the policy from the operator server config,
+    /// applied to accepted sessions as well as dialled ones (#5119).
+    #[must_use]
+    pub fn with_gate(events: Arc<Mutex<LocalEvents>>, gate: PullGate) -> Self {
+        Self { events, gate }
     }
 }
 
@@ -305,6 +330,55 @@ mod tests {
             .unwrap();
         assert_eq!(second.sent, 0, "the second session re-sent events");
         assert_eq!(second.received, 0, "the second session re-received events");
+
+        router.shutdown().await.unwrap();
+        client.close().await;
+        server.close().await;
+    }
+
+    /// #5119: under a configured `members` pull policy this store has no
+    /// membership source, so the gate refuses every pull — fail closed, never
+    /// silently open. The accepting side refuses to send, and the dialling side
+    /// refuses too, so nothing crosses either way.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_members_gate_refuses_every_pull_when_the_store_has_no_membership_source() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = node(dir_a.path(), 5);
+        let b = node(dir_b.path(), 6);
+        let published = {
+            let mut a = a.lock().await;
+            a.publish("text/plain", b"never served", &[]).unwrap()
+        };
+
+        let server = endpoint().await;
+        let router = Router::builder(server.clone())
+            .accept(
+                ALPN,
+                EventSyncProtocol::with_gate(b.clone(), gate(PullPolicy::Members)),
+            )
+            .spawn();
+        let client = endpoint().await;
+        // A refused pull ends the session with `PullRefused` (the sync layer's
+        // documented contract: a refused peer gets no event, and the session
+        // reports the refusal rather than a successful zero transfer - serve
+        // logs the error and carries on). Nothing may move in either direction.
+        let error = sync_with_peer(
+            &client,
+            loopback(&server),
+            &a,
+            &gate(PullPolicy::Members),
+        )
+        .await
+        .expect_err("a members gate with no membership source completed a session");
+        assert!(
+            error.to_string().contains("pull policy refuses"),
+            "the session failed for a reason other than the gate: {error:#}"
+        );
+        assert!(
+            b.lock().await.history(published.id).is_err(),
+            "B received an event under a refusing members gate"
+        );
 
         router.shutdown().await.unwrap();
         client.close().await;

@@ -261,7 +261,7 @@ const loadedLangs = new Set<string>();
  */
 async function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = (async () => {
+    const pending = (async () => {
       const { createHighlighterCore } = await import("shiki/core");
       const { createJavaScriptRegexEngine } = await import("shiki/engine/javascript");
 
@@ -271,6 +271,13 @@ async function getHighlighter(): Promise<ShikiHighlighter> {
         engine: createJavaScriptRegexEngine(),
       });
     })();
+    highlighterPromise = pending;
+    // Success-only memoization (#3880, contract in #3879): a rejected
+    // creation (e.g. a transient chunk-load failure) must not latch —
+    // clear the memo so the next call retries; success stays cached.
+    void pending.catch(() => {
+      if (highlighterPromise === pending) highlighterPromise = null;
+    });
   }
   return highlighterPromise;
 }

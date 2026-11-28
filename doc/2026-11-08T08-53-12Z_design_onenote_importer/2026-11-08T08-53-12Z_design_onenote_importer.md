@@ -1,0 +1,109 @@
+# Design: OneNote import into the ID knowledge layer
+
+- Date: 2026-11-08
+- Status: **design proposal** — no importer implementation or source-account access is included.
+- Issue: [#6438](https://github.com/developing-today/code/issues/6438), under knowledge-layer program [#5678](https://github.com/developing-today/code/issues/5678); object model: [#2048](https://github.com/developing-today/code/issues/2048).
+- Baseline: `origin/main` at `41803c5fce`.
+- Evidence checked: Microsoft Graph and OneNote support documentation on 2026-11-08; current ID note model in `pkgs/id/src/notes.rs` and `pkgs/id/src/note_links.rs`.
+
+## Request and intent
+
+Specify an honest, recoverable path for importing OneNote into ID's knowledge layer. This record covers how users acquire source data, what the available source surfaces actually expose, how OneNote structures map to the existing ID note model, what must be reported as degraded or unavailable, and how retries and re-import avoid data loss. It does not implement the importer, promise byte-for-byte or visual fidelity, decide the #5678 program questions, or redefine #2048's access model.
+
+## Recommendation
+
+Use the **stable Microsoft Graph OneNote v1.0 API as the primary machine-readable path**, after a small capability probe establishes account/tenant support, consent, and the actual authentication mode. Require a user-selected account and notebook scope; enumerate notebook → section-group/section → page, fetch each page's output HTML, then fetch each linked resource separately. Convert exposed semantic content to ID note content and preserve original source IDs and resource digests in an import manifest.
+
+Offer OneNote's web notebook download only as an explicitly user-mediated recovery/input path, not as the default automated importer: Microsoft's current help says this export is available only for personal OneDrive notebooks, not work/school OneDrive or SharePoint; the downloaded archive must be opened in OneNote for Windows, and notebook import is deprecated. PDF is a visual fallback, not a structured interchange format.
+
+Do not advertise full-fidelity import. The importer must show a preview and a per-item fidelity report before writing, and must not broaden source visibility into ID without the importing owner's explicit decision.
+
+## Acquisition paths and current constraints
+
+| Path | What it can provide | Prerequisites and limitations | Role in this design |
+| --- | --- | --- | --- |
+| **Microsoft Graph OneNote API, v1.0** | Enumerates notebooks, section groups, sections and pages; returns page metadata and HTML; page HTML identifies image and file resource URLs. Supports consumer OneDrive and Microsoft 365 organization notebooks, including group and SharePoint-site notebook locations. | A signed-in user and appropriate Notes permission are required. The OneNote API overview explicitly says app-only authentication is not supported, while the current Graph permissions reference and Graph throttling page list application-permission entries/quotas. Treat this as a documentation discrepancy: prototype the exact endpoint + token flow; do not promise unattended app-only access. API enumeration is not a notebook backup/restore interface. | **Primary**, contingent on per-account capability verification and delegated consent. Use only v1.0 in production. |
+| **OneNote for the web: Export notebook** | A user-triggered ZIP download containing the notebook files; the support article describes opening it through the OneNote Windows app. | Export is documented only for personal OneDrive notebooks, not OneDrive work/school or SharePoint. Large downloads can fail for disk space or notebook size; no stable parser contract is documented in the cited help. Notebook import is marked deprecated. | Optional user-provided archive path after a separate parser spike; not a general enterprise fallback. |
+| **PDF / print** | Static visual representation of selected pages. Useful to retain a visible page when structured extraction is unavailable. | Web export is page-at-a-time; PDF is not a structured or incremental notebook export and loses native hierarchy, editability, tags, links-as-edges, and source identity. | User-directed salvage only. Report as visual-only; never call it a full import. |
+
+### Graph API operating limits
+
+The current Graph documentation gives pages a default page size of 20 and a maximum `$top` of 100; continue through `@odata.nextLink` and request `pagelevel=true` per section when order/indentation matters. Fetch resource binaries one at a time from the URLs in page HTML; the resource collection endpoint is not supported. The page HTML returned by Graph is not the original OneNote markup: Graph normalizes it to supported HTML/CSS and adds its own attributes.
+
+Microsoft's OneNote-specific error list documents query failures when a user's/group's document library contains more than 5,000 OneNote items (error 10008) or more than 20,000 items that cannot be indexed (10013). The service-specific throttling page lists 120 requests/minute and 400/hour per app per user for delegated requests and notes that OneNote resources do not return `Retry-After` on 429 responses. These are ceilings, not throughput promises. Use bounded concurrency, honor `Retry-After` if a response supplies it, otherwise exponential backoff with jitter, and surface a resumable partial result rather than retrying an entire notebook blindly.
+
+## Target model and mapping
+
+ID's current note model separates a stable logical note ID (`note.create`) from immutable content revisions (`note.revise`); revisions are blob-backed and concurrent heads are retained until an explicit merge. Names are aliases, not identity. `note.link` stores stable target IDs and authored link surface; backlinks are derived. The importer must use these semantics rather than making OneNote titles or paths into identities.
+
+| OneNote source | ID target | Fidelity and reporting rule |
+| --- | --- | --- |
+| Account / notebook / section group / section | Import-manifest hierarchy, retaining source IDs, names, parent IDs, and sibling order. Apply only existing note metadata/tag mechanisms where useful; do not invent a new ID collection object in this ticket. | Hierarchy is preserved as navigable source metadata. If the destination UI cannot render groups, make the full source path visible in the manifest/report rather than flattening silently. |
+| Page | One stable ID note. Use the source page ID plus account/notebook scope as the import identity; title is a display alias/title, never the target ID. Keep OneNote client/content URLs as provenance where available. | Preserve source page order and `pagelevel` indentation in metadata. Duplicate titles remain separate notes. |
+| Text, headings, paragraphs, basic emphasis, supported lists/styles | Note body, normalized to the ID content representation. | Preserve semantic text and the supported formatting subset. Record dropped style/layout, absolute-position coordinates, and unsupported elements; do not promise pixel-identical canvas layout. |
+| Tables | Structured table content where the target representation supports it; otherwise retain a sanitized HTML/attachment fallback alongside readable text. | Graph documents tables, including nested tables, but not `rowspan` or `colspan`; report any such source structure as transformed. |
+| Built-in note tags and checklist completion | Map known built-in tags and completed states to ID tags/metadata; preserve the original tag string and element location in the manifest. | Graph documents built-in `data-tag` values, but custom tags are not supported by its tag API. Unknown/custom values are preserved as raw source metadata and listed as not mapped. |
+| External hyperlinks | Keep the URI and authored label in the note body. | Do not fetch linked web pages as part of import. Unsafe, invalid, or unsupported URI schemes are inert text and reported. |
+| OneNote page links | Resolve only after all accessible source page IDs have been mapped; emit an ID `note.link` to the stable destination note ID and retain the authored surface/source URI. | If the destination page is not in the selected import, is inaccessible, or cannot be resolved, keep the original URI/surface and mark `unresolved`; do not guess by title. |
+| Images and printouts | Fetch the authenticated full-resolution resource identified by `data-fullres-src` when available, verify its digest, store as a linked ID blob/attachment, and retain alt text, media type, order, and source position. | Optimized preview is not a substitute for original bytes. Split images use the source index/position as a best-effort reading order. Report OCR text only when explicitly returned by the source; do not infer it. |
+| File attachments | Fetch each `<object>` resource and retain filename, MIME type, digest, and page association as a linked attachment. | Unsupported or inaccessible resources stay as manifest entries with the exact failure reason; never count a missing binary as imported. |
+| Embedded video | Preserve the `data-original-src` URL, provider, title/position if present, as an external link. | Do not download/re-host video. If Graph does not expose playable media, report link-only. |
+| Ink, handwriting, audio, and other non-HTML canvas data | If Graph returns a resource/image, retain that resource as a non-editable attachment and preserve any source-provided text separately. | The cited Graph content contract documents HTML, `img`, `object`, and `iframe`, but does not specify a lossless ink-stroke or handwriting-transcription representation. Treat semantic ink/OCR as **unavailable unless the capability probe proves otherwise**; report attachment-only or inaccessible, never imply editable strokes or reliable OCR. |
+| Password-protected, deleted, or inaccessible pages/resources | Manifest status with source ID, last known metadata, and error category. | Keep the import incomplete and resumable. Do not silently omit, substitute, or delete the corresponding ID note. |
+
+The source IDs and the import manifest are the durable correspondence needed for repeat imports. Do not use a content hash as a page identity: two independently authored OneNote pages may legitimately have identical bytes.
+
+## Import protocol, re-import, and recovery
+
+1. **Authorize and scope.** The user signs in, selects notebooks, reviews source account and destination access policy, and approves the least privileged Notes permission that supports the selected read operations. The app reads only content the signed-in user can access; it must not enumerate another user's content by guessing identifiers.
+2. **Inventory before writing.** Walk notebook/section-group/section/page collections with paging. Record source IDs, parent path, order, page metadata, source permission facts actually available, and inventory errors. No visible completion state is shown while any collection/page remains unvisited.
+3. **Preview and resolve authority.** Show counts and representative pages, content/resource classes, estimated bytes, unavailable items, and the read policy each destination object will resolve to. Source ACLs are not documented as fields in the OneNote page-content API. Map source principals to ID users/groups only when their identity and grants can be verified. Otherwise disclose that the source ACL cannot be reproduced and require an explicit owner choice before creating an ID object whose resolved read set is broader. Every note and attachment follows the ruled order: **object → user default → server config → public**. Never let preview, search, resource fetch, or fidelity reports reveal content outside that resolved readable set.
+4. **Extract and checkpoint per item.** Fetch page HTML and each referenced binary separately; sanitize active markup and retain safe text/links. Verify resource size/type and content digest before storing. Persist a checkpoint after each page/resource so a network, throttling, or permission failure resumes at the failed item. Keep failed items in the report with actionable retry/reauthorization steps.
+5. **Create or revise idempotently.** The manifest maps `(provider, account/tenant, notebook ID, page ID)` to one stable note ID and records the last imported source modification marker plus content/resource digests. First import creates a note; unchanged source content is a no-op; a changed source page appends a revision to that note. Resolve cross-page links after all selected page IDs are mapped. Resource bytes may be deduplicated by digest without conflating note identities.
+6. **Protect concurrent edits.** If the target still has exactly the last imported head, append the source revision with that head as its parent. If a user or another importer has changed the target since the recorded source head, retain both as competing heads or stage an explicit conflict for review; never overwrite, choose last-writer-wins, or merge implicitly. Source deletion or absence from an incomplete scan is a report item, not a delete. Only a user-confirmed complete reconciliation may propose removal, and removal semantics remain the #2048 tombstone/retention decision.
+7. **Report completion truthfully.** A notebook is `complete` only when inventory and all in-scope pages/resources have terminal outcomes. Partial, skipped, inaccessible, transformed, and failed items remain visible and retryable. A rerun must neither duplicate a page nor hide a prior failure.
+
+## Fidelity report
+
+Generate one machine-readable record per source item and a human-readable summary. At minimum each record contains source path and opaque source ID, destination note ID if created, source version marker/content digest, item type, status (`preserved`, `transformed`, `omitted-by-user`, `unavailable`, `failed`, `unchanged`), original and destination MIME/types, mapped fields, unsupported fields, resource digests, access-policy outcome, and a reason plus retry action when incomplete. The report must be readable before commit and after import; it must not include private page bodies for viewers who cannot read those pages.
+
+Top-level totals distinguish pages inventoried, pages imported/unchanged, media fetched, media unavailable, and each fidelity status. No aggregate “100% imported” may count an unsupported or inaccessible source class as success.
+
+## Test corpus and objective checks
+
+Use a small synthetic notebook created specifically for testing plus a user-supplied, consented fixture only when licensing/privacy permits. Include nested section groups; ordered and indented pages; duplicate titles and identical content; headings, mixed inline formatting, lists/checklists (completed and incomplete), built-in and unknown tags, nested tables and a table with spans, external and cross-page links, high-resolution image, split image, PDF printout, ordinary file attachment, embedded video, ink/handwriting, inaccessible page/resource, and a notebook large enough to exercise pagination. Do not use personal production notebooks as a fixture by default.
+
+Acceptance oracles:
+
+- **Inventory:** each accessible notebook/section/page source ID appears once; parent path, page order, and pagelevel match the API inventory; pagination reaches every `nextLink`.
+- **Content:** text and supported structure compare against captured Graph output; every transformed or unavailable feature has a report entry; no active markup executes.
+- **Media:** every fetched resource's stored digest equals the bytes fetched from its authenticated resource URI; source/destination counts reconcile; missing media is not reported as preserved.
+- **Links and tags:** resolvable internal links target the mapped stable note ID, unresolved links retain their source surface/URI, and each built-in tag/status is accounted for.
+- **Idempotence:** importing the same snapshot twice creates no second note or revision; a changed page keeps its stable note ID and adds exactly one revision; identical but distinct source pages remain distinct.
+- **Recovery:** inject a timeout, 429, forbidden resource, and interrupted inventory; retry resumes without duplicate writes and does not mark the notebook complete until all items have terminal outcomes.
+- **Conflict/deletion:** edit a destination between imports and verify both heads are retained for review; remove a source page and verify it is reported but no destination note is deleted automatically.
+- **Access:** test as the importing owner and as a reader outside the resolved set; content, attachment bytes, link surfaces, search results, and report details are disclosed only according to the read-authority order.
+- **Capability gate:** for each supported account/edition, prove delegated sign-in, notebook/section/page enumeration, HTML retrieval, binary-resource retrieval, and required consent before enabling that path. Record unsupported editions rather than inferring coverage from a successful consumer-account test.
+
+## Phased implementation boundary
+
+1. **Capability spike:** verify the delegated/app-only documentation discrepancy, editions/accounts to support, consent UX, Graph endpoint coverage, permissions visibility, and ink/resource behavior.
+2. **Read-only inventory and preview:** pagination, source-ID manifest, permission/access preview, unsupported-class detection, and fidelity report.
+3. **Normalization and resource capture:** safe HTML normalization, note/tag/link mapping, media extraction and digest checks.
+4. **ID write and recovery:** stable note creation/revision, idempotent checkpoints, conflict handling, and resume semantics.
+5. **Acceptance corpus:** execute the checks above, review fidelity language with product owner, and enable only verified source paths.
+
+No implementation phase is authorized by this issue. Do not decide OneNote support for particular product editions until the parent program chooses which editions to inventory.
+
+## Parent-level open questions (remain open)
+
+The following stay with #5678/#6438 and are not defaults in this design: product editions (free vs. paid) to inventory; hands-on versus documentation-only evaluation budget; what “Open Knowledge” identifies; graph scope (all ID objects vs. knowledge-only); AI-over-notes model choice and authority implications. This design also does not decide whether import is a supported product capability for every edition; the capability gate supplies evidence for that decision.
+
+## References
+
+- [Issue #6438](https://github.com/developing-today/code/issues/6438) and [parent program #5678](https://github.com/developing-today/code/issues/5678).
+- [ID Zettelkasten design #2048](https://github.com/developing-today/code/issues/2048) and local design record [`pkgs/id/docs/2026-11-01_design_id2048.md`](../2026-11-01_design_id2048.md).
+- Current ID model: [`notes.rs`](../../pkgs/id/src/notes.rs), [`note_links.rs`](../../pkgs/id/src/note_links.rs), and [`note_link_backlink_projection`](../2026-11-02T04-52-00Z_feature_note_link_backlink_projection/2026-11-02T04-52-00Z_feature_note_link_backlink_projection.md).
+- Microsoft Learn, [OneNote API overview](https://learn.microsoft.com/en-us/graph/api/resources/onenote-api-overview?view=graph-rest-1.0), [get content and structure](https://learn.microsoft.com/en-us/graph/onenote-get-content), [input/output HTML](https://learn.microsoft.com/en-us/graph/onenote-input-output-html), [note tags](https://learn.microsoft.com/en-us/graph/onenote-note-tags), [images, videos and files](https://learn.microsoft.com/en-us/graph/onenote-images-files), [OneNote error codes](https://learn.microsoft.com/en-us/graph/onenote-error-codes), [service-specific throttling limits](https://learn.microsoft.com/en-us/graph/throttling-limits), and [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#notes-permissions). Checked 2026-11-08; API overview and permissions/throttling sources currently disagree about app-only availability, as noted above.
+- Microsoft Support, [Export OneNote notebooks](https://support.microsoft.com/en-us/onenote/export-and-import-onenote-notebooks) and [Export notes as PDF](https://support.microsoft.com/en-us/onenote/onenote-help-and-learning/export-notes-from-onenote-as-a-pdf). Checked 2026-11-08.
+- [ID documentation protocol](../DOCUMENTATION_PROTOCOL.md).

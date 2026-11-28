@@ -21,7 +21,7 @@ func listen(t *testing.T, name string) *net.UnixConn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -72,7 +72,7 @@ func TestAbstractSocketName(t *testing.T) {
 	name := fmt.Sprintf("@mcpx-sdnotify-%d-%d", os.Getpid(), time.Now().UnixNano())
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: name, Net: "unixgram"})
 	if err != nil {
-		if abstractSocketUnavailable(err) {
+		if abstractSocketsUnsupported(err) {
 			t.Skipf("abstract Unix datagram sockets are unavailable here: %v", err)
 		}
 		t.Fatalf("listen on abstract socket: %v", err)
@@ -81,21 +81,24 @@ func TestAbstractSocketName(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", name)
 
 	if err := Ready(); err != nil {
-		if abstractSocketUnavailable(err) {
+		if abstractSocketsUnsupported(err) {
 			t.Skipf("abstract Unix datagram sockets are unavailable here: %v", err)
 		}
-		t.Fatal(err)
+		// A timeout here is the #5428 hang, now surfaced by Send's own
+		// deadline instead of stalling the package to the test timeout.
+		// It is a bug in Send, never a platform quirk, so it fails.
+		t.Fatalf("Ready to a listening abstract socket: %v", err)
 	}
 	if got := next(t, conn); got != "READY=1" {
 		t.Fatalf("Ready sent %q", got)
 	}
 }
 
-func abstractSocketUnavailable(err error) bool {
-	var networkErr net.Error
-	if errors.As(err, &networkErr) && networkErr.Timeout() {
-		return true
-	}
+// abstractSocketsUnsupported reports whether err says this kernel (or
+// sandbox) has no abstract Unix datagram sockets at all. A timeout is
+// deliberately not in that set: a send that hangs is the defect this
+// package bounds, not an unsupported platform.
+func abstractSocketsUnsupported(err error) bool {
 	return errors.Is(err, syscall.EAFNOSUPPORT) ||
 		errors.Is(err, syscall.EPROTONOSUPPORT) ||
 		errors.Is(err, syscall.EOPNOTSUPP) ||

@@ -8,13 +8,14 @@
 
 use std::collections::HashMap;
 
+use atlas_proto::SearchParametersV1;
 use serde_json::{Map, Value as Json, json};
 
 use crate::backend::SearchBackend;
 use crate::embed::QueryEmbedder;
 use crate::error::{Error, Result};
 use crate::filters::Filters;
-use crate::fusion::{FusedEntry, fts_match_expr, fuse};
+use crate::fusion::{FusedEntry, fts_match_expr, fuse_with_parameters};
 use crate::types::{BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
@@ -77,6 +78,8 @@ pub struct SearchOptions {
     /// Query-vector truncation (0 = full width).
     pub trunc: usize,
     pub vector_backend: VectorBackend,
+    /// Versioned query-time controls shared with the wire protocol.
+    pub parameters: SearchParametersV1,
 }
 
 impl Default for SearchOptions {
@@ -84,15 +87,16 @@ impl Default for SearchOptions {
         SearchOptions {
             query: String::new(),
             mode: SearchMode::Hybrid,
-            k: 10,
-            pool: 100,
+            k: SearchParametersV1::default_k(),
+            pool: SearchParametersV1::default_pool(),
             group_by_session: false,
-            expand: 0,
+            expand: SearchParametersV1::default_expand(),
             with_message: false,
             model: DEFAULT_MODEL.to_string(),
             embedder_label: "auto".to_string(),
             trunc: 0,
             vector_backend: VectorBackend::Scan,
+            parameters: SearchParametersV1::default(),
         }
     }
 }
@@ -162,6 +166,15 @@ pub fn run_search_with_executor(
     opts: &SearchOptions,
     executor: &dyn BranchPoolExecutor,
 ) -> Result<Json> {
+    opts.parameters
+        .validate(opts.expand)
+        .map_err(Error::fatal)?;
+    if opts.expand > crate::MAX_EXPAND_NEIGHBORS {
+        return Err(Error::fatal(format!(
+            "expand must be at most {}",
+            crate::MAX_EXPAND_NEIGHBORS
+        )));
+    }
     if opts.mode.uses_vector()
         && opts.vector_backend != VectorBackend::Scan
         && backend.name() != "turso"
@@ -199,11 +212,19 @@ pub fn run_search_with_executor(
             match_expr,
             query_vector: qvec,
             pool: opts.pool,
+            shard_top_k: opts.parameters.shard_top_k,
+            global_top_k: opts.parameters.global_top_k,
             vector_backend: opts.vector_backend,
         },
         filters,
     )?;
-    let (ranked, vec_dist) = fuse(&pools.fts, &pools.vector);
+    let (ranked, vec_dist) = fuse_with_parameters(
+        &pools.fts,
+        &pools.vector,
+        opts.parameters.rrf_k,
+        opts.parameters.fts_weight,
+        opts.parameters.vector_weight,
+    );
 
     // The local backend learns things mid-search (vector
     // coverage); fold any late notes in before rendering.
@@ -399,7 +420,9 @@ fn entry_chunk_extras(
 
 /// The Python's `neighbor_map`.
 fn neighbor_map(backend: &dyn SearchBackend, d: &ChunkDetail, n: usize) -> Result<Json> {
-    let rows = backend.neighbors(&d.message_id, d.chunk_idx, n as i64)?;
+    let n = i64::try_from(n)
+        .map_err(|_| Error::fatal("neighbor count does not fit in the backend's signed range"))?;
+    let rows = backend.neighbors(&d.message_id, d.chunk_idx, n)?;
     let mut before = Vec::new();
     let mut after = Vec::new();
     for r in &rows {

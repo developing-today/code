@@ -28,9 +28,9 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	}()
 	fnErr := fn()
 	os.Stdout = old
-	w.Close()
+	_ = w.Close()
 	out := <-done
-	r.Close()
+	_ = r.Close()
 	return out, fnErr
 }
 

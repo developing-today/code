@@ -217,20 +217,37 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 // empty execDir inherits the caller's working directory, which is
 // exactly what the execution does.
 func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir string) *Report {
+	return TypeCheckWithPolicy(ctx, runtimeBin, entry, mode, timeout, configArgs, execDir, "fail", "warn")
+}
+
+// TypeCheckWithPolicy runs a type check while applying the configured policies
+// for checker errors and runtimes that cannot check. The switch policy uses
+// Deno as a checker only; it does not alter the runtime selected for execution.
+func TypeCheckWithPolicy(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir, onError, onUnsupported string) *Report {
 	r := &Report{}
 	if mode == TypeCheckOff || mode == "" {
 		return r
 	}
 	base := filepath.Base(runtimeBin)
+	checker := runtimeBin
 	if !strings.Contains(base, "deno") {
-		// Node and Bun strip types rather than checking them, so there is no
-		// equivalent single command. Saying so is better than pretending the
-		// check ran.
-		r.Add(Problem{
-			What:  "script checking is only available under Deno; " + base + " strips types rather than checking them",
-			Where: "script.check",
-		})
-		return r
+		switch onUnsupported {
+		case "skip":
+			return r
+		case "switch":
+			deno, err := exec.LookPath("deno")
+			if err != nil {
+				r.Add(Problem{What: "cannot use Deno to check this script because deno is not on PATH", Where: "script.checkOnUnsupported", Fatal: true})
+				return r
+			}
+			checker = deno
+		default: // "warn" is also the zero-value policy for direct callers.
+			r.Add(Problem{
+				What:  "script checking is only available under Deno; " + base + " strips types rather than checking them",
+				Where: "script.check",
+			})
+			return r
+		}
 	}
 	args := []string{"check"}
 	if mode == TypeCheckStrict {
@@ -245,7 +262,7 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 		cctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(cctx, runtimeBin, args...)
+	cmd := exec.CommandContext(cctx, checker, args...)
 	// Execute in the directory the script will execute in, not beside
 	// the entry file: relative --config paths resolve from the working
 	// directory (Codex review, PR #2589).
@@ -255,17 +272,22 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 		return r
 	}
 	if cctx.Err() != nil {
-		r.Add(Problem{
-			What:  "type checking did not finish within " + timeout.String(),
-			Where: "script.check",
-			Fix:   "raise the timeout, or set script.check off",
-		})
+		problem := Problem{What: "type checking did not finish within " + timeout.String(), Where: "script.check", Fix: "raise the timeout, or set script.check off"}
+		if onError == "" || onError == "fail" {
+			problem.Fatal = true
+		}
+		if onError != "run" {
+			r.Add(problem)
+		}
+		return r
+	}
+	if onError == "run" {
 		return r
 	}
 	r.Add(Problem{
 		What:  "the program does not type check:\n" + indent(strings.TrimSpace(string(out))),
 		Where: "script.check",
-		Fatal: true,
+		Fatal: onError == "" || onError == "fail",
 	})
 	return r
 }

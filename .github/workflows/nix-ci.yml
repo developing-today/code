@@ -29,8 +29,8 @@ jobs:
   # home/common/default.nix, or a non-shell launch silently dials
   # the wrong — or an empty — port (#434, #435). Pure bash/grep: no
   # Nix needed. This copy runs on main/schedule/manual runs; the
-  # dedicated proxy-port-fallbacks.yml runs it on PR and merge_group
-  # events so the expensive host/flake jobs retain their own triggers.
+  # dedicated proxy-port-fallbacks.yml runs it on PR events so the
+  # expensive host/flake jobs retain their own triggers.
   # This job used to also run the
   # treefmt format check; formatting is no longer a merge gate —
   # it is auto-fixed on main by .github/workflows/auto-format.yml

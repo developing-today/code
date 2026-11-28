@@ -79,12 +79,12 @@ func (a *App) settingsList(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SETTING\tVALUE\tFROM\tSCOPE\tHOT")
+	_, _ = fmt.Fprintln(tw, "SETTING\tVALUE\tFROM\tSCOPE\tHOT")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			r.Path, quoteEmpty(r.Value), r.Source, r.Scope, yesNo(r.Hot))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	if !*withPlumbing {
 		fmt.Println("\n(--plumbing also lists internal settings; --daemon shows what the daemon resolved)")
 	}
@@ -452,7 +452,7 @@ func (a *App) serversList(ctx context.Context) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tNAMESPACE\tHOW\tDEFINED IN")
+	_, _ = fmt.Fprintln(tw, "NAME\tNAMESPACE\tHOW\tDEFINED IN")
 	for _, s := range out.Servers {
 		how, _ := s["command"].(string)
 		if how == "" {
@@ -465,7 +465,7 @@ func (a *App) serversList(ctx context.Context) error {
 			}
 			how += " " + strings.Join(parts, " ")
 		}
-		fmt.Fprintf(tw, "%v\t%v\t%s\t%v\n", s["name"], s["namespace"], truncate(how, 48), s["from"])
+		_, _ = fmt.Fprintf(tw, "%v\t%v\t%s\t%v\n", s["name"], s["namespace"], truncate(how, 48), s["from"])
 	}
 	return tw.Flush()
 }
@@ -503,8 +503,7 @@ func (a *App) serversAdd(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: mcpx servers add <name> -- <command> [args...]\n" +
-			"       mcpx servers add <name> --url https://...")
+		return fmt.Errorf("usage: mcpx servers add <name> -- <command> [args...]\n       mcpx servers add <name> --url https://example.com")
 	}
 	name := fs.Arg(0)
 	command := ""

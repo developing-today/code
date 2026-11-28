@@ -401,6 +401,7 @@ async fn main() -> Result<()> {
             no_relay,
             no_mdns,
             node,
+            abuse,
         }) => {
             let options = PeersOptions {
                 gossip,
@@ -416,6 +417,7 @@ async fn main() -> Result<()> {
                 replace_defaults,
                 no_relay,
                 no_mdns,
+                abuse,
             };
             cmd_peers(node, options).await
         }
@@ -431,6 +433,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
+        }
+        Some(Command::WriterSets { json, command }) => {
+            id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),

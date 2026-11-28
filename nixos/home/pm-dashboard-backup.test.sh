@@ -105,7 +105,11 @@ run_scenario() {
   printf '{}\n' >"$home/.local/state/pm-aggregator/actions.json"
   # Full required set (#1025): a missing required member now fails
   # the run at verify, so the fixture carries every required file.
-  for f in comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do printf '{}\n' >"$home/.local/state/pm-aggregator/$f"; done
+  for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+    quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+    coverage-snapshot.json aa-last-good.json; do
+    printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
+  done
   printf '{}\n' >"$home/atlas/meta-quota-export/latest.json"
   printf '{}\n' >"$home/atlas/meta-quota-export/history.jsonl"
   echo "$PRESET" >"$home/backups/dashboard/.last-run-epoch"
@@ -160,7 +164,11 @@ mkdir -p "$tf_home/backups/dashboard" "$tf_home/.local/state/pm-aggregator" \
 printf '{}\n' >"$tf_home/.local/state/pm-aggregator/actions.json"
 # Full required set (#1025): a missing required member now fails
 # the run at verify, so the fixture carries every required file.
-for f in comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do printf '{}\n' >"$tf_home/.local/state/pm-aggregator/$f"; done
+for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+  quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+  coverage-snapshot.json aa-last-good.json; do
+  printf '{}\n' >"$tf_home/.local/state/pm-aggregator/$f"
+done
 printf '{}\n' >"$tf_home/atlas/meta-quota-export/latest.json"
 printf '{}\n' >"$tf_home/atlas/meta-quota-export/history.jsonl"
 HOME="$tf_home" PATH="$TARBIN:$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \

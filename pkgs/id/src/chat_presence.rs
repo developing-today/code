@@ -473,7 +473,17 @@ pub fn encode_frame(heartbeat: &PresenceHeartbeat) -> Vec<u8> {
 #[must_use]
 pub fn decode_frame(frame: &[u8]) -> Option<PresenceHeartbeat> {
     let body = frame.strip_prefix(PRESENCE_FRAME_MAGIC)?;
-    postcard::from_bytes(body).ok()
+    // `take_from_bytes`, not `from_bytes`: trailing bytes after the
+    // heartbeat must refuse the frame, not be silently ignored — the
+    // signature is verified over a canonical re-encoding of the parsed
+    // fields, so an unsigned suffix would otherwise give one signed
+    // heartbeat many accepted byte spellings (#6197; same pattern as
+    // world/replication.rs).
+    let (heartbeat, rest) = postcard::take_from_bytes(body).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(heartbeat)
 }
 
 #[cfg(test)]
@@ -690,6 +700,54 @@ mod tests {
         assert_eq!(decode_frame(&bare), None);
         assert_eq!(decode_frame(b"garbage"), None);
         assert_eq!(decode_frame(&[]), None);
+    }
+
+    #[test]
+    fn frames_refuse_trailing_bytes() {
+        // #6197 oracle: the full-consumption invariant — a frame is exactly
+        // one postcard value after the magic; any remainder refuses it,
+        // while the genuine frame still decodes.
+        let chan = channel("general");
+        let hb = heartbeat(key(1), vec![chan], 7_100);
+        let frame = encode_frame(&hb);
+        assert_eq!(decode_frame(&frame), Some(hb.clone()));
+
+        let mut trailing_byte = frame.clone();
+        trailing_byte.push(0x00);
+        assert_eq!(decode_frame(&trailing_byte), None);
+
+        let mut trailing_garbage = frame.clone();
+        trailing_garbage.extend_from_slice(b"garbage!!");
+        assert_eq!(decode_frame(&trailing_garbage), None);
+
+        let mut trailing_second = frame.clone();
+        trailing_second.extend_from_slice(&postcard::to_allocvec(&hb).unwrap());
+        assert_eq!(decode_frame(&trailing_second), None);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn frames_refuse_any_trailing_suffix(
+            node_byte in any::<u8>(),
+            ts in any::<u64>(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // #6197 property form of the full-consumption invariant
+            // (oracle: the invariant itself, checked over generated
+            // heartbeats and arbitrary nonempty suffixes): the genuine
+            // frame round-trips, the suffixed frame never decodes.
+            let chan = channel("general");
+            let hb = heartbeat(key(node_byte), vec![chan], ts);
+            let frame = encode_frame(&hb);
+            prop_assert_eq!(decode_frame(&frame), Some(hb));
+            let mut suffixed = frame;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert_eq!(decode_frame(&suffixed), None);
+        }
     }
 
     #[test]

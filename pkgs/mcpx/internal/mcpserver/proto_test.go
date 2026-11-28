@@ -96,7 +96,7 @@ func TestEveryRevisionIsADateSoOrderingWorks(t *testing.T) {
 		if len(v) != len("2025-03-26") || strings.Count(v, "-") != 2 {
 			t.Fatalf("%q is not a date; AtLeast compares revisions lexically", v)
 		}
-		if prev != "" && !(v > prev) {
+		if prev != "" && (v <= prev) {
 			t.Errorf("Supported is not newest-first: %s does not sort after %s", v, prev)
 		}
 		prev = v

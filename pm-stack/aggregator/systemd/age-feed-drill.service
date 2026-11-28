@@ -1,0 +1,12 @@
+[Unit]
+Description=Chaos drill: age the fleet feed while the collector runs, and verify the PM stack notices (#1283, epic #1184)
+
+[Service]
+Type=oneshot
+# Runs on the laptop: the collector and aggregator are laptop user units
+# since code#3362/#3363, and the feed lives under ~/.local/state/pm-aggregator.
+# HOME/XDG_RUNTIME_DIR are the invoking user's, so `systemctl --user` in
+# the drill reaches fleet-feed-collector.timer.
+ExecStart=/home/user/git/code/pm-stack/aggregator/scripts/age-feed-drill.sh
+# Max signal wait (25 min) + collector cadence (5 min) + restore margin.
+TimeoutStartSec=50min

@@ -67,7 +67,7 @@ func TestPutNonIndexDimensionNotPersistedAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer idx2.Close()
+	defer func() { _ = idx2.Close() }()
 	if _, ok := idx2.Get("tool.remote"); ok {
 		t.Fatal("non-index-dimension vector survived a restart")
 	}
@@ -141,7 +141,7 @@ func TestLoadFromDBSurfacesDroppedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer idx2.Close()
+	defer func() { _ = idx2.Close() }()
 	if _, ok := idx2.Get("tool.foreign"); ok {
 		t.Fatal("foreign-dimension row was loaded into the index")
 	}

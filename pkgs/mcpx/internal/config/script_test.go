@@ -115,7 +115,7 @@ func TestCommandLineIsTheNearestLayer(t *testing.T) {
 func TestMissingScriptBlockYieldsNothing(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.json")
-	os.WriteFile(p, []byte(`{"mcpServers":{"a":{"command":"x"}}}`), 0o644)
+	_ = os.WriteFile(p, []byte(`{"mcpServers":{"a":{"command":"x"}}}`), 0o644)
 	c, err := config.Load(p)
 	if err != nil {
 		t.Fatal(err)

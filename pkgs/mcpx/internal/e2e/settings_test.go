@@ -147,7 +147,7 @@ func TestAServerAddedOverTheSocketIsTheSameAsOneAddedFromTheCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /v1/servers: %d %s", resp.StatusCode, raw)
@@ -161,7 +161,7 @@ func TestAServerAddedOverTheSocketIsTheSameAsOneAddedFromTheCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("DELETE /v1/servers: %d", resp2.StatusCode)
 	}
@@ -179,7 +179,7 @@ func TestEverySettingIsReachableOverV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		Settings []struct {
 			Path   string `json:"path"`

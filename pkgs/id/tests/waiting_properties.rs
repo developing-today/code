@@ -72,7 +72,8 @@ struct Model {
     /// Held events in arrival order.
     held: Vec<Held>,
     arrived: BTreeSet<u32>,
-    ready: Vec<u32>,
+    /// Ready events by key and id, so an arrival can drop its copy (#4730).
+    ready: Vec<(u32, u32)>,
     expired: Vec<(u8, u32)>,
     /// Every event the model has expired, so that none is released later.
     ever_expired: BTreeSet<u32>,
@@ -123,7 +124,7 @@ impl Model {
             .filter(|dep| !self.arrived.contains(dep))
             .collect();
         if missing.is_empty() {
-            self.ready.push(id);
+            self.ready.push((key, id));
             return false;
         }
         if self.count(author) >= self.per_author {
@@ -144,6 +145,7 @@ impl Model {
     fn arrive(&mut self, key: u32, now: u64) -> Vec<Held> {
         self.expire_due(now);
         self.held.retain(|held| held.key != key);
+        self.ready.retain(|(ready_key, _)| *ready_key != key);
         self.arrived.insert(key);
         let mut released = Vec::new();
         for mut held in std::mem::take(&mut self.held) {
@@ -159,6 +161,9 @@ impl Model {
 
     fn take_ready(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.ready)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
     }
 
     fn expire(&mut self, now: u64) -> Vec<(u8, u32)> {
@@ -457,4 +462,31 @@ proptest! {
             .collect();
         prop_assert_eq!(run(&reordered, max_age_ms)?, drawn);
     }
+}
+
+/// The event store's path (#1730): holds go through `restore`, releases
+/// through `release`. Releasing any number of applied keys must leave the
+/// pool's retained state exactly as it was — the pool used to record every
+/// released key in its arrived set forever (+37 MB per 2M arrivals in a
+/// pool reporting itself empty). Held events aside, pool state after N
+/// releases is independent of N.
+#[test]
+fn store_path_releases_do_not_grow_the_pool() {
+    let mut pool: WaitingPool<u32, u32> = WaitingPool::new(WaitingLimits::default());
+    // One held event waiting on key 9, restored the way the store holds.
+    pool.restore(author_key(1), 1_000_000, [9], 1, 0).unwrap();
+    assert_eq!(pool.len(), 1);
+    // A long stream of applied events, none of them key 9.
+    for key in (0..10_000u32).filter(|key| *key != 9) {
+        assert!(pool.release(key, 0).is_empty());
+    }
+    assert_eq!(pool.len(), 1, "releases retained state in the pool");
+    // The one real dependency still releases the held event...
+    assert_eq!(pool.release(9, 0), vec![1]);
+    assert!(pool.is_empty());
+    // ...and none of the released keys was recorded as arrived: a later
+    // insert depending on one still waits for it.
+    pool.insert(author_key(1), 1_000_001, [5], 2, 0).unwrap();
+    assert!(pool.take_ready().is_empty());
+    assert_eq!(pool.len(), 1);
 }

@@ -65,11 +65,22 @@ type Task struct {
 	// per-requestor limits (protoTasks.maxPerRequestor). Never on the wire.
 	requestor Requestor
 
+	// retentionFloor is the minimum terminal retention for a deadline
+	// (internal backing) task: two poll intervals, set by
+	// StartWithDeadline. deadline()'s maxAge ceiling must not cut
+	// retention below it (#6249). Zero for ordinary tasks, whose
+	// retention the maxAge ceiling bounds exactly. Never on the wire.
+	retentionFloor time.Duration
+
 	result any
 	fault  *Fault
 	cancel context.CancelFunc
 	done   chan struct{}
-	timer  *time.Timer
+	// doneClosed, guarded by Store.mu, makes closing done once-only:
+	// grace expiry closes it without the work's return, and the worker
+	// goroutine's close after finish must not close it a second time.
+	doneClosed bool
+	timer      *time.Timer
 	// cancelTimer bounds the in-memory cooperative-cancellation window. The
 	// cancelling mark and timer are deliberately not persisted or exposed.
 	cancelTimer *time.Timer
@@ -82,6 +93,24 @@ func deadline(terminalAt, lastTouched time.Time, ttl, maxAge time.Duration) time
 	if maxAge > 0 {
 		if ceiling := terminalAt.Add(maxAge); ceiling.Before(expires) {
 			expires = ceiling
+		}
+	}
+	return expires
+}
+
+// retentionDeadline is deadline() with t's retention floor applied.
+// The maxAge ceiling still bounds retention above the floor, but a
+// deadline task's result always survives its two-poll-interval
+// collection window: #6249 is the maxAge clamp (tasks.maxAge=100ms
+// against a 1s poll) overriding at arming time the very floor
+// StartWithDeadline sets on the TTL, deleting a finished backing
+// result before the ask wrapper's next poll, whose 404 then records
+// a successful call as failed.
+func (t *Task) retentionDeadline(terminalAt, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
+	expires := deadline(terminalAt, lastTouched, ttl, maxAge)
+	if t.retentionFloor > 0 {
+		if floor := terminalAt.Add(t.retentionFloor); expires.Before(floor) {
+			expires = floor
 		}
 	}
 	return expires
@@ -276,6 +305,19 @@ func New() *Store {
 
 // Open opens or creates a persistent SQLite-backed task store.
 func Open(dbPath string) (*Store, error) {
+	return OpenWithRetention(dbPath, 0, 0)
+}
+
+// OpenWithRetention is Open with the deployment's retention settings
+// applied before the store loads and migrates existing rows. That
+// ordering matters: loadTasksFromDB derives deadlines for legacy rows
+// (expires_ms unset) from the store's ttl/maxAge and deletes rows past
+// them, so configuring retention only after Open — as daemon startup
+// previously did — deleted legacy terminal rows under the built-in
+// defaults before the configured retention could preserve them
+// (issue #6248). Nonpositive values leave the built-in defaults in
+// place, exactly as Configure does.
+func OpenWithRetention(dbPath string, ttl, maxAge time.Duration) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("creating task db dir: %w", err)
 	}
@@ -284,6 +326,12 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening task db: %w", err)
 	}
 	st := New()
+	if ttl > 0 {
+		st.ttl = ttl
+	}
+	if maxAge > 0 {
+		st.maxAge = maxAge
+	}
 	st.db = db
 	if err := st.initDB(); err != nil {
 		_ = db.Close()
@@ -324,7 +372,7 @@ func ensureTaskColumn(db *sql.DB, name string) error {
 	if err != nil {
 		return fmt.Errorf("reading tasks schema: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var column, kind string
@@ -355,7 +403,7 @@ FROM tasks`)
 	if err != nil {
 		return fmt.Errorf("querying stored tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	now := time.Now()
 	nowMs := now.UnixMilli()
@@ -436,6 +484,7 @@ FROM tasks`)
 		}
 
 		close(t.done)
+		t.doneClosed = true
 		s.tasks[t.TaskID] = t
 		t.refreshTTLRemaining(now)
 		s.armExpiryLocked(t, time.Duration(expiresAtMs-nowMs)*time.Millisecond)
@@ -767,7 +816,7 @@ func (s *Store) armExpiryLocked(t *Task, d time.Duration) {
 func (s *Store) armRetentionLocked(t *Task) {
 	now := t.LastUpdatedAt
 	t.LastTouched = &now
-	expires := deadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
+	expires := t.retentionDeadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
 	t.ExpiresAt = &expires
 	t.refreshTTLRemaining(time.Now())
 	s.armExpiryLocked(t, time.Until(expires))
@@ -803,7 +852,11 @@ func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Contex
 // would delete a finished backing result before the wrapper's next
 // look, and its poll would meet a 404 and record a successful call as
 // failed (Codex on #2869, round 6). The floor is on the returned task's
-// TTL, so what a client is told is what the store does.
+// TTL, so what a client is told is what the store does. The floor
+// also holds against the store's maxAge ceiling when retention is
+// armed at the terminal transition (Task.retentionFloor, #6249):
+// flooring the TTL alone left armRetentionLocked free to recompute
+// a shorter expiry through deadline().
 func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
 	if ttl <= 0 {
 		s.mu.Lock()
@@ -869,6 +922,9 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 		requestor: requestor,
 		cancel:    cancel, done: make(chan struct{}),
 	}
+	if deadline > 0 {
+		t.retentionFloor = 2 * poll
+	}
 	ctx = context.WithValue(ctx, idKey{}, t.TaskID)
 	s.tasks[t.TaskID] = t
 	s.saveTaskLocked(t)
@@ -882,7 +938,7 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 	go func() {
 		result, fault := fn(ctx)
 		moved := s.finish(t, result, fault)
-		close(t.done)
+		s.closeDone(t)
 		if moved {
 			s.changed(t.TaskID)
 		}
@@ -994,7 +1050,7 @@ func (s *Store) touchLocked(t *Task, now time.Time) bool {
 			s.deleteFromDBLocked(t.TaskID)
 			return false
 		}
-		expires := deadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
+		expires := t.retentionDeadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
 		if expires.Before(*t.ExpiresAt) {
 			expires = *t.ExpiresAt
 		}
@@ -1184,6 +1240,25 @@ func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
 	return snap, true
 }
 
+// closeDoneLocked releases Result waiters exactly once. The caller
+// holds s.mu. Terminal transitions recorded without the work's return
+// (grace expiry) close done themselves; the worker goroutine's close
+// after finish is then a no-op instead of a double-close panic.
+func (s *Store) closeDoneLocked(t *Task) {
+	if t.doneClosed {
+		return
+	}
+	t.doneClosed = true
+	close(t.done)
+}
+
+// closeDone is closeDoneLocked for callers not holding s.mu.
+func (s *Store) closeDone(t *Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeDoneLocked(t)
+}
+
 // expireCancellation records the cancel only if the task's work did not
 // record a terminal status first. Called by the per-task grace timer.
 func (s *Store) expireCancellation(t *Task, reason string) {
@@ -1200,6 +1275,10 @@ func (s *Store) expireCancellation(t *Task, reason string) {
 	}
 	s.armRetentionLocked(t)
 	s.saveTaskLocked(t)
+	// The work may never return (that is the path grace expiry exists
+	// for), so release Result waiters here: they read the recorded
+	// Cancelled status and return the cancelled fault (#6897).
+	s.closeDoneLocked(t)
 	s.mu.Unlock()
 	s.logTerminal(t)
 	s.changed(t.TaskID)

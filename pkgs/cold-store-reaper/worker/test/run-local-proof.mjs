@@ -65,7 +65,7 @@ const info = JSON.parse(out.trim().split("\n").pop());
 
 const bundle = readFileSync(info.bundle_path);
 const frame = bundle.subarray(info.offset, info.offset + info.length);
-const plain = Buffer.from(decompressFrame(new Uint8Array(frame)));
+const plain = Buffer.from(decompressFrame(new Uint8Array(frame), sample.length));
 const digest = createHash("sha256").update(plain).digest("hex");
 
 if (digest !== info.hash) {

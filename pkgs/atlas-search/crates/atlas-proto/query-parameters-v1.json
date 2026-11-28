@@ -1,0 +1,18 @@
+{
+  "k": 10,
+  "pool": 100,
+  "expand": 0,
+  "parameters_version": 1,
+  "shard_top_k": 100,
+  "global_top_k": 100,
+  "fts_weight": 1.0,
+  "vector_weight": 1.0,
+  "jaccard_depth": 0,
+  "jaccard_threshold": 0.0,
+  "rrf_k": 10,
+  "planner_enabled": false,
+  "spell_enabled": false,
+  "query_class_hint": null,
+  "variant": "raw",
+  "raw": false
+}

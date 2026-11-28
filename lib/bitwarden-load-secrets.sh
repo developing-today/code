@@ -182,18 +182,39 @@ sanitize_var_name() {
   echo "$clean"
 }
 
-# Temporary associative-like storage using newline-delimited pairs
-# Format: KEY<TAB>VALUE
+# Temporary associative-like storage using newline-delimited pairs.
+# Format: KEY<TAB>BASE64_VALUE -- values are base64-encoded so a
+# multiline secret (private key, certificate) can never split into
+# bogus variables (#5650). Values are decoded only at output time.
+# jq (already a hard dependency) does the codec, so this is portable.
 PAIRS=""
 
-add_pair() {
+# Encode a raw value for PAIRS storage (single line, no wrapping).
+b64_encode_value() {
+  jq -jn --arg v "$1" '$v | @base64'
+}
+
+# Decode a PAIRS value into $DECODED_VALUE (a global, so a trailing
+# newline in the value survives command-substitution stripping).
+DECODED_VALUE=""
+b64_decode_value() {
+  local tmp
+  tmp="$(jq -jn --arg v "$1" '$v | @base64d'; printf 'x')"
+  DECODED_VALUE="${tmp%x}"
+}
+
+add_pair_encoded() {
   local k="$1"
-  local v="$2"
+  local v_enc="$2"
   local safe_k
   safe_k="$(sanitize_var_name "${VAR_PREFIX}${k}")"
   if [ -n "$safe_k" ]; then
-    PAIRS+="${safe_k}"$'\t'"${v}"$'\n'
+    PAIRS+="${safe_k}"$'\t'"${v_enc}"$'\n'
   fi
+}
+
+add_pair() {
+  add_pair_encoded "$1" "$(b64_encode_value "$2")"
 }
 
 # -------------------------------------------------------------
@@ -220,9 +241,9 @@ if [ "$USE_BWS" = true ]; then
       ARGS+=("$BWS_PROJECT_QUERY")
     fi
     RAW_JSON="$(bws secret list "${ARGS[@]}" 2>/dev/null)" || die "Failed to list secrets from bws."
-    while IFS=$'\t' read -r k v; do
-      [ -n "$k" ] && add_pair "$k" "$v"
-    done < <(echo "$RAW_JSON" | jq -r '.[] | "\(.key)\t\(.value)"')
+    while IFS=$'\t' read -r k v_enc; do
+      [ -n "$k" ] && add_pair_encoded "$k" "$v_enc"
+    done < <(echo "$RAW_JSON" | jq -r '.[] | "\(.key)\t\((.value // "") | @base64)"')
   fi
 
 # -------------------------------------------------------------
@@ -268,9 +289,9 @@ else
   # Extract all custom fields and optional login/notes
   else
     # 1. Custom fields
-    while IFS=$'\t' read -r k v; do
-      [ -n "$k" ] && add_pair "$k" "$v"
-    done < <(echo "$ITEM_JSON" | jq -r '(.fields // [])[] | "\(.name)\t\(.value)"')
+    while IFS=$'\t' read -r k v_enc; do
+      [ -n "$k" ] && add_pair_encoded "$k" "$v_enc"
+    done < <(echo "$ITEM_JSON" | jq -r '(.fields // [])[] | "\(.name)\t\((.value // "") | @base64)"')
 
     # 2. Login fields if requested or if no custom fields exist
     NUM_CUSTOM="$(echo "$ITEM_JSON" | jq '(.fields // []) | length')"
@@ -301,9 +322,10 @@ LOADED_NAMES=()
 
 case "$FORMAT" in
 source)
-  while IFS=$'\t' read -r k v; do
+  while IFS=$'\t' read -r k v_enc; do
     if [ -n "$k" ]; then
-      export "$k"="$v"
+      b64_decode_value "$v_enc"
+      export "$k"="$DECODED_VALUE"
       LOADED_NAMES+=("$k")
       COUNT=$((COUNT + 1))
     fi
@@ -312,18 +334,20 @@ source)
   ;;
 
 export)
-  while IFS=$'\t' read -r k v; do
+  while IFS=$'\t' read -r k v_enc; do
     if [ -n "$k" ]; then
-      escaped_val="$(printf '%s' "$v" | jq -Rr @sh)"
+      b64_decode_value "$v_enc"
+      escaped_val="$(printf '%s' "$DECODED_VALUE" | jq -Rsr @sh)"
       printf 'export %s=%s\n' "$k" "$escaped_val"
     fi
   done <<<"$PAIRS"
   ;;
 
 env)
-  while IFS=$'\t' read -r k v; do
+  while IFS=$'\t' read -r k v_enc; do
     if [ -n "$k" ]; then
-      escaped_val="$(printf '%s' "$v" | jq -Rr @sh)"
+      b64_decode_value "$v_enc"
+      escaped_val="$(printf '%s' "$DECODED_VALUE" | jq -Rsr @sh)"
       printf '%s=%s\n' "$k" "$escaped_val"
     fi
   done <<<"$PAIRS"
@@ -333,7 +357,7 @@ json)
   # Build JSON object from pairs
   jq -n -R '
       [inputs | select(length > 0) | split("\t")] |
-      map({(.[0]): .[1]}) | add // {}
+      map({(.[0]): (.[1] | @base64d)}) | add // {}
     ' <<<"$PAIRS"
   ;;
 

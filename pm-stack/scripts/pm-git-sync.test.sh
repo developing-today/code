@@ -80,6 +80,7 @@ export PM_TEST_BUN_FAIL="$SCRATCH/bun-fail"
 export PM_TEST_RESTART_FAIL="$SCRATCH/restart-fail"
 export PM_TEST_PROJ_DEP_FAIL="$SCRATCH/proj-dep-fail"
 STATE_DIR="$SCRATCH/state"
+DEPLOYED_HEAD="$STATE_DIR/deployed-head"
 
 run_sync() {
   PM_GIT_SYNC_REPO="$REPO" \
@@ -103,16 +104,32 @@ OWED_DISPATCH="$STATE_DIR/owed-pm-dispatch.service"
 run_sync >/dev/null 2>&1
 check "up-to-date run exits 0" test $? -eq 0
 check "up-to-date run restarts nothing" log_lacks "restart"
+check "up-to-date run records deployed HEAD" test "$(cat "$DEPLOYED_HEAD")" = "$(git -C "$REPO" rev-parse HEAD)"
+
+# --- 0b. a hand-pulled HEAD still owes its subtree redeploy -------------------
+push_change pm-stack/dispatch/index.ts 'dispatch hand-pulled'
+git -C "$REPO" pull --ff-only origin main >/dev/null 2>&1
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "hand-pulled HEAD run exits 0" test $? -eq 0
+check "hand-pulled subtree change redeploys dispatch" log_has "restart pm-dispatch"
+check "successful hand-pulled deploy advances baseline" test "$(cat "$DEPLOYED_HEAD")" = "$(git -C "$REPO" rev-parse HEAD)"
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "repeat run after hand-pulled deploy exits 0" test $? -eq 0
+check "repeat run does not redeploy the same HEAD" log_lacks "restart"
 
 # --- 1. dep step fails: no restart, owed recorded, loud exit ------------------
 push_change pm-stack/aggregator/package.json '{"name":"agg","version":"2"}'
 : >"$STUB_LOG"
+BASELINE_BEFORE_FAILURE="$(cat "$DEPLOYED_HEAD")"
 touch "$PM_TEST_BUN_FAIL"
 run_sync >/dev/null 2>&1
 check "dep-fail run exits non-zero" test $? -ne 0
 check "dep step was attempted" log_has "bun install"
 check "aggregator NOT restarted after dep failure" log_lacks "restart pm-aggregator"
 check "owed record exists for aggregator" test -e "$OWED_AGG"
+check "failed redeploy does not advance deployed baseline" test "$(cat "$DEPLOYED_HEAD")" = "$BASELINE_BEFORE_FAILURE"
 
 # --- 2. old==new run retries the owed redeploy --------------------------------
 : >"$STUB_LOG"
@@ -139,6 +156,7 @@ run_sync >/dev/null 2>&1
 check "recovery run exits 0" test $? -eq 0
 check "owed retry restarted the aggregator" log_has "restart pm-aggregator"
 check "owed record cleared" test ! -e "$OWED_AGG"
+check "recovery advances deployed baseline" test "$(cat "$DEPLOYED_HEAD")" = "$(git -C "$REPO" rev-parse HEAD)"
 
 # --- 4. restart failure is owed and retried on old==new ------------------------
 push_change pm-stack/dispatch/index.ts 'dispatch v2'
@@ -152,6 +170,32 @@ run_sync >/dev/null 2>&1
 check "old==new retry after restart failure exits 0" test $? -eq 0
 check "dispatch restarted by retry" log_has "restart pm-dispatch"
 check "dispatch owed record cleared" test ! -e "$OWED_DISPATCH"
+
+# --- 4b. partial batch then revert: the successful unit rolls back ------------
+# (Codex P2 on PR #7132: successful deployments are tracked per unit.
+# The aggregator restarts at the partial head while the projector's
+# dep step fails, holding the baseline; the next commit reverts the
+# aggregator subtree to its baseline content and fixes the projector.
+# The baseline-range diff for the aggregator is then empty, so only
+# its per-unit deployed record can trigger the rollback restart.)
+push_change pm-stack/aggregator/index.ts 'agg v3-partial'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"2"}'
+touch "$PM_TEST_PROJ_DEP_FAIL"
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "partial-batch run exits non-zero" test $? -ne 0
+check "aggregator restarted at the partial head" log_has "restart pm-aggregator"
+check "projector NOT restarted past its failing dep step" log_lacks "restart pm-projector"
+rm -f "$PM_TEST_PROJ_DEP_FAIL"
+push_change pm-stack/aggregator/index.ts 'agg v2'
+push_change pm-stack/projector/package.json '{"name":"proj","version":"3"}'
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "revert run exits 0" test $? -eq 0
+check "aggregator rolled back by the revert" log_has "restart pm-aggregator"
+check "projector redeployed by the revert run" log_has "restart pm-projector"
+check "revert run advances deployed baseline" test "$(cat "$DEPLOYED_HEAD")" = "$(git -C "$REPO" rev-parse HEAD)"
+check "aggregator deployed record tracks the revert head" test "$(cat "$STATE_DIR/deployed-pm-aggregator.service")" = "$(git -C "$REPO" rev-parse HEAD)"
 
 # --- 5. an unpersistable owed record must fail the run -------------------------
 # (Codex P2 on PR 2860: absent record != successful deployment.)

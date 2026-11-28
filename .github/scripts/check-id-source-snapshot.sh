@@ -39,6 +39,20 @@ if [ -z "$cmd" ] || [ -z "$root" ] || [ -z "$manifest" ]; then
   exit 2
 fi
 
+# Resolve paths before snapshot changes directory, so a relative root is
+# interpreted from the caller's working directory, not from pkgs/id.
+if ! root="$(cd "$root" 2>/dev/null && pwd -P)"; then
+  echo "source snapshot guard: repo root '$root' is not a directory" >&2
+  exit 2
+fi
+manifest_dir="$(dirname -- "$manifest")"
+manifest_base="$(basename -- "$manifest")"
+if ! manifest_dir="$(cd "$manifest_dir" 2>/dev/null && pwd -P)"; then
+  echo "source snapshot guard: manifest directory '$manifest_dir' not found" >&2
+  exit 2
+fi
+manifest="$manifest_dir/$manifest_base"
+
 id_tree="$root/pkgs/id"
 if [ ! -d "$id_tree" ]; then
   echo "source snapshot guard: $id_tree not found" >&2
@@ -56,7 +70,11 @@ digest_tree() {
       if [ -L "$p" ]; then
         printf 'LINK %s  %s\n' "$(readlink "$p")" "$rel"
       else
-        sha256sum "$p" | sed "s|  \./|  |"
+        if ! digest="$(sha256sum -- "$p")"; then
+          echo "source snapshot guard: failed to digest $tree/$rel" >&2
+          return 1
+        fi
+        printf '%s\n' "$digest" | sed 's|  \./|  |'
       fi
     done
   )
@@ -68,21 +86,40 @@ snapshot)
   # manifest exactly that set so ignored build residue in a dirty local
   # tree cannot false-positive. In CI the checkout is clean, so this is
   # simply every file git knows about under pkgs/id.
+  tmp_manifest="$(mktemp "$manifest.tmp.XXXXXX")" || {
+    echo "source snapshot guard: cannot create temporary manifest beside $manifest" >&2
+    exit 2
+  }
+  trap 'rm -f -- "$tmp_manifest"' EXIT
   if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     (
       cd "$id_tree"
       git -C "$root" ls-files -- pkgs/id | sed 's|^pkgs/id/||' | LC_ALL=C sort |
         while IFS= read -r rel; do
+          [ -n "$rel" ] || continue
+          if [ ! -e "$rel" ] && [ ! -L "$rel" ]; then
+            echo "source snapshot guard: tracked file missing from worktree: $id_tree/$rel" >&2
+            exit 1
+          fi
           if [ -L "$rel" ]; then
             printf 'LINK %s  %s\n' "$(readlink "$rel")" "$rel"
           else
-            sha256sum "$rel"
+            if ! sha256sum -- "$rel"; then
+              echo "source snapshot guard: failed to digest tracked file $id_tree/$rel" >&2
+              exit 1
+            fi
           fi
         done
-    ) >"$manifest"
+    ) >"$tmp_manifest" || exit 1
   else
-    digest_tree "$id_tree" >"$manifest"
+    digest_tree "$id_tree" >"$tmp_manifest" || exit 1
   fi
+  if [ "$(wc -l <"$tmp_manifest")" -eq 0 ]; then
+    echo "source snapshot guard: snapshot recorded no files from $id_tree; refusing an empty manifest" >&2
+    exit 1
+  fi
+  mv -- "$tmp_manifest" "$manifest"
+  trap - EXIT
   echo "source snapshot: recorded $(wc -l <"$manifest") files from $id_tree"
   ;;
 verify)
@@ -92,6 +129,10 @@ verify)
   fi
   if [ ! -f "$manifest" ]; then
     echo "source snapshot guard: manifest $manifest missing — run snapshot first" >&2
+    exit 2
+  fi
+  if [ "$(wc -l <"$manifest")" -eq 0 ]; then
+    echo "source snapshot guard: manifest $manifest is empty; refusing to verify an empty snapshot" >&2
     exit 2
   fi
   actual="$(mktemp)"

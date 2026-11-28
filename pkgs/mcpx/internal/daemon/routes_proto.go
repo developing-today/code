@@ -982,7 +982,7 @@ func (w *resourceWatch) release() {
 func (w *resourceWatch) announce(out io.Writer) {
 	data, _ := json.Marshal(w)
 	b, _ := json.Marshal(events.Event{Kind: events.ResourceWatching, At: time.Now(), Data: data})
-	fmt.Fprintf(out, "event: %s\ndata: %s\n\n", events.ResourceWatching, b)
+	_, _ = fmt.Fprintf(out, "event: %s\ndata: %s\n\n", events.ResourceWatching, b)
 }
 
 // watchResources subscribes upstream to the resources a stream names and

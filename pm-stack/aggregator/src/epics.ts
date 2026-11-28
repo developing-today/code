@@ -1,4 +1,5 @@
 import type { ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef } from "./model.ts";
 
 export interface EpicRollup {
   /** Resolved pool items whose epicRef points at this epic. */
@@ -24,7 +25,7 @@ export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, 
   const byRef = new Map(pool.map((item) => [item.ref, item]));
   const childrenByEpic = new Map<RefKey, ProjectPoolItem[]>();
   for (const item of pool) {
-    if (!item.epicRef) continue;
+    if (!isValidRef(item.epicRef)) continue;
     const children = childrenByEpic.get(item.epicRef) ?? [];
     children.push(item);
     childrenByEpic.set(item.epicRef, children);
@@ -44,6 +45,7 @@ export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, 
       if (
         child.state === "open" &&
         (child.blockedBy ?? []).some((ref) => {
+          if (!isValidRef(ref)) return false;
           const blocker = byRef.get(ref);
           return blocker === undefined || blocker.state === "open";
         })

@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 export const TASK_ID = "f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9";
 export const TASK_NAME = "Opencode lane claimant/executor - #3026";
-export const CRON = "*/10 * * * *";
+export const CRON = "*/5 * * * *";
 export const TIMEZONE = "America/Chicago";
 export const PROVIDER_ID = "opencode-route";
 export const MODEL_ID = "workhorse";

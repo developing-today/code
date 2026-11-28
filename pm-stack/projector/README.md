@@ -43,6 +43,26 @@ general/muse-meta database rather than requiring a dedicated database. Run
 locally against a SQLite file (`file:` URL) or remotely via
 `DATABASE_URL` + `TURSO_AUTH_TOKEN`.
 
+### Upgrading the comment identity schema
+
+Existing databases with the old `pmp_comments(id)` primary key fail startup
+with an explicit error. Stop all projector writers and back up the entire
+database first, including the human-written `pmp_links` registry. Do not
+delete the database: it may contain unrelated fleet data. Using the SQL client
+for that database, run:
+
+```sql
+DROP VIEW IF EXISTS pmp_v_subject_activity;
+DROP TABLE pmp_comments;
+```
+
+Start the upgraded projector to recreate the table and view, then run a full
+reconciliation for every configured repository and check all stream errors.
+The comment and review streams reread their full GitHub collections. This
+rebuild cannot recover deleted comments or overwritten historical records
+that GitHub no longer returns; retain the backup for those records. Links,
+items, deliveries, cursors, and other applications' tables are untouched.
+
 ## Secrets (referenced by name only — never commit values)
 
 | Env var                  | What it is                                                                |

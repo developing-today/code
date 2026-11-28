@@ -29,7 +29,7 @@ func TestTheDaemonServesModernMessageShapes(t *testing.T) {
 		r := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 			"method": "server/discover", "params": map[string]any{"_meta": modernMeta()}})
 		doc := decodeJSON(t, r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		if s := r.Header.Get("Mcp-Session-Id"); s != "" {
 			t.Errorf("a session was issued on discover: %s", s)
 		}
@@ -46,7 +46,7 @@ func TestTheDaemonServesModernMessageShapes(t *testing.T) {
 			"method": "resources/read", "params": map[string]any{
 				"uri": "mcpx://no-such-namespace/x", "_meta": modernMeta()}})
 		doc := decodeJSON(t, r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		errObj, _ := doc["error"].(map[string]any)
 		if errObj["code"] != float64(-32602) {
 			t.Errorf("got:\n%s", dumpJSON(t, doc))
@@ -58,11 +58,11 @@ func TestTheDaemonServesModernMessageShapes(t *testing.T) {
 			"method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25",
 				"capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "1"}}})
 		session := init.Header.Get("Mcp-Session-Id")
-		init.Body.Close()
+		_ = init.Body.Close()
 		r := mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 2,
 			"method": "resources/read", "params": map[string]any{"uri": "not-an-mcpx-uri"}})
 		doc := decodeJSON(t, r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		errObj, _ := doc["error"].(map[string]any)
 		if errObj["code"] != float64(-32002) {
 			t.Errorf("got:\n%s", dumpJSON(t, doc))
@@ -74,7 +74,7 @@ func TestTheDaemonServesModernMessageShapes(t *testing.T) {
 			"method": "initialize", "params": map[string]any{"protocolVersion": "1999-01-01",
 				"capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "1"}}})
 		doc := decodeJSON(t, r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		res, _ := doc["result"].(map[string]any)
 		if res["protocolVersion"] != "2025-11-25" {
 			t.Errorf("got:\n%s", dumpJSON(t, doc))
@@ -97,7 +97,7 @@ func TestTheDaemonServesModernMessageShapes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 			t.Fatalf("status %d, content type %q", resp.StatusCode, ct)
 		}

@@ -162,6 +162,57 @@ test('a non-participating optional capture does not prevent participating ids fr
   );
 });
 
+test('a non-numeric version capture is excluded deterministically in both input orders (#6893)', () => {
+  // Oracle: permutation invariance — the returned set must not depend
+  // on enumeration order, and a NaN-component capture never wins.
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const forward = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-1', 'model-2-beta']);
+  const reversed = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-1']);
+  assert.deepEqual(forward, new Set(['model-2-1']));
+  assert.deepEqual(reversed, forward);
+});
+
+test('a family whose only candidates have non-numeric captures selects nothing (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-alpha']),
+    new Set(),
+  );
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-alpha', 'model-2-beta']),
+    new Set(),
+  );
+});
+
+test('allowedModelIds returns the same set for every permutation of the same ids (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const ids = ['model-2-1', 'model-2-beta', 'model-3-0'];
+  const permutations = [
+    ids,
+    [ids[0], ids[2], ids[1]],
+    [ids[1], ids[0], ids[2]],
+    [ids[1], ids[2], ids[0]],
+    [ids[2], ids[0], ids[1]],
+    [ids[2], ids[1], ids[0]],
+  ];
+  for (const permutation of permutations) {
+    assert.deepEqual(
+      allowedModelIds(policy, { keep: ['suffixed'] }, permutation),
+      new Set(['model-3-0']),
+    );
+  }
+});
+
+test('shipped-policy control: families select the same newest model in both input orders (#6893)', () => {
+  const policyPath = path.join(binDir, 'sync-models.policy.json');
+  const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
+  const ids = ['gemini-1-flash', 'gemini-2-flash', 'gemini-1.5-flash'];
+  const forward = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, ids);
+  const reversed = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, [...ids].reverse());
+  assert.deepEqual(forward, new Set(['gemini-2-flash']));
+  assert.deepEqual(reversed, forward);
+});
+
 test('shipped policy still loads unchanged and known families select the newest model', () => {
   const policyPath = path.join(binDir, 'sync-models.policy.json');
   const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
@@ -253,4 +304,82 @@ test('--dry-run still exits 0 writing nothing', () => {
   assert.equal(result.status, 0);
   assert.equal(after, before);
   assert.equal(backupExists, false);
+});
+// --- #2832: shape validation at the parse boundary (design #3068 Phase 2) ---
+
+const { validateConfigShape } = new Function(
+  `${extractFunction('validateConfigShape')}\nreturn { validateConfigShape };`,
+)();
+
+const editorStart = source.indexOf('const lineIndent');
+assert.notEqual(editorStart, -1, 'JSONC tree editor block not found');
+const editorEnd = source.indexOf('// Removes the member at', editorStart);
+assert.notEqual(editorEnd, -1, 'JSONC tree editor block end not found');
+const { setJsoncPath } = new Function(
+  `${extractFunction('parseJsoncTree')}\n${source.slice(editorStart, editorEnd)}\nreturn { setJsoncPath };`,
+)();
+
+test('validateConfigShape names a scalar provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: 'oops' } }, 'cfg.jsonc'),
+    /invalid config shape in cfg\.jsonc: provider\.google: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names an array provider entry (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: [1, 2] } }, 'cfg.jsonc'),
+    /provider\.google: expected object, got array/,
+  );
+});
+
+test('validateConfigShape names a scalar models container (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: { google: { models: 'oops' } } }, 'cfg.jsonc'),
+    /provider\.google\.models: expected object, got string/,
+  );
+});
+
+test('validateConfigShape names a wrong-shaped provider container and root (#2832)', () => {
+  assert.throws(
+    () => validateConfigShape({ provider: 'oops' }, 'cfg.jsonc'),
+    /provider: expected object, got string/,
+  );
+  assert.throws(
+    () => validateConfigShape(['oops'], 'cfg.jsonc'),
+    /\(root\): expected object, got array/,
+  );
+});
+
+test('validateConfigShape treats a missing provider key as nothing to sync (#2832)', () => {
+  assert.doesNotThrow(() => validateConfigShape({}, 'cfg.jsonc'));
+  assert.doesNotThrow(() =>
+    validateConfigShape({ provider: { google: { models: { m1: {} } } } }, 'cfg.jsonc'));
+});
+
+test('setJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => setJsoncPath(text, ['provider', 'google', 'models', 'm1'], {}),
+    /cannot set provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
+  const arrayText = '{\n  "provider": { "google": [1, 2] }\n}';
+  assert.throws(
+    () => setJsoncPath(arrayText, ['provider', 'google', 'models', 'm1'], {}),
+    /provider\/google is a array, expected object|provider\/google is an array, expected object/,
+  );
+});
+
+test('setJsoncPath well-formed control still inserts the key (#2832)', () => {
+  const text = '{\n  "provider": { "google": { "models": {} } }\n}';
+  const out = setJsoncPath(text, ['provider', 'google', 'models', 'm1'], { name: 'M1' });
+  assert.deepEqual(parseJsonc(out).provider.google.models.m1, { name: 'M1' });
+});
+
+test('removeJsoncPath refuses a non-object intermediate naming the key path (#2832)', () => {
+  const text = '{\n  "provider": { "google": "oops" }\n}';
+  assert.throws(
+    () => removeJsoncPath(text, ['provider', 'google', 'models', 'm1']),
+    /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
+  );
 });

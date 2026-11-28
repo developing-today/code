@@ -63,7 +63,7 @@ use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
-use crate::currency::IssuerId;
+use crate::currency::{IssuerId, issuer_id};
 
 /// The event kind carrying an issuer rotation body.
 pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
@@ -342,7 +342,10 @@ impl IssuerRotation {
     /// This is the stateless half of validation: consecutive
     /// generations, the predecessor rule, the asserted-compromise
     /// rule, the successor proof, and — for recovery mode — that the
-    /// author is the committed recovery key. The chain-dependent
+    /// author is the committed recovery key. For routine mode it
+    /// also refuses a self-rotation — successor equal to the
+    /// author — which the fold could never count (#6451).
+    /// The chain-dependent
     /// half (a routine author must be the *current* generation key;
     /// a recovery author must not be the key it replaces) is
     /// enforced by [`fold_rotation_chain`], the only place the
@@ -361,6 +364,9 @@ impl IssuerRotation {
             RotationMode::Routine => {
                 if self.asserted_compromise_from.is_some() {
                     return Err(RotationError::AssertedCompromiseOnRoutine);
+                }
+                if self.successor_key == *author {
+                    return Err(RotationError::RoutineSuccessorIsAuthor);
                 }
             }
             RotationMode::CompromiseRecovery => {
@@ -396,6 +402,10 @@ pub enum RotationError {
     /// A routine rotation carries an asserted compromise start;
     /// only recovery rotations may (§3.3).
     AssertedCompromiseOnRoutine,
+    /// A routine rotation names its own author as the successor
+    /// key: the transition installs the very key it replaces, so
+    /// the fold can never count it (#6451).
+    RoutineSuccessorIsAuthor,
     /// A recovery rotation was presented for a currency whose
     /// definition committed no recovery key: no issuer-signed
     /// declaration can be authoritative for it (§3.4).
@@ -426,6 +436,9 @@ impl std::fmt::Display for RotationError {
             }
             Self::AssertedCompromiseOnRoutine => {
                 write!(f, "routine rotation asserts a compromise start")
+            }
+            Self::RoutineSuccessorIsAuthor => {
+                write!(f, "routine rotation names its author as its successor")
             }
             Self::RecoveryCommitmentMissing => {
                 write!(f, "currency definition commits no recovery key")
@@ -707,7 +720,13 @@ pub fn fold_rotation_chain(
 ///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid.
+/// Returns [`SignError::Rotation`] with
+/// [`RotationError::RoutineSuccessorIsAuthor`] for a routine
+/// rotation whose successor is the signing key itself: the fold
+/// can never count such a transition, so signing it would hand
+/// the caller a valid-looking event that never advances the
+/// chain (#6451). Returns a chain error if the extension or
+/// backlink is invalid otherwise.
 pub fn sign_rotation(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -715,6 +734,9 @@ pub fn sign_rotation(
     rotation: &IssuerRotation,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    if rotation.mode == RotationMode::Routine && rotation.successor_key == issuer_id(key) {
+        return Err(RotationError::RoutineSuccessorIsAuthor.into());
+    }
     Ok(chain::sign(
         key,
         seq_num,
@@ -731,6 +753,8 @@ pub fn sign_rotation(
             link: None,
             checkpoint: None,
             rotation: Some(rotation.clone()),
+
+            chat: None,
         },
     )?)
 }
@@ -740,6 +764,9 @@ pub fn sign_rotation(
 pub enum SignError {
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// The rotation breaks a rule the signer can check locally
+    /// before producing an event (#6451).
+    Rotation(RotationError),
 }
 
 impl From<chain::ChainError> for SignError {
@@ -748,10 +775,17 @@ impl From<chain::ChainError> for SignError {
     }
 }
 
+impl From<RotationError> for SignError {
+    fn from(err: RotationError) -> Self {
+        Self::Rotation(err)
+    }
+}
+
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chain(err) => write!(f, "chain refused the rotation event: {err:?}"),
+            Self::Rotation(err) => write!(f, "rotation refused at sign time: {err}"),
         }
     }
 }
@@ -1358,5 +1392,79 @@ mod tests {
         );
         assert_eq!(chain.active_generation(), 1);
         assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
+    }
+
+    #[test]
+    fn routine_self_rotation_is_refused_at_sign_time() {
+        // #6451 oracle: fold_rotation_chain can never count a
+        // routine transition whose successor is the current key
+        // (see a_routine_rotation_to_the_same_key_does_not_advance),
+        // so sign_rotation must refuse it up front, naming the rule,
+        // instead of producing a valid-looking event.
+        let issuer = gen0_key();
+        let self_rotation = rotation(RotationMode::Routine, 0, None, &gen0_key(), None);
+        match sign_rotation(&issuer, 0, None, &self_rotation, vec![]) {
+            Ok(_) => panic!("routine self-rotation signed Ok"),
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    SignError::Rotation(RotationError::RoutineSuccessorIsAuthor)
+                ),
+                "unexpected sign error: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn validate_refuses_a_routine_self_rotation() {
+        // The same author-local invariant in validate: a routine
+        // rotation whose successor equals its verified author.
+        let self_rotation = rotation(RotationMode::Routine, 0, None, &gen0_key(), None);
+        assert_eq!(
+            self_rotation.validate(&issuer_id(&gen0_key()), Some(&commitment())),
+            Err(RotationError::RoutineSuccessorIsAuthor)
+        );
+    }
+
+    #[test]
+    fn routine_rotation_to_a_new_key_still_signs_and_folds() {
+        // Control: the ordinary gen0 -> gen1 routine rotation is
+        // unaffected by the self-rotation refusal.
+        let issuer = gen0_key();
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let signed = sign_rotation(&issuer, 0, None, &first, vec![]).expect("sign rotation");
+        let chain = fold_rotation_chain(
+            &issuer_id(&issuer),
+            &currency(),
+            Some(&commitment()),
+            &[(issuer_id(&issuer), signed.id, first)],
+        );
+        assert_eq!(chain.active_generation(), 1);
+        assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
+    }
+
+    #[test]
+    fn recovery_rotation_to_the_recovery_key_itself_still_signs_and_validates() {
+        // Out of scope for the refusal (#6451): sign_rotation's
+        // inputs do not name the key a recovery replaces, so a
+        // CompromiseRecovery rotation whose successor is the
+        // recovery signing key itself stays accepted at sign time
+        // and in validate; only the fold decides advancement.
+        let recovery = recovery_key();
+        let rotation = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &recovery_key(),
+            None,
+        );
+        assert_eq!(
+            rotation.validate(&issuer_id(&recovery_key()), Some(&commitment())),
+            Ok(())
+        );
+        match sign_rotation(&recovery, 0, None, &rotation, vec![]) {
+            Ok(_) => {}
+            Err(err) => panic!("recovery self-install refused at sign time: {err}"),
+        }
     }
 }

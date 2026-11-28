@@ -1,0 +1,37 @@
+name: atlas-search
+
+# CI tier policy: see .github/ci-policy.md
+#
+# No `cargo fmt --check` step: the policy is that formatting is not a
+# merge gate (formatting is auto-fixed on main by auto-format.yml), so
+# this basic-tier job runs tests only.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/atlas-search/**"
+      - ".github/workflows/atlas-search-pr.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-search-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atlas-search:
+    name: "basic: atlas-search Rust checks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+
+      - name: Test atlas-search
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search
+
+      - name: Test atlas-core
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core

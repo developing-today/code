@@ -344,7 +344,7 @@ func scanPluginEnv(t *testing.T, root string) (sets, reads []envSite) {
 			return nil
 		}
 		name := d.Name()
-		if !(strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".tsx")) ||
+		if (!strings.HasSuffix(name, ".ts") && !strings.HasSuffix(name, ".tsx")) ||
 			strings.HasSuffix(name, ".test.ts") {
 			return nil
 		}

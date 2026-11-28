@@ -16,6 +16,11 @@
 //! `Transfer` reissues them from a permitted successor; `KeepPrior` retains the original grantor;
 //! and `ReassignToGroup` makes the group the root. Strong/weak removal still decides what happens
 //! to grants concurrent with the removal.
+//! One limit on `KeepPrior` (issue #169, ruling 2026-11-03): a re-add starts clean. A grant an
+//! account made or received before its removal does not revive when the account is re-added -
+//! at positions whose past contains the re-add, such a grant is no link, and authority flows
+//! only from grants issued after the re-add. Positions before the re-add are judged as before:
+//! there the grant still stands, as a fact about the past.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,6 +71,15 @@ pub(super) struct Removal {
 pub(super) const fn removed_member(event: &Event) -> Option<Key> {
     match &event.body {
         Body::Member(MemberOp::Remove { member, .. }) => Some(*member),
+        _ => None,
+    }
+}
+
+/// The account a member-add event adds, if the event is one. A re-add is an add whose causal
+/// past contains a removal of the same account.
+pub(super) const fn added_member(event: &Event) -> Option<Key> {
+    match &event.body {
+        Body::Member(MemberOp::Add { member, .. }) => Some(*member),
         _ => None,
     }
 }
@@ -357,6 +371,13 @@ impl Engine {
                 })
                 .collect();
             if superseding.is_empty() {
+                // Issue #169: an endpoint removed under KeepPrior and later re-added starts
+                // clean, so this grant is no link at a position that has seen the re-add.
+                // Only the grantee endpoint can arise here: a grantor removal that contains
+                // the grant in its past would supersede the grant, not leave this branch.
+                if self.cut_by_readd(by_id, &grant, &removals, &past) {
+                    continue;
+                }
                 // A non-removal role change (a demotion) carries no RemoveMode: under
                 // Cascade delegation the link stands only while the grantor still holds
                 // the scope at `after`, so demoting the grantor below the grant's scope
@@ -471,6 +492,10 @@ impl Engine {
                 });
                 continue;
             }
+            // Issue #169: the retained grant does not revive when an endpoint is re-added.
+            if self.cut_by_readd(by_id, &grant, &removals, &past) {
+                continue;
+            }
             links.push(Link {
                 origin: grant.id,
                 from: grant.from,
@@ -483,6 +508,42 @@ impl Engine {
             });
         }
         Ok(links)
+    }
+
+    /// Whether `KeepPrior` must cut this grant at this position because an endpoint was
+    /// re-added (issue #169): for the grantor or the grantee, a settled `KeepPrior`
+    /// removal in `past` has the grant in its causal past, and a settled re-add of the
+    /// same account in `past` has that removal in its causal past. The re-add starts the
+    /// account clean, so the pre-removal grant is no link at any position that has seen
+    /// the re-add. Grants issued after the re-add are untouched: no removal that follows
+    /// them contains them in its past together with a later re-add, until the account is
+    /// removed and re-added again.
+    fn cut_by_readd(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        grant: &Grant,
+        removals: &[Removal],
+        past: &BTreeSet<Hash>,
+    ) -> bool {
+        [grant.from, Some(grant.to)].iter().any(|member| {
+            removals
+                .iter()
+                .filter(|removal| {
+                    Some(removal.member) == *member
+                        && removal.mode == RemoveMode::KeepPrior
+                        && causal_past(by_id, &[removal.id]).contains(&grant.id)
+                })
+                .any(|removal| {
+                    past.iter().any(|id| {
+                        self.settled.contains(id)
+                            && by_id.get(id).is_some_and(|event| {
+                                event.group == Some(grant.group)
+                                    && added_member(event) == *member
+                                    && causal_past(by_id, &[*id]).contains(&removal.id)
+                            })
+                    })
+                })
+        })
     }
 
     /// Whether a settled removal of the grantor is concurrent with the grant: neither is in the

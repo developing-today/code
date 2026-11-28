@@ -128,10 +128,15 @@ async function discoverInstallationId(
     headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json", "user-agent": "pm-projector" },
   });
   if (!res.ok) return undefined;
-  const body = (await res.json()) as { id?: number };
-  if (typeof body.id === "number") {
-    discoveredInstallations.set(repo, body.id);
-    return body.id;
+  const body: unknown = await res.json();
+  // A wrong-shape 200 (null, a scalar, an array) carries no installation
+  // id: return undefined like the non-200 case above, so apiTokenFor
+  // falls through to the configured id / plain-token fallbacks instead
+  // of dying on a property access against null (#6954).
+  if (body !== null && typeof body === "object" && typeof (body as { id?: unknown }).id === "number") {
+    const id = (body as { id: number }).id;
+    discoveredInstallations.set(repo, id);
+    return id;
   }
   return undefined;
 }
@@ -156,8 +161,18 @@ export async function apiTokenFor(
       headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json" },
     });
     if (!res.ok) throw new Error(`installation_token_failed_${res.status}`);
-    const body = (await res.json()) as { token: string };
-    return { kind: "app", token: body.token };
+    const body: unknown = await res.json();
+    // Only a non-empty string token is an app credential: a token-less,
+    // mistyped, or null reply must fail here in the module's vocabulary
+    // instead of returning { token: undefined } as success (every later
+    // call would 401 as "Bearer undefined") or throwing a raw
+    // property-access TypeError on null (#6954).
+    const token =
+      body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
+    if (typeof token !== "string" || token === "") {
+      throw new Error("installation_token_failed_shape: access_tokens response carried no string token");
+    }
+    return { kind: "app", token };
   }
   if (env.GITHUB_TOKEN) return { kind: "token", token: env.GITHUB_TOKEN };
   throw new Error(`no_github_credentials_for_${repo}`);
@@ -202,8 +217,17 @@ export async function listResource<T>(auth: GitHubAuth, initialPath: string, fet
       },
     });
     if (!res.ok) throw new Error(`github_api_${res.status}`);
-    const page = (await res.json()) as T[];
-    out.push(...page);
+    const page: unknown = await res.json();
+    // List endpoints return arrays; any other 200 shape is an API
+    // error in disguise. Reject it in the module's vocabulary instead
+    // of a raw spread TypeError (null/object/number) or, worse,
+    // silently spreading a string page into per-character rows (#6954).
+    if (!Array.isArray(page)) {
+      throw new Error(
+        `github_api_unexpected_shape: ${url} returned ${page === null ? "null" : typeof page}, expected an array`,
+      );
+    }
+    out.push(...(page as T[]));
     path = nextPageFromLink(res.headers.get("link"));
   }
   return out;

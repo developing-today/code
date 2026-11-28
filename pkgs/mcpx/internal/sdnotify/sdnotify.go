@@ -36,7 +36,11 @@ func sendWithDialer(path, state string, dialer unixgramDialer, timeout time.Dura
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
+	// The dial above is bounded by its context; the write is bounded too.
+	// A datagram socket whose peer's queue is full blocks a send
+	// indefinitely -- seen on a CI worker where an abstract-socket send
+	// never returned and the package test hit its 1800s timeout (#5428).
 	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
 		return fmt.Errorf("notify %s: set write deadline: %w", path, err)
 	}
