@@ -1026,6 +1026,13 @@
       "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
     },
     {
+      "path": "docs/script-generate.md",
+      "chapter": "proposed",
+      "role": "chapter-source",
+      "lines": 294,
+      "note": "contract for the script-side generate surface (#14183, split from #1925): call surface, languages, model selection, request/response, budgets, errors, readiness verdict"
+    },
+    {
       "path": "docs/decisions/0005-release-pipeline.md",
       "chapter": "decision-records",
       "role": "chapter-source",
@@ -1080,6 +1087,13 @@
       "role": "not-compendium",
       "lines": 3,
       "note": "docs-history change fragment for #1864 (ask-path cancel); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/public-client-generated-table.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #14072 (generated public-client table); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
       "path": "docs/index.md",
@@ -1199,6 +1213,34 @@
       "role": "chapter-source",
       "lines": 350,
       "note": "the door Worker at mcpx.security.cab (#13657): the OAuth/bearer gate, the ns selector enforced at the JSON-RPC layer, the Access and tunnel chain to the laptop bridge, and the door's related work in order"
+    },
+    {
+      "path": "docs/daemon-auth.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 64,
+      "note": "daemon authentication design (#13659 slice 1): per-user keys, capability ceilings, the loopback migration and the door-selector mapping"
+    },
+    {
+      "path": "docs/adapters/claude-code.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 104,
+      "note": "Claude Code adapter feasibility research; findings and assumptions, not an adapter design"
+    },
+    {
+      "path": "docs/adapters/codex.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 81,
+      "note": "Codex adapter decided integration record (#1861): tool access through the existing MCP server, no adapter added; the Codex counterpart of the Claude Code feasibility record"
+    },
+    {
+      "path": "docs/record-and-replay.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 73,
+      "note": "transport-boundary call trace capture and deterministic replay design"
     },
     {
       "path": "worker/README.md",
