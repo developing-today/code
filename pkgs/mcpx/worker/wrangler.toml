@@ -32,6 +32,10 @@ ACCESS_TEAM_DOMAIN = "snowy-sun-58a9.cloudflareaccess.com"
 # Audience of the Access app scoped to /authorize (the Worker verifies
 # it on the Access JWT before rendering the approval page).
 ACCESS_AUD = "b34b9764fb317774bf5c0ff0ac9cbd8a2ab80ed346d06f08d74967011bac640e"
+# #15793 criterion 1: the deployed commit the /version route names,
+# stamped per deploy via cloudflare.config.ts (GITHUB_SHA at build
+# time); "unknown" is the honest unstamped default.
+VERSION = "unknown"
 
 [[kv_namespaces]]
 binding = "OAUTH_KV"
