@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Usage: copy-push-registry-to-d1.ts [--source-url URL] (--copy | --verify-only)
-// Strict arguments before I/O. Refreshes the five CF-5e (#15561) push
+// Strict arguments before I/O. Refreshes the six CF-5e (#15561) push
 // registry tables from the live fleet-platform Turso store into D1
 // fleet-platform, then hash-verifies source against destination.
 //

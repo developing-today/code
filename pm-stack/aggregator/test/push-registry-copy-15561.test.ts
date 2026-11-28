@@ -1,4 +1,4 @@
-// CF-5e #15561 slice 2: refresh + hash-verify the five push registry
+// CF-5e #15561 slice 2: refresh + hash-verify the six push registry
 // tables from Turso into D1 fleet-platform.
 //
 // Oracle: two independent SQLite databases. The source is authoritative;
@@ -40,6 +40,8 @@ const SEED = [
    values (7, 'item-1', 'needs-review', 'needs-user', 'it''s urgent', '2026-11-02T00:00:00.000Z')`,
   `insert into push_registry_meta (key, value, at)
    values ('legacy-alerts-push-subscriptions-seeded', '0', '2026-11-01T00:00:00.000Z')`,
+  `insert into push_sends (id, endpoint_id, class, object_ref, incident_id, outcome, push_status, sent_at, acted_on_at, group_ref)
+   values (11, 'e1', 'incident', 'incident:x', null, 'sent', '201', '2026-11-02T00:00:00.000Z', null, null)`,
 ];
 
 function seededDb(): Database {
@@ -50,6 +52,7 @@ function seededDb(): Database {
     `CREATE TABLE push_item_stages (item_ref TEXT PRIMARY KEY, stage TEXT NOT NULL, priority INTEGER, blocked_by_count INTEGER NOT NULL DEFAULT 0, entered_stage_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE push_item_stage_events (id INTEGER PRIMARY KEY, item_ref TEXT NOT NULL, from_stage TEXT, to_stage TEXT NOT NULL, reason TEXT, at TEXT NOT NULL)`,
     `CREATE TABLE push_registry_meta ("key" TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL)`,
+    `CREATE TABLE push_sends (id INTEGER PRIMARY KEY, endpoint_id TEXT, class TEXT NOT NULL, object_ref TEXT NOT NULL, incident_id TEXT, outcome TEXT NOT NULL, push_status TEXT, sent_at TEXT NOT NULL, acted_on_at TEXT, group_ref TEXT)`,
   ];
   for (const statement of ddl) db.exec(statement);
   for (const row of SEED) db.exec(row);
@@ -72,7 +75,7 @@ describe("push registry copy + verify (#15561 slice 2)", () => {
       await copyPushRegistry(client(sourceDb), client(destDb), PUSH_REGISTRY_DDL);
       const report = await verifyPushRegistryCopy(client(sourceDb), client(destDb));
       expect(report.match).toBe(true);
-      expect(report.tables).toHaveLength(5);
+      expect(report.tables).toHaveLength(6);
       for (const row of report.tables) {
         expect(row.match).toBe(true);
         expect(row.destCount).toBe(row.sourceCount);

@@ -1,6 +1,6 @@
 // Push registry copy + hash-verify for the CF-5e (#15561) D1 refresh.
 //
-// The five registry tables move Turso fleet-platform -> D1 fleet-platform
+// The six registry tables move Turso fleet-platform -> D1 fleet-platform
 // (#14968 copy pattern: counts + hashes, evidence recorded on the issue).
 // copyPushRegistry reads every row of a table (keyset-paginated on the
 // registry key) and reproduces it in the destination; the rows travel
@@ -48,6 +48,11 @@ export const PUSH_REGISTRY_COPY_TABLES: readonly PushRegistryCopyTable[] = [
     table: "push_preferences",
     key: "endpoint_id",
     columns: ["endpoint_id", "classes", "quiet", "delivery", "updated_at"],
+  },
+  {
+    table: "push_sends",
+    key: "id",
+    columns: ["id", "endpoint_id", "class", "object_ref", "incident_id", "outcome", "push_status", "sent_at", "acted_on_at", "group_ref"],
   },
   {
     table: "push_item_stages",
