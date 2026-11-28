@@ -24,6 +24,11 @@ export default defineConfig({
       // is created at deploy time. Flag default off.
       HOT_CACHE: bindings.d1({ name: "atlas-hot-cache", id: "00000000-0000-0000-0000-000000000001" }),
       HOT_CACHE_ENABLED: bindings.text("false"),
+      // The deployed commit the /version route names (#15793). This
+      // config runs at build time in the cf versions flow: hand it
+      // GITHUB_SHA and each uploaded version names the commit it was
+      // built from; a build without it answers "unknown", honestly.
+      VERSION: bindings.text(process.env.GITHUB_SHA ?? "unknown"),
     },
   },
 });

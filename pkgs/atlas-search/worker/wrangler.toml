@@ -25,6 +25,10 @@ SERVICE_BASE = "https://atlas-search.security.cab"
 # Default off: with the flag off the Worker keeps the pre-cache
 # read path exactly; src/hot_cache.ts is the only consumer.
 HOT_CACHE_ENABLED = "false"
+# Deployed commit named by GET /version (#15793); real deploys stamp
+# it at build time (cloudflare.config.ts), this keeps local dev and
+# the test suite honest.
+VERSION = "unknown"
 
 # Retention cycle (#9140 slice 7): every six hours, store a scheduled
 # retention report and retire what it lists in classes an admin promoted
