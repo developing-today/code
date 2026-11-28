@@ -26,6 +26,10 @@
 //! owns persisting the ledger; the projector's `pmp_deliveries`
 //! keyspace is never consulted here.
 
+/// REL-03 scoped ledger for the shared `fleet.command/v1` envelope
+/// (developing-today/code#9513).
+pub mod idempotency;
+
 use std::collections::BTreeMap;
 
 /// An actor identity as proven by the verified provider context.
