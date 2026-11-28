@@ -53,10 +53,14 @@
     },
     {
       "id": "cursor",
-      "status": "gated",
+      "status": "landed",
       "contract_owner": "HYD-06 (#9508)",
-      "gating_issue": 9508,
-      "tests": []
+      "fixtures": "cursor/",
+      "tests": [
+        "test_adapter_conformance_cursor_refresh_distinguishes_edit_from_creation",
+        "test_adapter_conformance_cursor_replay_dedupes_revision_not_creation",
+        "test_adapter_conformance_cursor_rejects_empty_identity"
+      ]
     },
     {
       "id": "authority.field_ownership",
