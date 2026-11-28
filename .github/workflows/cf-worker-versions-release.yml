@@ -232,7 +232,16 @@ jobs:
             # slices; fleet-git-rehost landed first, cf-container-hello
             # second, cold-store-rehydrator third, lab-ops-hub fourth,
             # fleet-hosted fifth).
-            if [ "$WORKER" = "fleet-git-rehost" ] || [ "$WORKER" = "cf-container-hello" ] || [ "$WORKER" = "cold-store-rehydrator" ] || [ "$WORKER" = "lab-ops-hub" ] || [ "$WORKER" = "fleet-hosted" ]; then
+            if [ "$WORKER" = "fleet-git-rehost" ] || [ "$WORKER" = "cf-container-hello" ]; then
+              upload_args+=(--var "VERSION:${GITHUB_SHA}")
+            fi
+            if [ "$WORKER" = "cold-store-rehydrator" ]; then
+              upload_args+=(--var "VERSION:${GITHUB_SHA}")
+            fi
+            if [ "$WORKER" = "lab-ops-hub" ]; then
+              upload_args+=(--var "VERSION:${GITHUB_SHA}")
+            fi
+            if [ "$WORKER" = "fleet-hosted" ]; then
               upload_args+=(--var "VERSION:${GITHUB_SHA}")
             fi
             $WRANGLER versions upload "${upload_args[@]}" | tee "$upload_log"
