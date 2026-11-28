@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use id_grants::{PublicationRecord, Scope};
 use id_sync::serving_limits::{
-    FetchCap, OwnerAggregateLimits, ServingGate, ServingRefusal, ShareServingLimits,
+    FetchCap, FetchPage, OwnerAggregateLimits, ServingGate, ServingRefusal, ShareServingLimits,
 };
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1091,6 +1091,36 @@ impl PublicServing {
             gate.end_owner_fetch(context.owner);
         }
         result
+    }
+
+    /// Plan and charge one page of a public snapshot fetch under the
+    /// same share and owner limits as public reads. A capped page carries
+    /// its stable cap name and next object index; callers resume the same
+    /// snapshot cut from `resume_from` rather than treating it as complete.
+    ///
+    /// The snapshot-serving transport supplies the cut's ordered object
+    /// sizes and the prior page's resume position. This method is the
+    /// serving-boundary seam for #5800 page-and-resume; it does not fetch
+    /// or serialize the snapshot itself.
+    pub fn serve_snapshot_page(
+        &self,
+        object_sizes: &[u64],
+        from: u64,
+        context: &PublicReadContext<'_>,
+    ) -> Result<FetchPage, PublicServingError> {
+        let limits =
+            ShareServingLimits::effective(context.owner_tuned_limits, &self.platform_ceilings);
+        let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        gate.serve_fetch(
+            context.owner,
+            context.share,
+            context.reader,
+            object_sizes,
+            from,
+            &limits,
+            context.now_ms,
+        )
+        .map_err(PublicServingError::Limit)
     }
 
     async fn serve_gated<T: Transport, C: CredentialResolver>(
