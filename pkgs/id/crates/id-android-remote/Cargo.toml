@@ -18,12 +18,12 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni = "0.22.4"
 zeroize = "1"
 
 [dev-dependencies]
 id-worlds = { path = "../id-worlds", default-features = false, features = ["sandbox"] }
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [lints.rust]

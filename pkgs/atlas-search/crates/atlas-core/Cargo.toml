@@ -9,7 +9,7 @@ description = "Atlas search semantics as a library: filters and sensitivity ceil
 [dependencies]
 atlas-embed = { path = "../atlas-embed" }
 atlas-proto = { path = "../atlas-proto" }
-arrow = { version = "58", optional = true }
+arrow = { version = "60", optional = true }
 base64 = "0.23"
 blake3 = "1"
 lance = { version = "14", default-features = false, optional = true }
