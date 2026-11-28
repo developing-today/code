@@ -22,6 +22,10 @@
 //   GET /status                 (unauthenticated, deliberately
 //     minimal: up/silent + since, snapshot seq, subscription
 //     count, last delivery — never board data, never endpoints.)
+//   GET /version                (unauthenticated: {ok, service,
+//     version} naming the deployed commit from the VERSION var,
+//     stamped per deploy — #15793 criterion 1; "unknown" when
+//     unstamped. Answered by the fetch handler, never the DO.)
 //
 // Everything else 404s — the route list is closed (design §2).
 // Mirrored event rows are append-only, deduped by mirrorId, retained
@@ -74,6 +78,10 @@ export interface Env {
   /** The aggregator VAPID keypair's private key (wrangler secret
    * put; Bitwarden name `pm-aggregator.vapid-private-key`). */
   VAPID_PRIVATE_KEY?: string;
+  /** The commit this deployment was built from, stamped per deploy
+   * as a plain-text var (#15793 criterion 1); absent/blank when the
+   * deploy was unstamped, in which case /version answers "unknown". */
+  VERSION?: string;
 }
 
 const SINGLETON = "pm-notify";
@@ -81,6 +89,15 @@ const STATE_KEY = "relay-state";
 
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+/** The #15793 criterion-1 answer: the deployed commit from the
+ * VERSION var (stamped per deploy), or "unknown" unstamped — the
+ * `version`-field shape the edge probe reads (commitOf in
+ * pm-stack/console/edge/src/worker-checks.ts). */
+export function versionAnswer(env: Env): { ok: true; service: string; version: string } {
+  const version = typeof env.VERSION === "string" ? env.VERSION.trim() : "";
+  return { ok: true, service: "pm-notify", version: version || "unknown" };
+}
 
 const ANSWER_PAGE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; " +
@@ -123,6 +140,9 @@ function ledgerIdFrom(match: RegExpMatchArray | null): string | null {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    // #15793 criterion 1: answered here, ahead of the Durable Object
+    // stub — it reads no state and no secret.
+    if (req.method === "GET" && url.pathname === "/version") return json(versionAnswer(env));
     const stub = env.PM_NOTIFY.get(env.PM_NOTIFY.idFromName(SINGLETON));
     const laptopRoute =
       (req.method === "POST" &&
