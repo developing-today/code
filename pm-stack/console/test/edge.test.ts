@@ -5319,8 +5319,13 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+<<<<<<< HEAD
         "settings.clear",
         "settings.set",
+||||||| afcef5a1239
+=======
+        "prompt.enqueue",
+>>>>>>> origin/queue/13490-edge-prompt-door
         "ask.send",
         "ask.reply",
         "ask.close",
