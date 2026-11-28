@@ -1,0 +1,7 @@
+{"from": "client", "frame": {"type": "join", "capability": "c"}}
+{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}
+{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}
+{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "welcome to the world\n", "view_revision": 1}}
+{"from": "client", "frame": {"type": "input", "data_hex": "6c6f6f6b0d"}}
+{"from": "client", "frame": {"type": "paste", "text": "a pasted line"}}
+{"from": "client", "frame": {"type": "chat", "text": "hello from the native shell"}}

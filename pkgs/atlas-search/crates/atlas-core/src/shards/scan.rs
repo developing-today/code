@@ -1,0 +1,676 @@
+//! The fan-out query path: exact cosine scan on every selected
+//! shard in parallel (top-k each), merged by distance.
+//!
+//! Exactness: each shard returns its own exact top-k, so the global
+//! top-k is contained in the union and the merge is exact — the
+//! property the restore parity run checked live (7/7 held-out
+//! queries identical to the monolith). Tests re-prove it offline
+//! against a single-store oracle.
+
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use rusqlite::Connection;
+
+use super::content::ContentStores;
+use super::{ShardInfo, ShardSet, Tier, TierCeiling};
+use crate::backend::SearchBackend;
+use crate::error::{Error, Result};
+use crate::filters::{Filters, turso_vector_scan_stmt};
+use crate::turso::qvec_json;
+use crate::types::{
+    BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow, Stmt, VectorBackend,
+};
+
+/// One merged hit with its provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardHit {
+    pub chunk_id: i64,
+    pub dist: f64,
+    pub tier: Tier,
+    pub shard: String,
+}
+
+pub struct FanoutQuery<'a> {
+    pub qvec: &'a [f32],
+    pub shard_top_k: usize,
+    pub global_top_k: usize,
+    pub filters: &'a Filters,
+    /// Manifest topics to scope to (`None` = every topic).
+    pub topics: Option<&'a [String]>,
+    pub ceiling: TierCeiling,
+}
+
+#[derive(Debug, Clone)]
+pub struct FanoutResult {
+    pub hits: Vec<ShardHit>,
+    /// Names of the shards that were scanned (selection order).
+    pub scanned: Vec<String>,
+}
+
+/// Merge per-shard hits: ascending distance; ties by tier merge rank
+/// (internal first), then shard name, then chunk id. A chunk id seen
+/// twice (a re-shard in flight) is kept once, at its best position.
+/// Hits without a finite distance are dropped.
+pub fn merge_top_k(hits: Vec<ShardHit>, k: usize) -> Vec<ShardHit> {
+    let mut hits: Vec<ShardHit> = hits.into_iter().filter(|h| h.dist.is_finite()).collect();
+    hits.sort_by(|a, b| {
+        a.dist
+            .total_cmp(&b.dist)
+            .then(a.tier.merge_rank().cmp(&b.tier.merge_rank()))
+            .then_with(|| a.shard.cmp(&b.shard))
+            .then(a.chunk_id.cmp(&b.chunk_id))
+    });
+    let mut seen = BTreeSet::new();
+    hits.retain(|h| seen.insert(h.chunk_id));
+    hits.truncate(k);
+    hits
+}
+
+/// Scan one shard. The last line of defence for the tier ceiling:
+/// even a caller that hands in a shard it should not have refuses
+/// here, before any statement is sent.
+fn scan_one(
+    set: &ShardSet,
+    shard: &ShardInfo,
+    ceiling: TierCeiling,
+    stmt: &Stmt,
+) -> Result<Vec<ShardHit>> {
+    if !ceiling.admits(shard.tier) {
+        return Err(Error::fatal(format!(
+            "shard fan-out: refusing to scan {} (tier {} above ceiling {})",
+            shard.name, shard.tier, ceiling.0
+        )));
+    }
+    let t = set.transport(&shard.name).ok_or_else(|| {
+        Error::backend(format!(
+            "shard fan-out: {} has no open transport",
+            shard.name
+        ))
+    })?;
+    let rows = t
+        .pipeline(std::slice::from_ref(stmt))
+        .map_err(|e| Error::backend(format!("shard {}: {e}", shard.name)))?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            Some(ShardHit {
+                chunk_id: r.get_i64("cid")?,
+                dist: r.get_f64("dist")?,
+                tier: shard.tier,
+                shard: shard.name.clone(),
+            })
+        })
+        .collect())
+}
+
+/// Fan the exact scan out to the caller's shards in parallel and
+/// merge. A failing shard fails the query: a partial answer that
+/// silently omits a shard is worse than an error.
+pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> {
+    if q.qvec.is_empty() {
+        return Err(Error::fatal("shard fan-out: empty query vector"));
+    }
+    let (session_clauses, _) = q.filters.session_clauses("s2", "l2");
+    if !session_clauses.is_empty() {
+        return Err(Error::fatal(
+            "shard fan-out does not support classification/date filters \
+             (--kind/--topic/--project/--client/--since/--until): scan shards carry no \
+             sessions or labels; those queries stay on the monolith",
+        ));
+    }
+    let shards = set.select(q.ceiling, q.topics)?;
+    // M1 (#7646): never merge across embedding models. Discovery
+    // already refused shards that disagree with the consumer, but
+    // the scanned set itself is checked here so a set assembled
+    // from more than one discovery still cannot mix identities.
+    if let Some(first) = shards.first() {
+        for s in &shards[1..] {
+            if s.embedding_model != first.embedding_model {
+                return Err(Error::fatal(format!(
+                    "shard fan-out: scanned set mixes embedding models — shard {} records `{}` but shard {} records `{}`; vectors from different embedding models are not comparable, refusing to merge",
+                    first.name, first.embedding_model, s.name, s.embedding_model
+                )));
+            }
+        }
+    }
+    let stmt = turso_vector_scan_stmt(
+        set.vec_table(),
+        q.filters,
+        &qvec_json(q.qvec),
+        q.shard_top_k,
+    );
+    let per_shard: Vec<Result<Vec<ShardHit>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = shards
+            .iter()
+            .map(|s| scope.spawn(|| scan_one(set, s, q.ceiling, &stmt)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(Error::backend("shard scan worker panicked")))
+            })
+            .collect()
+    });
+    let mut all = Vec::new();
+    for r in per_shard {
+        all.extend(r?);
+    }
+    Ok(FanoutResult {
+        hits: merge_top_k(all, q.global_top_k),
+        scanned: shards.iter().map(|s| s.name.clone()).collect(),
+    })
+}
+
+/// Periodic shard re-discovery for a serving [`ShardedBackend`]
+/// (#6666 slice 1): re-open the shard set from `spec` on an
+/// interval and swap it in atomically when its snapshot changes,
+/// so new shards and promotion batches are observed without a
+/// restart. The swap is the whole mechanism: the result cache is
+/// snapshot-bound (#9943), so a changed `snapshot_id()` invalidates
+/// cached results on the next query.
+pub struct ShardRefresh {
+    spec: String,
+    ceiling: TierCeiling,
+    interval: Duration,
+    last_check: Mutex<Instant>,
+}
+
+/// A [`SearchBackend`] that serves the **vector** branch from the
+/// shard core and delegates everything else (FTS, details,
+/// neighbors, messages, notes) to the wrapped backend — the libSQL
+/// monolith until cutover. Chunk ids are the monolith's (the shards
+/// were restored from it with ids preserved), so the monolith
+/// hydrates what the shards ranked.
+///
+/// Keyword search deliberately stays on the monolith: TursoDB MVCC
+/// shards have no `chunks_fts` (#5669 deviation, #5755 FTS gap).
+/// Queries carrying session-level filters
+/// (--kind/--topic/--project/--client/--since/--until) likewise stay
+/// on the monolith — both branches, with a diagnostic note — since
+/// scan shards carry no sessions or labels (#6665); `fanout_scan`
+/// itself still refuses such filters loudly for direct callers.
+pub struct ShardedBackend<B> {
+    inner: B,
+    set: RwLock<Arc<ShardSet>>,
+    refresh: Option<ShardRefresh>,
+    topics: Option<Vec<String>>,
+    /// Per-query diagnostics recorded during `branch_pools` (the
+    /// monolith-fallback notices, #6665). `notes()` surfaces them;
+    /// `run_search` folds late notes in after the branches run, so
+    /// a fallback taken mid-search is reported in the envelope.
+    fallback_notes: Mutex<Vec<String>>,
+    /// Tier content stores for hydration (#6664), when attached.
+    content: Option<Arc<ContentStores>>,
+    /// Source registry for occurrence attribution (#3125 slice 6),
+    /// when attached: `lookup_by_hash` resolves each occurrence's
+    /// source locator to its registered root. Absent, occurrence
+    /// rows are unattributed exactly as before.
+    source_registry: Mutex<Option<Connection>>,
+    /// The successor switch (#6664): serve hydration from
+    /// `content` instead of the wrapped monolith. The service's
+    /// successor protocol field (coordination issue #5668) maps
+    /// onto this flag; shipped `--expand` semantics are unchanged.
+    hydrate_from_content: bool,
+}
+
+impl<B: SearchBackend> ShardedBackend<B> {
+    pub fn new(inner: B, set: Arc<ShardSet>) -> ShardedBackend<B> {
+        ShardedBackend {
+            inner,
+            set: RwLock::new(set),
+            refresh: None,
+            topics: None,
+            fallback_notes: Mutex::new(Vec::new()),
+            content: None,
+            source_registry: Mutex::new(None),
+            hydrate_from_content: false,
+        }
+    }
+
+    /// Attach tier content stores and choose whether hydration
+    /// (chunk details, neighbors, message) is served from them
+    /// (#6664) instead of the wrapped monolith. With `enabled`
+    /// false the stores are inert: hydration stays on the monolith
+    /// exactly as before.
+    pub fn with_content_stores(
+        mut self,
+        stores: Arc<ContentStores>,
+        enabled: bool,
+    ) -> ShardedBackend<B> {
+        self.content = Some(stores);
+        self.hydrate_from_content = enabled;
+        self
+    }
+
+    fn content_if_enabled(&self) -> Option<&ContentStores> {
+        if self.hydrate_from_content {
+            self.content.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Scope vector scans to these manifest topics.
+    pub fn with_topics(mut self, topics: Vec<String>) -> ShardedBackend<B> {
+        self.topics = Some(topics);
+        self
+    }
+
+    /// Attach a source registry for occurrence attribution (#3125
+    /// slice 6). The connection is the caller's — typically the
+    /// phase-4 catalog database holding `source_registry`'s tables —
+    /// and is used read-only by occurrence lookups (resolution never
+    /// creates or alters rows beyond the registry's own additive
+    /// `ensure`). Without it, `occurrences` serves unattributed rows
+    /// exactly as before; serving-side wiring of the catalog path is
+    /// the named next slice.
+    pub fn with_source_registry(self, conn: Connection) -> ShardedBackend<B> {
+        *self
+            .source_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(conn);
+        self
+    }
+
+    pub fn inner(&self) -> &B {
+        &self.inner
+    }
+
+    pub fn shard_set(&self) -> Arc<ShardSet> {
+        self.set
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Enable periodic re-discovery (#6666 slice 1): every
+    /// `interval`, the shard set is re-opened from `spec` at
+    /// `ceiling` and swapped in when its snapshot changed. A
+    /// zero interval disables the opportunistic checks (explicit
+    /// [`ShardedBackend::refresh_shard_set`] calls still work).
+    pub fn with_refresh(
+        mut self,
+        spec: String,
+        ceiling: TierCeiling,
+        interval: Duration,
+    ) -> ShardedBackend<B> {
+        self.refresh = Some(ShardRefresh {
+            spec,
+            ceiling,
+            interval,
+            // Backdate so the first query after the interval has
+            // elapsed checks; construction itself just discovered.
+            last_check: Mutex::new(Instant::now()),
+        });
+        self
+    }
+
+    /// Re-open the shard set from the refresh spec now and swap it
+    /// in if its snapshot changed. Returns true when a swap
+    /// happened. A discovery failure keeps the current set and
+    /// records a diagnostic note; it never fails the caller.
+    pub fn refresh_shard_set(&self) -> bool {
+        let Some(refresh) = &self.refresh else {
+            return false;
+        };
+        let new = match super::open_from_spec(
+            &refresh.spec,
+            refresh.ceiling,
+            self.set
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .vec_table(),
+        ) {
+            Ok(new) => new,
+            Err(e) => {
+                if let Ok(mut notes) = self.fallback_notes.lock() {
+                    let note = format!("shard re-discovery failed; serving the previous set: {e}");
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+                return false;
+            }
+        };
+        let mut guard = self
+            .set
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.snapshot_id() == new.snapshot_id() {
+            return false;
+        }
+        *guard = new;
+        true
+    }
+
+    /// The shard set to serve from: when refresh is configured and
+    /// the interval has elapsed, re-discover first (the check is
+    /// cheap and at most once per interval per backend).
+    fn current_set(&self) -> Arc<ShardSet> {
+        if let Some(refresh) = &self.refresh
+            && !refresh.interval.is_zero()
+            && let Ok(mut last) = refresh.last_check.lock()
+            && last.elapsed() >= refresh.interval
+        {
+            *last = Instant::now();
+            drop(last);
+            self.refresh_shard_set();
+        }
+        self.shard_set()
+    }
+}
+
+/// Whether the filters carry any session-level classification or
+/// date clause — the clauses scan shards cannot evaluate, because
+/// shards hold no sessions or labels (the `fanout_scan` refusal).
+/// The sensitivity ceiling is NOT a session clause: it is enforced
+/// on the shards themselves via the tier ceiling.
+fn has_session_filters(filters: &Filters) -> bool {
+    !filters.session_clauses("s2", "l2").0.is_empty()
+}
+
+fn vector_pool(
+    set: &ShardSet,
+    topics: Option<&[String]>,
+    q: &BranchQuery,
+    filters: &Filters,
+) -> Result<(Vec<BranchHit>, std::collections::HashMap<i64, String>)> {
+    let Some(qvec) = q.query_vector.as_deref() else {
+        return Ok((Vec::new(), std::collections::HashMap::new()));
+    };
+    if q.vector_backend != VectorBackend::Scan {
+        return Err(Error::fatal(
+            "--vector-backend index modes are not available on the shard fan-out \
+             (exact-cosine scan only)",
+        ));
+    }
+    let res = fanout_scan(
+        set,
+        &FanoutQuery {
+            qvec,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
+            filters,
+            topics,
+            ceiling: TierCeiling::from_sensitivity(filters.max_sensitivity),
+        },
+    )?;
+    // M5 provenance (#7647): each hit's shard manifest
+    // `embedding_model`, keyed by chunk id for the query trace.
+    let model_by_shard: std::collections::HashMap<&str, &str> = set
+        .shards()
+        .iter()
+        .map(|s| (s.name.as_str(), s.embedding_model.as_str()))
+        .collect();
+    let mut candidate_models = std::collections::HashMap::new();
+    let hits = res
+        .hits
+        .into_iter()
+        .map(|h| {
+            if let Some(m) = model_by_shard.get(h.shard.as_str()) {
+                candidate_models.insert(h.chunk_id, m.to_string());
+            }
+            BranchHit {
+                chunk_id: h.chunk_id,
+                dist: Some(h.dist),
+            }
+        })
+        .collect();
+    Ok((hits, candidate_models))
+}
+
+impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn snapshot_id(&self) -> Option<String> {
+        // The shard set IS the corpus state for this backend: its
+        // snapshot id moves on every re-shard / promotion, which
+        // is exactly the result-cache invalidation signal (#9943).
+        Some(self.current_set().snapshot_id())
+    }
+
+    fn vec_table(&self) -> &str {
+        self.inner.vec_table()
+    }
+
+    fn notes(&self) -> Vec<String> {
+        let mut notes = self.inner.notes();
+        notes.push(format!(
+            "vector branch served by shard fan-out over {} shards (snapshot {})",
+            self.shard_set().shards().len(),
+            &self.shard_set().snapshot_id()[..12]
+        ));
+        if let Ok(fallback) = self.fallback_notes.lock() {
+            notes.extend(fallback.iter().cloned());
+        }
+        if let Some(content) = &self.content {
+            if self.hydrate_from_content {
+                let names: Vec<&str> = content.stores().iter().map(|s| s.name.as_str()).collect();
+                notes.push(format!(
+                    "hydration served by tier content stores: {}",
+                    names.join(", ")
+                ));
+            }
+            for r in &content.rejections {
+                notes.push(format!(
+                    "content store {} not connected: {}",
+                    r.name, r.reason
+                ));
+            }
+        }
+        notes
+    }
+
+    fn has_vector_store(&self) -> Option<bool> {
+        self.inner.has_vector_store()
+    }
+
+    fn branch_pools(&self, q: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
+        // Session-level filters (#6665): scan shards carry no
+        // sessions or labels, so a filtered query routed to the
+        // fan-out can only fail. Route BOTH branches to the wrapped
+        // monolith instead — it evaluates the filters and the
+        // sensitivity ceiling in its own branch construction — and
+        // record the diagnostic the envelope surfaces. Unfiltered
+        // vector queries keep the shard fan-out below; FTS already
+        // stays on the monolith (shards have no chunks_fts).
+        if q.query_vector.is_some() && has_session_filters(filters) {
+            let pools = self.inner.branch_pools(q, filters)?;
+            if let Ok(mut fallback) = self.fallback_notes.lock() {
+                let note = format!(
+                    "session-level filters present ({}): vector and FTS branches \
+                     served by the wrapped monolith; shard fan-out skipped — \
+                     scan shards carry no sessions or labels (#6665)",
+                    filters.describe()
+                );
+                if !fallback.contains(&note) {
+                    fallback.push(note);
+                }
+            }
+            return Ok(pools);
+        }
+        // FTS (if asked) on the wrapped backend, vector on the
+        // shards, concurrently; fusion happens upstream over both.
+        let fts_query = BranchQuery {
+            match_expr: q.match_expr.clone(),
+            query_vector: None,
+            pool: q.pool,
+            shard_top_k: q.shard_top_k,
+            global_top_k: q.global_top_k,
+            vector_backend: q.vector_backend,
+        };
+        let set = self.current_set();
+        let (set, topics) = (&*set, self.topics.as_deref());
+        std::thread::scope(|scope| {
+            let vec_handle = q
+                .query_vector
+                .is_some()
+                .then(|| scope.spawn(|| vector_pool(set, topics, q, filters)));
+            let mut pools = BranchPools::default();
+            if q.match_expr.is_some() {
+                pools.fts = self.inner.branch_pools(&fts_query, filters)?.fts;
+            }
+            if let Some(h) = vec_handle {
+                let (hits, models) = h
+                    .join()
+                    .map_err(|_| Error::backend("shard vector branch panicked"))??;
+                pools.vector = hits;
+                pools.candidate_models = models;
+            }
+            Ok(pools)
+        })
+    }
+
+    fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.chunk_details(ids);
+        }
+        self.inner.chunk_details(ids)
+    }
+
+    fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.neighbors(message_id, chunk_idx, n);
+        }
+        self.inner.neighbors(message_id, chunk_idx, n)
+    }
+
+    fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.message(message_id);
+        }
+        self.inner.message(message_id)
+    }
+
+    /// #3125 rule 3 read side: resolve a canonical content hash
+    /// against every shard the caller's ceiling admits. Occurrence
+    /// rows live in the scan shards themselves (written at
+    /// promotion, aggregate.rs), so this is one indexed lookup per
+    /// shard — no content-store or monolith involvement. The
+    /// ceiling is the caller's, enforced inside
+    /// [`lookup_by_hash`] exactly as the vector fan-out enforces
+    /// it in [`ShardSet::select`].
+    fn occurrences(
+        &self,
+        canonical_hash: &str,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: crate::filters::Sensitivity,
+    ) -> Result<Vec<crate::occurrences::ChunkOccurrence>> {
+        let guard = self
+            .source_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::occurrences::lookup_by_hash(
+            &self.current_set(),
+            tier_ceiling,
+            caller_ceiling,
+            canonical_hash,
+            guard.as_ref(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shards::{ShardEndpoint, ShardLocation, ShardTransport};
+    use crate::types::Row;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting(Arc<AtomicUsize>);
+    impl crate::turso::PipelineTransport for Counting {
+        fn pipeline(&self, _s: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![vec![]])
+        }
+    }
+
+    #[test]
+    fn scan_one_refuses_a_shard_above_the_ceiling_before_sending_anything() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let info = ShardInfo {
+            name: "atlas-core-secret-main-01".into(),
+            tier: Tier::Secret,
+            topic: "main".into(),
+            part: 1,
+            expected_chunks: None,
+            embedding_model: crate::shards::EMBEDDING_MODEL_ID.to_string(),
+            chunks: 0,
+            endpoint: ShardEndpoint {
+                name: "atlas-core-secret-main-01".into(),
+                location: ShardLocation::File("/nonexistent".into()),
+            },
+        };
+        let t: Arc<dyn ShardTransport> = Arc::new(Counting(calls.clone()));
+        let set = ShardSet {
+            shards: vec![info.clone()],
+            transports: BTreeMap::from([(info.name.clone(), t)]),
+            vec_table: "v".into(),
+            discovery_ceiling: TierCeiling(Tier::Secret),
+            rejections: vec![],
+        };
+        let stmt = Stmt::new("SELECT 1", vec![]);
+        let err = scan_one(&set, &info, TierCeiling(Tier::Internal), &stmt).unwrap_err();
+        assert!(err.to_string().contains("above ceiling"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing was sent");
+        // The same shard under a secret ceiling is scanned.
+        scan_one(&set, &info, TierCeiling(Tier::Secret), &stmt).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    fn hit(id: i64, dist: f64, tier: Tier, shard: &str) -> ShardHit {
+        ShardHit {
+            chunk_id: id,
+            dist,
+            tier,
+            shard: shard.to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_orders_by_distance_then_internal_first() {
+        let merged = merge_top_k(
+            vec![
+                hit(1, 0.30, Tier::Secret, "s"),
+                hit(2, 0.10, Tier::Internal, "b"),
+                hit(3, 0.10, Tier::Secret, "a"),
+                hit(4, 0.10, Tier::Internal, "a"),
+                hit(5, 0.05, Tier::Public, "p"),
+            ],
+            4,
+        );
+        let ids: Vec<i64> = merged.iter().map(|h| h.chunk_id).collect();
+        // 0.05 first; the 0.10 tie: internal (a, b) before secret.
+        assert_eq!(ids, [5, 4, 2, 3]);
+    }
+
+    #[test]
+    fn merge_dedupes_ids_drops_nan_and_truncates() {
+        let merged = merge_top_k(
+            vec![
+                hit(1, 0.2, Tier::Internal, "b"),
+                hit(1, 0.1, Tier::Internal, "a"),
+                hit(2, f64::NAN, Tier::Internal, "a"),
+                hit(3, 0.3, Tier::Internal, "a"),
+            ],
+            2,
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .map(|h| (h.chunk_id, h.shard.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "a"), (3, "a")]
+        );
+        assert!(merge_top_k(vec![hit(1, 0.1, Tier::Internal, "a")], 0).is_empty());
+    }
+}

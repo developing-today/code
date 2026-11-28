@@ -1,0 +1,50 @@
+{
+  "pools": [
+    {
+      "id": "example-pool-1",
+      "provider": "Example Provider 1",
+      "plan": "Example subscription",
+      "state": "healthy",
+      "windows": [
+        {
+          "name": "window-1",
+          "unit": "other",
+          "limit": 100,
+          "used": 11,
+          "resetsAt": "2026-11-10T00:00:00Z",
+          "percent": 11.0
+        }
+      ]
+    },
+    {
+      "id": "example-pool-2",
+      "provider": "Example Provider 2",
+      "plan": "Example subscription",
+      "state": "healthy",
+      "windows": [
+        {
+          "name": "window-1",
+          "unit": "usd",
+          "limit": 100,
+          "used": 50,
+          "resetsAt": "2026-11-10T00:00:00Z",
+          "percent": 84.0
+        },
+        {
+          "name": "window-2",
+          "unit": "usd",
+          "limit": 100,
+          "used": 2,
+          "resetsAt": null,
+          "percent": 7.0
+        }
+      ]
+    }
+  ],
+  "burn": [],
+  "choices": {
+    "hasHeadroom": ["example-pool-1"],
+    "burnBeforeReset": [],
+    "doNotStart": []
+  }
+}

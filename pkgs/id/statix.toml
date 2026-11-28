@@ -1,0 +1,9 @@
+# pkgs/id is a standalone flake: its checks build from a source copy of
+# this directory alone, so the repository-root statix.toml is not
+# visible inside the Nix sandbox. Without this file the sandbox run
+# enables lints the project deliberately turned off — repeated_keys
+# (W20) fires on the idiomatic dotted `nodes.<name>` paths in the
+# NixOS VM test files (#702). Keep in sync with the root statix.toml.
+disabled = ["repeated_keys"]
+nix_version = '2.23'
+ignore = ['.direnv']

@@ -1,0 +1,10 @@
+[Unit]
+Description=repo-universe pull-in (daily, after the issue check)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

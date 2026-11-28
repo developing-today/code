@@ -1,0 +1,14 @@
+host \
+"nixos flake" \
+"running in container" \
+"everything in /host and os is frozen read only" \
+"other layers will pull in writeable file system as-needed"
+platform \
+"user uploads blake-hash-zip of max _ mb (custom uploader hashes files before upload)" \
+"unzip inside nixos container /platform/" \
+"read-only rest of file system, ln -s /platform/Lib" \
+"""
+nix develop # or maybe a different flake thing
+roc build.roc
+"""
+application \

@@ -1,0 +1,50 @@
+[package]
+name = "p2panda-core"
+version = "0.7.1"
+edition = "2024"
+authors = [
+  "adz <x12@adz.garden>",
+  "sandreae <contact@samandreae.com>",
+  "glyph <glyph@mycelial.technology>",
+]
+description = "Extensible data-types for secure, distributed and efficient exchange of data"
+repository = "https://github.com/p2panda/p2panda"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["p2p", "data-types", "blake3", "cbor", "ed25519"]
+rust-version = "1.96"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+arbitrary = [
+  "dep:arbitrary",
+  "test_utils",
+]
+test_utils = [
+  "dep:mock_instant",
+  "dep:tracing-subscriber",
+]
+
+[dependencies]
+arbitrary = { version = "1.4.2", optional = true, features = ["derive"] }
+blake3 = { workspace = true }
+cbor-core = { version = "0.10.1", features = ["serde"] }
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+hex = { workspace = true, features = ["serde"] }
+mock_instant = { workspace = true, optional = true }
+rand = "0.8.5"
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+
+[dev-dependencies]
+p2panda-core = { path = ".", features = ["test_utils"] }
+serde_json = "1.0.150"

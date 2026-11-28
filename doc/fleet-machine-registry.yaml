@@ -1,0 +1,88 @@
+# Fleet machine registry — execution nodes (#2179)
+#
+# The registry artifact defined by the machine onboarding standard:
+#   doc/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1/
+#     2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1.md (§3)
+#
+# One record per execution node. This file is a reviewed repo artifact:
+# schedulers and the watchdog consume it; capabilities and capacity are
+# declarations changed by reviewed edits, never probes (§3). The `health`
+# block of each record is a cache written by the watchdog (§1.5) — every
+# other writer leaves it alone, and a stale `last_seen` demotes the
+# machine for placement without editing its declared state.
+#
+# Secrets appear as CLASS names only (§1.6) — never values, fingerprints,
+# or expiry data. `scripts/validate-fleet-machine-registry.py` enforces
+# the §3 shape; run it after any edit.
+#
+# A record may say `active` only for a machine that has passed the join
+# procedure (§2) end to end, including step 5 (first real work). The
+# basement machines (#1095/#1097/#1099/#1101) get records when their
+# inventory entries exist — not before.
+machines:
+  - id: amd-6 # registry identity (fleet); distinct from the NixOS host key
+    hostname: amd # flake target: nixosConfigurations.amd
+    state: active # declared | joining | active | draining | retired
+    roles: [execution] # execution | lab-cluster | both (both only by a recorded #2179 decision)
+    links:
+      talos_inventory: null # amd-6 is not a lab-cluster node
+      evidence_issues: [] # the reference machine; not a basement box
+    access:
+      ssh: user@amd-6 # operator account over the tailnet name (§1.2); no credentials
+      # Server facade on-host (§1.3); consumers attach on-host today
+      # (OpenChamber, dispatcher). Port from the shared definitions in
+      # home/common/default.nix.
+      opencode_server: http://127.0.0.1:13420
+    capabilities:
+      queue_worker: true
+      opencode_sessions: true
+      builds: true
+      gpu: false # integrated APU graphics only; no discrete compute GPU
+    capacity:
+      max_sessions: 12 # amd-6's declared session cap (§1.3)
+      cpu_cores: 16 # measured on the host 2026-11-22
+      ram_gb: 123 # OS-visible total, measured 2026-11-22
+      worktree_disk_gb: 3372 # worktree volume size, measured 2026-11-22
+    # Secret CLASS names only (§1.6) — the classes a standard execution
+    # node may hold, as amd-6 holds them today.
+    secrets:
+      - bitwarden-secrets-manager-access-token
+      - onepassword-service-account-token
+      - github-gh-auth
+      - opencode-provider-route-credentials
+    health:
+      # Watchdog-written cache (§1.5) — refreshed by
+      # scripts/fleet-machine-watchdog.py; never hand-edited (the
+      # validator requires the earned checks record below).
+      source: watchdog
+      last_seen: '2026-11-24T12:54:13Z'
+      status: degraded
+      checks:
+        reported_at: '2026-11-24T12:54:13Z'
+        reachable:
+          state: ok
+          ssh: true
+          opencode_server_http: 200
+        load_headroom:
+          state: ok
+          load15: 11.7
+          cpu_cores: 16
+          load15_per_core: 0.731
+        disk_headroom:
+          state: failed
+          volume: worktree (home)
+          total_gb: 3371
+          free_gb: 78
+          free_pct: 2.3
+        sessions:
+          state: ok
+          listed: 50
+          active_within_cadence: 43
+          max_sessions: 12
+          source: openchamber attach api
+        last_queue_job:
+          state: ok
+          task_id: '22688'
+          queue: repo-health-code-pilot
+          worker: xaltha
+          completed_at: '2026-11-24T12:53:49Z'

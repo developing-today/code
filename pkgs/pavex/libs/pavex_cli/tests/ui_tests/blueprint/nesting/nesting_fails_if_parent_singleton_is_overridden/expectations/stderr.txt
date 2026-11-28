@@ -1,0 +1,26 @@
+[31m[1mERROR[0m[39m:
+  [31m×[0m You can't register multiple constructors for the same singleton type,
+  [31m│[0m `u64`.
+  [31m│[0m There must be at most one live instance for each singleton type. If you
+  [31m│[0m register multiple constructors, I don't know which one to use to build
+  [31m│[0m that unique instance!
+  [31m│[0m I have found 2 different constructors for `u64`:
+  [31m│[0m
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:8:1]
+  [31m│[0m  [2m 8[0m │     let mut bp = Blueprint::new();
+  [31m│[0m  [2m 9[0m │     bp.constructor(f!(crate::singleton), Lifecycle::Singleton);
+  [31m│[0m     · [35;1m                   ──────────┬─────────[0m
+  [31m│[0m     ·                              [35;1m╰── [35;1mA constructor was registered here[0m[0m
+  [31m│[0m  [2m10[0m │     bp.route(GET, "/parent", f!(crate::handler));
+  [31m│[0m     ╰────
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:28:1]
+  [31m│[0m  [2m28[0m │     let mut bp = Blueprint::new();
+  [31m│[0m  [2m29[0m │     bp.constructor(f!(crate::overridden_singleton), Lifecycle::Singleton);
+  [31m│[0m     · [35;1m                   ───────────────┬───────────────[0m
+  [31m│[0m     ·                                   [35;1m╰── [35;1mA constructor was registered here[0m[0m
+  [31m│[0m  [2m30[0m │     bp.route(GET, "/child", f!(crate::handler));
+  [31m│[0m     ╰────
+  [31m│[0m [36m  help: [0mIf you want a single instance of `u64`, remove constructors for
+  [31m│[0m         `u64` until there is only one left.
+  [31m│[0m         If you want different instances, consider creating separate newtypes
+  [31m│[0m         that wrap a `u64`.

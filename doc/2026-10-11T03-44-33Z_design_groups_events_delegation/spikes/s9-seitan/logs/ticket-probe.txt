@@ -1,0 +1,12 @@
+1. ticket string (124 chars): endpointadveu3dd4kofecv66vihwezoyx4zkr3wv27l464siipou2iui3jcyaqadruhi5dqom5c6l3smvwgc6jomv4gc3lqnrss45dfon2c4lybadaaaaqk2era
+   postcard payload (72 bytes): 00ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c02001c68747470733a2f2f72656c61792e6578616d706c652e746573742e2f0100c000020ad122
+   layout (iroh-tickets endpoint.rs): variant 00 | EndpointId 32 bytes | addr count | addrs
+   fields: no signature, no expiry, no extension field
+2. round trip equal: true
+   leaks: id=ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+          transport Relay(https://relay.example.test./)
+          transport Ip(192.0.2.10:4433)
+3. token appended after the payload (90 bytes):
+   parses: true  addr unchanged: true  token recovered by any API: no (no accessor exists)
+4. EndpointId swapped inside the string: parses = true, id now 1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca
+5. parsed twice, same address: true

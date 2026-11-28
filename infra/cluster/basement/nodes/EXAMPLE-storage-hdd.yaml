@@ -1,0 +1,12 @@
+# EXAMPLE NODE — NOT A REAL MACHINE. Do not apply. Placeholder serials only.
+# Drive class: storage node, 990 boot NVMe plus 16 TB helium HDDs. The HDDs are data
+# disks and are NOT in this file: UserVolumeConfig documents are a #1813 storage
+# decision and are not part of this skeleton (see infra/cluster/basement/README.md).
+# talm: nodes=["192.0.2.23"], endpoints=["192.0.2.23"], templates=["templates/controlplane.yaml"]
+# Discovered hardware (example values):
+#   disk /dev/nvme0n1  serial=EXAMPLE-990-0003  model="Samsung SSD 990 PRO 2TB"  size=2TB  transport=nvme
+#   disk /dev/sda      wwid=naa.EXAMPLE0000000003  model="WDC WD160EDGZ"  size=16TB  transport=sata
+machine:
+  install:
+    diskSelector:
+      serial: "EXAMPLE-990-0003"

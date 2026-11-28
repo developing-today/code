@@ -1,0 +1,1879 @@
+#!/usr/bin/env python3
+"""Tests for claimant.py's live launch and supervision steps (#6865).
+
+Run:  python3 -m unittest pm-stack/opencode-claimant/test_claimant.py
+
+The transport (curl to the OpenCode server) and the queue CLI
+(repo-queue) are stubbed at subprocess.run, poll discovery is
+stubbed at claimant.run_poll, and supervision's claimed rows are
+stubbed at the poll module's fetch_claimed_rows, so the suite
+exercises the real step logic with no server and no queue:
+
+- launch_step launches, binds and prompts a valid handed_off
+  candidate; a prompt that cannot be landed flags the launch entry
+  instead of reading as a clean launch;
+- launch_step in shadow mode mutates nothing and records the
+  would-launch window as skips (#7366);
+- launch_step records a skip (not silence) when a candidate's state
+  changes before launch, and main() writes those skips into the
+  fires.jsonl entry;
+- launch_step stops at the provider-capacity wall (#8166): a
+  tier_limit_exceeded answer from session create or the prompt POST
+  closes the gate for the rest of the fire, a prompt-walled launch
+  is rolled back (delete + recovery bind) so it does not stand as
+  an attempt-consuming launch, and main() records the verbatim
+  provider error under the fires entry's provider_wall key;
+- a live fire that finds the cap saturated with launchable
+  candidates waiting hands the next candidate back in the same
+  fire (#1187 criterion 2): claimed by the claimant, parked with
+  reason `executor-saturated` and the broker's capacity
+  ready-condition, and noted on its issue; shadow fires and
+  failed hand-back claims mutate nothing;
+- supervision_step recovers a bound task whose session is gone from
+  the server (error body, zero messages) via delete + recovery bind;
+- supervision_step treats an unreadable message read as UNKNOWN, not
+  zero: no delete, no rebind, and a session that does have messages
+  is never recovered; recovery also requires an expired lease (#3026).
+
+Negative control (#6865 acceptance): this suite fails against the
+pre-fix claimant.py (65beb42c1a, unimported requests/subprocess) and
+against the 307-line Slice-1 shadow stub that replaced it
+(d0703e82ce) — neither can launch or recover anything in live mode.
+"""
+
+import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+import time
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
+
+_spec = importlib.util.spec_from_file_location(
+    "claimant", Path(__file__).resolve().parent / "claimant.py"
+)
+claimant = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(claimant)
+
+
+class Result:
+    """Minimal subprocess.run stand-in."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def make_fake_run(
+    binds,
+    *,
+    session_get="gone",
+    session_get_status=None,
+    messages="[]",
+    messages_status=200,
+    prompt_status=200,
+    create_status=200,
+    delete_status=200,
+    prompts=None,
+    deletes=None,
+):
+    """Build a subprocess.run stub dispatching on argv shape.
+
+    binds: list collecting every repo-queue bind argv.
+    session_get: "gone" -> the session GET answers 404 with an error
+    body (what the v2 server prints for a missing session); "active"
+    -> a live session. session_get_status overrides the status.
+    messages / messages_status: body and HTTP status of the message
+    read (GET /message).
+    prompt_status / create_status / delete_status: HTTP status for
+    the prompt POST, the session create POST and the DELETE.
+    prompts / deletes: optional lists collecting those argv.
+
+    Every curl reply carries its HTTP status as the trailing line
+    (the claimant's one transport asks curl for exactly that with
+    -w), because the verified-read contract judges a reply by
+    status + body shape, never by curl's exit code - so this stub
+    answers rc 0 even for a 401, exactly as curl -s does.
+    """
+
+    def reply(body, status):
+        return Result(0, body + "\n" + str(status))
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        joined = " ".join(argv)
+        if "repo-queue" in argv[0] and "bind" in argv:
+            binds.append(cmd)
+            return Result(0, "{}")
+        if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
+            if deletes is not None:
+                deletes.append(cmd)
+            return reply("", delete_status)
+        if argv[0] == "curl" and joined.rstrip().endswith("/message"):
+            return reply(messages, messages_status)
+        if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
+            if prompts is not None:
+                prompts.append(cmd)
+            return reply("", prompt_status)
+        if argv[0] == "curl" and "-X" in argv and "POST" in argv:
+            if 200 <= create_status < 300:
+                body = json.dumps(
+                    {
+                        "id": "ses_new1",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    }
+                )
+            else:
+                body = json.dumps(
+                    {
+                        "_tag": "UnauthorizedError",
+                        "message": "Authentication required",
+                    }
+                )
+            return reply(body, create_status)
+        if argv[0] == "curl" and "/api/session/" in joined:
+            status = session_get_status
+            if status is None:
+                status = 404 if session_get == "gone" else 200
+            if 200 <= status < 300:
+                body = json.dumps(
+                    {
+                        "id": "ses_gone",
+                        "time": {"created": 1, "updated": 2},
+                    }
+                )
+            elif status == 401:
+                body = json.dumps(
+                    {
+                        "_tag": "UnauthorizedError",
+                        "message": "Authentication required",
+                    }
+                )
+            else:
+                body = json.dumps({"error": "session not found"})
+            return reply(body, status)
+        return Result(0, "")
+
+    return fake_run
+
+
+BOUND_ROW = {
+    "id": 4242,
+    "attempts": 0,
+    "max_attempts": 5,
+    "lease_until": "2020-01-01T00:00:00Z",
+    "progress": {"lane": "opencode", "session_id": "ses_gone"},
+}
+
+
+def stub_claimed_rows(rows, sessions=None, active_ids=None):
+    """Patch the poll module's broker read (supervision's row source)
+    to serve `rows` for the first queue and [] for the rest. Also
+    stubs supervision's poll session-list / active-set reads
+    (#8038): by default both are unreadable (None), which fails
+    stuck-bound selection closed exactly as poll.py requires; tests
+    for the stuck-bound path pass concrete sessions / active_ids."""
+    poll_mod = claimant._load_poll_module()
+
+    def fake_fetch(queue):
+        return list(rows) if queue == claimant.QUEUES[0] else []
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch)
+    )
+    stack.enter_context(
+        patch.object(claimant, "_fetch_sessions", return_value=sessions)
+    )
+    stack.enter_context(
+        patch.object(claimant, "_fetch_active_ids", return_value=active_ids)
+    )
+    return stack
+
+
+CANDIDATE = {
+    "id": 777,
+    "lane": "opencode",
+    "session_id": None,
+    "stage": "handed_off",
+    "worker_id": "repo-worker-code",
+    "issue": "#1234",
+    "packet": {},
+}
+
+
+class TestLaunchStep(unittest.TestCase):
+    def test_live_mid_loop_cap_exhaustion_hands_back_next_candidate(self):
+        # The oracle is the real launch/hand-back subprocess boundary:
+        # with one launch slot and two candidates, the second task must
+        # be claimed, parked as executor-saturated and noted, not merely
+        # left as a cap_saturated fire-log skip.
+        binds = []
+        calls = empty_calls()
+        first = dict(
+            CANDIDATE,
+            id=777,
+            stage="launch_failed",
+            issue="#1187",
+            packet={"repo": "developing-today/code", "issue": {"number": 1187}},
+        )
+        second = dict(
+            first,
+            id=889,
+            issue="#1188",
+            packet={"repo": "developing-today/code", "issue": {"number": 1188}},
+        )
+        base_fake = make_fake_run(binds)
+        handback_fake = make_handback_run(calls)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
+                return handback_fake(cmd, **kwargs)
+            if argv and argv[0] == "gh":
+                calls["gh"].append(argv)
+                if "view" in argv:
+                    return Result(0, "[]")
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                return_value={"candidates": [first, second]},
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            hand_back = []
+            launched, skips = claimant.launch_step(
+                "live",
+                1,
+                fire_start_candidates=[first, second],
+                hand_back_out=hand_back,
+            )
+
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 777)
+        self.assertIn({"task_id": 889, "reason": "cap_saturated"}, skips)
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "889")
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("executor-saturated", " ".join(calls["park"][0]))
+        self.assertTrue(
+            any(
+                "handed back" in argv[argv.index("--body") + 1]
+                for argv in calls["gh"]
+                if "--body" in argv
+            )
+        )
+        self.assertEqual(
+            hand_back,
+            [
+                {
+                    "task_id": 889,
+                    "parked": True,
+                    "noted": True,
+                    "reason": "executor-saturated",
+                }
+            ],
+        )
+
+    def test_valid_candidate_launches_and_binds(self):
+        binds = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 777)
+        self.assertEqual(launched[0]["session_id"], "ses_new1")
+        self.assertEqual(len(binds), 1)
+        bind_argv = binds[0]
+        # Real subprocess.run rejects non-str argv: every part is a str
+        # and the task id arrives stringified.
+        self.assertTrue(all(isinstance(part, str) for part in bind_argv))
+        self.assertIn("777", bind_argv)
+        self.assertIn("ses_new1", bind_argv)
+
+    def test_sink_candidate_is_collected_without_naming_its_id(self):
+        # #8097 Rule 1: a sink (status 'handed_off', #8234)
+        # candidate is collected via the broker-picked handoff
+        # claim — no argv ever names the task id — and then
+        # launches exactly like a claimed one.
+        binds = []
+        claims = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "claim" in argv:
+                claims.append(argv)
+                return Result(0, json.dumps({"id": 888, "status": "claimed"}))
+            return base_fake(cmd, **kwargs)
+
+        parked = dict(CANDIDATE, id=888, status="handed_off", queue=claimant.QUEUES[0])
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(parked)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 888)
+        self.assertEqual(len(claims), 1)
+        claim_argv = claims[0]
+        self.assertIn("--handoff", claim_argv)
+        self.assertIn("--platform", claim_argv)
+        self.assertIn("openchamber", claim_argv)
+        self.assertNotIn("--task", claim_argv)
+        self.assertNotIn("888", claim_argv)
+
+    def test_collect_handed_offs_drains_until_the_broker_has_none(self):
+        # The collection loop claims broker-picked handoffs until
+        # the broker answers {"task": null}; every claim is a
+        # no-id handoff claim under the openchamber family.
+        rows = [
+            Result(0, json.dumps({"id": 501, "status": "claimed"})),
+            Result(0, json.dumps({"id": 502, "status": "claimed"})),
+            Result(0, json.dumps({"task": None})),
+        ]
+        argvs = []
+
+        def fake_run(cmd, **kwargs):
+            argvs.append([str(part) for part in cmd])
+            return rows[len(argvs) - 1]
+
+        with patch.object(claimant.subprocess, "run", fake_run):
+            collected = claimant._collect_handed_offs("q1", 5)
+        self.assertEqual(sorted(collected), [501, 502])
+        self.assertEqual(len(argvs), 3)
+        for argv in argvs:
+            self.assertIn("--handoff", argv)
+            self.assertNotIn("--task", argv)
+
+    def test_collection_claim_carries_the_launch_model_stamp(self):
+        # #8176: the sink-collection claim stamps the model this
+        # claimant launches every collected task under, so the
+        # task row records the model that will work it (a later
+        # stamped claim overwrites with its own session's model).
+        argvs = []
+
+        def fake_run(cmd, **kwargs):
+            argvs.append([str(part) for part in cmd])
+            return Result(0, json.dumps({"task": None}))
+
+        with patch.object(claimant.subprocess, "run", fake_run):
+            claimant._collect_handed_offs("q1", 1)
+        self.assertEqual(len(argvs), 1)
+        argv = argvs[0]
+        self.assertEqual(
+            argv[argv.index("--model-provider") + 1], claimant.LAUNCH_MODEL_PROVIDER
+        )
+        self.assertEqual(argv[argv.index("--model-id") + 1], claimant.LAUNCH_MODEL_ID)
+        self.assertEqual(claimant.LAUNCH_MODEL_PROVIDER, "opencode-route")
+        self.assertEqual(claimant.LAUNCH_MODEL_ID, "workhorse")
+
+    def test_vanished_candidate_is_a_recorded_skip(self):
+        calls = {"n": 0}
+
+        def poll_stub(**_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"candidates": [dict(CANDIDATE)]}
+            return {"candidates": []}
+
+        with (
+            patch.object(claimant, "run_poll", side_effect=poll_stub),
+            patch.object(claimant.subprocess, "run", make_fake_run([])),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "task_state_changed"}])
+
+    def test_shadow_mode_launches_nothing(self):
+        # #7366: a shadow fire must not create, bind or prompt — the
+        # candidate is reported as a would-launch skip only.
+        binds = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            launched, skips = claimant.launch_step("shadow", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "shadow_would_launch"}])
+        self.assertEqual(binds, [])
+
+    def test_failed_prompt_flags_the_launch(self):
+        # #7356: the prompt POST is rejected and no message landed —
+        # the launch is recorded, but flagged, never read as clean.
+        binds = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, prompt_status=500)
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0].get("prompt_failed"), True)
+        self.assertEqual(len(binds), 1)
+
+    def test_landed_prompt_despite_post_error_is_clean(self):
+        # The POST's response was lost but the message landed: the
+        # reconcile read sees it and no resend/flag happens.
+        binds = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, prompt_status=500, messages='[{"id": "m1"}]'),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertNotIn("prompt_failed", launched[0])
+
+    def test_unreadable_session_is_never_resent(self):
+        # The POST failed and the reconcile read is unusable (error
+        # body, not a message list): delivery state is unknown, so
+        # no second POST may go out — the worker might be executing
+        # the first one. The launch is flagged instead.
+        binds = []
+        prompts = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(
+                    binds,
+                    prompt_status=500,
+                    messages='{"error": "boom"}',
+                    prompts=prompts,
+                ),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0].get("prompt_failed"), True)
+        self.assertEqual(len(prompts), 1)
+
+    def test_create_401_skip_names_the_transport_failure(self):
+        # #7367 acceptance: with the transport returning 401 for
+        # POST /api/session, the skip reason names the auth/transport
+        # failure - never session_wrong_location, which blamed a
+        # session that was never created.
+        binds = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, create_status=401)
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(len(skips), 1)
+        self.assertIn("401", skips[0]["reason"])
+        self.assertNotIn("session_wrong_location", skips[0]["reason"])
+        self.assertEqual(binds, [])
+
+
+WALL_ERROR = (
+    "[code=tier_limit_exceeded] membership concurrency limit exceeded: "
+    "11/10 resets 2026-11-10T15:12:00Z"
+)
+WALL_BODY = json.dumps({"error": {"message": WALL_ERROR}})
+
+
+def make_wall_run(binds, *, wall_on, creates=None, deletes=None):
+    """Build a subprocess.run stub like make_fake_run, except the
+    named launch surface ("create" or "prompt") answers 400 with
+    the provider's tier_limit_exceeded body (#8166) - the shape the
+    Workhorse route returned in the 2026-11-10 fires."""
+
+    base = make_fake_run(binds, deletes=deletes)
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        joined = " ".join(argv)
+        if (
+            argv[0] == "curl"
+            and "POST" in argv
+            and joined.rstrip().endswith("/api/session")
+        ):
+            if creates is not None:
+                creates.append(cmd)
+            if wall_on == "create":
+                return Result(0, WALL_BODY + "\n400")
+        if (
+            argv[0] == "curl"
+            and wall_on == "prompt"
+            and joined.rstrip().endswith("/prompt")
+        ):
+            return Result(0, WALL_BODY + "\n400")
+        return base(cmd, **kwargs)
+
+    return fake_run
+
+
+class TestProviderWallGate(unittest.TestCase):
+    def test_create_wall_stops_the_fire_and_records_it(self):
+        # #8166: the first candidate's session create is answered
+        # with the provider wall - nothing launches, the second
+        # candidate is never even attempted (one create total), and
+        # the fire record carries the wall verbatim with the route
+        # and serving leaf.
+        binds = []
+        creates = []
+        two = [dict(CANDIDATE), dict(CANDIDATE, id=778)]
+        with (
+            patch.object(claimant, "run_poll", return_value={"candidates": two}),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="create", creates=creates),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            skips,
+            [
+                {"task_id": 777, "reason": "provider_wall"},
+                {"task_id": 778, "reason": "provider_wall"},
+            ],
+        )
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(binds, [])
+        self.assertEqual(
+            claimant._fire_provider_wall,
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+    def test_prompt_wall_rolls_back_the_launch(self):
+        # #8166 item 3: create + bind succeed but the prompt POST is
+        # answered with the wall - the session's first step died on
+        # provider capacity, so the launch is rolled back (verified
+        # delete + recovery bind) instead of standing as a launched
+        # session consuming the task's attempt.
+        binds = []
+        deletes = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="prompt", deletes=deletes),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "provider_wall"}])
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(binds), 2)
+        recovery_argv = [str(part) for part in binds[1]]
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_PROVIDER_WALL, recovery_argv)
+        self.assertEqual(claimant._fire_provider_wall["error"], WALL_ERROR)
+
+    def test_main_records_provider_wall_in_fires_entry(self):
+        # #8166 item 2: a walled fire's log line carries the
+        # provider_wall entry - verbatim error, route, serving
+        # leaf - next to zero launches, so the record distinguishes
+        # "nowhere to run them" from "no candidates".
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
+                patch.object(
+                    claimant.subprocess,
+                    "run",
+                    make_wall_run([], wall_on="create"),
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["sessions_launched"], [])
+        self.assertEqual(
+            entries[0]["provider_wall"],
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+
+class TestSupervisionStep(unittest.TestCase):
+    def test_gone_zero_message_session_is_recovered(self):
+        binds = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
+        self.assertEqual(len(binds), 1)
+        bind_argv = [str(part) for part in binds[0]]
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, bind_argv)
+        self.assertIn("4242", bind_argv)
+
+    def test_active_session_is_left_bound(self):
+        binds = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, session_get="active")
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+
+    def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
+        binds = []
+        deletes = []
+        with (
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
+            recovered = claimant._recover_error_stopped("ses_error", 4242, {})
+        self.assertTrue(recovered)
+        self.assertEqual(deletes, ["ses_error"])
+        self.assertEqual(len(binds), 1)
+        bind_argv = [str(part) for part in binds[0]]
+        self.assertIn("4242", bind_argv)
+        self.assertIn("ses_error", bind_argv)
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ERROR_STOPPED, bind_argv)
+
+    def test_supervision_requeues_expired_error_stopped_bound_task(self):
+        binds = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_sessions", return_value=[]),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(claimant, "_delete_session", return_value=True),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered[0]["reason"], "error_stopped")
+        self.assertEqual(recovered[0]["outcome"], "failure")
+        self.assertEqual(recovered[0]["binding"]["task_id"], 4242)
+        self.assertEqual(recovered[0]["action"], "requeued_retry")
+
+    def test_unreadable_messages_are_unknown_not_zero(self):
+        # #3026: the old endpoint 404s with an empty body, and the old
+        # read parsed that as []. Unknown must leave the task bound:
+        # no DELETE, no recovery bind, no candidate.
+        for status, body in (
+            (404, ""),
+            (200, ""),
+            (401, '{"_tag": "UnauthorizedError"}'),
+        ):
+            with self.subTest(status=status, body=body):
+                binds = []
+                deletes = []
+                with (
+                    stub_claimed_rows([BOUND_ROW]),
+                    patch.object(
+                        claimant.subprocess,
+                        "run",
+                        make_fake_run(
+                            binds,
+                            messages=body,
+                            messages_status=status,
+                            deletes=deletes,
+                        ),
+                    ),
+                ):
+                    recovered = claimant.supervision_step("live")
+                self.assertEqual(recovered, [])
+                self.assertEqual(binds, [])
+                self.assertEqual(deletes, [])
+
+    def test_wrapped_empty_message_list_is_recovered(self):
+        # The live 200 shape: {"data": [...], "cursor": {...}}. A
+        # dict wrapping a confirmed empty list is still zero messages.
+        binds = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, messages='{"data": [], "cursor": {}}'),
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
+        self.assertEqual(len(binds), 1)
+
+    def test_bound_session_with_messages_is_not_recovered(self):
+        binds = []
+        deletes = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, messages='[{"id": "m1"}]', deletes=deletes),
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unexpired_lease_is_not_recovered(self):
+        # A live lease is still owned by a worker: recovery would
+        # double-launch over it even when the session looks gone.
+        row = dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z")
+        binds = []
+        deletes = []
+        with (
+            stub_claimed_rows([row]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_unparseable_lease_is_not_recovered(self):
+        # A lease we cannot read is a fact we do not have; it never
+        # counts as expired.
+        row = dict(BOUND_ROW, lease_until="not-a-timestamp")
+        binds = []
+        deletes = []
+        with (
+            stub_claimed_rows([row]),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_shadow_mode_recovers_nothing(self):
+        with patch.object(claimant.subprocess, "run", make_fake_run([])):
+            self.assertEqual(claimant.supervision_step("shadow"), [])
+
+    def test_session_get_401_is_unknown_not_gone(self):
+        # #7367: a 401 session GET is an unverified read. It must
+        # never read as "gone": no recovery candidate, no DELETE,
+        # no binding clear - the task stays bound.
+        binds = []
+        deletes = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, session_get_status=401, deletes=deletes),
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+        self.assertEqual(deletes, [])
+
+    def test_delete_401_never_clears_the_binding(self):
+        # #7367: the session is verifiably gone with zero messages,
+        # but the DELETE answers 401 - the delete did not happen,
+        # so the recovery bind that clears the binding must not run.
+        binds = []
+        deletes = []
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, delete_status=401, deletes=deletes),
+            ),
+        ):
+            claimant.supervision_step("live")
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(binds, [])
+
+
+class TestMainFireLog(unittest.TestCase):
+    def test_main_records_launch_skips_in_fires_entry(self):
+        calls = {"n": 0}
+
+        def poll_stub(**_kwargs):
+            calls["n"] += 1
+            # The gate (call 1) sees the candidate and main threads
+            # it into launch_step as the fire-start snapshot (#8038);
+            # the launch re-verification poll (call 2) finds it gone
+            # -> a recorded skip.
+            if calls["n"] <= 1:
+                return {"candidates": [dict(CANDIDATE)]}
+            return {"candidates": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "run_poll", side_effect=poll_stub),
+                stub_claimed_rows([]),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
+                patch.object(claimant.subprocess, "run", make_fake_run([])),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["sessions_launched"], [])
+        self.assertEqual(entries[0]["candidates_seen"], [dict(CANDIDATE)])
+        self.assertEqual(
+            entries[0]["skips"], [{"task_id": 777, "reason": "task_state_changed"}]
+        )
+
+
+class TestSingleInstanceLock(unittest.TestCase):
+    """#8039: a second fire while one holds the lock exits early and
+    logs already_running, touching nothing else."""
+
+    def test_second_fire_exits_with_already_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire") as fire,
+            ):
+                held = claimant.acquire_fire_lock()
+                self.assertIsNotNone(held)
+                try:
+                    self.assertEqual(claimant.main(), 0)
+                finally:
+                    held.close()
+                fire.assert_not_called()
+                entries = [json.loads(l) for l in fires.read_text().splitlines() if l]
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["skips"], [{"reason": "already_running"}])
+                self.assertIsNone(entries[0]["candidates_seen"])
+                self.assertIsNone(entries[0]["cap_room"])
+
+    def test_lock_is_released_after_a_fire(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", state_dir / "fires.jsonl"),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", return_value=0) as fire,
+            ):
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(fire.call_count, 2)
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again, "the lock is free once fires finish")
+                again.close()
+
+    def test_lock_is_released_when_a_fire_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", side_effect=RuntimeError("boom")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    claimant.main()
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again)
+                again.close()
+
+
+class TestCapUnknownFireLog(unittest.TestCase):
+    def test_cap_unknown_logs_cap_room_null_not_sentinel(self):
+        # #7770 Phase 4 audit: cap_step's -1 is an internal unknown
+        # sentinel, not a measurement; the fire log must record
+        # cap_room null (unknown), never -1 (#7732's rule).
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant, "get_active_root_session_count", return_value=-1
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant, "fire_opencode_working_hook") as hook,
+            ):
+                self.assertEqual(claimant.main(), 1)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_unknown"}])
+        self.assertEqual(hook.call_count, 1)
+        self.assertEqual(hook.call_args.args[0], "lane-launch")
+
+
+class TestGateUnknownFireLog(unittest.TestCase):
+    def test_gate_failure_logs_candidates_unknown_not_empty(self):
+        # #7770 Phase 4 audit: when poll.py itself fails, the gate
+        # exit must record candidates_seen null (discovery UNKNOWN)
+        # — [] would state a verified empty queue that was never
+        # read (#7770's unknown rule, #7732's candidates_seen point).
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", side_effect=RuntimeError("poll blew up")
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 1)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["candidates_seen"])
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "gate_unknown"}])
+
+
+class TestGateExitFireLog(unittest.TestCase):
+    def test_gate_exit_logs_cap_room_null_not_zero(self):
+        # #7732: a fire that exits at the gate never ran cap_step, so
+        # its cap_room is unknown (null) - a hardcoded 0 would read as
+        # a saturated fleet in fires.jsonl.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="shadow"),
+                patch.object(claimant, "run_poll", return_value={"candidates": []}),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["cap_room"])
+        self.assertEqual(entries[0]["skips"], [{"reason": "no_candidates"}])
+
+
+class TestGateQueueReadFailed(unittest.TestCase):
+    """#8042: when poll could not read a queue, the gate is UNKNOWN
+    (None -> gate_unknown in the fire log), never a false
+    no_candidates verdict on an unread queue."""
+
+    def test_failed_read_with_no_candidates_is_unknown(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
+            self.assertIsNone(claimant.gate_step())
+
+    def test_verified_empty_queue_is_still_no_candidates(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {"repo-health-code-pilot": {"read_ok": True, "read_errors": {}}},
+        }
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
+            self.assertFalse(claimant.gate_step())
+
+    def test_verified_candidate_wins_despite_another_queues_failed_read(self):
+        poll_data = {
+            "candidates": [dict(CANDIDATE)],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
+            self.assertTrue(claimant.gate_step())
+
+    def test_main_logs_gate_unknown_on_failed_read(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "run_poll", return_value=poll_data),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 1)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["skips"], [{"reason": "gate_unknown"}])
+
+
+class TestBindFailedRecordsError(unittest.TestCase):
+    """#8042: a bind_failed skip must carry the bind error text, so a
+    repeat bind loop says which precondition failed."""
+
+    def test_bind_failure_skip_includes_first_stderr_line(self):
+        binds = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(cmd)
+                return Result(
+                    1,
+                    "",
+                    "bind failed: task not claimed with a live lease\nsecond line ignored",
+                )
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(launched, [])
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(skips[0]["task_id"], 777)
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(
+            skips[0]["error"], "bind failed: task not claimed with a live lease"
+        )
+
+    def test_bind_failure_deletes_the_created_session(self):
+        """A refused bind leaves the new session bound to nothing.
+        The created session must be deleted before the skip, or the
+        fire orphans an unowned root and leaks a cap slot. #8042
+        added the error text and dropped this delete; the regression
+        went unnoticed because nothing asserted it."""
+        binds = []
+        deletes = []
+        base_fake = make_fake_run(binds, deletes=deletes)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(cmd)
+                return Result(1, "", "bind failed: already bound to session ses_old")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(len(deletes), 1, "created session was not deleted")
+        self.assertIn("ses_new1", " ".join(str(p) for p in deletes[0]))
+
+
+class TestClaimant8038(unittest.TestCase):
+    """#8038: supervision consumes poll.is_stuck_bound, step-1e
+    attempts-exhausted terminal fail, candidates_seen threading,
+    gate health, launch agent-note + same-fire exclusion."""
+
+    STUCK_SESSION = {"id": "ses_gone", "time": {"created": 1, "updated": 2}}
+
+    def test_stuck_bound_session_is_recovered_via_poll_selection(self):
+        binds = []
+        with (
+            stub_claimed_rows(
+                [BOUND_ROW], sessions=[self.STUCK_SESSION], active_ids=set()
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, session_get="active"),
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [{"task_id": 4242, "session_id": "ses_gone", "reason": "zero_message"}],
+        )
+        self.assertEqual(len(binds), 1)
+
+    def test_poll_vetoes_leave_the_task_bound(self):
+        now_ms = int(time.time() * 1000)
+        cases = {
+            "terminal_marker": (
+                [
+                    dict(
+                        self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3}
+                    )
+                ],
+                set(),
+                BOUND_ROW,
+            ),
+            "outcome_marker": (
+                [dict(self.STUCK_SESSION, outcome="completed")],
+                set(),
+                BOUND_ROW,
+            ),
+            "in_active_set": ([self.STUCK_SESSION], {"ses_gone"}, BOUND_ROW),
+            "recent_activity": (
+                [{"id": "ses_gone", "time": {"created": now_ms, "updated": now_ms}}],
+                set(),
+                BOUND_ROW,
+            ),
+            "live_lease": (
+                [self.STUCK_SESSION],
+                set(),
+                dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z"),
+            ),
+            "unreadable_active_set": ([self.STUCK_SESSION], None, BOUND_ROW),
+        }
+        for name, (sessions, active_ids, row) in cases.items():
+            with self.subTest(case=name):
+                binds = []
+                with (
+                    stub_claimed_rows([row], sessions=sessions, active_ids=active_ids),
+                    patch.object(
+                        claimant.subprocess,
+                        "run",
+                        make_fake_run(binds, session_get="active"),
+                    ),
+                ):
+                    recovered = claimant.supervision_step("live")
+                self.assertEqual(recovered, [])
+                self.assertEqual(binds, [])
+
+    def _fail_capture(self, binds):
+        base_fake = make_fake_run(binds)
+        fails = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "fail" in argv:
+                fails.append(cmd)
+                return Result(0, "{}")
+            return base_fake(cmd, **kwargs)
+
+        return fake_run, fails
+
+    def test_attempts_exhausted_gone_session_is_terminally_failed(self):
+        row = dict(BOUND_ROW, attempts=5, max_attempts=5, worker_id="repo-worker-code")
+        binds = []
+        fake_run, fails = self._fail_capture(binds)
+        with (
+            stub_claimed_rows([row]),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "attempts_exhausted",
+                }
+            ],
+        )
+        self.assertEqual(binds, [])
+        self.assertEqual(len(fails), 1)
+        argv = [str(part) for part in fails[0]]
+        self.assertIn(
+            "bound session ses_gone unavailable without terminal outcome; attempts exhausted",
+            argv,
+        )
+        self.assertIn("repo-worker-code", argv)
+        execution = json.loads(argv[argv.index("--execution") + 1])
+        self.assertEqual(
+            execution["fallback_reason"], "launch_failed_attempts_exhausted"
+        )
+        self.assertEqual(execution["session_id"], "ses_gone")
+        self.assertEqual(execution["lane"], "opencode")
+
+    def test_attempts_exhausted_stuck_session_is_failed_after_delete(self):
+        row = dict(BOUND_ROW, attempts=5, max_attempts=5, worker_id="repo-worker-code")
+        binds = []
+        deletes = []
+        base_fake = make_fake_run(binds, session_get="active", deletes=deletes)
+        fails = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "fail" in argv:
+                fails.append(cmd)
+                return Result(0, "{}")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            stub_claimed_rows([row], sessions=[self.STUCK_SESSION], active_ids=set()),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(fails), 1)
+        self.assertEqual(recovered[0]["reason"], "attempts_exhausted")
+
+    def test_gate_records_health_and_snapshot(self):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
+            self.assertTrue(claimant.gate_step())
+        self.assertEqual(claimant._fire_health, "health-test-line")
+        self.assertEqual(claimant._fire_candidates, [dict(CANDIDATE)])
+
+    def test_cap_exit_fire_log_carries_candidates_and_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant,
+                    "run_poll",
+                    return_value={"candidates": [dict(CANDIDATE)]},
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant, "get_active_root_session_count", return_value=36
+                ),
+                patch.object(claimant.subprocess, "run", make_fake_run([])),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["candidates_seen"], [dict(CANDIDATE)])
+        self.assertEqual(entries[0]["queue_health"], "health-test-line")
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_saturated"}])
+
+    def test_recovered_this_fire_is_excluded_from_launch(self):
+        with patch.object(
+            claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+        ):
+            launched, skips = claimant.launch_step(
+                "live",
+                3,
+                exclude_task_ids=[777],
+                fire_start_candidates=[dict(CANDIDATE)],
+            )
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            skips,
+            [{"task_id": 777, "reason": "recovered_this_fire_next_fire_only"}],
+        )
+
+    def test_launch_posts_agent_note_and_inlines_runbook(self):
+        binds = []
+        prompts = []
+        notes = []
+        base_fake = make_fake_run(binds, prompts=prompts)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if argv[1:3] == ["gh", "sync-labels"]:
+                # The step-4a2 held-label read: no labels at all.
+                return Result(0, "[]")
+            if argv[1:3] == ["gh", "sync-comment"]:
+                notes.append(cmd)
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        candidate = dict(
+            CANDIDATE,
+            issue_number=1234,
+            packet={
+                "repo": "developing-today/code",
+                "issue": {"number": 1234},
+            },
+        )
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["agent_note"], "posted")
+        self.assertEqual(len(notes), 1)
+        note_argv = [str(part) for part in notes[0]]
+        body = note_argv[note_argv.index("--body") + 1]
+        self.assertIn("agent-note:v1", body)
+        self.assertIn("handed off", body)
+        self.assertIn("777", body)
+        self.assertIn("ses_new1", body)
+        prompt_argv = [str(part) for part in prompts[0]]
+        prompt_text = " ".join(prompt_argv)
+        self.assertIn("QUEUE RUNBOOK (step 4d, inlined)", prompt_text)
+        self.assertIn("heartbeat at least every 10 minutes", prompt_text)
+
+
+HANDBACK_CANDIDATE = {
+    "id": 888,
+    "queue": "repo-health-code-pilot",
+    "lane": "opencode",
+    "session_id": None,
+    "stage": "handed_off",
+    "worker_id": "repo-worker-code",
+    "issue": "#1187",
+    "packet": {"repo": "developing-today/code", "issue": {"number": 1187}},
+}
+
+
+def make_handback_run(calls, *, claim_row="candidate", park_rc=0):
+    """subprocess.run stub for hand-back fires.
+
+    calls collects argv lists under "claim", "park", "gh" and
+    "other". claim_row: "candidate" answers the targeted claim with
+    the claimed row for the --task id; "none" answers
+    {"task": null} (nothing claimed); "other" answers a row whose
+    id is not the candidate's.
+    """
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "repo-queue" in argv[0] and "claim" in argv:
+            calls["claim"].append(argv)
+            if claim_row == "none":
+                return Result(0, json.dumps({"task": None}))
+            task_id = int(argv[argv.index("--task") + 1])
+            if claim_row == "other":
+                task_id += 1000
+            return Result(0, json.dumps({"id": task_id, "status": "claimed"}))
+        if "repo-queue" in argv[0] and "park" in argv:
+            calls["park"].append(argv)
+            return Result(park_rc, "{}")
+        if argv[1:3] == ["gh", "sync-comment"]:
+            calls["gh"].append(argv)
+            return Result(0, "")
+        calls["other"].append(argv)
+        return Result(0, "")
+
+    return fake_run
+
+
+def empty_calls():
+    return {"claim": [], "park": [], "gh": [], "other": []}
+
+
+class TestHandBackStep(unittest.TestCase):
+    """#1187 criterion 2 (hand-back): a live fire that finds the
+    session cap saturated with launchable candidates waiting hands
+    the NEXT candidate back in the same fire - claimed by the
+    claimant, parked with reason `executor-saturated` and the
+    broker's capacity ready-condition, and noted on its issue -
+    instead of leaving it silently queued with the only record in
+    the local fire log. The oracle is the argv sequence at the
+    subprocess boundary plus the fires.jsonl entry. Shadow fires
+    mutate nothing, and a hand-back whose claim does not land
+    parks nothing."""
+
+    def _run_main(self, mode, candidates, fake_run, active=36):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value=mode),
+                patch.object(
+                    claimant,
+                    "run_poll",
+                    return_value={"candidates": candidates},
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant,
+                    "get_active_root_session_count",
+                    return_value=active,
+                ),
+                patch.object(claimant.subprocess, "run", fake_run),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                rc = claimant.main()
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        return rc, entries
+
+    def test_live_saturated_fire_hands_back_next_candidate(self):
+        calls = empty_calls()
+        second = dict(HANDBACK_CANDIDATE, id=889, issue="#1188")
+        rc, entries = self._run_main(
+            "live",
+            [dict(HANDBACK_CANDIDATE), second],
+            make_handback_run(calls),
+        )
+        self.assertEqual(rc, 0)
+        # Exactly one targeted claim, for the first candidate only.
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "888")
+        self.assertEqual(
+            claim_argv[claim_argv.index("--worker") + 1], claimant.CLAIMANT_WORKER
+        )
+        self.assertEqual(claim_argv[claim_argv.index("--platform") + 1], "openchamber")
+        # Exactly one park: the claimed task, reason class
+        # executor-saturated, capacity ready-condition.
+        self.assertEqual(len(calls["park"]), 1)
+        park_argv = calls["park"][0]
+        self.assertIn("888", park_argv)
+        self.assertIn("executor-saturated", park_argv[park_argv.index("--reason") + 1])
+        self.assertEqual(
+            json.loads(park_argv[park_argv.index("--ready-condition") + 1]),
+            {"kind": "capacity"},
+        )
+        # One hand-back note on the candidate's issue.
+        self.assertEqual(len(calls["gh"]), 1)
+        gh_argv = calls["gh"][0]
+        self.assertEqual(
+            gh_argv[:7],
+            [
+                str(claimant.FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                "developing-today/code",
+                "issue",
+                "1187",
+            ],
+        )
+        self.assertEqual(gh_argv[gh_argv.index("--repo") + 1], "developing-today/code")
+        body = gh_argv[gh_argv.index("--body") + 1]
+        self.assertIn("agent-note:v1", body)
+        self.assertIn("handed back", body)
+        self.assertIn("executor-saturated", body)
+        self.assertIn("888", body)
+        # The fire log keeps the cap_saturated skip AND records the
+        # hand-back under its own key.
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_saturated"}])
+        self.assertEqual(
+            entries[0]["hand_back"],
+            {
+                "task_id": 888,
+                "parked": True,
+                "noted": True,
+                "reason": "executor-saturated",
+            },
+        )
+
+    def test_shadow_saturated_fire_mutates_nothing(self):
+        calls = empty_calls()
+        rc, entries = self._run_main(
+            "shadow",
+            [dict(HANDBACK_CANDIDATE)],
+            make_handback_run(calls),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, empty_calls())
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["hand_back"])
+
+    def test_failed_claim_parks_nothing(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess, "run", make_handback_run(calls, claim_row="none")
+        ):
+            record = claimant.hand_back_step("live", [dict(HANDBACK_CANDIDATE)])
+        self.assertEqual(
+            record,
+            {
+                "task_id": 888,
+                "parked": False,
+                "noted": False,
+                "reason": "handback_claim_failed",
+            },
+        )
+        self.assertEqual(calls["park"], [])
+        self.assertEqual(calls["gh"], [])
+
+    def test_handback_reuses_claim_already_collected_for_launch(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            make_handback_run(calls),
+        ):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE)],
+                already_claimed_task_ids=[888],
+            )
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(record["noted"], True)
+        self.assertEqual(calls["claim"], [])
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertEqual(len(calls["gh"]), 1)
+
+    def test_mismatched_claim_parks_nothing(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess, "run", make_handback_run(calls, claim_row="other")
+        ):
+            record = claimant.hand_back_step("live", [dict(HANDBACK_CANDIDATE)])
+        self.assertEqual(record["parked"], False)
+        self.assertEqual(record["reason"], "handback_claim_failed")
+        self.assertEqual(calls["park"], [])
+        self.assertEqual(calls["gh"], [])
+
+    def test_handback_picks_first_launchable_not_excluded(self):
+        calls = empty_calls()
+        bound = dict(HANDBACK_CANDIDATE, id=890, session_id="ses_busy")
+        second = dict(HANDBACK_CANDIDATE, id=889, issue="#1188")
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE), bound, second],
+                exclude_task_ids=[888],
+            )
+        self.assertEqual(record["task_id"], 889)
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("889", calls["park"][0])
+
+    def test_no_launchable_candidate_no_handback(self):
+        calls = empty_calls()
+        bound = dict(HANDBACK_CANDIDATE, session_id="ses_busy")
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
+            record = claimant.hand_back_step("live", [bound])
+        self.assertIsNone(record)
+        self.assertEqual(calls, empty_calls())
+
+
+class TestBoundedPoll(unittest.TestCase):
+    def snapshot(self):
+        return {
+            "candidates": [],
+            "cap_room": 36,
+            "ledger_readable": True,
+            "queues": {q: {"read_ok": True} for q in claimant.QUEUES},
+        }
+
+    def poll(self, snapshot):
+        result = subprocess.CompletedProcess(
+            [], 0, json.dumps(snapshot), "claimant-poll-phase:snapshot\n"
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", return_value=result) as child,
+        ):
+            data = claimant.run_poll(timeout=12)
+        self.assertEqual(child.call_args.kwargs["timeout"], 12)
+        self.assertEqual(
+            child.call_args.kwargs["env"]["OPENCODE_CLAIMANT_POLL_SECONDS"], "12"
+        )
+        return data
+
+    def test_healthy_snapshot_keeps_decision(self):
+        snapshot = self.snapshot()
+        self.assertEqual(self.poll(snapshot), snapshot)
+        snapshot["candidates"] = [dict(CANDIDATE)]
+        self.assertEqual(self.poll(snapshot), snapshot)
+
+    def test_incomplete_snapshot_cannot_launch_even_with_candidate(self):
+        for field, bad, phase in (
+            ("cap_room", None, "session_census"),
+            ("ledger_readable", False, "ledger_read"),
+            ("queues", {}, "broker_reads"),
+            (
+                "queues",
+                {q: {"read_ok": False} for q in claimant.QUEUES},
+                "broker_reads",
+            ),
+        ):
+            with self.subTest(field=field, bad=bad):
+                snapshot = self.snapshot()
+                snapshot["candidates"] = [dict(CANDIDATE)]
+                snapshot[field] = bad
+                with self.assertRaises(claimant.PollFailure) as raised:
+                    self.poll(snapshot)
+                self.assertEqual(raised.exception.category, "incomplete_snapshot")
+                self.assertEqual(raised.exception.phase, phase)
+
+    def test_hard_timeout_reports_only_fixed_phase_not_stderr(self):
+        exc = subprocess.TimeoutExpired(
+            ["fixture"],
+            3,
+            stderr=b"private diagnostic\nclaimant-poll-phase:broker_reads\n",
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", side_effect=exc),
+        ):
+            with self.assertRaises(claimant.PollFailure) as raised:
+                claimant.run_poll(timeout=3)
+        self.assertEqual(str(raised.exception), "deadline during broker_reads")
+
+    def test_gate_spends_only_remaining_budget_and_records_fixed_category(self):
+        with (
+            patch.object(claimant.time, "monotonic", side_effect=[10.0, 27.0, 28.0]),
+            patch.object(claimant, "run_queue_health", return_value=None),
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=claimant.PollFailure("deadline", "broker_reads"),
+            ) as read,
+        ):
+            self.assertIsNone(claimant.gate_step())
+        read.assert_called_once_with(timeout=298.0)
+        self.assertEqual(
+            claimant._gate_diagnostic,
+            {"category": "deadline", "phase": "broker_reads", "elapsed_ms": 18000},
+        )
+
+
+class TestSinkClaimDiagnostics(unittest.TestCase):
+    def test_fixed_categories_do_not_copy_cli_output_and_preserve_attempts(self):
+        fixtures = (
+            (subprocess.TimeoutExpired(["private"], 15, stderr=b"private"), "timeout"),
+            (OSError("private"), "spawn_error"),
+            (Result(13, "private"), "cli_nonzero"),
+            (Result(0, "private"), "invalid_json"),
+            (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
+        )
+        for fixture, category in fixtures:
+            with (
+                self.subTest(category=category),
+                patch.object(claimant.subprocess, "run", side_effect=[fixture]) as run,
+                patch.object(claimant.time, "monotonic", side_effect=[10.0, 10.25]),
+            ):
+                diagnostic = {}
+                self.assertEqual(
+                    claimant._collect_handed_offs("fixture", 3, diagnostic=diagnostic),
+                    {},
+                )
+                self.assertEqual(diagnostic, {"category": category, "elapsed_ms": 250})
+                run.assert_called_once()
+                self.assertIn("--handoff", run.call_args.args[0])
+                self.assertNotIn("--task", run.call_args.args[0])
+                self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
+    def test_diagnostic_does_not_change_preexisting_acceptance_of_returned_row(self):
+        row = {"id": 42, "private": "not surfaced"}
+        with patch.object(
+            claimant.subprocess, "run", return_value=Result(1, json.dumps(row))
+        ):
+            diagnostic = {}
+            self.assertEqual(
+                claimant._collect_handed_offs("fixture", 1, diagnostic=diagnostic),
+                {42: row},
+            )
+        self.assertEqual(diagnostic["category"], "row_returned")
+        self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestCodeSourceFireLog(unittest.TestCase):
+    """#12813: every fire log entry records the primary clone's
+    checked-out branch and commit (code_source), so a fire running
+    stale-branch code names itself. The read is fail-open: a clone
+    git cannot read yields state "unreadable", never an abort."""
+
+    def setUp(self):
+        claimant._code_source = None
+
+    def tearDown(self):
+        claimant._code_source = None
+
+    def _make_clone(self, tmp: str) -> Path:
+        # A static .git layout written with plain file writes (#13135):
+        # the hermetic suite's audit guard forbids subprocess spawns,
+        # so the fixture cannot run `git init` — and read_code_source()
+        # reads .git directly, so no git binary is needed for the read
+        # either. The commit sha is a fixed 40-hex placeholder; the
+        # tests assert shape (branch, 40-char commit), not history.
+        clone = Path(tmp) / "clone"
+        git_dir = clone / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(
+            "0123456789abcdef0123456789abcdef01234567\n"
+        )
+        (clone / "f.txt").write_text("x")
+        return clone
+
+    def test_reads_branch_and_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            with patch.object(claimant, "PRIMARY_CLONE", clone):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "ok")
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(len(source["commit"]), 40)
+
+    def test_unreadable_clone_fails_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_repo = Path(tmp) / "nope"
+            not_a_repo.mkdir()
+            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "unreadable")
+        self.assertIsNone(source["branch"])
+        self.assertIsNone(source["commit"])
+
+    def test_fire_entry_carries_code_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            state_dir = Path(tmp) / "state"
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", clone),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                claimant.log_fire("live", [], [], 3, [])
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["code_source"]["branch"], "main")
+        self.assertEqual(entries[0]["code_source"]["state"], "ok")

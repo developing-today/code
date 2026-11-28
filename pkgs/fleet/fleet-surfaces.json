@@ -1,0 +1,153 @@
+{
+  "comment": "Fleet placement registry. Targets accept exact owner/repo names, owner/* patterns, or * for all valid owner/repo paths. The fleet-command.yml workflow is dispatch-only; the fleet-queue placement adapter selects a host and provider from live capacity and local session history. Add a surface by adding a registry entry and a compatible workflow.",
+  "laptop": {
+    "busy": false,
+    "busy_source": "manual-flag",
+    "note": "Saturation signal for the codespace tier. Set from pm-dispatch/queue depth where a caller can read it, else flip by hand or pass --laptop-busy. Deliberately not scraped telemetry."
+  },
+  "owners": {
+    "developing-today": {
+      "concurrent_jobs_cap": 20,
+      "concurrent_macos_cap": 5,
+      "plan": "free-org",
+      "private_minutes_monthly": 2000
+    },
+    "developing-today-forks": {
+      "concurrent_jobs_cap": 20,
+      "concurrent_macos_cap": 5,
+      "plan": "free-org (assumed - confirm)",
+      "private_minutes_monthly": 2000
+    },
+    "dezren39": {
+      "concurrent_jobs_cap": 40,
+      "concurrent_macos_cap": 5,
+      "plan": "pro",
+      "private_minutes_monthly": 3000
+    }
+  },
+  "surfaces": [
+    {
+      "app_installation": 175747567,
+      "dispatch_id_input": true,
+      "id": "fleet-personal",
+      "kind": "github-actions",
+      "notes": "Personal Fleet command runner. Dispatch uses the developing-today GitHub App installation. Its repo secrets include GHCR_ORG_PAT and NIX_CACHE_* for private checkouts, cross-run artifacts, and explicitly requested Nix cache pushes.",
+      "owner": "dezren39",
+      "repo": "dezren39/fleet",
+      "status": "active",
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
+      "workflow": "fleet-command.yml",
+      "platform_input": true,
+      "previous_run_id_input": true,
+      "sticky_queue_threshold": 2,
+      "selection_priority": 10,
+      "container_input": true
+    },
+    {
+      "app_installation": 174792676,
+      "dispatch_as": "user",
+      "id": "fleet-org",
+      "kind": "github-actions",
+      "notes": "Canonical org Fleet command runner. Dispatch uses the authenticated user token. GitHub-hosted Linux is preferred; this host also supports the Blacksmith fallback. The dispatch-only workflow does not wait on PR or main CI.",
+      "owner": "developing-today",
+      "repo": "developing-today/fleet",
+      "status": "active",
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
+      "workflow": "fleet-command.yml",
+      "platform_input": true,
+      "previous_run_id_input": true,
+      "dispatch_id_input": true,
+      "sticky_queue_threshold": 2,
+      "selection_priority": 10,
+      "container_input": true
+    },
+    {
+      "app_installation": null,
+      "dispatch_as": "user",
+      "dispatch_id_input": true,
+      "id": "fleet-forks",
+      "kind": "github-actions",
+      "notes": "Public-target-only Fleet command runner. It can target public repositories under all configured owners and increases GitHub-hosted capacity when those account pools are busy. Private targets are rejected because this host has no GHCR_ORG_PAT secret.",
+      "owner": "developing-today-forks",
+      "repo": "developing-today-forks/fleet",
+      "status": "active",
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
+      "workflow": "fleet-command.yml",
+      "platform_input": true,
+      "previous_run_id_input": true,
+      "sticky_queue_threshold": 2,
+      "selection_priority": 10,
+      "container_input": true,
+      "public_targets_only": true
+    },
+    {
+      "app_installation": 174792676,
+      "dispatch_id_input": true,
+      "id": "org-run",
+      "kind": "github-actions",
+      "notes": "Retained for manual org-run workflow use. Fleet placement uses developing-today/fleet as the canonical organization runner so followups share its dependency cache and output artifacts.",
+      "owner": "developing-today",
+      "repo": "developing-today/code",
+      "status": "standby",
+      "targets": ["developing-today/*"],
+      "workflow": "fleet-command.yml",
+      "platform_input": false,
+      "previous_run_id_input": false,
+      "sticky_queue_threshold": 2,
+      "selection_priority": 20,
+      "container_input": false
+    },
+    {
+      "app_installation": 174792676,
+      "budget": {
+        "free_minutes_monthly": 3000,
+        "paid_cap_minutes": 0,
+        "rate_note": "Blacksmith is orgs-only: 3,000 free min/mo, then PAID per-minute (it charges for public-repo minutes past the free tier). paid_cap_minutes is the registry knob Drew can raise; 0 = free tier only."
+      },
+      "dispatch_as": "user",
+      "host_surface": "fleet-org",
+      "id": "fleet-org-blacksmith",
+      "kind": "blacksmith",
+      "notes": "Linux-only Blacksmith fallback hosted by developing-today/fleet. GitHub-hosted Actions is preferred; the free-minute budget is enforced and paid overage is disabled unless a dispatch explicitly supplies --allow-paid-blacksmith.",
+      "owner": "developing-today",
+      "repo": "developing-today/fleet",
+      "status": "active",
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
+      "workflow": "fleet-command.yml",
+      "platform_input": true,
+      "previous_run_id_input": true,
+      "dispatch_id_input": true,
+      "sticky_queue_threshold": 2,
+      "selection_priority": 10,
+      "container_input": true
+    },
+    {
+      "app_installation": null,
+      "budget": {
+        "core_hours_monthly": 180,
+        "note": "Personal Pro Codespaces budget: 180 core-hours/mo. A 4-core codespace burns 4 core-hours per wall hour."
+      },
+      "id": "codespace-overflow",
+      "kind": "codespace",
+      "max_live": 3,
+      "notes": "Existing-codespace surface. Can be pinned with --surface codespace-overflow or selected after Actions capacity is exhausted and the laptop is busy. It does not create Codespaces. GitHub CLI OAuth codespace scope is still required.",
+      "owner": "dezren39",
+      "repo": null,
+      "status": "pending-scope",
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
+      "workflow": null
+    },
+    {
+      "app_installation": null,
+      "id": "laptop",
+      "kind": "laptop",
+      "notes": "Handoff-only placement record. Actual laptop command execution remains in the pm-dispatch/repo-queue lane; this adapter does not run shell commands on the laptop.",
+      "owner": "dezren39",
+      "repo": null,
+      "status": "handoff-only",
+      "targets": ["*"],
+      "workflow": null
+    }
+  ],
+  "version": 2
+}

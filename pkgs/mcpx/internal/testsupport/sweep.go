@@ -1,0 +1,172 @@
+package testsupport
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// The build temp dirs this test binary created by its fixture builders
+// (mcpx-bin-*, mcpx-fake-*, mcpx-era-*, mcpx-ask-*, mcpx-task-*). The builders register
+// every dir they make here so the suite-wide sweep (#1971 remainder
+// item 2) can remove exactly this binary's dirs at the end of the run —
+// and only this binary's: other suites running concurrently on the same
+// machine create sibling mcpx-bin-*/mcpx-fake-* dirs in the same temp
+// root, and a name-pattern sweep over the whole temp root would remove
+// a live neighbour's binaries mid-run.
+var (
+	buildTempDirsMu sync.Mutex
+	buildTempDirs   []string
+)
+
+func registerBuildTempDir(dir string) {
+	buildTempDirsMu.Lock()
+	defer buildTempDirsMu.Unlock()
+	for _, existing := range buildTempDirs {
+		if existing == dir {
+			return
+		}
+	}
+	buildTempDirs = append(buildTempDirs, dir)
+}
+
+// BuildTempDirs returns the build temp dirs registered by this test
+// binary's builders, in creation order.
+func BuildTempDirs() []string {
+	buildTempDirsMu.Lock()
+	defer buildTempDirsMu.Unlock()
+	return append([]string(nil), buildTempDirs...)
+}
+
+// LeftoverProcess is a process still executing a binary that lives in
+// one of this test binary's build temp dirs after the suite has run: a
+// leaked test daemon or fake server, not a process the suite owns any
+// more (its tests have all returned).
+type LeftoverProcess struct {
+	PID int
+	Exe string
+}
+
+func (p LeftoverProcess) String() string {
+	return fmt.Sprintf("pid=%d exe=%s", p.PID, p.Exe)
+}
+
+// processesExecutingFrom returns the processes whose executable resolves
+// inside one of dirs, excluding this process. Detection is Linux /proc
+// based; on a platform without /proc it reports nothing (the temp-dir
+// half of the sweep still runs there).
+func processesExecutingFrom(dirs []string) []LeftoverProcess {
+	if len(dirs) == 0 {
+		return nil
+	}
+	resolved := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = real
+		}
+		resolved = append(resolved, dir)
+	}
+	links, err := filepath.Glob("/proc/[0-9]*/exe")
+	if err != nil {
+		return nil
+	}
+	self := os.Getpid()
+	var out []LeftoverProcess
+	for _, link := range links {
+		pidText := filepath.Base(filepath.Dir(link))
+		pid, err := strconv.Atoi(pidText)
+		if err != nil || pid == self {
+			continue
+		}
+		exe, err := os.Readlink(link)
+		if err != nil {
+			continue
+		}
+		// A binary unlinked while running reads back with this suffix;
+		// the path still names the dir it was executed from.
+		exe = strings.TrimSuffix(exe, " (deleted)")
+		for _, dir := range resolved {
+			if within(exe, dir) {
+				out = append(out, LeftoverProcess{PID: pid, Exe: exe})
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
+	return out
+}
+
+// leftoverGracePeriod bounds how long the sweep waits for a process
+// seen executing from a build dir to exit on its own before calling it
+// a leak. It mirrors the harness's supported shutdown budget: a daemon
+// draining in-flight work during cleanup may legitimately take up to
+// the default 10-second drain to stop (Server.stopServing closes the
+// listener before draining; TestEnvCleanupStopsTheDaemonItStarted
+// allows the same 10 seconds for the asynchronous exit). Polling inside
+// that budget is not leniency — a survivor past it is not draining, it
+// is leaked.
+var leftoverGracePeriod = 10 * time.Second
+
+const leftoverPollInterval = 100 * time.Millisecond
+
+// SweepBuildTempDirs is the suite-wide sweep of #1971 remainder item 2:
+// it removes this test binary's build temp dirs and reports any process
+// still executing from them. Detection runs before removal, and a
+// process seen at suite end is polled for exit within
+// leftoverGracePeriod, so orderly shutdown is never misreported; a
+// process still there after the budget is a leak and is reported for
+// the caller (the e2e TestMain) to fail on.
+func SweepBuildTempDirs() (removed []string, leftover []LeftoverProcess) {
+	return sweepBuildTempDirs(BuildTempDirs())
+}
+
+// sweepBuildTempDirs applies the sweep to exactly dirs. SweepBuildTempDirs
+// is the suite-wide call over every registered dir, made once the tests
+// have all returned. This package's own sweep tests use the scoped form:
+// calling the suite-wide sweep mid-run would also remove the fixture
+// builders' cached temp dirs (the once-built mcpx and fakemcp binaries
+// live in registered dirs), so later tests in the same binary would fail
+// to exec a binary this test had swept out from under them under
+// -count=3.
+func sweepBuildTempDirs(dirs []string) (removed []string, leftover []LeftoverProcess) {
+	leftover = processesExecutingFrom(dirs)
+	for deadline := time.Now().Add(leftoverGracePeriod); len(leftover) > 0 && time.Now().Before(deadline); {
+		time.Sleep(leftoverPollInterval)
+		leftover = processesExecutingFrom(dirs)
+	}
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err == nil {
+			removed = append(removed, dir)
+		}
+	}
+	return removed, leftover
+}
+
+// MainWithSweep is the TestMain body for suites that use the fixture
+// builders but have no other suite-wide setup of their own: it runs the
+// tests, then applies the suite-wide sweep (#1971 remainder item 2) —
+// this binary's registered build temp dirs are removed, and a process
+// still executing from one of them fails the run, exactly as the e2e
+// suite's guarded main does by hand. Packages with their own TestMain
+// duties (e2e) keep calling SweepBuildTempDirs themselves. Before this
+// helper existed, the daemon, pool and examples suites never swept at
+// all, so every run leaked its builders' temp dirs (#10554).
+func MainWithSweep(m *testing.M) int {
+	code := m.Run()
+	removed, leftover := SweepBuildTempDirs()
+	fmt.Printf("testsupport sweep: removed %d build temp dirs\n", len(removed))
+	if len(leftover) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"testsupport: %d process(es) still executing from the suite's build temp dirs after the suite ran (#1971): %v. "+
+				"Each test owns the children it spawns; a survivor is a leaked daemon or fake server.\n",
+			len(leftover), leftover)
+		return 1
+	}
+	return code
+}

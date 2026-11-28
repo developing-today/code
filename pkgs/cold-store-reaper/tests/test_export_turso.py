@@ -1,0 +1,784 @@
+#!/usr/bin/env python3
+"""Tests for scripts/export-turso.sh — no network, stub curl on PATH.
+
+Run:  python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
+  or: python3 pkgs/cold-store-reaper/tests/test_export_turso.py
+
+The guard (#1027): no Turso credential (platform token or minted
+per-database JWT) may appear in any curl argv — the process list is
+world-readable for up to the 300 s dump window. Credentials must
+travel in a curl config fed on stdin (--config -), the pattern
+cold_store.py's _curl_fetch established for #983.
+"""
+
+import os
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
+REPAIR = Path(__file__).resolve().parent.parent / "scripts" / "repair_dump.py"
+
+PLATFORM_TOKEN = "fake-platform-token-SECRET"
+DB_JWT = "fake-db-jwt-SECRET"
+
+STUB_CURL = r"""#!/usr/bin/env bash
+# Stub curl: capture argv + stdin, serve canned Turso responses.
+set -u
+cap="${STUB_CAPTURE_DIR:?}"
+n=0
+[[ -f "${cap}/count" ]] && n="$(cat "${cap}/count")"
+n=$((n + 1))
+echo "${n}" > "${cap}/count"
+printf '%s\n' "$@" > "${cap}/argv-${n}.log"
+cat > "${cap}/stdin-${n}.log"
+out=""
+url=""
+prev=""
+for a in "$@"; do
+  if [[ "${prev}" == "-o" ]]; then out="${a}"; fi
+  case "${a}" in http*) url="${a}" ;; esac
+  prev="${a}"
+done
+if [[ "${url}" == */dump && -n "${STUB_DUMP_SLEEP:-}" ]]; then
+  # A dump that hangs, so a test can stop the run mid-download.
+  : > "${cap}/dump-started"
+  sleep "${STUB_DUMP_SLEEP}"
+fi
+if [[ "${url}" == */dump ]]; then
+  # STUB_DUMP_FAIL_FIRST=N: the first N dump downloads fail the way
+  # the 2026-11-17 run did (server closes the stream mid-transfer).
+  d=0
+  [[ -f "${cap}/dump-count" ]] && d="$(cat "${cap}/dump-count")"
+  d=$((d + 1))
+  echo "${d}" > "${cap}/dump-count"
+  if [[ "${d}" -le "${STUB_DUMP_FAIL_FIRST:-0}" ]]; then
+    echo "curl: (18) transfer closed with outstanding read data remaining" >&2
+    exit 18
+  fi
+fi
+body=""
+case "${url}" in
+  */auth/tokens) body='{"jwt":"__JWT__"}' ;;
+  */dump)
+    if [[ -n "${STUB_DUMP_BODY_FILE:-}" ]]; then
+      body="$(cat "${STUB_DUMP_BODY_FILE}")"
+    else
+      body='BEGIN TRANSACTION;
+CREATE TABLE t (x INTEGER);
+INSERT INTO t VALUES (1);
+COMMIT;
+'
+    fi ;;
+  *)
+    body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}'
+    if [[ -n "${STUB_DB_LIST:-}" ]]; then body="${STUB_DB_LIST}"; fi ;;
+esac
+if [[ -n "${out}" ]]; then
+  printf '%s' "${body}" > "${out}"
+else
+  printf '%s' "${body}"
+fi
+exit 0
+"""
+
+STUB_COLD_STORE = """#!/usr/bin/env bash
+printf '%s\\n' "$@" >> "${STUB_CAPTURE_DIR:?}/cold-store.log"
+exit 0
+"""
+
+
+class TestExportTursoArgv(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.capture = root / "capture"
+        self.capture.mkdir()
+        stubbin = root / "bin"
+        stubbin.mkdir()
+        curl = stubbin / "curl"
+        curl.write_text(STUB_CURL.replace("__JWT__", DB_JWT))
+        curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
+        cold = root / "cold-store-stub"
+        cold.write_text(STUB_COLD_STORE)
+        cold.chmod(cold.stat().st_mode | stat.S_IEXEC)
+        self.env = {
+            **os.environ,
+            "PATH": f"{stubbin}:{os.environ['PATH']}",
+            "STUB_CAPTURE_DIR": str(self.capture),
+            "TURSO_PLATFORM_API_TOKEN": PLATFORM_TOKEN,
+            "TURSO_API_BASE": "http://api.test",
+            "TURSO_DUMP_BASE": "http://dump.test",
+            "COLD_STORE_BIN": str(cold),
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "0",
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_script(self, env=None):
+        return subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env or self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_credentials_never_in_argv_but_reach_curl_via_stdin_config(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        # the script's never-print invariant holds for both secrets
+        self.assertNotIn(PLATFORM_TOKEN, result.stdout + result.stderr)
+        self.assertNotIn(DB_JWT, result.stdout + result.stderr)
+
+        argv_logs = sorted(self.capture.glob("argv-*.log"))
+        stdin_logs = sorted(self.capture.glob("stdin-*.log"))
+        # discovery + token mint + dump download
+        self.assertEqual(len(argv_logs), 3)
+        self.assertEqual(len(stdin_logs), 3)
+        all_stdin = ""
+        for argv_log, stdin_log in zip(argv_logs, stdin_logs):
+            argv = argv_log.read_text()
+            # no credential, no Authorization header, in any argv
+            self.assertNotIn(PLATFORM_TOKEN, argv)
+            self.assertNotIn(DB_JWT, argv)
+            self.assertNotIn("Authorization", argv)
+            # the header instead arrives via a stdin-fed curl config
+            argv_lines = argv.splitlines()
+            self.assertIn("--config", argv_lines)
+            self.assertEqual(argv_lines[argv_lines.index("--config") + 1], "-")
+            all_stdin += stdin_log.read_text()
+        self.assertEqual(all_stdin.count(f"Authorization: Bearer {PLATFORM_TOKEN}"), 2)
+        self.assertEqual(all_stdin.count(f"Authorization: Bearer {DB_JWT}"), 1)
+        # behaviour unchanged: the export was filed with cold-store
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def dump_argv_lines(self):
+        for argv_log in sorted(self.capture.glob("argv-*.log")):
+            lines = argv_log.read_text().splitlines()
+            if any("dump.test" in line for line in lines):
+                return lines
+        self.fail("no dump invocation recorded by the stub curl")
+
+    def test_dump_uses_default_max_time_and_three_spaced_retries(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "3600")
+        self.assertEqual(lines[lines.index("--retry") + 1], "3")
+        self.assertEqual(lines[lines.index("--retry-delay") + 1], "30")
+        self.assertIn("--retry-all-errors", lines)
+
+    def dump_calls(self):
+        f = self.capture / "dump-count"
+        return int(f.read_text()) if f.exists() else 0
+
+    def test_failed_dump_is_retried_in_a_second_pass_and_filed(self):
+        # 2026-11-17: curl 18 on 4 of 42 databases; a second pass at the
+        # end of the run must pick them up instead of failing the step.
+        env = {**self.env, "STUB_DUMP_FAIL_FIRST": "1"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("dump download failed", result.stderr)
+        self.assertIn("retrying 1 failed database(s) after 0s", result.stdout)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        self.assertEqual(self.dump_calls(), 2)
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_database_failing_every_pass_fails_the_run(self):
+        # A 75s deadline with a 1s pass delay: the spread passes fit
+        # waits of 1s, 2s and 4s, then the next wait (8s) plus the
+        # 60s attempt floor no longer fits the remaining budget, so
+        # a database whose download keeps being cut still ends the
+        # run in failure, with the stop named.
+        env = {
+            **self.env,
+            "STUB_DUMP_FAIL_FIRST": "99",
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "1",
+            "TURSO_EXPORT_DEADLINE_SECONDS": "75",
+        }
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("1 of 1 database(s) FAILED", result.stderr)
+        self.assertIn("no room for another retry pass", result.stderr)
+        self.assertGreaterEqual(self.dump_calls(), 2)
+        self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_failed_dump_is_filed_on_a_third_pass(self):
+        # #13115: download-stage retries spread across the deadline
+        # budget instead of stopping at the old single second pass —
+        # a database cut on the first two passes is tried again in a
+        # deadline-spread pass and files.
+        env = {
+            **self.env,
+            "STUB_DUMP_FAIL_FIRST": "2",
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "1",
+        }
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("retrying 1 failed database(s) after 1s", result.stdout)
+        self.assertIn("retrying 1 download-failed database(s) after 1s", result.stdout)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        self.assertEqual(self.dump_calls(), 3)
+
+    def test_rebuild_failure_names_the_repeated_statement(self):
+        # #12000: the atlas dump repeated a vec-table row and the rebuild
+        # stopped on its primary key; the dump is deleted afterwards, so
+        # the failure itself must say what the statement was.
+        body = self.capture.parent / "dup.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("UNIQUE constraint failed: vec.chunk_id", result.stderr)
+        self.assertIn(
+            "line 5: INSERT into vec; 2 identical statement(s) (first at line 3);"
+            " 2 INSERT(s) share its first value",
+            result.stderr,
+        )
+        self.assertNotIn("X'00'", result.stderr.split("UNIQUE")[1])
+
+    def test_table_dumped_twice_identically_is_filed_once(self):
+        # #12000: libsql's /dump emitted the atlas vec table whole, then
+        # whole again; the exact repeat is dropped and the export files.
+        block = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+        )
+        body = self.capture.parent / "repeat.sql"
+        body.write_text("BEGIN TRANSACTION;\n" + block + block + "COMMIT;\n")
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "dropped a repeated copy of table vec (2 rows identical to the first copy)",
+            result.stderr,
+        )
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_table_dumped_twice_with_different_rows_fails(self):
+        create = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+        )
+        body = self.capture.parent / "conflict.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'00');\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'01');\n"
+            + "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("dumped twice with different rows", result.stderr)
+        self.assertIn("db1: dump repair filter failed", result.stderr)
+        self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_libsql_vector_index_is_recorded_and_the_export_files(self):
+        # #12000: stock sqlite3 has no libsql_vector_idx, so the dump's
+        # CREATE INDEX for a vector index killed the rebuild at the end.
+        body = self.capture.parent / "vector.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v F32_BLOB(1));\n"
+            "INSERT INTO vec VALUES(1,X'0000803f');\n"
+            "CREATE TABLE IF NOT EXISTS vec_idx_shadow (index_key INTEGER, data BLOB, PRIMARY KEY (index_key));\n"
+            "INSERT INTO vec_idx_shadow VALUES(1,X'00');\n"
+            "CREATE INDEX vec_idx ON vec (libsql_vector_idx(v));\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kept libsql vector index vec_idx", result.stderr)
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_retry_pass_delay_must_be_an_integer(self):
+        env = {**self.env, "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "soon"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a non-negative integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_requests_compression(self):
+        # --compressed keeps GB-class dumps under the sandbox proxy's
+        # mid-stream cut: the wire size shrinks several-fold.
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--compressed", self.dump_argv_lines())
+
+    def test_dump_max_time_env_override_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "42"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "42")
+
+    def test_dump_max_time_zero_is_rejected(self):
+        # 0 is all digits but not positive: curl --max-time 0 disables
+        # the timeout, so the dump could hang forever (#1428).
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_all_zeros_is_rejected(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "00"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_leading_zero_positive_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0300"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "0300")
+
+    def test_skip_when_token_unset(self):
+        env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)", result.stdout)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_work_dir_is_named_wiped_at_start_and_removed_on_exit(self):
+        # darwin-nix#373 regression: scratch must live in ONE named
+        # directory. A previous run killed mid-flight (SIGKILL defeats
+        # the EXIT trap) leaves its files there; the next run wipes
+        # them at startup instead of starting a second anonymous
+        # mktemp dir, and a clean exit removes the directory.
+        work = Path(self.tmp.name) / "named-work"
+        work.mkdir()
+        (work / "stale-from-a-killed-run.sql").write_text("leftover")
+        env = {**self.env, "EXPORT_TURSO_WORK_DIR": str(work)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        # the named location was used (its lock file exists) ...
+        self.assertTrue(Path(f"{work}.lock").exists())
+        # ... and the directory itself is gone after a clean exit,
+        # stale leftovers included.
+        self.assertFalse(work.exists())
+
+    def dump_urls(self):
+        urls = []
+        for argv_log in sorted(
+            self.capture.glob("argv-*.log"), key=lambda p: int(p.stem.split("-")[1])
+        ):
+            urls += [
+                line
+                for line in argv_log.read_text().splitlines()
+                if line.startswith("http://dump.test/")
+            ]
+        return urls
+
+    def test_atlas_is_exported_after_every_other_database(self):
+        # 2026-11-20: atlas, first in the list, was still downloading at
+        # the service timeout and none of the other 49 were filed.
+        listing = (
+            '{"databases":['
+            '{"Name":"atlas","Hostname":"atlas.example.test"},'
+            '{"Name":"db1","Hostname":"db1.example.test"},'
+            '{"Name":"db2","Hostname":"db2.example.test"}]}'
+        )
+        result = self.run_script(env={**self.env, "STUB_DB_LIST": listing})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 3 database(s) filed", result.stdout)
+        self.assertEqual(
+            self.dump_urls(),
+            [
+                "http://dump.test/db1/dump",
+                "http://dump.test/db2/dump",
+                "http://dump.test/atlas/dump",
+            ],
+        )
+
+    def test_export_last_empty_keeps_the_list_order(self):
+        listing = (
+            '{"databases":['
+            '{"Name":"atlas","Hostname":"atlas.example.test"},'
+            '{"Name":"db1","Hostname":"db1.example.test"}]}'
+        )
+        env = {**self.env, "STUB_DB_LIST": listing, "TURSO_EXPORT_LAST": ""}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.dump_urls(),
+            ["http://dump.test/atlas/dump", "http://dump.test/db1/dump"],
+        )
+
+    def test_dump_attempts_are_clamped_to_the_run_deadline(self):
+        env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": "600"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        max_time = int(lines[lines.index("--max-time") + 1])
+        retry_max = int(lines[lines.index("--retry-max-time") + 1])
+        self.assertTrue(590 <= max_time <= 600, max_time)
+        self.assertTrue(590 <= retry_max <= 600, retry_max)
+
+    def test_no_database_starts_once_the_deadline_is_reached(self):
+        env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": "30"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("db1: not started", result.stderr)
+        self.assertIn("1 of 1 database(s) FAILED", result.stderr)
+        self.assertEqual(self.dump_calls(), 0)
+
+    def test_deadline_must_be_a_positive_integer(self):
+        for bad in ("0", "abc", ""):
+            with self.subTest(bad=bad):
+                env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": bad}
+                result = self.run_script(env=env)
+                if bad == "":
+                    # unset-or-empty falls back to the default
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("TURSO_EXPORT_DEADLINE_SECONDS", result.stderr)
+
+    def test_sigterm_mid_download_removes_the_private_scratch(self):
+        # systemd's start timeout sends SIGTERM to the whole unit; on
+        # 2026-11-20 that left 10 GB of atlas dump and a minted token
+        # in /tmp. The scratch is 0700 and a TERM still cleans it up.
+        work = Path(self.tmp.name) / "named-work"
+        env = {
+            **self.env,
+            "EXPORT_TURSO_WORK_DIR": str(work),
+            "STUB_DUMP_SLEEP": "30",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            started = self.capture / "dump-started"
+            for _ in range(200):
+                if started.exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue(started.exists(), "the dump never started")
+            self.assertEqual(stat.S_IMODE(work.stat().st_mode), 0o700)
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=20)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+        self.assertEqual(proc.returncode, 143)
+        self.assertFalse(work.exists())
+
+
+BROKEN_SCHEMA_INSERT = (
+    b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+    b" VALUES('table','chunks_fts','chunks_fts',0,"
+    b"'CREATE VIRTUAL TABLE chunks_fts\n"
+    b"      USING fts5(text, content='chunks', content_rowid='id')');\n"
+)
+ESCAPED_SCHEMA_INSERT = BROKEN_SCHEMA_INSERT.replace(
+    b"content='chunks'", b"content=''chunks''"
+).replace(b"content_rowid='id'", b"content_rowid=''id''")
+
+
+class TestDumpRepairFilter(unittest.TestCase):
+    """scripts/repair_dump.py (#1391): the streaming filter between the
+    /dump download and the sqlite3 rebuild. Only a verifiably
+    mis-escaped sqlite_schema literal is rewritten; everything else —
+    including correctly-escaped statements — is byte-identical."""
+
+    def run_filter(self, data: bytes) -> bytes:
+        result = subprocess.run(
+            [sys.executable, str(REPAIR)],
+            input=data,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_broken_literal_is_rewritten_with_doubled_quotes(self):
+        data = (
+            b"PRAGMA writable_schema=ON;\n"
+            + BROKEN_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        expected = (
+            b"PRAGMA writable_schema=ON;\n"
+            + ESCAPED_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        self.assertEqual(self.run_filter(data), expected)
+
+    def test_correctly_escaped_literal_passes_byte_identical(self):
+        data = (
+            b"PRAGMA writable_schema=ON;\n"
+            + ESCAPED_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_quoteless_schema_literal_passes_byte_identical(self):
+        data = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','t','t',0,'CREATE TABLE t (x INTEGER)');\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_unrelated_lines_pass_byte_identical(self):
+        data = (
+            b"PRAGMA foreign_keys=OFF;\n"
+            b"BEGIN TRANSACTION;\n"
+            b"CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+            b"INSERT INTO notes VALUES(1,'it''s a ''quoted'' note');\n"
+            b"COMMIT;\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_unterminated_statement_at_eof_flushes_unchanged(self):
+        # A truncated dump must not be mangled on its way to the
+        # caller's COMMIT; guard — it passes through exactly as cut.
+        data = b"BEGIN TRANSACTION;\n" + BROKEN_SCHEMA_INSERT[:-20]
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_interior_line_ending_in_quote_paren_semicolon_is_not_a_boundary(self):
+        # #6531: a multi-line schema statement whose embedded SQL has an
+        # interior line ending in "');" (a trigger body's RAISE) is one
+        # statement, not a repaired fragment plus a raw tail. Oracle:
+        # the filtered stream loads in stock sqlite3 with the full SQL.
+        import sqlite3
+
+        sql = (
+            "CREATE TRIGGER tr AFTER INSERT ON ft BEGIN SELECT RAISE(ABORT, 'bad');\n"
+            " INSERT INTO log VALUES('x'); END"
+        )
+        raw = (
+            "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql) "
+            "VALUES('trigger','tr','ft',0,'" + sql + "');\n"
+        ).encode()
+        escaped = raw.replace(b"'bad'", b"''bad''").replace(
+            b"VALUES('x')", b"VALUES(''x'')"
+        )
+        for variant in (raw, escaped):
+            data = (
+                b"PRAGMA writable_schema=ON;\n"
+                + variant
+                + b"PRAGMA writable_schema=OFF;\n"
+            )
+            out = self.run_filter(data)
+            # Mis-escaped input is repaired (quotes doubled); escaped
+            # input passes through byte-identical.
+            self.assertEqual(
+                out, data.replace(raw, escaped) if variant is raw else data
+            )
+            db = sqlite3.connect(":memory:")
+            db.executescript(
+                "CREATE TABLE ft(x); CREATE TABLE log(v);"
+                "PRAGMA writable_schema=ON;"
+                "DELETE FROM sqlite_schema WHERE name='tr';"
+            )
+            db.executescript(out.decode())
+            self.assertEqual(
+                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[
+                    0
+                ],
+                sql,
+            )
+            db.close()
+
+    def test_multiline_statement_followed_by_more_statements(self):
+        data = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','a','a',0,'CREATE TABLE a (x); -- ''c'');\n"
+            b"');\n"
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','t','t',0,'CREATE TABLE t (x INTEGER)');\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def run_filter_capped(self, data: bytes, cap: int) -> bytes:
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES=str(cap))
+        result = subprocess.run(
+            [sys.executable, str(REPAIR)],
+            input=data,
+            capture_output=True,
+            timeout=60,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_over_cap_candidate_streams_through_and_following_statement_is_repaired(
+        self,
+    ):
+        # #6525: a candidate that grows past the buffer cap without
+        # terminating is flushed unchanged and streamed, not held;
+        # its end is still recognised, so the next statement gets
+        # the normal repair treatment.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_cap_crossed_on_terminating_line_does_not_leak_passthrough(self):
+        # Codex P2 on PR #8415: when the cap is first exceeded ON the
+        # candidate's terminating line, the statement is complete --
+        # it flushes whole (unrepaired, like any over-cap statement)
+        # and must NOT enable pass-through, or the following statement
+        # streams through unrepaired even when it is below the cap
+        # and needs quote repair.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 39 + b"x" * 46 + b"\n"
+        # opener + filler stays under the 4096 cap; the terminating
+        # line itself is what pushes the buffer over it.
+        self.assertLessEqual(len(opener) + len(filler), 4096)
+        self.assertGreater(len(opener) + len(filler) + len(b"');\n"), 4096)
+        data = opener + filler + b"');\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_valid_candidate_end_recognised_before_blank_line(self):
+        # Codex P2 on PR #8415 (second round): a correctly escaped
+        # candidate that crosses the cap BEFORE its terminating line
+        # enters pass-through; when a blank line follows the
+        # terminating line, ends_statement() applied to the lone
+        # terminating line cannot recognise the end (no statement
+        # head for its valid-literal path, and a blank lookahead
+        # fails the top-level fallback), so pass-through leaked into
+        # the following statement, which streamed through unrepaired.
+        # The pass-through literal tracker recognises the end from
+        # the statement's own bytes.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 100  # 10 KB, no terminator line
+        data = opener + filler + b"');\n" + b"\n" + BROKEN_SCHEMA_INSERT
+        expected = opener + filler + b"');\n" + b"\n" + ESCAPED_SCHEMA_INSERT
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_interior_insert_line_is_not_a_boundary(self):
+        # Codex P2 on PR #8415 (third round): in pass-through mode the
+        # old ends_statement() fallback parsed the current interior
+        # line standalone -- an interior line that itself parses as a
+        # complete schema INSERT (the fake_complete line below,
+        # followed by a blank line) ended pass-through while the
+        # tracker was
+        # still inside the outer literal, and a later interior
+        # INSERT-prefixed line was then treated as a new repair
+        # candidate and quote-rewritten, corrupting the valid outer
+        # statement. Oracle: the whole over-cap statement is
+        # byte-identical and the following broken statement is
+        # repaired.
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"x" * 100 + b"\n") * 50  # 5 KB: cap crossed in filler
+        fake_complete = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4," + b"'" * 4 + b");\n"
+        )
+        fake_candidate = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES(1,2,3,4,''X'');\n"
+        )
+        # The tail after fake_candidate stays below the cap, so if
+        # fake_candidate is wrongly taken as a new candidate its
+        # buffer terminates below the cap and repair_chunk runs on
+        # it -- that is where the corruption would appear.
+        filler2 = (b"x" * 100 + b"\n") * 20
+        data = (
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + BROKEN_SCHEMA_INSERT
+        )
+        expected = (
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + ESCAPED_SCHEMA_INSERT
+        )
+        self.assertEqual(self.run_filter_capped(data, 4096), expected)
+
+    def test_over_cap_candidate_emits_before_eof(self):
+        # #6525, the streaming half of the oracle: with stdin held
+        # open, output from an over-cap candidate must already be
+        # flowing (the old code emitted nothing until a terminator
+        # or EOF, buffering the whole remainder of the dump).
+        import select
+
+        opener = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','big','big',0,'CREATE TABLE big (\n"
+        )
+        filler = (b"y" * 100 + b"\n") * 100
+        env = dict(os.environ, REPAIR_DUMP_MAX_CANDIDATE_BYTES="4096")
+        proc = subprocess.Popen(
+            [sys.executable, str(REPAIR)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=env,
+        )
+        try:
+            proc.stdin.write(opener + filler)
+            proc.stdin.flush()
+            ready, _, _ = select.select([proc.stdout], [], [], 15)
+            self.assertTrue(
+                ready, "no output before EOF: the candidate is being buffered whole"
+            )
+            first = os.read(proc.stdout.fileno(), 4096)
+            self.assertTrue(first.startswith(b"INSERT INTO sqlite_schema("))
+            proc.stdin.write(b"');\nPRAGMA writable_schema=OFF;\n")
+            proc.stdin.close()
+            rest = proc.stdout.read()
+            self.assertEqual(proc.wait(timeout=60), 0)
+            self.assertEqual(
+                first + rest, opener + filler + b"');\nPRAGMA writable_schema=OFF;\n"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+
+if __name__ == "__main__":
+    unittest.main()

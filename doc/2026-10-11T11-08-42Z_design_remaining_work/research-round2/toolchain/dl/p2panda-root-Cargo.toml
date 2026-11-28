@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "fuzz",
+    "p2panda",
+    "p2panda-auth",
+    "p2panda-blobs",
+    "p2panda-core",
+    "p2panda-discovery",
+    "p2panda-encryption",
+    "p2panda-net",
+    "p2panda-spaces",
+    "p2panda-store",
+    "p2panda-stream",
+    "p2panda-sync",
+]
+
+[workspace.lints.clippy]
+unused_async = "warn"
+needless_pass_by_ref_mut = "warn"
+
+[workspace.dependencies]
+blake3 = { version = "1.8.5" }
+futures-channel = { version = "0.3.32" }
+futures-test = { version = "0.3.32" }
+futures-util = { version = "0.3.32", default-features = false }
+hex = { version = "0.4.3" }
+mock_instant = { version = "0.6.1" }
+pin-project = { version = "1.1.13" }
+rand = { version = "0.10.1" }
+rand_chacha = { version = "0.10.0" }
+serde = { version = "1.0.228" }
+serde_bytes = { version = "0.11.19" }
+static_assertions = { version = "1.1.0" }
+test-log = { version = "0.2.21" }
+thiserror = { version = "2.0.18" }
+tokio = { version = "1.52.3", default-features = false }
+tokio-stream = { version = "0.1.18", default-features = false }
+tokio-util = { version = "0.7.18" }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23" }
+
+# p2panda workspace
+p2panda = { path = "p2panda", version = "0.7.1", default-features = false }
+p2panda-auth = { path = "p2panda-auth", version = "0.7.1", default-features = false }
+p2panda-core = { path = "p2panda-core", version = "0.7.1", default-features = false }
+p2panda-discovery = { path = "p2panda-discovery", version = "0.7.1", default-features = false }
+p2panda-encryption = { path = "p2panda-encryption", version = "0.7.1", default-features = false }
+p2panda-net = { path = "p2panda-net", version = "0.7.1", default-features = false }
+p2panda-spaces = { path = "p2panda-spaces", version = "0.7.1", default-features = false }
+p2panda-store = { path = "p2panda-store", version = "0.7.1", default-features = false }
+p2panda-stream = { path = "p2panda-stream", version = "0.7.1", default-features = false }
+p2panda-sync = { path = "p2panda-sync", version = "0.7.1", default-features = false }

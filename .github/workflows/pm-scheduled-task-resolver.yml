@@ -1,0 +1,29 @@
+name: pm-scheduled-task-resolver
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Basic-tier contract coverage for explicit scheduled-task validation.
+
+on:
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pm-scheduled-task-resolver-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolver-contract:
+    name: "basic: pm-scheduled task resolver contract (#5738)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run task resolver contract tests
+        run: bash .github/scripts/resolve-pm-scheduled-tasks.test.sh
