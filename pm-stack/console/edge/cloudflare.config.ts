@@ -29,6 +29,11 @@ export default defineConfig({
       // read from D1. Keep in sync with the vars in wrangler.jsonc.
       LEDGER_PAGES: bindings.text("on"),
       LEDGER_STORE: bindings.text("d1"),
+      // The queue transport watch (#13503 slice 2): the broker's
+      // public route the object probes itself. Keep in sync with
+      // wrangler.jsonc. The Access token that may ask it is a pair of
+      // Worker secrets, applied by infra/pm-cloudflare, never here.
+      QUEUE_BROKER_URL: bindings.text("https://queue-broker.security.cab"),
       // The health check verifies the commit currently serving on workers.dev.
       VERSION: bindings.text(processEnv.GITHUB_SHA?.slice(0, 12) ?? "local"),
       PM: bindings.durableObject({ worker: "pm-console-edge", exportName: "PmEdge" }),

@@ -222,6 +222,53 @@ class Apply(unittest.TestCase):
             run(account, "--apply", "--refresh-tokens", state=state)
         self.assertEqual(getattr(account, "asked", 0), 0)
 
+    def test_the_broker_access_pair_rides_along_when_the_environment_holds_it(self):
+        account = Account()
+        run(
+            account,
+            "--apply",
+            env={
+                "PMCF_BROKER_ACCESS_ID": "broker-id-value",
+                "PMCF_BROKER_ACCESS_SECRET": "broker-secret-value",
+            },
+        )
+        self.assertEqual(
+            account.worker_secrets,
+            {
+                "GITHUB_TOKEN": "github-value",
+                "QUEUE_TOKEN": "queue-value",
+                "EDGE_DIRECT": "on",
+                "BRIDGE_TOKEN": "bridge-value",
+                "QUEUE_BROKER_ACCESS_ID": "broker-id-value",
+                "QUEUE_BROKER_ACCESS_SECRET": "broker-secret-value",
+            },
+        )
+        # A second apply with the pair held changes nothing.
+        account.changes = []
+        code = run(
+            account,
+            "--apply",
+            env={
+                "PMCF_BROKER_ACCESS_ID": "broker-id-value",
+                "PMCF_BROKER_ACCESS_SECRET": "broker-secret-value",
+            },
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(account.changes, [])
+        # An environment without the pair leaves the Worker alone, in
+        # silence: no pair uploaded, nothing about it in the changes.
+        account2 = Account()
+        run(account2, "--apply")
+        self.assertNotIn("QUEUE_BROKER_ACCESS_ID", account2.worker_secrets)
+        self.assertNotIn("QUEUE_BROKER_ACCESS_SECRET", account2.worker_secrets)
+        self.assertNotIn("BROKER", "\n".join(account2.changes))
+
+    def test_a_partial_broker_access_pair_refuses_before_cloudflare_writes(self):
+        account = Account()
+        with self.assertRaises(SystemExit):
+            run(account, "--apply", env={"PMCF_BROKER_ACCESS_ID": "broker-id-value"})
+        self.assertEqual(account.order, [])
+
     def test_the_bridge_token_rides_along_when_the_state_holds_it(self):
         account = Account()
         run(account, "--apply")
