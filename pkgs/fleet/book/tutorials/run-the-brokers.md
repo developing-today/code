@@ -160,8 +160,9 @@ The secrets broker in this list behaves exactly as it does alone
   On a sandbox seat (`FLEET_LOCATION=sandbox`) the bind is **forced to
   `127.0.0.1:4800`** at the bind itself, whatever the environment says.
 - It is a resident Bitwarden Secrets Manager **cache**: at startup a
-  background thread runs a full refresh (`bws secret list`, then one
-  `bws secret get` per name, fetched 8-way parallel), then repeats on
+  background thread runs a full refresh (one `bws secret list` call
+  carrying the whole vault, installed atomically and, on later refreshes,
+  applied as a delta against the persisted watermark), then repeats on
   the TTL — `SECRETS_BROKER_TTL_S`, default `900` seconds, minimum `30`.
   An unparseable TTL falls back to 900 with a warning naming the value;
   a parsed TTL below 30 makes startup **refuse to run**, exit `2`,
