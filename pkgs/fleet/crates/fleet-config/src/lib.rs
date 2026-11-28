@@ -614,6 +614,13 @@ pub struct SecretsConfig {
     /// 1Password item field holding the value (`credential` when
     /// unset). Env `FLEET_OP_FIELD` beats this file value.
     pub op_field: Option<String>,
+    /// Whether the `fleet secrets put` dual-write verb is enabled
+    /// (#13948 S5, §8). Default false: the verb ships dark until the
+    /// S6 reconcile loop is live, so no write path exists before drift
+    /// repair does. Env `FLEET_SECRETS_PUT_ENABLED` (`1`/`true`)
+    /// beats this file value; an explicit `false`/`0` in env keeps
+    /// it dark even when the file opts in.
+    pub put_enabled: Option<bool>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -1993,6 +2000,26 @@ impl Config {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string)
+    }
+
+    /// Whether the `fleet secrets put` dual-write verb is enabled
+    /// (#13948 S5, §8): env `FLEET_SECRETS_PUT_ENABLED` beats the
+    /// `[secrets] put_enabled` file value; unset in both places is
+    /// dark (false). Env spellings `1`/`true` (any case, trimmed)
+    /// enable; `0`/`false` disable; any other non-empty env value
+    /// is treated as unset (the file value applies) rather than
+    /// silently enabling a write path.
+    pub fn secrets_put_enabled(&self) -> bool {
+        if let Ok(raw) = std::env::var("FLEET_SECRETS_PUT_ENABLED") {
+            let v = raw.trim().to_ascii_lowercase();
+            if v == "1" || v == "true" {
+                return true;
+            }
+            if v == "0" || v == "false" {
+                return false;
+            }
+        }
+        self.secrets.put_enabled.unwrap_or(false)
     }
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).

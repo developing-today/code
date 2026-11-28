@@ -421,6 +421,70 @@ impl StoreSelection {
 /// secret to name.
 const LIST_PSEUDO_NAME: &str = "names";
 
+/// The pseudo-name a triggered refresh's errors carry: a refresh
+/// names no secret.
+const REFRESH_PSEUDO_NAME: &str = "refresh";
+
+/// The pseudo-name a health read's errors carry: a health probe
+/// names no secret.
+const HEALTH_PSEUDO_NAME: &str = "health";
+
+/// The broker's liveness record (`GET /health`), as the `refresh`
+/// verb reports it (#13948 S5): whether the broker is serving, how
+/// many secrets it holds, whether a refresh is in flight, which leg
+/// served the last completed cycle (`peer`, `upstream-delta`,
+/// `upstream-full`, or `None` before the first success), and the
+/// durable watermark that cycle installed. Names, counts and the
+/// leg only — no values, no hashes, so the record is safe to print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokerHealth {
+    pub serving: bool,
+    pub secrets: usize,
+    pub refreshing: bool,
+    pub refresh_leg: Option<String>,
+    pub last_refresh_unix: Option<u64>,
+}
+
+impl BrokerHealth {
+    /// Parse a `/health` body strictly: `serving`, `secrets` and
+    /// `refreshing` are required (every broker since #13081 serves
+    /// them); `refresh_leg` and `last_refresh_unix` are optional so
+    /// the parse also accepts pre-S5 brokers. A non-string
+    /// `refresh_leg` is a source failure, never silently dropped.
+    pub fn parse(body: &serde_json::Value) -> Result<BrokerHealth, SecretError> {
+        let unavailable = |detail: &str| SecretError::Unavailable {
+            source: "secrets-broker",
+            name: HEALTH_PSEUDO_NAME.to_string(),
+            detail: detail.to_string(),
+        };
+        let serving = body
+            .get("serving")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| unavailable("health reply has no boolean \"serving\" field"))?;
+        let secrets = body
+            .get("secrets")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| unavailable("health reply has no numeric \"secrets\" field"))?;
+        let refreshing = body
+            .get("refreshing")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| unavailable("health reply has no boolean \"refreshing\" field"))?;
+        let refresh_leg = match body.get("refresh_leg") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(leg)) => Some(leg.clone()),
+            Some(_) => return Err(unavailable("health reply has a non-string \"refresh_leg\"")),
+        };
+        let last_refresh_unix = body.get("last_refresh_unix").and_then(|v| v.as_u64());
+        Ok(BrokerHealth {
+            serving,
+            secrets: secrets as usize,
+            refreshing,
+            refresh_leg,
+            last_refresh_unix,
+        })
+    }
+}
+
 /// The broker route a listing in `scope` asks for (#10358 D6). An
 /// unscoped listing never sends the parameter, so it works against old
 /// and new brokers alike.
@@ -654,6 +718,14 @@ impl Resolver {
         Resolver { sources }
     }
 
+    /// The chain's leg names in order (`secrets-broker`, `bws`,
+    /// `op`): the seam `--upstream` / `--no-cache` composition tests
+    /// assert through, and operators debugging a resolution path
+    /// can print.
+    pub fn source_names(&self) -> Vec<&'static str> {
+        self.sources.iter().map(|s| s.source_name()).collect()
+    }
+
     /// The default chain for a resolved fleet config. On a host
     /// where the secrets-broker's own socket answers (the laptop,
     /// #6218), the direct source comes first: there is no session
@@ -743,6 +815,47 @@ impl Resolver {
         }
     }
 
+    /// The upstream chain (#13948 S5, `get --upstream`): the
+    /// primary store and the 1Password mirror, with no broker leg.
+    /// A broker cache miss is never final (read-through), but a
+    /// broker cache HIT can be stale; `--upstream` skips the cache
+    /// entirely and resolves from the stores that the brokers
+    /// themselves refresh from. The `bws` leg is always present; the
+    /// `op` leg joins under the same vault rule as the default
+    /// chain. A vault-scoped `bitwarden` selection scopes the `bws`
+    /// leg to that project, exactly as in [`Resolver::chain_for`].
+    pub fn upstream_chain(config: &fleet_config::Config, selection: &StoreSelection) -> Resolver {
+        let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
+        let bws = match selection.bitwarden_project() {
+            Some(project) => BwsSource::with_project(project.to_string()),
+            None => BwsSource::new(),
+        };
+        sources.push(Box::new(bws));
+        // The mirror leg under the default-chain rule: only where a
+        // vault is named. A `bitwarden` selection excludes it (the
+        // caller asked for one store); any other selection keeps it.
+        let want_op = !matches!(selection.store, StoreKind::Bitwarden);
+        if want_op {
+            if let Some(op) = OpSource::from_config(config) {
+                sources.push(Box::new(op));
+            }
+        }
+        Resolver::new(sources)
+    }
+
+    /// The primary-store-only chain (#13948 S5, `get --no-cache`):
+    /// straight to Bitwarden, bypassing every broker cache AND the
+    /// 1Password mirror. The answer is the commit-point truth (§5.5:
+    /// the primary store is what a put commits to first), never a
+    /// cached or mirrored copy.
+    pub fn primary_only(selection: &StoreSelection) -> Resolver {
+        let bws = match selection.bitwarden_project() {
+            Some(project) => BwsSource::with_project(project.to_string()),
+            None => BwsSource::new(),
+        };
+        Resolver::new(vec![Box::new(bws)])
+    }
+
     /// Resolve a caller's name inside a scope: the name is mapped to
     /// its full stored name once, before any source sees it, so every
     /// source in the chain receives the same full name (D2, D12).
@@ -824,8 +937,21 @@ impl BrokerSource {
     /// connection — the exchange [`BrokerSource::resolve`] and
     /// [`BrokerSource::list_names`] share.
     fn request(&self, path: &str, name: &str) -> Result<Response, SecretError> {
+        self.request_with_method("GET", path, name)
+    }
+
+    /// The same exchange under an explicit HTTP method (#13948 S5):
+    /// `POST /refresh` triggers a broker refresh cycle; the
+    /// session-broker frame carries the method through to the
+    /// secrets broker exactly as it carries the path.
+    fn request_with_method(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<Response, SecretError> {
         let request = Request {
-            method: "GET".to_string(),
+            method: method.to_string(),
             path: path.to_string(),
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
@@ -846,6 +972,53 @@ impl BrokerSource {
             let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
         }
         self.exchange(&mut stream, &request, name)
+    }
+
+    /// Trigger a broker refresh cycle now (#13948 S5, `fleet
+    /// secrets refresh`): the broker runs §5.2/§5.1 out of band
+    /// instead of at the next TTL tick. The broker answers 202 with
+    /// the cycle running in the background; the caller polls
+    /// [`BrokerSource::health`] for `refreshing == false` and reads
+    /// the serving leg there. A 404 means the broker predates the
+    /// refresh route; any other non-2xx is `Unavailable`.
+    pub fn post_refresh(&self) -> Result<(), SecretError> {
+        let response = self.request_with_method("POST", "/refresh", REFRESH_PSEUDO_NAME)?;
+        match response.status {
+            200 | 202 => Ok(()),
+            404 => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: REFRESH_PSEUDO_NAME.to_string(),
+                detail: "broker does not serve POST /refresh (predates #13948 S5)".to_string(),
+            }),
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: REFRESH_PSEUDO_NAME.to_string(),
+                detail: broker_error_detail(status, &response.body),
+            }),
+        }
+    }
+
+    /// The broker's liveness record (`GET /health`, #13948 S5): the
+    /// same unauthenticated probe a heal uses, read here so the
+    /// `refresh` verb can wait out a triggered cycle and report the
+    /// leg that served it.
+    pub fn health(&self) -> Result<BrokerHealth, SecretError> {
+        let response = self.request("/health", HEALTH_PSEUDO_NAME)?;
+        // /health answers 200 serving or 503 still loading — both
+        // carry the record; anything else is a broker failure.
+        match response.status {
+            200 | 503 => BrokerHealth::parse(&response.body),
+            404 => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: HEALTH_PSEUDO_NAME.to_string(),
+                detail: "broker does not serve GET /health".to_string(),
+            }),
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: HEALTH_PSEUDO_NAME.to_string(),
+                detail: broker_error_detail(status, &response.body),
+            }),
+        }
     }
 
     /// The broker's names listing (`GET /secrets` — the endpoint the
@@ -1019,6 +1192,19 @@ impl DirectBrokerSource {
 
     /// One GET exchange over the broker socket: status + JSON body.
     fn get(&self, path: &str, name: &str) -> Result<(u16, serde_json::Value), SecretError> {
+        self.request_raw("GET", path, name)
+    }
+
+    /// One raw HTTP exchange over the broker socket (#13948 S5):
+    /// `GET` as before, plus `POST /refresh` (empty body) for the
+    /// `refresh` verb. `POST` sends `Content-Length: 0` so the
+    /// broker's body gate never waits on bytes that never come.
+    fn request_raw(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<(u16, serde_json::Value), SecretError> {
         use std::io::{Read, Write};
         let unavailable = |detail: String| SecretError::Unavailable {
             source: "secrets-broker",
@@ -1049,10 +1235,17 @@ impl DirectBrokerSource {
         // #14188: the caller's FLEET_CTX_* record as X-Fleet-Ctx-*
         // headers (empty when there is no context).
         let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
-            token.trim()
-        );
+        let req = if method == "POST" {
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Content-Length: 0\r\nConnection: close\r\n\r\n",
+                token.trim()
+            )
+        } else {
+            format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
+                token.trim()
+            )
+        };
         stream
             .write_all(req.as_bytes())
             .map_err(|e| unavailable(e.to_string()))?;
@@ -1071,6 +1264,46 @@ impl DirectBrokerSource {
         let body: serde_json::Value =
             serde_json::from_str(parts.next().unwrap_or("")).unwrap_or(serde_json::Value::Null);
         Ok((status, body))
+    }
+
+    /// Trigger a broker refresh cycle now over the direct socket
+    /// (#13948 S5): the same `POST /refresh` the session-broker leg
+    /// sends, without the framed hop. Status mapping matches
+    /// [`BrokerSource::post_refresh`].
+    pub fn post_refresh(&self) -> Result<(), SecretError> {
+        let (status, body) = self.request_raw("POST", "/refresh", REFRESH_PSEUDO_NAME)?;
+        match status {
+            200 | 202 => Ok(()),
+            404 => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: REFRESH_PSEUDO_NAME.to_string(),
+                detail: "broker does not serve POST /refresh (predates #13948 S5)".to_string(),
+            }),
+            _ => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: REFRESH_PSEUDO_NAME.to_string(),
+                detail: broker_error_detail(status, &body),
+            }),
+        }
+    }
+
+    /// The broker's liveness record over the direct socket (#13948
+    /// S5): same parse as [`BrokerSource::health`].
+    pub fn health(&self) -> Result<BrokerHealth, SecretError> {
+        let (status, body) = self.get("/health", HEALTH_PSEUDO_NAME)?;
+        match status {
+            200 | 503 => BrokerHealth::parse(&body),
+            404 => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: HEALTH_PSEUDO_NAME.to_string(),
+                detail: "broker does not serve GET /health".to_string(),
+            }),
+            _ => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: HEALTH_PSEUDO_NAME.to_string(),
+                detail: broker_error_detail(status, &body),
+            }),
+        }
     }
 
     /// The broker's names listing over the direct socket -- the
@@ -2012,6 +2245,215 @@ impl SecretSource for OpSource {
             return Err(unavailable("op read: empty value".to_string()));
         }
         Ok(SecretValue(value))
+    }
+}
+
+/// The 1Password capability spike (#13948 S5, design §3 + §7-S5):
+/// what this seat can do with `op`, established WITHOUT reading
+/// any item value. `op item list` returns metadata only (titles,
+/// ids, timestamps) and `op account list` names configured
+/// accounts; neither call touches a vault item's fields, so the
+/// probe never sees secret material.
+///
+/// Live result, laptop seat, 2026-11-28: the `op` CLI is present
+/// (2.41.1) but reports "No accounts configured for use with
+/// 1Password CLI" and no `OP_SERVICE_ACCOUNT_TOKEN` is set in a
+/// plain shell, so `mirror_write_ready` is false there — exactly
+/// the design's documented unverified premise. The mirror write
+/// path is therefore built dark (never attempted while the probe
+/// fails) with the failure recorded as `propagation pending` for
+/// the S6 reconcile, and open design question 4 (write identity:
+/// service account vs desktop-integration session) stays with
+/// Archer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpCapability {
+    /// An `op` binary resolves and runs.
+    pub cli_present: bool,
+    /// `op account list` succeeds: at least one account (or a
+    /// service-account token the CLI accepts) is configured.
+    pub account_configured: bool,
+    /// `OP_SERVICE_ACCOUNT_TOKEN` names a non-empty token in this
+    /// environment (self-loaded by [`OpTokenRunner`]).
+    pub service_account_token: bool,
+    /// A mirror vault is named (`FLEET_OP_VAULT` / `[secrets]
+    /// vault` / `[secrets] op_vault`), so a write would know where
+    /// to go.
+    pub vault_named: bool,
+}
+
+impl OpCapability {
+    /// Whether a mirror write may be attempted: CLI present, an
+    /// account configured, and a vault named. The service-account
+    /// token is informational (an account session can also authorize
+    /// the write), so it never gates. Anything less records
+    /// `propagation pending` instead of failing the put (§5.5).
+    pub fn mirror_write_ready(&self) -> bool {
+        self.cli_present && self.account_configured && self.vault_named
+    }
+
+    /// Build a capability from four metadata-only observations, so
+    /// the readiness rule is pinned by unit tests without spawning
+    /// a child.
+    pub fn from_observations(
+        cli_present: bool,
+        account_configured: bool,
+        service_account_token: bool,
+        vault_named: bool,
+    ) -> OpCapability {
+        OpCapability {
+            cli_present,
+            account_configured,
+            service_account_token,
+            vault_named,
+        }
+    }
+}
+
+/// Probe this seat's 1Password capability: one `op --version`
+/// (presence), one `op account list --format json` (metadata only,
+/// never an item value), plus the token/vault environment. The
+/// runner is the same [`OpTokenRunner`] discipline reads use, so
+/// the probe observes exactly the credential a read would carry.
+pub fn probe_op_capability() -> OpCapability {
+    let runner = OpTokenRunner::from_environment();
+    let cli_present = runner.run("op", &["--version"]).is_ok();
+    let account_configured = cli_present
+        && runner
+            .run("op", &["account", "list", "--format", "json"])
+            .is_ok();
+    let service_account_token = op_service_account_token()
+        .is_some_and(|t| !t.trim().is_empty());
+    let vault_named = std::env::var(OpSource::VAULT_ENV)
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty());
+    OpCapability::from_observations(
+        cli_present,
+        account_configured,
+        service_account_token,
+        vault_named,
+    )
+}
+
+/// The 1Password mirror-write end of a `put` dual-write (#13948 S5,
+/// §5.5): the primary commit goes to Bitwarden first and the mirror
+/// follows, never the reverse, so a mirror failure degrades to
+/// `propagation pending` for the S6 reconcile instead of failing
+/// the put.
+///
+/// UNVERIFIED SPIKE (open design question 4, with Archer): no seat
+/// with a configured account was available — the laptop seat that
+/// ran the S5 spike has the CLI but no account — so the exact
+/// create/edit argv below has never run against a live vault. The
+/// verb ships dark ([secrets] `put_enabled` /
+/// `FLEET_SECRETS_PUT_ENABLED`) until the S6 reconcile is live; by
+/// then this path must have a live-spike receipt or it stays off.
+/// Unit tests pin the argv shape through the fake-runner seam only.
+///
+/// Secret handling: the value travels as one `field=value` argv
+/// entry — visible in the process list while the child runs. The
+/// primary path never takes values on argv; this mirror path
+/// accepts the narrower exposure because `op` offers no
+/// stdin-value form for item fields, and says so here so S6 can
+/// revisit it (write identity + argv exposure, open question 4).
+pub struct OpStore {
+    runner: Box<dyn CommandRunner>,
+    vault: String,
+    field: String,
+}
+
+impl OpStore {
+    /// The same vault/field rule reads use: `FLEET_OP_VAULT` /
+    /// `FLEET_OP_FIELD` beat `[secrets] op_vault` / `op_field`.
+    /// None names no vault — mirror writes are impossible, which
+    /// the caller reports as `propagation pending`, never an error.
+    pub fn from_config(config: &fleet_config::Config) -> Option<OpStore> {
+        let vault = OpSource::from_config(config)?.vault().to_string();
+        let field = config
+            .secrets_op_field()
+            .unwrap_or_else(|| OpSource::DEFAULT_FIELD.to_string());
+        Some(OpStore {
+            runner: Box::new(OpTokenRunner::from_environment()),
+            vault,
+            field,
+        })
+    }
+
+    /// The fake-runner seam unit tests pin the argv shape through.
+    pub fn with_runner(runner: Box<dyn CommandRunner>, vault: String, field: String) -> OpStore {
+        OpStore {
+            runner,
+            vault,
+            field,
+        }
+    }
+
+    /// Whether this store names the item `name` (titles only —
+    /// metadata, never values — the same discipline as
+    /// [`OpSource::list_names`]).
+    fn item_exists(&self, name: &str) -> Result<bool, SecretError> {
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op-store",
+            name: name.to_string(),
+            detail,
+        };
+        let raw = self
+            .runner
+            .run("op", &["item", "list", "--vault", &self.vault, "--format", "json"])
+            .map_err(|d| unavailable(format!("op item list: {d}")))?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| unavailable("op item list: output is not JSON".to_string()))?;
+        let items = parsed
+            .as_array()
+            .ok_or_else(|| unavailable("op item list: output is not a JSON array".to_string()))?;
+        for item in items {
+            let title = item.get("title").and_then(|t| t.as_str()).ok_or_else(|| {
+                unavailable("op item list: an item has no string \"title\"".to_string())
+            })?;
+            if title == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Store `value` under item `name`: edit the field on the
+    /// existing item, or create a `password`-category item carrying
+    /// it. The name is validated exactly as reads validate it; the
+    /// value is stored exactly as given.
+    pub fn store(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op-store",
+            name: name.to_string(),
+            detail,
+        };
+        let assignment = format!("{}={}", self.field, value);
+        let (op, args): (&str, Vec<&str>) = if self.item_exists(name)? {
+            (
+                "edit",
+                vec!["item", "edit", "--vault", &self.vault, name, &assignment],
+            )
+        } else {
+            (
+                "create",
+                vec![
+                    "item",
+                    "create",
+                    "--category",
+                    "password",
+                    "--vault",
+                    &self.vault,
+                    "--title",
+                    name,
+                    &assignment,
+                ],
+            )
+        };
+        self.runner
+            .run("op", &args)
+            .map(|_| ())
+            .map_err(|d| unavailable(format!("op item {op}: {d}")))?;
+        Ok(())
     }
 }
 
@@ -3959,5 +4401,168 @@ mod tests {
                 None => std::env::remove_var("FLEET_OP_FIELD"),
             }
         }
+    }
+
+    // ---- S5 client surface (#13948 §5.4) ----
+
+    #[test]
+    fn op_capability_readiness_needs_every_leg() {
+        // All four observations present: a mirror write may be
+        // attempted.
+        assert!(
+            OpCapability::from_observations(true, true, true, true).mirror_write_ready()
+        );
+        // Any single gating leg missing: the put records propagation
+        // pending instead of attempting the mirror write (§5.5). The
+        // service-account token is informational (an account session
+        // can also authorize the write), so it alone never gates.
+        for missing in [0, 1, 3] {
+            let mut legs = [true, true, true, true];
+            legs[missing] = false;
+            assert!(
+                !OpCapability::from_observations(legs[0], legs[1], legs[2], legs[3])
+                    .mirror_write_ready(),
+                "leg {missing} missing must keep the mirror write off"
+            );
+        }
+        assert!(
+            OpCapability::from_observations(true, true, false, true).mirror_write_ready(),
+            "token alone is informational, not gating"
+        );
+        // The live spike shape (2026-11-28 laptop seat: CLI present,
+        // no account, no token, no vault) is not ready.
+        assert!(
+            !OpCapability::from_observations(true, false, false, false).mirror_write_ready()
+        );
+    }
+
+    #[test]
+    fn broker_health_parse_accepts_s5_and_pre_s5_bodies() {
+        // A current broker: leg present, watermark installed.
+        let body = serde_json::json!({
+            "ok": true,
+            "serving": true,
+            "secrets": 42,
+            "last_refresh_unix": 1700000000u64,
+            "refreshing": false,
+            "refresh_progress": null,
+            "refresh_leg": "upstream-delta",
+            "oldest_secret_age_seconds": 7,
+        });
+        assert_eq!(
+            BrokerHealth::parse(&body).unwrap(),
+            BrokerHealth {
+                serving: true,
+                secrets: 42,
+                refreshing: false,
+                refresh_leg: Some("upstream-delta".to_string()),
+                last_refresh_unix: Some(1700000000),
+            }
+        );
+        // A pre-S5 broker: no refresh_leg, no watermark yet — the
+        // parse still succeeds with both as None.
+        let body = serde_json::json!({
+            "ok": false,
+            "serving": false,
+            "secrets": 0,
+            "last_refresh_unix": null,
+            "refreshing": true,
+            "refresh_progress": {"started_unix": 1, "fetched": 2, "total": 9},
+        });
+        assert_eq!(
+            BrokerHealth::parse(&body).unwrap(),
+            BrokerHealth {
+                serving: false,
+                secrets: 0,
+                refreshing: true,
+                refresh_leg: None,
+                last_refresh_unix: None,
+            }
+        );
+        // An explicit null leg is None, not an error.
+        let body = serde_json::json!({
+            "serving": true,
+            "secrets": 1,
+            "refreshing": false,
+            "refresh_leg": null,
+        });
+        assert_eq!(BrokerHealth::parse(&body).unwrap().refresh_leg, None);
+        // A non-string leg is a source failure, never silently
+        // dropped: the caller must not misreport the serving leg.
+        let body = serde_json::json!({
+            "serving": true,
+            "secrets": 1,
+            "refreshing": false,
+            "refresh_leg": 7,
+        });
+        assert!(BrokerHealth::parse(&body).is_err());
+        // A body missing the required liveness fields is a source
+        // failure, never a defaulted guess.
+        let body = serde_json::json!({"refreshing": false});
+        assert!(BrokerHealth::parse(&body).is_err());
+    }
+
+    #[test]
+    fn op_store_edits_the_existing_item_and_creates_the_missing_one() {
+        // The argv shape is pinned but has no live-spike receipt
+        // (open design question 4): these tests prove what the dark
+        // verb WOULD run, not that a vault accepts it.
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let present =
+            OpStore::with_runner(Box::new(FakeOpList(calls.clone())), "vault-a".into(), "credential".into());
+        present.store("alpha", "s3cr3t").unwrap();
+        let calls = calls.lock().unwrap();
+        // First the metadata-only existence check, then the edit.
+        assert_eq!(calls[0], ["item", "list", "--vault", "vault-a", "--format", "json"]);
+        assert_eq!(
+            calls[1],
+            ["item", "edit", "--vault", "vault-a", "alpha", "credential=s3cr3t"]
+        );
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let missing =
+            OpStore::with_runner(Box::new(FakeOpList(calls.clone())), "vault-a".into(), "credential".into());
+        missing.store("gamma", "s3cr3t").unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[1][..7], ["item", "create", "--category", "password", "--vault", "vault-a", "--title"]);
+        assert_eq!(calls[1][7], "gamma");
+        assert_eq!(calls[1][8], "credential=s3cr3t");
+    }
+
+    #[test]
+    fn op_store_refuses_bad_names_before_spawning() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store =
+            OpStore::with_runner(Box::new(FakeOpList(calls.clone())), "vault-a".into(), "credential".into());
+        assert!(store.store("", "s3cr3t").is_err());
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn upstream_chain_skips_broker_legs_but_keeps_stores() {
+        let config = fleet_config::Config::default();
+        let auto = StoreSelection::auto();
+        // No vault named in this environment's config: bws only, no
+        // broker leg, no op leg.
+        let names = Resolver::upstream_chain(&config, &auto).source_names();
+        assert!(!names.contains(&"secrets-broker"), "upstream skips caches: {names:?}");
+        assert!(names.contains(&"bws"), "upstream keeps the primary: {names:?}");
+        assert!(!names.contains(&"op"), "no vault, no mirror leg: {names:?}");
+        // A bitwarden project selection scopes the single bws leg.
+        let project = StoreSelection::from_flags_and_config(Some("bitwarden"), Some("proj-1"), &config)
+            .unwrap();
+        assert_eq!(
+            Resolver::upstream_chain(&config, &project).source_names(),
+            ["bws"]
+        );
+        assert_eq!(
+            Resolver::primary_only(&project).source_names(),
+            ["bws"],
+            "no-cache is the commit-point truth only"
+        );
+        assert_eq!(
+            Resolver::primary_only(&auto).source_names(),
+            ["bws"]
+        );
     }
 }

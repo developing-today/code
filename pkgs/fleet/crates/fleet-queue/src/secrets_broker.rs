@@ -17,11 +17,15 @@
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
 //!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
-//!                          refresh_progress, oldest_secret_age_seconds}
+//!                          refresh_leg, refresh_progress, oldest_secret_age_seconds}
 //!                          | 503 while `serving` is false (no successful
 //!                          refresh yet, #10868). While a refresh is in
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
+//!                          refresh_leg names the leg that served the last
+//!                          completed cycle (peer | upstream-delta |
+//!                          upstream-full, #13948 S5); null before the
+//!                          first success.
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secrets?prefix=P -> {names: [...]} holding only names that
 //!                          start with `P.` (#10358 D6); an empty
@@ -134,6 +138,14 @@ struct State {
     /// construction (BwsRunner discipline): never vault material.
     last_refresh_error: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
+    /// Which leg served the last completed refresh cycle (#13948
+    /// S5): `peer` (adopted from or confirmed-equal with the
+    /// laptop broker), `upstream-delta` (a watermarked `bws`
+    /// refresh), or `upstream-full` (a cold-start full `bws`
+    /// refresh). `None` before the first success. `/health`
+    /// publishes it so the `refresh` verb can report the leg and a
+    /// heal can see which path the broker actually draws from.
+    refresh_leg: RwLock<Option<String>>,
     /// The in-flight refresh's progress (#13081): when it started,
     /// how many of the vault's fetches it has completed, and how
     /// many the authoritative list carries. Present only while a
@@ -369,6 +381,9 @@ fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
                 started.elapsed().as_millis()
             ),
         );
+        // The set already matches the peer: the cycle was served by
+        // the peer leg even though nothing was installed.
+        *state.refresh_leg.write().unwrap() = Some("peer".to_string());
         return Ok(Some(local_count));
     }
     if peer_watermark.is_none_or(|peer| local_watermark.is_some_and(|local| peer <= local)) {
@@ -409,6 +424,7 @@ fn peer_sync(state: &Arc<State>) -> Result<Option<usize>, String> {
     drop(projects);
     let watermark = peer_watermark.unwrap();
     *state.last_refresh.write().unwrap() = Some(watermark);
+    *state.refresh_leg.write().unwrap() = Some("peer".to_string());
     if let Err(e) = persist_watermark(watermark) {
         crate::log::info(
             "secrets-broker",
@@ -736,6 +752,18 @@ fn apply_delta_refresh(
     // compares and adopts it): refresh-start minus the skew overlap.
     // No second un-skewed timestamp is kept for peer comparison.
     *state.last_refresh.write().unwrap() = Some(watermark_new);
+    // The serving leg (#13948 S5): a cycle with no prior watermark
+    // installed the whole vault (cold start), anything else applied
+    // a watermarked delta. Recorded beside the watermark advance so
+    // every upstream install — background loop or manual POST
+    // /refresh — reports its leg through /health.
+    *state.refresh_leg.write().unwrap() = Some(
+        if watermark.is_none() {
+            "upstream-full".to_string()
+        } else {
+            "upstream-delta".to_string()
+        },
+    );
     DeltaOutcome {
         applied,
         deleted,
@@ -863,6 +891,9 @@ fn install_list_refresh(state: &Arc<State>, items: &[(String, String, String)], 
     let total = secrets.len();
     *state.secrets.write().unwrap() = secrets;
     *state.last_refresh.write().unwrap() = Some(now);
+    // A full-load install is the upstream-full leg (#13948 S5), same
+    // as a cold-start delta cycle with no prior watermark.
+    *state.refresh_leg.write().unwrap() = Some("upstream-full".to_string());
     total
 }
 
@@ -1082,6 +1113,11 @@ fn handle_request(
             .max();
         let last_refresh_unix = state.last_refresh.read().unwrap().clone();
         let serving = last_refresh_unix.is_some();
+        // The serving leg (#13948 S5): which path the last completed
+        // cycle drew from, None before the first success. Names only
+        // — no values, no hashes — so it rides the unauthenticated
+        // probe safely.
+        let refresh_leg = state.refresh_leg.read().unwrap().clone();
         // The in-flight refresh's progress (#13081): an object
         // while a refresh is running, null when idle, so a heal
         // reading this body can apply the refreshing-aware
@@ -1101,6 +1137,7 @@ fn handle_request(
                 "secrets": state.secrets.read().unwrap().len(),
                 "last_refresh_unix": last_refresh_unix,
                 "refreshing": *state.refreshing.read().unwrap(),
+                "refresh_leg": refresh_leg,
                 "refresh_progress": refresh_progress,
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
@@ -1345,6 +1382,7 @@ pub fn run() -> i32 {
         peer_token: token.clone(),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
+        refresh_leg: RwLock::new(None),
         refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
         projects: RwLock::new(HashMap::new()),
@@ -1591,6 +1629,7 @@ mod tests {
             peer_token: "tok".into(),
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
+            refresh_leg: RwLock::new(None),
             refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
             projects: RwLock::new(HashMap::new()),
@@ -1616,6 +1655,36 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["serving"], true);
         assert_eq!(body["ok"], true);
+    }
+
+    #[test]
+    fn health_publishes_the_serving_leg_once_a_cycle_completes() {
+        // oracle (#13948 S5): before the first success the leg is
+        // absent (null), so a `refresh` waiter polls on
+        // `refreshing` and reads the leg only after it settles; a
+        // completed delta cycle reports `upstream-delta`, a
+        // cold-start cycle `upstream-full`.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_leg"], serde_json::Value::Null);
+
+        // A watermarked cycle applies a delta ...
+        let entries = parse_delta_entries(&serde_json::json!([
+            {"key": "a", "id": "id-a", "value": "va", "revisionDate": "2026-01-01T00:00:00Z"},
+        ]))
+        .unwrap();
+        apply_delta_refresh(&state, &entries, Some(1), 10, 9);
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_leg"], "upstream-delta");
+
+        // ... while a cold-start cycle with no prior watermark is a
+        // full install.
+        let fresh = empty_state();
+        *fresh.last_refresh.write().unwrap() = None;
+        apply_delta_refresh(&fresh, &entries, None, 10, 9);
+        let (_, body) = handle_request(&fresh, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_leg"], "upstream-full");
     }
 
     #[test]
