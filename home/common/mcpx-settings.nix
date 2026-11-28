@@ -158,6 +158,9 @@
         "mcp"
       ];
       "command" = "go";
+      "mcpx" = {
+        "scope" = "worktree";
+      };
     };
     "github" = {
       "args" = [ "stdio" ];
