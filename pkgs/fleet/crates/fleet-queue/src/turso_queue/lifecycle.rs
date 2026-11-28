@@ -2084,6 +2084,41 @@ pub(crate) fn park_required_budget(
     None
 }
 
+/// #9178 §2 (FDR-0002): the live manual-claim override a park must
+/// honor. Returns the recorded audit when the row carries a
+/// `result.manual_override` bound to the CURRENT claim and the
+/// incoming park's (wait_kind, ready_condition) equals the recorded
+/// previous pair — the owner already overrode exactly this
+/// condition, so a boot-time re-park for it must refuse. Anything
+/// else (no audit, a materially new condition, or a stale marker
+/// from an earlier claim — every claim stamps a fresh claimed_at,
+/// so the audit's claimed_at only matches the live claim) parks as
+/// before.
+pub(crate) fn manual_override_park_cover(
+    row: &Value,
+    wait_kind: &str,
+    condition: &Value,
+) -> Option<Value> {
+    let audit = row.get("result")?.get("manual_override")?;
+    if !audit.is_object() {
+        return None;
+    }
+    if audit.get("claimed_at") != row.get("claimed_at") {
+        return None;
+    }
+    if audit.get("previous_wait_kind").and_then(Value::as_str) != Some(wait_kind) {
+        return None;
+    }
+    if audit
+        .get("previous_ready_condition")
+        .unwrap_or(&Value::Null)
+        != condition
+    {
+        return None;
+    }
+    Some(audit.clone())
+}
+
 pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -2142,6 +2177,41 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     // is later than the park's lapse term raises the lapse term —
     // the park must not resume into the unchanged condition.
     let (not_before, park_kind) = apply_time_condition_floor(&condition, not_before, park_kind);
+    // #9178 §2 (FDR-0002): a worker booting under a manual claim
+    // must not immediately re-park the task for the same unchanged
+    // condition the owner overrode. The cover binds to the live
+    // claim via claimed_at, so a stale marker from an earlier claim
+    // is inert and a materially new condition still parks.
+    if let Some(audit) = manual_override_park_cover(&row, wk, &condition) {
+        let detail = json!({
+            "reason": reason, "status": "claimed",
+            "via": "park_task", "refusal": "manual_override_honored",
+            "wait_kind": wk, "ready_condition": condition,
+            "manual_override": audit,
+        });
+        let _ = event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "park_refused",
+            &with_marks(&detail, &row),
+        );
+        return fail(
+            5,
+            format!(
+                "park_task: task {task_id} keeps its manual-claim override ({} at {}, reason: {}) — the recorded wait condition ({wk}) is unchanged, so the park is refused; a materially new condition may still park it",
+                audit
+                    .get("worker_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                audit
+                    .get("claimed_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                audit.get("reason").and_then(Value::as_str).unwrap_or("?"),
+            ),
+        );
+    }
     // #3418: the budget requirement this park records (explicit in
     // the request, or defaulted from the packet timebox for a
     // capacity wait). A capacity park stays timer-floored as
@@ -4046,6 +4116,97 @@ mod manual_claim_override_audit_tests {
         let after = get_task(&t, id).unwrap().expect("live claim remains");
         assert_eq!(after["worker_id"], "max-attempt-worker");
         assert_eq!(after["attempts"], 5);
+    }
+
+    #[test]
+    fn first_boot_honors_manual_override_same_condition_repark_refused_9178() {
+        // Oracle for #9178 §2's remaining criterion (FDR-0002): the
+        // boot trap — a worker booting under a manual claim whose
+        // supervision re-parks for the UNCHANGED recorded condition
+        // must keep the task claimed, with the honored override on
+        // the refusal record. A materially new condition may still
+        // park it, and the new condition is recorded.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91785)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            &t,
+            &json!({"worker": "boot-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        let condition = json!({"kind": "dependency", "on": ["queue:42"]});
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "waiting on dependency", "ready_condition": condition.clone(),
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "boot-worker", "queue": QUEUE, "task_id": id,
+                "session_id": "ses_boot_override",
+                "manual_override": "dependency independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["attempts"], 1);
+        let audit = row["result"]["manual_override"].clone();
+        assert_eq!(audit["previous_wait_kind"], "external");
+        assert_eq!(audit["previous_ready_condition"], condition);
+
+        // First boot: supervision re-evaluates the unchanged
+        // condition and re-parks. The override holds.
+        let boot = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "waiting on dependency", "ready_condition": condition.clone(),
+            }),
+        );
+        assert_eq!(
+            boot["ok"], false,
+            "same-condition re-park under a live manual override must refuse: {boot}"
+        );
+        assert!(
+            boot["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("manual-claim override")),
+            "{boot}"
+        );
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["worker_id"], "boot-worker");
+        assert_eq!(row["attempts"], 1);
+        assert_eq!(row["result"]["manual_override"], audit);
+        let refusals = events_for(&t, id, "park_refused");
+        assert_eq!(refusals.len(), 1, "one recorded refusal");
+        let detail: Value = serde_json::from_str(refusals[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["refusal"], "manual_override_honored");
+        assert_eq!(detail["manual_override"], audit);
+
+        // A materially new condition may still park, and records
+        // itself.
+        let new_condition = json!({"kind": "review", "by": "owner"});
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "needs owner review", "ready_condition": new_condition.clone(),
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+        let row = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["wait_kind"], "review");
+        assert_eq!(row["ready_condition"], new_condition);
+        assert_eq!(row["result"]["park_reason"], "needs owner review");
     }
 
     #[test]
