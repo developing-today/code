@@ -7,48 +7,6 @@
 
 use super::*;
 
-/// #16007: whether this triage filing is the recovery filing for a
-/// completed triage whose fix follow-on failed or was cancelled.
-/// The follow-on's statuses come from the work-identity match (any
-/// queue), falling back to the exact follow-on dedupe key in this
-/// queue when no identity-matched follow-on exists (a follow-on
-/// whose payload carries no work identity). Only a triage filing
-/// can be a recovery filing; every other kind returns false and
-/// keeps the #13091 completed-work absorption.
-pub(crate) fn triage_recovery_filing(
-    t: &TursoBackend,
-    queue: &str,
-    kind: &str,
-    dedupe_key: Option<&str>,
-    identity: Option<&WorkIdentity>,
-) -> Result<bool, TErr> {
-    if kind != "triage" {
-        return Ok(false);
-    }
-    let mut statuses: Vec<String> = match identity {
-        Some(ident) => triage_follow_on_statuses(t, ident)?,
-        None => Vec::new(),
-    };
-    if statuses.is_empty() {
-        if let Some(fix_key) = dedupe_key.and_then(follow_on_key) {
-            let rows = t.query_objs(
-                &format!(
-                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
-                     ORDER BY id ASC"
-                ),
-                &[Arg::Text(queue.to_string()), Arg::Text(fix_key)],
-                &TASK_JSON_COLS,
-            )?;
-            statuses = rows
-                .iter()
-                .filter_map(|r| r.get("status").and_then(|v| v.as_str()).map(str::to_string))
-                .collect();
-        }
-    }
-    let refs: Vec<&str> = statuses.iter().map(String::as_str).collect();
-    Ok(triage_recovery_needed(&refs))
-}
-
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
     let metadata = req.get("metadata").cloned().unwrap_or_else(|| json!({}));
@@ -175,31 +133,32 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             // revive-on-enqueue (#6838), and a declared
             // dedupe_override still files its deliberate parallel
             // below, revive bookkeeping included.
+            // #16349: triage is the exception — a triage completion
+            // is not the issue being done (#7016 doctrine: the issue
+            // goes back in the queue as a fix follow-on unless triage
+            // exited it), so a triage re-file over a done predecessor
+            // is a reassessment, never re-served work. It always
+            // falls through and files a fresh claimable triage task
+            // (revive bookkeeping below links it to this
+            // predecessor). No fix work is re-served: a fix
+            // follow-on the re-triage files carries the deterministic
+            // fix key, still absorbed by this same rule; a closed
+            // issue retires the revival at claim time (#10626).
+            // #16007's narrower recovery (failed/cancelled/missing
+            // follow-on only) is subsumed: a done follow-on with the
+            // issue still open leaves the issue ownerless the same
+            // way, and only the re-triage verdict reconciles it.
             if override_reason.is_none() {
                 if let Some(row) = terminal
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    // #16007: a COMPLETED triage predecessor is not
-                    // completed issue work when its fix follow-on
-                    // failed or was cancelled and no live or
-                    // completed follow-on covers the issue — the
-                    // reconciliation re-filing IS the recovery path,
-                    // so it falls through and files a fresh claimable
-                    // triage task (revive bookkeeping below links it
-                    // to this predecessor) instead of being absorbed.
                     let kind = task
                         .get("payload")
                         .and_then(|p| p.get("kind"))
                         .and_then(|k| k.as_str())
                         .unwrap_or("");
-                    if !triage_recovery_filing(
-                        t,
-                        &queue,
-                        kind,
-                        Some(dk.as_str()),
-                        identity.as_ref(),
-                    )? {
+                    if kind != "triage" {
                         // #10627: the absorption itself is #13091's
                         // standing rule; what was missing is the report.
                         // Name the terminal match in the envelope so a
@@ -237,25 +196,22 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             // broker knows its own completions locally; no probe
             // is involved. Failed and cancelled holders still
             // never block a filing.
-            // #16007: the same triage recovery exception as the
-            // dedupe-key check above — a completed triage holder
-            // whose fix follow-on failed or was cancelled (and no
-            // live or completed follow-on covers the issue) does not
-            // absorb a same-work-identity re-filing either; the
+            // #16349: the same triage exception as the dedupe-key
+            // check above — a completed triage holder never absorbs
+            // a same-work-identity triage re-filing either; the
             // filing falls through and creates the fresh claimable
             // triage task reconciliation needs.
-            let triage_recovery =
-                triage_recovery_filing(t, &queue, kind, dedupe.as_deref(), Some(ident))?;
-            if let Some(holder) = done_identity_holder(t, ident, kind)?.filter(|_| !triage_recovery)
-            {
-                let mut detail = collision_detail(&holder, ident);
-                detail["rule"] = json!("done_work_identity");
-                detail["hint"] = json!(
-                    "this work already completed under another task; a completed \
-                     task is never re-served (#13091) — file with \
-                     payload.dedupe_override=\"<reason>\" for a deliberate parallel"
-                );
-                return Ok((holder, None, Some(detail), None));
+            if kind != "triage" {
+                if let Some(holder) = done_identity_holder(t, ident, kind)? {
+                    let mut detail = collision_detail(&holder, ident);
+                    detail["rule"] = json!("done_work_identity");
+                    detail["hint"] = json!(
+                        "this work already completed under another task; a completed \
+                         task is never re-served (#13091) — file with \
+                         payload.dedupe_override=\"<reason>\" for a deliberate parallel"
+                    );
+                    return Ok((holder, None, Some(detail), None));
+                }
             }
         }
         let ins = t.exec(

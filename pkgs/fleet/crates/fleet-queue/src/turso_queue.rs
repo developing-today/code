@@ -1094,6 +1094,188 @@ mod tests {
         );
     }
 
+    /// A #16349-shaped triage packet: the production shape of
+    /// packet_13091 but kind triage with a matching :triage: key
+    /// (triage timebox 20, payload labels set so the mirror
+    /// enrichment — and its backend call — is skipped).
+    fn packet_16349(issue: i64) -> Value {
+        let mut p = packet_13091(issue);
+        p["dedupe_key"] =
+            json!(format!("repo-health:v1:triage:developing-today/code:issue:{issue}"));
+        p["payload"]["kind"] = json!("triage");
+        p["payload"]["timebox_minutes"] = json!(20);
+        p
+    }
+
+    fn payload_16349(issue: i64) -> Value {
+        packet_16349(issue)["payload"].clone()
+    }
+
+    #[test]
+    fn enqueue_triage_after_completion_on_the_same_key_revives_16349() {
+        // #16349 monitor scenario, no fix follow-on ever landed:
+        // a triage re-file is a reassessment, not re-served work.
+        // Over a done predecessor with the same key the broker
+        // files a fresh queued row with the revived_from link (the
+        // #6838 revive path; #16007 recovery), instead of returning
+        // the done row the way #13091 requires for fix packets.
+        // The fix-key route answers the recovery check's follow-on
+        // lookup: no fix follow-on exists, so nothing covers the
+        // issue and the re-file revives.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![]),
+            ),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_16349(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["revived_from"]["task_id"], 4242, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done triage predecessor must revive, not absorb: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_triage_after_completion_under_another_key_revives_16349() {
+        // The identity twin of the same-key rule: a done triage
+        // holder under a different key must not absorb a triage
+        // re-file either. The stub answers the done-identity lookup
+        // with the holder itself, so only a skipped lookup files.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283:dispatch:0123abcd",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![]),
+            ),
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_16349(10283);
+        packet["dedupe_key"] =
+            json!("repo-health:v1:triage:developing-today/code:issue:10283:dispatch:0123abcd");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert!(
+            out.get("work_identity_collision").is_none(),
+            "no done holder absorbs a triage re-file: {out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done triage identity holder must not absorb: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_triage_after_done_follow_on_revives_16349() {
+        // #16349 remainder beyond #16007: the fix follow-on already
+        // completed, but the issue is still open and labelled
+        // queue/queued with no live task, so the monitor re-files
+        // triage. A done fix is not the issue being done — the
+        // re-triage is the reassessment the label asks for, and its
+        // verdict (already-resolved or still-open) is what finally
+        // reconciles the label. The broker files a fresh queued row;
+        // no fix work is re-served (a follow-on the re-triage files
+        // carries the deterministic fix key, still absorbed by the
+        // #13091 done-fix rule) and a closed issue retires the
+        // revival at claim time (#10626).
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let done_fix = task_row_13091(
+            4244,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![done_fix.clone()]),
+            ),
+            ("= 'small_fix'", task_select_reply_13091(vec![done_fix])),
+            (
+                "dedupe_key = ?",
+                task_select_reply_13091(vec![done_triage]),
+            ),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_16349(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["revived_from"]["task_id"], 4242, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done fix follow-on must not block triage reassessment: {bodies:?}"
+        );
+    }
+
     #[test]
     fn enqueue_terminal_key_match_reports_dedupe_match_10627() {
         // The fleet monitor's 2026-11-25 finding on #10627: a fresh
