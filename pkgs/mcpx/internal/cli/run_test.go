@@ -34,9 +34,9 @@ func TestRunVersion(t *testing.T) {
 }
 
 func TestReportFinalResultNamesSelectedRuntime(t *testing.T) {
-	// The notice names the runtime for a person at a terminal; the
-	// terminal question is faked, so this pins the human case without
-	// needing a tty in the test runner.
+	// The notice is for a person at a terminal in the default text
+	// rendering; the terminal question is faked, so this pins the human
+	// case without needing a tty in the test runner.
 	oldTTY := stderrIsTerminal
 	stderrIsTerminal = func() bool { return true }
 	defer func() { stderrIsTerminal = oldTTY }()
@@ -63,9 +63,9 @@ func TestReportFinalResultNamesSelectedRuntime(t *testing.T) {
 }
 
 // The runtime notice stays off for machine-readable renderings and when
-// stderr is piped, so a caller reading combined output parses only the
-// run's answer (nix e2e failures, run 46042116668).
-func TestReportFinalResultKeepsPipedOutputClean(t *testing.T) {
+// stderr is not a terminal, so a caller reading combined output parses
+// only the run's answer (nix e2e failures, run 46042116668).
+func TestReportFinalResultKeepsMachineOutputClean(t *testing.T) {
 	oldTTY := stderrIsTerminal
 	defer func() { stderrIsTerminal = oldTTY }()
 

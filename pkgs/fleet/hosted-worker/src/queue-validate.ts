@@ -183,7 +183,15 @@ export function validateNotBeforeAt(value: Json, field: string, now: number): st
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90];
 export const EXPEDITE_PRIORITY = 15;
 export const NEXT_UP_PRIORITY = 25;
-export const KINDS = ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice", "prompt"];
+export const KINDS = [
+  "pr_shepherd",
+  "triage",
+  "small_fix",
+  "ci_investigation",
+  "second_pass",
+  "feature_slice",
+  "prompt",
+];
 export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today/opencode",
@@ -250,7 +258,10 @@ function manualSchemaErrors(p: Json): string[] {
   if (get(obj, "kind") === "prompt") {
     const prompt = get(obj, "prompt");
     const id = isObj(prompt) ? get(prompt, "id") : undefined;
-    if (typeof id !== "string" || !/^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) {
+    if (
+      typeof id !== "string" ||
+      !/^prompt:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)
+    ) {
       errs.push("payload.prompt.id: must be a canonical prompt:<UUIDv4>");
     }
   }

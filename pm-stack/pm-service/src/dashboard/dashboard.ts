@@ -302,28 +302,47 @@ export function renderRoadmap(rows: readonly RoadmapRow[], renderedAt: string): 
 /** Same lossless Epic partition and freshness derivation as /api/program.json.
  * Editorial program and health data are deliberately not inferred from pool rows. */
 export function renderProgram(program: ProgramView, boards: readonly BoardSummary[], renderedAt: string): Response {
-  const table = (items: readonly ProjectPoolItem[], empty: string) => items.length
-    ? `<table><thead><tr><th>Item</th><th>Title</th><th>Board</th><th>Status</th><th>State</th></tr></thead><tbody>${items.map((item) =>
-      `<tr><td>${itemLink(item.ref)}</td><td>${e(item.title)}</td><td>${e(item.boardId ?? "")}</td><td>${e(item.status ?? "")}</td><td>${e(item.state)}</td></tr>`,
-    ).join("")}</tbody></table>`
-    : `<p class="muted">${e(empty)}</p>`;
+  const table = (items: readonly ProjectPoolItem[], empty: string) =>
+    items.length
+      ? `<table><thead><tr><th>Item</th><th>Title</th><th>Board</th><th>Status</th><th>State</th></tr></thead><tbody>${items
+          .map(
+            (item) =>
+              `<tr><td>${itemLink(item.ref)}</td><td>${e(item.title)}</td><td>${e(item.boardId ?? "")}</td><td>${e(item.status ?? "")}</td><td>${e(item.state)}</td></tr>`,
+          )
+          .join("")}</tbody></table>`
+      : `<p class="muted">${e(empty)}</p>`;
   const groups = program.epics.length
-    ? program.epics.map((group) => `<section><h2>${itemLink(group.ref)}</h2>
+    ? program.epics
+        .map(
+          (group) => `<section><h2>${itemLink(group.ref)}</h2>
 <h3>Epic headers</h3>${table(group.headers, "No Epic header in the tenant pool.")}
-<h3>Items</h3>${table(group.items, "No child items in the tenant pool.")}</section>`).join("")
+<h3>Items</h3>${table(group.items, "No child items in the tenant pool.")}</section>`,
+        )
+        .join("")
     : '<p class="muted">No Epic groups in the tenant pool.</p>';
   const freshness = freshnessFromSummaries(boards);
   const latest = freshness.latestSnapshotAt
     ? `Latest snapshot: ${e(freshness.latestSnapshotAt)}`
     : "No snapshots have landed yet.";
   const snapshots = boards.length
-    ? `<ul>${boards.map(({ board, snapshot }) => `<li>${e(board.id)}: ${snapshot
-      ? `${e(snapshot.snapshotId)} · ${e(snapshot.generatedAt)} · ${e(snapshot.writer)} epoch ${e(snapshot.epoch)}`
-      : "no snapshot yet"}</li>`).join("")}</ul>`
+    ? `<ul>${boards
+        .map(
+          ({ board, snapshot }) =>
+            `<li>${e(board.id)}: ${
+              snapshot
+                ? `${e(snapshot.snapshotId)} · ${e(snapshot.generatedAt)} · ${e(snapshot.writer)} epoch ${e(snapshot.epoch)}`
+                : "no snapshot yet"
+            }</li>`,
+        )
+        .join("")}</ul>`
     : '<p class="muted">The registry has no boards.</p>';
-  return page("Program", `<p>Epic groups from the Project pool. Editorial program and health summaries are not in this projection.</p>
+  return page(
+    "Program",
+    `<p>Epic groups from the Project pool. Editorial program and health summaries are not in this projection.</p>
 <p class="muted">${latest}</p>${snapshots}${groups}
-<h2>Unassigned</h2>${table(program.unassigned, "No unassigned items.")}`, renderedAt);
+<h2>Unassigned</h2>${table(program.unassigned, "No unassigned items.")}`,
+    renderedAt,
+  );
 }
 
 export function renderReleases(releases: readonly ReleaseSnapshot[], renderedAt: string): Response {

@@ -460,10 +460,9 @@ async function runWsSession(opts: { evict: boolean }): Promise<void> {
   const doStore = new BridgeStore(sql as never);
   assert.equal(doStore.chainOf(author.publicHex).next_seq, 3);
   assert.deepEqual(doStore.canonical(), clientStore.canonical());
-  const activeCoord = sql.exec(
-    "SELECT tenant_id, peer_id, state, watermark FROM sync_coord WHERE peer_id = ?",
-    key.publicHex,
-  ).toArray()[0];
+  const activeCoord = sql
+    .exec("SELECT tenant_id, peer_id, state, watermark FROM sync_coord WHERE peer_id = ?", key.publicHex)
+    .toArray()[0];
   assert.equal(activeCoord.tenant_id, BINDING);
   assert.equal(activeCoord.state, "active");
   assert.deepEqual(JSON.parse(String(activeCoord.watermark)), [
@@ -475,10 +474,7 @@ async function runWsSession(opts: { evict: boolean }): Promise<void> {
   await new Promise((r) => setTimeout(r, 0));
   await server.settled();
   assert.equal(wsSessionRows(sql), 0);
-  const idleCoord = sql.exec(
-    "SELECT state, watermark FROM sync_coord WHERE peer_id = ?",
-    key.publicHex,
-  ).toArray()[0];
+  const idleCoord = sql.exec("SELECT state, watermark FROM sync_coord WHERE peer_id = ?", key.publicHex).toArray()[0];
   assert.equal(idleCoord.state, "idle");
   assert.deepEqual(JSON.parse(String(idleCoord.watermark)), [
     { author: author.publicHex, next_seq: 3, head: events[2].id },
@@ -603,7 +599,16 @@ async function sizedCheckpoint(
       ],
     };
     const extra: [string, CborValue][] = [
-      ["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment]] }],
+      [
+        "checkpoint",
+        {
+          kind: "map",
+          value: [
+            [T("header"), header],
+            [T("segment"), segment],
+          ],
+        },
+      ],
     ];
     const candidate = await signEvent(key, {
       seq,

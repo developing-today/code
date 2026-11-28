@@ -254,7 +254,8 @@ test("a sweep never sees or deletes another partition's replicas", async () => {
 
   const index = new ReferenceIndex(fakeSql(), { partition: EU_PRIVATE });
   throwsCode(
-    () => new GcSweeper(fakeSql(), { partition: US_PRIVATE, index, adapter: new FakePlane(US_PRIVATE), locator: "r2/us" }),
+    () =>
+      new GcSweeper(fakeSql(), { partition: US_PRIVATE, index, adapter: new FakePlane(US_PRIVATE), locator: "r2/us" }),
     "gc_index_partition_mismatch",
   );
   throwsCode(
@@ -324,8 +325,20 @@ test("erasure of shared bytes deletes nothing and records an erasure note", asyn
   const b = makeStore("tenant-b", US_RESTRICTED);
   const { plane, gc } = setup(US_RESTRICTED, { soleReferencerErasure: true });
   plane.present.add(C1);
-  const mine = a.createReference({ contentId: C1, refClass: "restricted", createdBy: WRITER, canMintRestricted: true, now: T0 });
-  b.createReference({ contentId: C1, refClass: "restricted", createdBy: OTHER_WRITER, canMintRestricted: true, now: T0 });
+  const mine = a.createReference({
+    contentId: C1,
+    refClass: "restricted",
+    createdBy: WRITER,
+    canMintRestricted: true,
+    now: T0,
+  });
+  b.createReference({
+    contentId: C1,
+    refClass: "restricted",
+    createdBy: OTHER_WRITER,
+    canMintRestricted: true,
+    now: T0,
+  });
   a.removeReference(mine.row.reference_id, { actor: WRITER, now: at(1000) });
 
   const res = await gc.requestErasure(C1, WRITER, [a, b], { now: at(2000) });

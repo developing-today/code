@@ -286,9 +286,9 @@ var EffectProbes = map[string]string{
 // count is pinned by EffectExemptionPin.
 var EffectExemptions = map[string]string{
 	"auth.capabilityCeilings": "keyed tool-ceiling enforcement is covered by deterministic internal/daemon tests (TestRegistryCallEnforcesConfiguredKeyToolCeilingBeforeInvocation, TestRegistryCallFailsClosedForUnknownOrMalformedKeyCeilings); the e2e harness has no keyed-tool fixture yet",
-	"daemon.tsnetUpTimeout": "tsnet bring-up needs a tailnet the harness does not have",
-	"daemon.tsnet.hostname": "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
-	"http.streamBufferInit": "Scanner allocation-capacity hint only; changing it does not change emitted events or line limits, and allocation size is not a stable e2e behavior oracle",
+	"daemon.tsnetUpTimeout":   "tsnet bring-up needs a tailnet the harness does not have",
+	"daemon.tsnet.hostname":   "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
+	"http.streamBufferInit":   "Scanner allocation-capacity hint only; changing it does not change emitted events or line limits, and allocation size is not a stable e2e behavior oracle",
 }
 
 // EffectExemptionPin is the ratchet: the exemption count at the time

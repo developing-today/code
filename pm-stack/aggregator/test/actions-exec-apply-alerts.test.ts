@@ -14,9 +14,7 @@ import {
 
 const tempDirs: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })),
-  );
+  await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
 async function files() {
@@ -50,9 +48,7 @@ async function answerApprove(file: string, ledgerId: string) {
 
 describe("actions-exec applier failure alerts S4 (#14043 §4)", () => {
   test("alert key and incident shape: source/key/severity name the failure", () => {
-    expect(applyAlertKey("h@2026-11-27T03:00:00Z")).toBe(
-      "actions-exec-apply:h@2026-11-27T03:00:00Z",
-    );
+    expect(applyAlertKey("h@2026-11-27T03:00:00Z")).toBe("actions-exec-apply:h@2026-11-27T03:00:00Z");
     const incident = buildApplyFailureIncident(
       {
         answerId: "actions-exec-ext:h1:1@2026-11-27T03:00:00Z",
@@ -60,16 +56,11 @@ describe("actions-exec applier failure alerts S4 (#14043 §4)", () => {
         handle: "h1",
         approve: true,
         answeredAt: "2026-11-27T03:00:00Z",
-        state: "failed",
-        attempts: 1,
-        updatedAt: "2026-11-27T03:00:01Z",
       },
       "broker unreachable: reset",
     );
     expect(incident.source).toBe("fleet-actions-exec");
-    expect(incident.key).toBe(
-      "actions-exec-apply:actions-exec-ext:h1:1@2026-11-27T03:00:00Z",
-    );
+    expect(incident.key).toBe("actions-exec-apply:actions-exec-ext:h1:1@2026-11-27T03:00:00Z");
     // Design §4 says "high"; the throat vocabulary is critical |
     // warning | info and only critical pushes — so high maps to critical.
     expect(incident.severity).toBe("critical");
@@ -86,10 +77,7 @@ describe("actions-exec applier failure alerts S4 (#14043 §4)", () => {
 
   test("forced broker failure raises exactly one alert and stays failed", async () => {
     const { needsDrewFile, applyFile } = await files();
-    const answered = await answerApprove(
-      needsDrewFile,
-      "actions-exec-ext:fail1:1",
-    );
+    const answered = await answerApprove(needsDrewFile, "actions-exec-ext:fail1:1");
     const raised: unknown[] = [];
     const res = await runApplierTick({
       needsDrewFile,

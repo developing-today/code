@@ -1,11 +1,15 @@
-//! Resumable durable page ingestion — HYD-05
+//! Resumable durable page ingestion — HYD-05 — plus per-source
+//! incremental activity revisions and tombstones — HYD-06
 //! (developing-today/code#9207, program #9196).
 //!
 //! This module is the page-iterator/cursor slice of the PM
 //! orchestration design (`doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/components/9207-context-hydration-incremental-activity.md`,
 //! §4 and the crash table): GitHub `Link` continuation parsing,
 //! per-source page cursors, atomic page-ingest/cursor-commit
-//! semantics, documented API caps, and query/API fingerprinting.
+//! semantics, documented API caps, query/API fingerprinting, and the
+//! revision/tombstone observation layer (design §4 rows "Old comment
+//! edited after creation cursor advanced" and "Comment
+//! deleted/minimized").
 //! It is pure types and validation: no I/O, no queue, no storage —
 //! the `turso_queue.rs` transaction integration named by the slice
 //! is explicitly deferred until storage approval, so a rejection is
@@ -16,9 +20,13 @@
 //! durable ingest does not advance; crash before commit means refetch
 //! the page; the unique event key makes repeats idempotent; unknown
 //! cursor forces a full snapshot and legacy `last_checked_at` is
-//! never trusted. The test below compares expected and observed
-//! committed sequences explicitly. No mock-only claim of
-//! deployed/live behavior.
+//! never trusted. For revisions: ascending creation-ID order never
+//! hides edits — a newer revision of an old native ID observed
+//! behind the creation watermark is an edit, never nothing and never
+//! a second creation; disappearance without a tombstone is a
+//! reported visibility gap, never an inferred delete. The tests below
+//! compare expected and observed committed sequences explicitly. No
+//! mock-only claim of deployed/live behavior.
 
 use serde::{Deserialize, Serialize};
 
@@ -220,6 +228,207 @@ pub fn cap_status(fetched: usize, cap: usize, reason: &'static str) -> (bool, Op
     }
 }
 
+/// Presence of one observed revision. Absence from a listing is
+/// never a state — it is a visibility gap (see
+/// [`RefreshOutcome::visibility_gaps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActivityState {
+    /// A live item the source still reports.
+    Present,
+    /// A minimized item the API still reports (e.g. minimized
+    /// comment): retained as an observation, never dropped.
+    Minimized,
+    /// A tombstone the authoritative source/event provided (e.g.
+    /// deleted comment): retained, never inferred from absence.
+    Deleted,
+}
+
+/// Normalized observation of one source-native activity item at one
+/// revision — HYD-06 (design §4: "Activity identity separates
+/// occurrence and edits").
+///
+/// Identity is `(native_id, revision)`: the source-native event or
+/// comment ID separates occurrence from edits, while the revision
+/// (source revision or `updated_at`) plus the content digest detects
+/// edits to old IDs that ascending creation order would miss. The
+/// three clocks stay distinguished: `occurred_at` is the source's
+/// creation time (stable across edits), `observed_at` is when this
+/// revision was seen, and `source_updated_at` is the source's own
+/// update time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityRecord {
+    /// Source-native event/comment ID (occurrence identity).
+    pub native_id: String,
+    /// Source revision or `updated_at` (edit identity).
+    pub revision: String,
+    /// Current content digest.
+    pub content_digest: String,
+    /// Source creation time; stable across edits of the same item.
+    pub occurred_at: String,
+    /// When this revision was observed locally.
+    pub observed_at: String,
+    /// The source's own update time for this revision.
+    pub source_updated_at: String,
+    /// Presence of this observation.
+    pub state: ActivityState,
+}
+
+impl ActivityRecord {
+    /// Build one observation; empty identity is a typed rejection,
+    /// never a silently accepted blank record.
+    pub fn new(
+        native_id: impl Into<String>,
+        revision: impl Into<String>,
+        content_digest: impl Into<String>,
+        occurred_at: impl Into<String>,
+        observed_at: impl Into<String>,
+        source_updated_at: impl Into<String>,
+        state: ActivityState,
+    ) -> Result<Self, ContractError> {
+        let native_id = native_id.into();
+        let revision = revision.into();
+        if native_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "activity record has empty native_id".to_string(),
+            });
+        }
+        if revision.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "activity record has empty revision".to_string(),
+            });
+        }
+        Ok(ActivityRecord {
+            native_id,
+            revision,
+            content_digest: content_digest.into(),
+            occurred_at: occurred_at.into(),
+            observed_at: observed_at.into(),
+            source_updated_at: source_updated_at.into(),
+            state,
+        })
+    }
+
+    /// Dedupe key: repeats of a committed `(native_id, revision)`
+    /// pair are idempotent; the same native ID under a new revision
+    /// is an edit, never a second creation.
+    pub fn revision_key(&self) -> (String, String) {
+        (self.native_id.clone(), self.revision.clone())
+    }
+}
+
+/// Outcome of refreshing committed activity against a refetch —
+/// HYD-06 (design §4 rows "Old comment edited after creation cursor
+/// advanced" and "Comment deleted/minimized").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefreshOutcome {
+    /// Native IDs never committed before, first seen `Present`.
+    pub creations: Vec<ActivityRecord>,
+    /// Committed native IDs whose revision, digest, or state moved
+    /// (includes edits observed behind the creation watermark).
+    pub edits: Vec<ActivityRecord>,
+    /// Newly observed minimized/deleted states for committed IDs,
+    /// plus first observations already minimized/deleted.
+    pub tombstones: Vec<ActivityRecord>,
+    /// Committed native IDs whose revision, digest, and state are
+    /// all unchanged — however many times re-observed.
+    pub unchanged_ids: Vec<String>,
+    /// Committed IDs absent from the refetch with no tombstone:
+    /// reported, never inferred as deleted (design §4: "absent API
+    /// evidence cannot be inferred from disappearance in a paginated
+    /// list").
+    pub visibility_gaps: Vec<String>,
+}
+
+/// Refresh committed activity against one refetch.
+///
+/// * A refetch carrying a newer revision (or digest, or state) of a
+///   committed native ID is an edit — even when that ID sits behind
+///   the creation watermark. Creation order never hides edits.
+/// * A refetch minimized/deleted state for a committed `Present`
+///   item — or a first observation already minimized/deleted — is a
+///   retained tombstone, not a creation and not a drop.
+/// * Equal revision + equal digest + equal state is unchanged (the
+///   equal-`updated_at` negative case): re-observation alone changes
+///   nothing.
+/// * A committed ID absent from the refetch with no tombstone is a
+///   visibility gap, never an inferred delete.
+/// * Duplicate `(native_id, revision)` pairs inside one refetch
+///   report once (first occurrence wins); order is refetch order.
+pub fn refresh_activity(
+    committed: &[ActivityRecord],
+    refetch: &[ActivityRecord],
+) -> RefreshOutcome {
+    use std::collections::{HashMap, HashSet};
+    let committed_by_id: HashMap<&str, &ActivityRecord> = committed
+        .iter()
+        .map(|record| (record.native_id.as_str(), record))
+        .collect();
+    let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    let mut outcome = RefreshOutcome::default();
+    for record in refetch {
+        if !seen_pairs.insert((record.native_id.clone(), record.revision.clone())) {
+            continue;
+        }
+        seen_ids.insert(record.native_id.as_str());
+        match committed_by_id.get(record.native_id.as_str()) {
+            None => {
+                if record.state == ActivityState::Present {
+                    outcome.creations.push(record.clone());
+                } else {
+                    outcome.tombstones.push(record.clone());
+                }
+            }
+            Some(previous) => {
+                if record.state != ActivityState::Present
+                    && previous.state == ActivityState::Present
+                {
+                    outcome.tombstones.push(record.clone());
+                } else if record.revision != previous.revision
+                    || record.content_digest != previous.content_digest
+                    || record.state != previous.state
+                {
+                    outcome.edits.push(record.clone());
+                } else {
+                    outcome.unchanged_ids.push(record.native_id.clone());
+                }
+            }
+        }
+    }
+    for record in committed {
+        if !seen_ids.contains(record.native_id.as_str()) {
+            outcome.visibility_gaps.push(record.native_id.clone());
+        }
+    }
+    outcome
+}
+
+/// Drop already-committed revisions from a redelivery — HYD-06
+/// (design §4: "Dedup webhook delivery ID separately from resource
+/// revision").
+///
+/// The dedupe key is the `(native_id, revision)` pair, not the
+/// creation: reordered duplicate redelivery of committed revisions
+/// yields nothing, while the same native ID under a new revision
+/// passes through exactly once as a change. Order is delivery order;
+/// duplicates inside one delivery report once.
+pub fn dedupe_replay(
+    seen_revision_keys: &[(String, String)],
+    delivery: &[ActivityRecord],
+) -> Vec<ActivityRecord> {
+    use std::collections::HashSet;
+    let seen: HashSet<(String, String)> = seen_revision_keys.iter().cloned().collect();
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+    delivery
+        .iter()
+        .filter(|record| {
+            let key = (record.native_id.clone(), record.revision.clone());
+            !seen.contains(&key) && emitted.insert(key)
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,4 +551,620 @@ mod tests {
         assert!(snapshot_needed(Some(&c2), "qfp2", "v3"));
         assert!(snapshot_needed(Some(&c2), "qfp1", "v4"));
     }
+
+    fn record(
+        native_id: &str,
+        revision: &str,
+        digest: &str,
+        occurred_at: &str,
+        observed_at: &str,
+        source_updated_at: &str,
+        state: ActivityState,
+    ) -> ActivityRecord {
+        ActivityRecord::new(
+            native_id,
+            revision,
+            digest,
+            occurred_at,
+            observed_at,
+            source_updated_at,
+            state,
+        )
+        .expect("valid activity record")
+    }
+
+    /// HYD-06 oracle (design §4, rows "Old comment edited after
+    /// creation cursor advanced" and "Comment deleted/minimized"):
+    /// ascending creation-ID order never hides edits — a refetch
+    /// that carries a newer revision of an old native ID behind the
+    /// creation watermark is an edit, not nothing; disappearance
+    /// without a tombstone is a reported visibility gap, never an
+    /// inferred delete.
+    #[test]
+    fn pmo_hyd_refresh_observes_edit_behind_creation_cursor() {
+        // Committed store: c5 r1 and c9 r1. The creation watermark
+        // has advanced past c5 (max observed creation is c9).
+        let committed = vec![
+            record(
+                "c5",
+                "r1",
+                "dig-old",
+                "t0",
+                "o0",
+                "u1",
+                ActivityState::Present,
+            ),
+            record(
+                "c9",
+                "r1",
+                "dig-9",
+                "t9",
+                "o9",
+                "u9",
+                ActivityState::Present,
+            ),
+            record(
+                "c8",
+                "r1",
+                "dig-8",
+                "t8",
+                "o8",
+                "u8",
+                ActivityState::Present,
+            ),
+        ];
+        // Refetch: c5 edited behind the cursor (same native ID, new
+        // revision + digest + later source time); c9 byte-identical
+        // but re-observed (equal updated_at must stay unchanged);
+        // c10 brand new; c7 minimized tombstone newly observed.
+        // c8 is absent with no tombstone anywhere in the refetch.
+        let refetch = vec![
+            record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o1",
+                "u2",
+                ActivityState::Present,
+            ),
+            record(
+                "c9",
+                "r1",
+                "dig-9",
+                "t9",
+                "o10",
+                "u9",
+                ActivityState::Present,
+            ),
+            record(
+                "c10",
+                "r1",
+                "dig-10",
+                "t10",
+                "o10",
+                "u10",
+                ActivityState::Present,
+            ),
+            record(
+                "c7",
+                "r1",
+                "dig-7",
+                "t7",
+                "o10",
+                "u7",
+                ActivityState::Minimized,
+            ),
+        ];
+        let outcome = refresh_activity(&committed, &refetch);
+
+        // The behind-cursor edit is observed as exactly one edit.
+        assert_eq!(
+            outcome
+                .edits
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c5"]
+        );
+        assert_eq!(outcome.edits[0].revision, "r2");
+        assert_eq!(outcome.edits[0].content_digest, "dig-new");
+        // Occurrence time is stable across the edit; observation and
+        // source-update times move forward — the three clocks stay
+        // distinguished.
+        assert_eq!(outcome.edits[0].occurred_at, "t0");
+        assert_eq!(outcome.edits[0].observed_at, "o1");
+        assert_eq!(outcome.edits[0].source_updated_at, "u2");
+
+        // Only the genuinely new native ID is a creation: the edit
+        // behind the cursor is never double-counted as one.
+        assert_eq!(
+            outcome
+                .creations
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c10"]
+        );
+
+        // Equal updated_at + equal digest + equal revision is
+        // unchanged, however many times it is re-observed.
+        assert_eq!(outcome.unchanged_ids, ["c9"]);
+
+        // The minimized record is retained as a tombstone
+        // observation, not dropped and not a creation.
+        assert_eq!(
+            outcome
+                .tombstones
+                .iter()
+                .map(|r| &r.native_id)
+                .collect::<Vec<_>>(),
+            ["c7"]
+        );
+
+        // c8 vanished with no tombstone: reported gap, never an
+        // inferred delete.
+        assert_eq!(outcome.visibility_gaps, ["c8"]);
+        assert!(!outcome.creations.iter().any(|r| r.native_id == "c8"));
+        assert!(!outcome.edits.iter().any(|r| r.native_id == "c8"));
+        assert!(!outcome.tombstones.iter().any(|r| r.native_id == "c8"));
+
+        // Empty identity is rejected, never silently accepted.
+        assert!(ActivityRecord::new("", "r1", "d", "t", "o", "u", ActivityState::Present).is_err());
+    }
+
+    /// HYD-06 oracle (design §4: "Dedup webhook delivery ID
+    /// separately from resource revision"): redelivery of an already
+    /// committed (native ID, revision) pair commits nothing, while
+    /// the same native ID under a new revision is one edit — the
+    /// dedupe key is the revision, not the creation.
+    #[test]
+    fn pmo_hyd_replay_deduplicates_revision_not_creation() {
+        let seen: Vec<(String, String)> = vec![
+            ("c5".to_string(), "r1".to_string()),
+            ("c5".to_string(), "r2".to_string()),
+        ];
+        // Reordered duplicate redelivery of committed revisions:
+        // nothing new, in any order.
+        let replay = vec![
+            record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o2",
+                "u2",
+                ActivityState::Present,
+            ),
+            record(
+                "c5",
+                "r1",
+                "dig-old",
+                "t0",
+                "o2",
+                "u1",
+                ActivityState::Present,
+            ),
+        ];
+        assert!(dedupe_replay(&seen, &replay).is_empty());
+
+        // Same native ID, new revision: exactly one change, and it
+        // is an edit of c5 — never a second creation of it.
+        let edit = vec![record(
+            "c5",
+            "r3",
+            "dig-v3",
+            "t0",
+            "o3",
+            "u3",
+            ActivityState::Present,
+        )];
+        let fresh = dedupe_replay(&seen, &edit);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].native_id, "c5");
+        assert_eq!(fresh[0].revision, "r3");
+
+        // Committed key stream across replay + edit: every
+        // (native ID, revision) pair appears at most once.
+        let mut keys: Vec<(String, String)> = seen.clone();
+        keys.extend(
+            fresh
+                .iter()
+                .map(|r| (r.native_id.clone(), r.revision.clone())),
+        );
+        let mut sorted = keys.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(keys.len(), sorted.len());
+        assert_eq!(
+            keys,
+            [
+                ("c5".to_string(), "r1".to_string()),
+                ("c5".to_string(), "r2".to_string()),
+                ("c5".to_string(), "r3".to_string()),
+            ]
+        );
+
+        // Full-refresh view agrees: the new revision lands in edits,
+        // creations stay empty, and a straight repeat lands nowhere.
+        let committed = vec![record(
+            "c5",
+            "r2",
+            "dig-new",
+            "t0",
+            "o2",
+            "u2",
+            ActivityState::Present,
+        )];
+        let again = refresh_activity(
+            &committed,
+            &[record(
+                "c5",
+                "r2",
+                "dig-new",
+                "t0",
+                "o9",
+                "u2",
+                ActivityState::Present,
+            )],
+        );
+        assert!(again.creations.is_empty());
+        assert!(again.edits.is_empty());
+        assert_eq!(again.unchanged_ids, ["c5"]);
+    }
+
+    fn observed(
+        native_id: &str,
+        actor: Option<&str>,
+        remote: Option<&str>,
+        op: Option<&str>,
+        session: Option<&str>,
+        outbox: Option<&str>,
+    ) -> ObservedActivity {
+        ObservedActivity::new(
+            native_id,
+            actor.map(str::to_string),
+            remote.map(str::to_string),
+            op.map(str::to_string),
+            session.map(str::to_string),
+            outbox.map(str::to_string),
+        )
+        .expect("valid observed activity")
+    }
+
+    /// HYD-07 oracle (design §8: "this test uses same bot login from
+    /// two sessions with only one op/remote-ID map"): shared actor
+    /// login never attributes by itself; only a full
+    /// operation-ID-plus-remote-ID mapping is `Fleet`; `Uncertain`
+    /// and `External` stay visible under `--external-only`.
+    #[test]
+    fn pmo_hyd_external_only_includes_uncertain_shared_actor() {
+        let fleet_actors = ["fleet-bot"];
+        // One durable mapping: op-A in session-A produced remote r1.
+        let mappings = vec![
+            OperationMapping::new("op-A", "session-A", Some("out-1".to_string()), vec![
+                "r1".to_string(),
+            ])
+            .expect("valid mapping"),
+        ];
+
+        // Same bot login, full mapping: reliably Fleet, excluded
+        // from external-only.
+        let fleet_item = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-A"),
+            Some("out-1"),
+        );
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &fleet_item),
+            ActivityOrigin::Fleet {
+                operation_id: "op-A".to_string(),
+                session_id: "session-A".to_string(),
+            }
+        );
+        assert!(!is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &fleet_item
+        )));
+
+        // Same bot login from another session's write: no operation
+        // map, so Uncertain — included in external-only, never Fleet.
+        // Username never assigns session.
+        let other_session = observed("c2", Some("fleet-bot"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &other_session),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&ActivityOrigin::Uncertain));
+
+        // Distinct human actor with no Fleet markers: External,
+        // included in external-only.
+        let human = observed("c3", Some("alice"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &human),
+            ActivityOrigin::External
+        );
+        assert!(is_external_only_visible(&ActivityOrigin::External));
+
+        // Negative: coincidental same-body human comment. Body is not
+        // an input to the classifier at all, so a human item that
+        // happens to repeat Fleet wording is still External, never
+        // Fleet — and stays visible.
+        let same_body_human = observed("c4", Some("alice"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &same_body_human),
+            ActivityOrigin::External
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &same_body_human
+        )));
+
+        // Negative: stale mapping. The mapping is gone (operation
+        // retired), but the observation still claims op-A/r1: without
+        // a live mapping it is Uncertain, never Fleet — and stays
+        // visible.
+        let stale = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-A"),
+            None,
+        );
+        assert_eq!(
+            classify_origin(&[], &fleet_actors, &stale),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &[],
+            &fleet_actors,
+            &stale
+        )));
+
+        // Session disagreement: op-A's remote claimed under a
+        // different session is Uncertain, never Fleet.
+        let wrong_session = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-B"),
+            None,
+        );
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &wrong_session),
+            ActivityOrigin::Uncertain
+        );
+
+        // Migration: legacy observation with no IDs at all is
+        // Uncertain (included), never silently excluded and never
+        // Fleet.
+        let legacy = observed("c0", None, None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &legacy),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &legacy
+        )));
+
+        // Empty identity is rejected, never silently accepted.
+        assert!(OperationMapping::new("", "session-A", None, vec![]).is_err());
+        assert!(OperationMapping::new("op-A", "", None, vec![]).is_err());
+        assert!(
+            ObservedActivity::new("", None::<String>, None, None, None, None).is_err()
+        );
+    }
+}
+
+/// Fleet operation mapping for attribution — HYD-07 (design §4 and
+/// §8: "External attribution maps Fleet `operation_id`/`session_id`/
+/// `outbox_id` to remote returned IDs and content markers").
+///
+/// A mapping states that one Fleet operation (in one session,
+/// optionally via one outbox entry) produced the listed remote
+/// resource IDs. Shared GitHub App/bot logins are deliberately
+/// absent here: the login is passed separately to
+/// [`classify_origin`] and can only ever yield `Uncertain`, never
+/// `Fleet` on its own ("username never assigns session").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationMapping {
+    /// Fleet operation identity (e.g. queue operation ID).
+    pub operation_id: String,
+    /// Fleet session that performed the operation.
+    pub session_id: String,
+    /// Outbox entry that carried the write, if any.
+    pub outbox_id: Option<String>,
+    /// Remote resource IDs this operation is known to have produced.
+    pub remote_ids: Vec<String>,
+}
+
+impl OperationMapping {
+    /// Build one mapping; empty operation/session identity is a
+    /// typed rejection, never a silently accepted blank map.
+    pub fn new(
+        operation_id: impl Into<String>,
+        session_id: impl Into<String>,
+        outbox_id: Option<String>,
+        remote_ids: Vec<String>,
+    ) -> Result<Self, ContractError> {
+        let operation_id = operation_id.into();
+        let session_id = session_id.into();
+        if operation_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "operation mapping has empty operation_id".to_string(),
+            });
+        }
+        if session_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "operation mapping has empty session_id".to_string(),
+            });
+        }
+        Ok(OperationMapping {
+            operation_id,
+            session_id,
+            outbox_id,
+            remote_ids,
+        })
+    }
+}
+
+/// Attribution of one observed source activity item — HYD-07.
+///
+/// `Fleet` requires a reliable operation mapping (operation ID plus
+/// remote ID, with session agreement); everything else is either
+/// confidently external or of uncertain origin. Uncertain events are
+/// included by `--external-only` by default, alongside external
+/// ones; only `Fleet` is excluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActivityOrigin {
+    /// Reliably mapped to one Fleet operation in one session.
+    Fleet {
+        /// Matched operation identity.
+        operation_id: String,
+        /// Matched session identity.
+        session_id: String,
+    },
+    /// Confidently not Fleet-caused (e.g. distinct human actor with
+    /// no Fleet markers).
+    External,
+    /// Origin cannot be proven either way (e.g. shared bot login
+    /// with no operation map, partial/stale mapping, or legacy
+    /// observation with no IDs at all). Included as external by
+    /// default; never silently dropped.
+    Uncertain,
+}
+
+/// One observed source activity item for attribution — HYD-07.
+///
+/// The content body is deliberately not an input: coincidental
+/// same-body text (a human comment repeating Fleet wording) must
+/// never attribute to a Fleet session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedActivity {
+    /// Source-native item ID (occurrence identity).
+    pub native_id: String,
+    /// Actor login reported by the source, if any.
+    pub actor_login: Option<String>,
+    /// Remote resource ID reported by the source, if any.
+    pub remote_id: Option<String>,
+    /// Fleet operation ID claimed by local provenance, if any.
+    pub operation_id: Option<String>,
+    /// Fleet session ID claimed by local provenance, if any.
+    pub session_id: Option<String>,
+    /// Outbox entry claimed by local provenance, if any.
+    pub outbox_id: Option<String>,
+}
+
+impl ObservedActivity {
+    /// Build one observation; empty native identity is a typed
+    /// rejection, never a silently accepted blank record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        native_id: impl Into<String>,
+        actor_login: Option<String>,
+        remote_id: Option<String>,
+        operation_id: Option<String>,
+        session_id: Option<String>,
+        outbox_id: Option<String>,
+    ) -> Result<Self, ContractError> {
+        let native_id = native_id.into();
+        if native_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "observed activity has empty native_id".to_string(),
+            });
+        }
+        Ok(ObservedActivity {
+            native_id,
+            actor_login,
+            remote_id,
+            operation_id,
+            session_id,
+            outbox_id,
+        })
+    }
+}
+
+/// Classify one observed item against the durable operation mappings
+/// — HYD-07 canonical attribution classifier.
+///
+/// * `Fleet` requires the observed `operation_id` **and**
+///   `remote_id` to match one mapping together (same operation
+///   produced this remote ID). When the observation carries a
+///   `session_id`, it must agree with the mapping's session;
+///   disagreement is `Uncertain`, never `Fleet`.
+/// * A shared Fleet actor login (bot/App) with no full mapping is
+///   `Uncertain`: the login proves nothing by itself, but the item
+///   could be another session's write, so it stays visible under
+///   `--external-only`.
+/// * An observation with no Fleet markers and a distinct (non-Fleet)
+///   actor is `External`.
+/// * An observation with no IDs at all (legacy) is `Uncertain`
+///   ("legacy uncertain"); it is included, never silently excluded.
+/// * Body/content similarity is not an input and can never produce
+///   `Fleet`.
+pub fn classify_origin(
+    mappings: &[OperationMapping],
+    fleet_actor_logins: &[&str],
+    observed: &ObservedActivity,
+) -> ActivityOrigin {
+    if let (Some(op), Some(remote)) = (observed.operation_id.as_deref(), observed.remote_id.as_deref())
+    {
+        for mapping in mappings {
+            if mapping.operation_id == op && mapping.remote_ids.iter().any(|id| id == remote) {
+                match observed.session_id.as_deref() {
+                    Some(session) if session != mapping.session_id => continue,
+                    _ => {
+                        return ActivityOrigin::Fleet {
+                            operation_id: mapping.operation_id.clone(),
+                            session_id: mapping.session_id.clone(),
+                        };
+                    }
+                }
+            }
+        }
+        // An operation claim or a mapped remote ID without a full
+        // match is a partial/stale mapping: uncertain, never Fleet.
+        return ActivityOrigin::Uncertain;
+    }
+    if observed.operation_id.is_some()
+        || observed.session_id.is_some()
+        || observed.outbox_id.is_some()
+    {
+        return ActivityOrigin::Uncertain;
+    }
+    if let Some(remote) = observed.remote_id.as_deref() {
+        if mappings
+            .iter()
+            .any(|m| m.remote_ids.iter().any(|id| id == remote))
+        {
+            return ActivityOrigin::Uncertain;
+        }
+    }
+    match observed.actor_login.as_deref() {
+        None => ActivityOrigin::Uncertain,
+        Some(login) if fleet_actor_logins.contains(&login) => ActivityOrigin::Uncertain,
+        Some(_) => ActivityOrigin::External,
+    }
+}
+
+/// Whether an attributed item is visible under `--external-only`
+/// with default semantics: `External` and `Uncertain` are included;
+/// only reliably attributed `Fleet` items are excluded.
+pub fn is_external_only_visible(origin: &ActivityOrigin) -> bool {
+    !matches!(
+        origin,
+        ActivityOrigin::Fleet {
+            operation_id: _,
+            session_id: _
+        }
+    )
 }

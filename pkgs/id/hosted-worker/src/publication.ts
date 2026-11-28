@@ -114,9 +114,13 @@ function samePartition(a: Partition, b: Partition): boolean {
 }
 
 async function hmacHex(key: Uint8Array, message: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey("raw", key as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, [
-    "sign",
-  ]);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(message) as BufferSource);
   return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -261,7 +265,13 @@ export class PublicationService {
     return next;
   }
 
-  private cdnBinding(p: { jurisdiction: string; contentId: string; publicationId: string; epoch: number; expiresAt: string }): string {
+  private cdnBinding(p: {
+    jurisdiction: string;
+    contentId: string;
+    publicationId: string;
+    epoch: number;
+    expiresAt: string;
+  }): string {
     return [CDN_BINDING_VERSION, p.jurisdiction, p.contentId, p.publicationId, p.epoch, p.expiresAt].join("|");
   }
 
@@ -285,7 +295,10 @@ export class PublicationService {
     const epoch = this.currentEpoch();
     const expiresAt = addSeconds(now, this.cdnPathTtlSeconds);
     const jurisdiction = this.partition.jurisdiction;
-    const sig = await hmacHex(this.cdnKey, this.cdnBinding({ jurisdiction, contentId: id, publicationId, epoch, expiresAt }));
+    const sig = await hmacHex(
+      this.cdnKey,
+      this.cdnBinding({ jurisdiction, contentId: id, publicationId, epoch, expiresAt }),
+    );
     const query = new URLSearchParams({ pub: publicationId, epoch: String(epoch), exp: expiresAt, sig });
     return { url: `/cdn/v1/${jurisdiction}/${id}?${query.toString()}`, publicationId, epoch, expiresAt };
   }
@@ -312,7 +325,10 @@ export class PublicationService {
     if (jurisdiction !== this.partition.jurisdiction) {
       throw new FailClosed(403, "cdn_path_wrong_partition", "CDN path is for a different jurisdiction");
     }
-    const expected = await hmacHex(this.cdnKey, this.cdnBinding({ jurisdiction, contentId, publicationId, epoch, expiresAt }));
+    const expected = await hmacHex(
+      this.cdnKey,
+      this.cdnBinding({ jurisdiction, contentId, publicationId, epoch, expiresAt }),
+    );
     if (!timingSafeEqualHex(sig, expected)) {
       throw new FailClosed(401, "cdn_path_bad_signature", "CDN path signature does not verify");
     }

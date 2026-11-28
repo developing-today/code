@@ -557,7 +557,11 @@ export class UserDO {
     }
     const checked = validateManifest(parsed, bindingId);
     if (!checked.ok) {
-      throw new ContractRefusal("placement_unknown", "the store's backend manifest is invalid; failing closed", checked.refusal);
+      throw new ContractRefusal(
+        "placement_unknown",
+        "the store's backend manifest is invalid; failing closed",
+        checked.refusal,
+      );
     }
     if (checked.value.backend !== STORE_BACKEND) {
       throw new ContractRefusal(
@@ -638,12 +642,21 @@ export class UserDO {
     }
     const snap = parseSnapshot(body);
     if (snap.binding_id !== identity.bindingId || snap.client_side_encryption !== identity.clientSideEncryption) {
-      throw new FailClosed(409, "identity_mismatch", "the snapshot belongs to a different binding or encryption choice");
+      throw new FailClosed(
+        409,
+        "identity_mismatch",
+        "the snapshot belongs to a different binding or encryption choice",
+      );
     }
     if (snap.schema_version !== SCHEMA_VERSION) {
       throw new FailClosed(409, "schema_mismatch", "the snapshot was taken at another schema version");
     }
-    const claimed = await snapshotDigest(snap.binding_id, snap.client_side_encryption, snap.schema_version, snap.tables);
+    const claimed = await snapshotDigest(
+      snap.binding_id,
+      snap.client_side_encryption,
+      snap.schema_version,
+      snap.tables,
+    );
     if (claimed !== snap.digest) {
       throw new FailClosed(422, "snapshot_digest_mismatch", "the snapshot does not match its digest");
     }
@@ -699,7 +712,11 @@ export class UserDO {
     identity: { bindingId: string; jurisdiction: string; clientSideEncryption: boolean },
   ): Promise<Response> {
     if (req.headers.get(HDR_MIGRATION) !== "1") {
-      throw new FailClosed(403, "migration_principal_required", "migration control is for the migration principal only");
+      throw new FailClosed(
+        403,
+        "migration_principal_required",
+        "migration control is for the migration principal only",
+      );
     }
     if (url.pathname === "/v1/migration/target" && req.method === "GET") {
       return json({ staged: this.stagedTarget(), activated: this.meta("migration_activated") });
@@ -755,8 +772,16 @@ export class UserDO {
     if (url.pathname === "/v1/migration/snapshot") {
       // Export waits for the freeze acknowledgement: only a fence for
       // this migration, at this epoch, makes the snapshot final.
-      if (current === null || current.migration_id !== request.migrationId || current.routing_epoch !== request.routingEpoch) {
-        throw new FailClosed(409, "freeze_not_acknowledged", "the source is not frozen for this migration at this epoch");
+      if (
+        current === null ||
+        current.migration_id !== request.migrationId ||
+        current.routing_epoch !== request.routingEpoch
+      ) {
+        throw new FailClosed(
+          409,
+          "freeze_not_acknowledged",
+          "the source is not frozen for this migration at this epoch",
+        );
       }
       if (this.mutationSeq() !== current.watermark) {
         throw new FailClosed(500, "fence_breached", "a mutation committed after the freeze; failing closed");
@@ -804,7 +829,11 @@ export class UserDO {
         }
       }
       if (missing > 0) {
-        throw new FailClosed(409, "target_blobs_missing", `${missing} referenced blobs are not in this jurisdiction's bucket yet`);
+        throw new FailClosed(
+          409,
+          "target_blobs_missing",
+          `${missing} referenced blobs are not in this jurisdiction's bucket yet`,
+        );
       }
       const now = await snapshotDigest(
         identity.bindingId,
@@ -824,7 +853,10 @@ export class UserDO {
       const staged = this.stagedTarget();
       // A newer migration may also clear an import a stale coordinator
       // left behind for an older epoch.
-      if (staged === null || (staged.migration_id !== request.migrationId && staged.routing_epoch >= request.routingEpoch)) {
+      if (
+        staged === null ||
+        (staged.migration_id !== request.migrationId && staged.routing_epoch >= request.routingEpoch)
+      ) {
         throw new FailClosed(409, "not_staged", "this object is not staged for this migration");
       }
       clearMigratedTables(this.state.storage.sql);
@@ -968,7 +1000,7 @@ export class UserDO {
       throw new FailClosed(
         400,
         "invalid_cse_context",
-        "client-side-encryption routing context must be \"1\" or \"0\"; failing closed",
+        'client-side-encryption routing context must be "1" or "0"; failing closed',
       );
     }
     const boundBinding = this.meta("binding_id");
@@ -1084,10 +1116,9 @@ export class UserDO {
   private forgetBridgeSession(socket: WsSocketLike, sid: string | null): void {
     this.liveSessions.delete(socket);
     if (sid !== null) {
-      const rows = this.state.storage.sql.exec(
-        "SELECT tenant_id, peer_id FROM sync_coord WHERE session_id = ? AND state = 'active'",
-        sid,
-      ).toArray();
+      const rows = this.state.storage.sql
+        .exec("SELECT tenant_id, peer_id FROM sync_coord WHERE session_id = ? AND state = 'active'", sid)
+        .toArray();
       for (const row of rows) this.syncCoord(String(row.tenant_id)).end(String(row.peer_id), sid);
       this.state.storage.sql.exec("DELETE FROM bridge_ws_sessions WHERE sid = ?", sid);
     }
@@ -1209,16 +1240,25 @@ export class UserDO {
       if (rawGeneration !== null) {
         const generation = parseWatermark(rawGeneration);
         if (!generation.ok || generation.value === null) {
-          throw new FailClosed(400, "invalid_placement_generation", "placement generation must be a non-negative integer");
+          throw new FailClosed(
+            400,
+            "invalid_placement_generation",
+            "placement generation must be a non-negative integer",
+          );
         }
         const stale = checkPlacementGeneration(manifest, generation.value);
         if (stale !== null) throw new ContractRefusal("placement_stale", "placement generation is not current", stale);
       }
       const readAt = parseWatermark(req.headers.get(HDR_READ_AT_WATERMARK));
-      if (!readAt.ok) throw new FailClosed(400, "invalid_watermark", "requested watermark must be a non-negative integer");
+      if (!readAt.ok)
+        throw new FailClosed(400, "invalid_watermark", "requested watermark must be a non-negative integer");
       const served = checkReadAtWatermark(readAt.value, this.head());
       if (!served.ok) {
-        throw new ContractRefusal("watermark_unavailable", "the store has not reached the requested watermark", served.refusal);
+        throw new ContractRefusal(
+          "watermark_unavailable",
+          "the store has not reached the requested watermark",
+          served.refusal,
+        );
       }
       if (isStorage) {
         const budget = this.budget();
@@ -1336,7 +1376,11 @@ export class UserDO {
         if (outcomes.some((o) => o.kind === "accepted" || o.kind === "waiting" || o.kind === "fork")) this.commit();
         // Fork proofs remain stored as evidence and are returned as
         // durable conflict reports; this path never selects a branch.
-        return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads(), conflicts: store.conflictReports() });
+        return json({
+          outcomes: outcomes.map(serializeOutcome),
+          heads: store.heads(),
+          conflicts: store.conflictReports(),
+        });
       }
       if (url.pathname === "/v1/bridge/pull" && req.method === "POST") {
         const irohHex = this.requireIroh(req);
@@ -1439,7 +1483,11 @@ export class UserDO {
         // HTTPS read legs stay open.
         this.assertNotFenced();
         if (!this.state.acceptWebSocket) {
-          throw new FailClosed(500, "websocket_hibernation_unavailable", "the runtime offers no hibernating WebSockets");
+          throw new FailClosed(
+            500,
+            "websocket_hibernation_unavailable",
+            "the runtime offers no hibernating WebSockets",
+          );
         }
         const pair = new WebSocketPair();
         const client = pair[0];
@@ -1488,7 +1536,13 @@ export class UserDO {
           new Date().toISOString(),
         );
         if (priorRef.length === 0) this.commit();
-        return json({ hash, size: bytes.byteLength, stored: true, deduped: !!existing, client_side_encryption: clientSideEncryption });
+        return json({
+          hash,
+          size: bytes.byteLength,
+          stored: true,
+          deduped: !!existing,
+          client_side_encryption: clientSideEncryption,
+        });
       }
       if (blobHashMatch && req.method === "GET") {
         const hash = blobHashMatch[1];
@@ -1570,7 +1624,10 @@ export class UserDO {
       return json({ error: "not_found" }, 404);
     } catch (e) {
       if (e instanceof RetryableRefusal) {
-        const response = json({ error: e.code, message: e.message, retry_after_seconds: e.retryAfterSeconds }, e.status);
+        const response = json(
+          { error: e.code, message: e.message, retry_after_seconds: e.retryAfterSeconds },
+          e.status,
+        );
         response.headers.set("retry-after", String(e.retryAfterSeconds));
         return response;
       }

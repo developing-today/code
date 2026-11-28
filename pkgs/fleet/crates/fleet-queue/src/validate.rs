@@ -2013,9 +2013,7 @@ mod tests {
             let requires = branch
                 .get("required")
                 .and_then(Value::as_array)
-                .map(|reqs| {
-                    reqs.iter().filter_map(Value::as_str).collect::<Vec<_>>()
-                })
+                .map(|reqs| reqs.iter().filter_map(Value::as_str).collect::<Vec<_>>())
                 .unwrap_or_default();
             if requires.contains(&"prompt") {
                 assert!(
@@ -2035,8 +2033,7 @@ mod tests {
                     .get("required")
                     .and_then(Value::as_array)
                     .is_some_and(|reqs| {
-                        reqs.iter().any(|r| r == "prompt")
-                            && reqs.iter().any(|r| r == "kind")
+                        reqs.iter().any(|r| r == "prompt") && reqs.iter().any(|r| r == "kind")
                     })
                     && branch["properties"]["kind"]["const"] == json!("prompt")
             }),
@@ -2800,10 +2797,7 @@ mod tests {
         // but no issue/prs/set/source must fail the identity rule.
         let mut packet = valid_packet();
         packet["payload"]["kind"] = json!("triage");
-        packet["payload"]
-            .as_object_mut()
-            .unwrap()
-            .remove("issue");
+        packet["payload"].as_object_mut().unwrap().remove("issue");
         packet["payload"]["prompt"] = json!({
             "id": "prompt:00000000-0000-4000-8000-000000000001",
         });

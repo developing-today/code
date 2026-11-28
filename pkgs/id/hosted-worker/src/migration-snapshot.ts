@@ -78,7 +78,11 @@ const COLUMN = /^[a-z_][a-z0-9_]{0,63}$/;
 function encodeCell(value: unknown): SnapshotCell {
   if (value === null || typeof value === "string") return value;
   if (typeof value === "number" && Number.isSafeInteger(value)) return value;
-  if (typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (
+    typeof value === "bigint" &&
+    value >= BigInt(Number.MIN_SAFE_INTEGER) &&
+    value <= BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
     return Number(value);
   }
   if (value instanceof Uint8Array) return { b64: bytesToBase64(value) };
@@ -166,7 +170,8 @@ export function parseSnapshot(body: unknown): MigrationSnapshot {
   }
   if (typeof s.binding_id !== "string") invalid("binding_id is missing");
   if (typeof s.client_side_encryption !== "boolean") invalid("client_side_encryption is missing");
-  if (typeof s.schema_version !== "number" || !Number.isSafeInteger(s.schema_version)) invalid("schema_version is missing");
+  if (typeof s.schema_version !== "number" || !Number.isSafeInteger(s.schema_version))
+    invalid("schema_version is missing");
   if (typeof s.watermark !== "number" || !Number.isSafeInteger(s.watermark) || s.watermark < 0) {
     invalid("watermark must be a non-negative integer");
   }
@@ -201,10 +206,7 @@ export function writeMigratedTables(sql: SqlLike, tables: Record<MigratedTable, 
         const cell = row[c];
         return cell !== null && typeof cell === "object" ? base64ToBytes(cell.b64) : cell;
       });
-      sql.exec(
-        `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-        ...values,
-      );
+      sql.exec(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, ...values);
     }
   }
 }

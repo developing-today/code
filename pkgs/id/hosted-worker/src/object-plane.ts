@@ -188,9 +188,13 @@ export function capabilityBindingString(cap: Omit<ObjectReadCapability, "mac">):
 }
 
 async function hmacHex(key: Uint8Array, message: string): Promise<string> {
-  const cryptoKey = await crypto.subtle.importKey("raw", key as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, [
-    "sign",
-  ]);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(message) as BufferSource);
   return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -226,7 +230,11 @@ export async function mintReadCapability(
       input.rangeStart < 0 ||
       input.rangeEnd <= input.rangeStart
     ) {
-      throw new FailClosed(400, "invalid_capability_range", "capability range must be integer [start, end) with end > start >= 0");
+      throw new FailClosed(
+        400,
+        "invalid_capability_range",
+        "capability range must be integer [start, end) with end > start >= 0",
+      );
     }
   }
   const unsigned = {

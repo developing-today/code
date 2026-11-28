@@ -82,6 +82,10 @@ impl<O: WorldOpener> WorldOpener for HostedOpener<O> {
         self.storage.durable()
     }
 
+    fn stored_bytes(&self, name: &str) -> Option<u64> {
+        self.storage.stored_bytes(name)
+    }
+
     fn closed(&self, name: &str) {
         if let Err(error) = self.host.record_closed(name) {
             tracing::warn!(world = name, "host: could not record idle close: {error:#}");
@@ -138,5 +142,15 @@ impl WorldOpener for RootOpener {
 
     fn durable(&self) -> bool {
         true
+    }
+
+    fn stored_bytes(&self, name: &str) -> Option<u64> {
+        std::fs::metadata(
+            self.root
+                .join(name)
+                .join(crate::world_storage::JOURNAL_FILE),
+        )
+        .ok()
+        .map(|meta| meta.len())
     }
 }

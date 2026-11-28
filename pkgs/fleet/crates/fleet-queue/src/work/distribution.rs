@@ -26,7 +26,17 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use super::contracts::{digest, ContractError, DIGEST_DOMAIN_SELECTION_ORDER};
+use super::contracts::{ContractError, DIGEST_DOMAIN_SELECTION_ORDER, digest};
+
+/// Wire schema identifier of the selection-order object
+/// (architecture.md: the order object carries `schema_version`).
+pub const SELECTION_ORDER_SCHEMA_VERSION: &str = "fleet.selection-order/v1";
+
+/// Comparator tuple this build implements: PRI-03 peer-order tuple
+/// version 1 (contract key PRI-CMP-01). The program index owns the
+/// tuple registry; this constant is the one ref this build knows —
+/// anything else is `unsupported_version` (DST-06 record §4.3).
+pub const ORDER_COMPARATOR_REF: &str = "PRI-CMP-01/tuple-1";
 
 /// One ordered candidate in comparator order (effective urgency
 /// ascending, then exact peer rank, creation time, normalized
@@ -83,6 +93,85 @@ pub struct SelectionOrderInput {
     /// candidate set (top page, truncated fetch) hashes to a typed
     /// error, never to an order claim.
     pub complete: bool,
+    /// Wire schema of the order object. Must be
+    /// [`SELECTION_ORDER_SCHEMA_VERSION`]: anything else is
+    /// `unsupported_version`, never silent coercion (DST-06
+    /// record §4.3).
+    pub schema_version: String,
+    /// Comparator tuple the order was computed under. Must be
+    /// [`ORDER_COMPARATOR_REF`]: a target on another tuple gets
+    /// `unsupported_version`, never a hash compared as if current
+    /// (DST-06 record §4.3).
+    pub comparator_ref: String,
+}
+
+/// Why a candidate set cannot claim full-order conformance: the
+/// producer holds one page of a paged population, a truncated
+/// fetch, or a population whose completeness it cannot state
+/// (DST-06 record §3.1). A partial population stays displayable
+/// but is never hashable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartialReason {
+    /// Only one page of a paged population is held.
+    Paginated,
+    /// The fetch was cut off before the population was complete.
+    Truncated,
+    /// The producer cannot state whether the set is complete.
+    UnknownCompleteness,
+}
+
+impl PartialReason {
+    /// Stable machine code for the reason, suitable for logs and
+    /// refusal details.
+    pub fn code(&self) -> &'static str {
+        match self {
+            PartialReason::Paginated => "paginated",
+            PartialReason::Truncated => "truncated",
+            PartialReason::UnknownCompleteness => "unknown_completeness",
+        }
+    }
+
+    /// One-line human sentence carried in the refusal error.
+    pub fn detail(&self) -> String {
+        match self {
+            PartialReason::Paginated => "population is one page of a paged fetch".to_string(),
+            PartialReason::Truncated => "population is a truncated fetch".to_string(),
+            PartialReason::UnknownCompleteness => {
+                "population completeness cannot be stated".to_string()
+            }
+        }
+    }
+}
+
+/// An order population known to be partial: a page, a truncated
+/// fetch, or a population of unknown completeness. Carries the
+/// same items for display, with the reason stated. Deliberately
+/// exposes no hash: there is no function that hashes a
+/// `PartialOrder`, so a page or truncated fetch cannot produce a
+/// conformant `order_hash` by accident (DST-06 record §3.1, §8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialOrder {
+    /// Candidates held, in display order (never hashed).
+    pub items: Vec<OrderedItem>,
+    /// Why the set cannot claim full-order conformance.
+    pub reason: PartialReason,
+}
+
+impl SelectionOrderInput {
+    /// Refuse completion of a partial population: attempting to
+    /// complete a `PartialOrder` is a typed `invalid_schema` error
+    /// naming the reason, never an order claim. Reuses the shared
+    /// `ContractError` so no `contracts.rs` change is needed (the
+    /// DST-07 record's G1 landing order leaves that file to DST-04).
+    pub fn from_partial(partial: PartialOrder) -> Result<Self, ContractError> {
+        Err(ContractError::InvalidSchema {
+            detail: format!(
+                "partial candidate set cannot claim full-order conformance: [{}] {}",
+                partial.reason.code(),
+                partial.reason.detail()
+            ),
+        })
+    }
 }
 
 /// Compare two canonical work IDs numerically when both are decimal
@@ -125,6 +214,8 @@ fn parse_decimal_id(value: &str) -> Option<u128> {
 pub fn selection_order_dto(input: &SelectionOrderInput) -> serde_json::Value {
     serde_json::json!({
         "purpose": DIGEST_DOMAIN_SELECTION_ORDER,
+        "schema_version": input.schema_version,
+        "comparator_ref": input.comparator_ref,
         "snapshot": {
             "profile_version": input.snapshot.profile_version,
             "taxonomy_version": input.snapshot.taxonomy_version,
@@ -156,7 +247,221 @@ pub fn selection_order_hash(input: &SelectionOrderInput) -> Result<String, Contr
             detail: "partial candidate set cannot claim full-order conformance".to_string(),
         });
     }
+    if input.schema_version != SELECTION_ORDER_SCHEMA_VERSION {
+        return Err(ContractError::UnsupportedVersion {
+            schema_version: input.schema_version.clone(),
+        });
+    }
+    if input.comparator_ref != ORDER_COMPARATOR_REF {
+        return Err(ContractError::UnsupportedVersion {
+            schema_version: format!("comparator:{}", input.comparator_ref),
+        });
+    }
     digest(DIGEST_DOMAIN_SELECTION_ORDER, &selection_order_dto(input))
+}
+
+/// How two order observations relate, checked in this order
+/// (DST-06 record §4.1). The classes mean different things, so the
+/// report stops at the first class that applies: different inputs
+/// are expected during normal operation (re-run on a pinned
+/// snapshot), while a different sequence over the same inputs,
+/// items and keys is always a comparator defect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderComparison {
+    /// Same inputs, same population, same keys, same sequence: the
+    /// two targets computed the same order. A fingerprint only — it
+    /// grants nothing (SEL-02).
+    Identical,
+    /// The two targets ordered different snapshots (different graph
+    /// revision, as-of, policy ...). Expected during normal
+    /// operation; re-run on a pinned snapshot. Order beneath it is
+    /// not inspected.
+    InputsDiffer {
+        /// Snapshot keys that differ, in canonical snapshot order.
+        keys: Vec<&'static str>,
+    },
+    /// Same pinned inputs, different eligible set: an eligibility
+    /// disagreement (predicates or hard gates).
+    PopulationDiffers {
+        /// Canonical identities only in `a`, sorted.
+        only_in_a: Vec<String>,
+        /// Canonical identities only in `b`, sorted.
+        only_in_b: Vec<String>,
+    },
+    /// Same population, an item's comparator keys differ (e.g. one
+    /// target normalised `peer_rank` differently).
+    ItemKeysDiffer {
+        /// `work_id` of the first item (in `a`'s order) whose
+        /// comparator keys differ.
+        work_id: String,
+        /// Comparator keys that differ, in comparator order.
+        keys: Vec<&'static str>,
+    },
+    /// Same inputs, same items, same keys, different sequence: a
+    /// comparator bug. The only class that is always a defect.
+    OrderDiffers {
+        /// First index where the two sequences disagree.
+        first_index: usize,
+        /// The item `a` holds at that index.
+        a: OrderedItem,
+        /// The item `b` holds at that index.
+        b: OrderedItem,
+    },
+    /// The pair cannot be compared: at least one side is a partial
+    /// candidate set, which claims no order (`partial_candidate_set`
+    /// reason), or the pair runs unknown or unequal versions, which
+    /// must never be compared as if current (`version_skew` reason,
+    /// DST-06 record §4.3).
+    NotComparable {
+        /// Machine-readable reason (`partial_candidate_set` or
+        /// `version_skew`).
+        reason: &'static str,
+    },
+}
+
+/// Render the authority-qualified identity of one item for
+/// population reports: `authority_id/work_id`.
+fn canonical_identity(item: &OrderedItem) -> String {
+    format!("{}/{}", item.authority_id, item.work_id)
+}
+
+/// Snapshot keys in canonical order, for [`OrderComparison`]
+/// reports.
+fn snapshot_diff_keys(a: &OrderSnapshot, b: &OrderSnapshot) -> Vec<&'static str> {
+    let mut keys = Vec::new();
+    if a.profile_version != b.profile_version {
+        keys.push("profile_version");
+    }
+    if a.taxonomy_version != b.taxonomy_version {
+        keys.push("taxonomy_version");
+    }
+    if a.policy_version != b.policy_version {
+        keys.push("policy_version");
+    }
+    if a.queue_rev != b.queue_rev {
+        keys.push("queue_rev");
+    }
+    if a.graph_rev != b.graph_rev {
+        keys.push("graph_rev");
+    }
+    if a.lane != b.lane {
+        keys.push("lane");
+    }
+    if a.as_of != b.as_of {
+        keys.push("as_of");
+    }
+    keys
+}
+
+/// Sorted canonical identities of one population, multiset: the same
+/// identity appears once per occurrence, so a duplicated identity is
+/// a population difference, not silent agreement. (Duplicates
+/// themselves are a builder refusal — oracle test 5.)
+fn sorted_identities(items: &[OrderedItem]) -> Vec<String> {
+    let mut ids: Vec<String> = items.iter().map(canonical_identity).collect();
+    ids.sort();
+    ids
+}
+
+/// Whether one input runs versions this build knows: the wire
+/// schema and the one comparator tuple it implements. Anything
+/// else is `unsupported_version` at build time and `version_skew`
+/// at compare time — never silent coercion (DST-06 record §4.3).
+fn is_known_version(input: &SelectionOrderInput) -> bool {
+    input.schema_version == SELECTION_ORDER_SCHEMA_VERSION
+        && input.comparator_ref == ORDER_COMPARATOR_REF
+}
+
+/// Whether two known-version inputs run unequal versions. Version
+/// skew is checked before snapshot inputs: different versions may
+/// legitimately order differently, so the pair is refused, not
+/// diagnosed as an input difference (DST-06 record §4.1 vs §4.3).
+fn version_skewed(a: &SelectionOrderInput, b: &SelectionOrderInput) -> bool {
+    a.schema_version != b.schema_version || a.comparator_ref != b.comparator_ref
+}
+
+/// Compare two order observations and name their divergence class.
+///
+/// Both sides must be complete: a partial candidate set claims no
+/// order, so a pair holding one is [`OrderComparison::NotComparable`],
+/// never a comparison. Both sides must also run known, equal
+/// versions: an unknown schema or comparator on either side — or a
+/// skew between them — is [`OrderComparison::NotComparable`] with
+/// reason `version_skew`, never a comparison as if current (DST-06
+/// record §4.3). Otherwise the report stops at the first class that
+/// applies: inputs, then population, then item keys, then sequence
+/// (DST-06 record §4.1).
+pub fn compare(a: &SelectionOrderInput, b: &SelectionOrderInput) -> OrderComparison {
+    if !a.complete || !b.complete {
+        return OrderComparison::NotComparable {
+            reason: "partial_candidate_set",
+        };
+    }
+    if !is_known_version(a) || !is_known_version(b) || version_skewed(a, b) {
+        return OrderComparison::NotComparable {
+            reason: "version_skew",
+        };
+    }
+    let keys = snapshot_diff_keys(&a.snapshot, &b.snapshot);
+    if !keys.is_empty() {
+        return OrderComparison::InputsDiffer { keys };
+    }
+    let ids_a = sorted_identities(&a.items);
+    let ids_b = sorted_identities(&b.items);
+    if ids_a != ids_b {
+        let only_in_a: Vec<String> = ids_a
+            .iter()
+            .filter(|id| !ids_b.contains(id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let only_in_b: Vec<String> = ids_b
+            .iter()
+            .filter(|id| !ids_a.contains(id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        return OrderComparison::PopulationDiffers {
+            only_in_a,
+            only_in_b,
+        };
+    }
+    for item_a in &a.items {
+        if let Some(item_b) = b
+            .items
+            .iter()
+            .find(|item| item.authority_id == item_a.authority_id && item.work_id == item_a.work_id)
+        {
+            let mut keys = Vec::new();
+            if item_a.effective_urgency != item_b.effective_urgency {
+                keys.push("effective_urgency");
+            }
+            if item_a.peer_rank != item_b.peer_rank {
+                keys.push("peer_rank");
+            }
+            if item_a.created_at != item_b.created_at {
+                keys.push("created_at");
+            }
+            if !keys.is_empty() {
+                return OrderComparison::ItemKeysDiffer {
+                    work_id: item_a.work_id.clone(),
+                    keys,
+                };
+            }
+        }
+    }
+    for (index, (item_a, item_b)) in a.items.iter().zip(b.items.iter()).enumerate() {
+        if item_a.authority_id != item_b.authority_id || item_a.work_id != item_b.work_id {
+            return OrderComparison::OrderDiffers {
+                first_index: index,
+                a: item_a.clone(),
+                b: item_b.clone(),
+            };
+        }
+    }
+    OrderComparison::Identical
 }
 
 #[cfg(test)]
@@ -200,6 +505,8 @@ mod tests {
             snapshot: fixture_snapshot(),
             items: fixture_items(),
             complete: true,
+            schema_version: SELECTION_ORDER_SCHEMA_VERSION.to_string(),
+            comparator_ref: ORDER_COMPARATOR_REF.to_string(),
         }
     }
 
@@ -295,5 +602,255 @@ mod tests {
         let err = selection_order_hash(&partial).unwrap_err();
         assert_eq!(err.code(), "invalid_schema");
         assert!(format!("{err:?}").contains("full-order conformance"));
+    }
+
+    /// DST-06 oracle test 2 (#9456): a producer holding only a
+    /// page, a truncated fetch, or a population of unknown
+    /// completeness builds a `PartialOrder` stating the reason.
+    /// `PartialOrder` exposes no hash function by construction, and
+    /// completing one is a typed `invalid_schema` refusal naming the
+    /// reason — never an order claim. Oracle source: the DST-06
+    /// design record §3.1 ("only one can be hashed") and §8
+    /// ("Producer has only a page: PartialOrder, no hash").
+    #[test]
+    fn pmo_distribution_partial_order_has_no_hash() {
+        // Reason codes are stable: logs and refusal details can
+        // match on them.
+        assert_eq!(PartialReason::Paginated.code(), "paginated");
+        assert_eq!(PartialReason::Truncated.code(), "truncated");
+        assert_eq!(
+            PartialReason::UnknownCompleteness.code(),
+            "unknown_completeness"
+        );
+
+        // Every stated reason refuses completion with its name in
+        // the typed error, and yields no input that could hash.
+        for reason in [
+            PartialReason::Paginated,
+            PartialReason::Truncated,
+            PartialReason::UnknownCompleteness,
+        ] {
+            let partial = PartialOrder {
+                items: fixture_items(),
+                reason,
+            };
+            let err = SelectionOrderInput::from_partial(partial).unwrap_err();
+            assert_eq!(err.code(), "invalid_schema");
+            let rendered = format!("{err:?}");
+            assert!(
+                rendered.contains(reason.code()),
+                "refusal names the reason: {rendered}"
+            );
+            assert!(
+                rendered.contains("full-order conformance"),
+                "refusal states the rule: {rendered}"
+            );
+        }
+    }
+
+    /// DST-06 oracle test 6 (#9456): `compare` returns each
+    /// divergence class for a constructed pair, in the §4.1
+    /// precedence — inputs, then population, then item keys, then
+    /// sequence — and refuses a pair holding a partial candidate
+    /// set. Oracle source: the DST-06 design record §4
+    /// ("Comparing two targets"), which this test copies, not this
+    /// module's implementation.
+    #[test]
+    fn pmo_distribution_divergence_classes() {
+        // Identical observations compare identical, and their hashes
+        // agree: same inputs hashed twice on "two targets".
+        let first = fixture_input();
+        let second = fixture_input();
+        assert_eq!(compare(&first, &second), OrderComparison::Identical);
+        assert_eq!(
+            selection_order_hash(&first).unwrap(),
+            selection_order_hash(&second).unwrap()
+        );
+
+        // One snapshot field differs: inputs differ, naming the key
+        // in canonical snapshot order. Order beneath it is not
+        // inspected, so the population may differ too.
+        let mut retaxed = fixture_input();
+        retaxed.snapshot.policy_version = "policy:v8".to_string();
+        retaxed.items.pop();
+        assert_eq!(
+            compare(&first, &retaxed),
+            OrderComparison::InputsDiffer {
+                keys: vec!["policy_version"],
+            }
+        );
+        let mut multi = fixture_input();
+        multi.snapshot.policy_version = "policy:v8".to_string();
+        multi.snapshot.as_of = "2026-11-13T04:30:00Z".to_string();
+        assert_eq!(
+            compare(&first, &multi),
+            OrderComparison::InputsDiffer {
+                keys: vec!["policy_version", "as_of"],
+            }
+        );
+
+        // Same pinned inputs, different eligible set: the missing
+        // and extra identities are named, sorted.
+        let mut smaller = fixture_input();
+        smaller.items.pop();
+        assert_eq!(
+            compare(&first, &smaller),
+            OrderComparison::PopulationDiffers {
+                only_in_a: vec!["fleet-local/843".to_string()],
+                only_in_b: vec![],
+            }
+        );
+        let mut swapped_set = fixture_input();
+        swapped_set.items[1].work_id = "844".to_string();
+        assert_eq!(
+            compare(&first, &swapped_set),
+            OrderComparison::PopulationDiffers {
+                only_in_a: vec!["fleet-local/843".to_string()],
+                only_in_b: vec!["fleet-local/844".to_string()],
+            }
+        );
+
+        // Same population, an item's comparator keys differ: the
+        // work_id and the differing keys, in comparator order.
+        let mut reranked = fixture_input();
+        reranked.items[1].peer_rank = "b".to_string();
+        assert_eq!(
+            compare(&first, &reranked),
+            OrderComparison::ItemKeysDiffer {
+                work_id: "843".to_string(),
+                keys: vec!["peer_rank"],
+            }
+        );
+
+        // Same inputs, same items, same keys, different sequence: a
+        // comparator bug, with the first disagreeing index. The
+        // hashes differ too: order is part of the claim.
+        let mut reordered = fixture_input();
+        reordered.items.reverse();
+        assert_eq!(
+            compare(&first, &reordered),
+            OrderComparison::OrderDiffers {
+                first_index: 0,
+                a: first.items[0].clone(),
+                b: first.items[1].clone(),
+            }
+        );
+        assert_ne!(
+            selection_order_hash(&first).unwrap(),
+            selection_order_hash(&reordered).unwrap()
+        );
+
+        // Precedence: a population difference does not mask an input
+        // difference, and a sequence difference does not mask a
+        // population difference.
+        assert!(matches!(
+            compare(&first, &retaxed),
+            OrderComparison::InputsDiffer { .. }
+        ));
+        let mut both = fixture_input();
+        both.items[1].work_id = "844".to_string();
+        both.items.reverse();
+        assert!(matches!(
+            compare(&first, &both),
+            OrderComparison::PopulationDiffers { .. }
+        ));
+
+        // A pair holding a partial candidate set claims no order, so
+        // there is nothing to compare: refused, never classified.
+        let mut partial = fixture_input();
+        partial.complete = false;
+        assert_eq!(
+            compare(&first, &partial),
+            OrderComparison::NotComparable {
+                reason: "partial_candidate_set",
+            }
+        );
+        assert_eq!(
+            compare(&partial, &first),
+            OrderComparison::NotComparable {
+                reason: "partial_candidate_set",
+            }
+        );
+    }
+
+    /// DST-06 oracle test 7 (#9456): an unknown schema or comparator
+    /// is `unsupported_version` for build and compare (DST-06 record
+    /// §4.3). A target on another tuple version never gets a hash,
+    /// and a skewed pair is refused — never compared as if current.
+    #[test]
+    fn pmo_distribution_unknown_version_not_compared() {
+        // Build: unknown schema version is unsupported_version, not
+        // a hash and not silent coercion to the known schema.
+        let mut future_schema = fixture_input();
+        future_schema.schema_version = "fleet.selection-order/v2".to_string();
+        let err = selection_order_hash(&future_schema).unwrap_err();
+        assert_eq!(err.code(), "unsupported_version");
+        assert!(format!("{err:?}").contains("fleet.selection-order/v2"));
+
+        // Build: unknown comparator tuple is unsupported_version —
+        // an old target cannot silently hash under the old tuple.
+        let mut old_tuple = fixture_input();
+        old_tuple.comparator_ref = "PRI-CMP-01/tuple-0".to_string();
+        let err = selection_order_hash(&old_tuple).unwrap_err();
+        assert_eq!(err.code(), "unsupported_version");
+
+        // Build: a missing comparator ref is unknown, not a default:
+        // empty never means "the current tuple".
+        let mut unversioned = fixture_input();
+        unversioned.comparator_ref = String::new();
+        assert_eq!(
+            selection_order_hash(&unversioned).unwrap_err().code(),
+            "unsupported_version"
+        );
+
+        // Compare: the same unknown schema on both sides is still
+        // refused — an unknown version is never comparable, even
+        // with itself.
+        let also_future = future_schema.clone();
+        assert_eq!(
+            compare(&future_schema, &also_future),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: skew between known schema and unknown schema is
+        // refused, and it preempts input diagnosis — the report is
+        // version_skew, not InputsDiffer, even when the snapshots
+        // also differ.
+        let first = fixture_input();
+        let mut skewed_inputs = future_schema.clone();
+        skewed_inputs.snapshot.policy_version = "policy:v8".to_string();
+        assert_eq!(
+            compare(&first, &skewed_inputs),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: same known schema, different comparator tuples —
+        // one target moved tuples — is refused, never classified.
+        assert_eq!(
+            compare(&first, &old_tuple),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+        assert_eq!(
+            compare(&old_tuple, &first),
+            OrderComparison::NotComparable {
+                reason: "version_skew",
+            }
+        );
+
+        // Compare: equal known versions still compare normally —
+        // the refusal only fires on unknown or unequal versions.
+        let second = fixture_input();
+        assert_eq!(compare(&first, &second), OrderComparison::Identical);
+
+        // Known-version constants are the wire values: schema is the
+        // digest domain's version, comparator is PRI-03 tuple 1.
+        assert_eq!(SELECTION_ORDER_SCHEMA_VERSION, "fleet.selection-order/v1");
+        assert_eq!(ORDER_COMPARATOR_REF, "PRI-CMP-01/tuple-1");
     }
 }

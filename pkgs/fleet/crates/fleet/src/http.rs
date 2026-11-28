@@ -467,7 +467,12 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             client::poll(&ladder, job, wait)
         }
         "fetch" => match (args.get(1), args.get(2)) {
-            (Some(remote), Some(local)) => client::fetch(&ladder, remote, &PathBuf::from(local), fleet_laptop_agent::FILE_CHUNK_MAX),
+            (Some(remote), Some(local)) => client::fetch(
+                &ladder,
+                remote,
+                &PathBuf::from(local),
+                fleet_laptop_agent::FILE_CHUNK_MAX,
+            ),
             _ => {
                 eprintln!("http: fetch needs REMOTE and LOCAL paths\n{USAGE}");
                 EXIT_USAGE

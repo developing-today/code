@@ -155,8 +155,11 @@ describe("CF-5d program HTML wave", () => {
   test("GET /program renders the same seeded projection as the JSON API, escaped and lossless", async () => {
     // Oracle: the landed program JSON projection over the exact same seeded DB.
     const db = await seededDb();
-    db.run(`INSERT INTO pm_boards (board_id, org, number, node_id, url, role, sibling_order, title, recorded_at)
-      VALUES ('empty<&', 'example', 9, 'PVT_empty', 'https://github.com/orgs/example/projects/9', 'project', 2, 'Empty', ?)`, [T1]);
+    db.run(
+      `INSERT INTO pm_boards (board_id, org, number, node_id, url, role, sibling_order, title, recorded_at)
+      VALUES ('empty<&', 'example', 9, 'PVT_empty', 'https://github.com/orgs/example/projects/9', 'project', 2, 'Empty', ?)`,
+      [T1],
+    );
     const deps = { db: asyncFromSync(db), now: () => T2 };
     const program = await programJsonAsync(deps);
     const response = await createDashboardHandler(deps)(new Request("https://pm.test/program"));

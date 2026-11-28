@@ -102,7 +102,11 @@ export interface DeclaredLimits {
   retention_floor_days: number | null;
 }
 
-export type DeclaredLimitName = "max_stored_bytes" | "max_entry_bytes" | "max_appends_per_second" | "retention_floor_days";
+export type DeclaredLimitName =
+  | "max_stored_bytes"
+  | "max_entry_bytes"
+  | "max_appends_per_second"
+  | "retention_floor_days";
 
 /** #5869 §2.2 retention floor, as #5863 §4.1 cites it. */
 export const RETENTION_FLOOR_DAYS = 30;
@@ -271,7 +275,10 @@ export interface StoreHead {
 export function parseWatermark(raw: string | null | undefined): Checked<number | null> {
   if (raw === null || raw === undefined || raw === "") return { ok: true, value: null };
   if (!/^[0-9]{1,16}$/.test(raw)) {
-    return { ok: false, refusal: verificationRefusal("malformed", "requested watermark is not a non-negative integer") };
+    return {
+      ok: false,
+      refusal: verificationRefusal("malformed", "requested watermark is not a non-negative integer"),
+    };
   }
   const n = Number(raw);
   if (!Number.isSafeInteger(n)) {
@@ -323,12 +330,18 @@ export function checkSnapshotDelta(
   const version = checkContractVersion(snapshot.contract_version);
   if (version !== null) return { ok: false, refusal: version };
   if (!Number.isInteger(snapshot.at_seq) || snapshot.at_seq < 0 || !Number.isInteger(target) || target < 0) {
-    return { ok: false, refusal: verificationRefusal("malformed", "snapshot and target sequences must be non-negative integers") };
+    return {
+      ok: false,
+      refusal: verificationRefusal("malformed", "snapshot and target sequences must be non-negative integers"),
+    };
   }
   if (target < snapshot.at_seq) {
     return {
       ok: false,
-      refusal: verificationRefusal("sequence_misaligned", `target ${target} is before the snapshot at ${snapshot.at_seq}`),
+      refusal: verificationRefusal(
+        "sequence_misaligned",
+        `target ${target} is before the snapshot at ${snapshot.at_seq}`,
+      ),
     };
   }
   let reached = snapshot.at_seq;
@@ -632,7 +645,11 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
   }
   const m = value as Record<string, unknown>;
   if (m.manifest_version !== MANIFEST_VERSION) {
-    if (typeof m.manifest_version === "number" && Number.isInteger(m.manifest_version) && m.manifest_version > MANIFEST_VERSION) {
+    if (
+      typeof m.manifest_version === "number" &&
+      Number.isInteger(m.manifest_version) &&
+      m.manifest_version > MANIFEST_VERSION
+    ) {
       return {
         ok: false,
         refusal: { kind: "version", supported: MANIFEST_VERSION, received: m.manifest_version, direction: "newer" },
@@ -642,7 +659,11 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
   }
   const version = checkContractVersion(m.contract_version);
   if (version !== null) {
-    return { ok: false, refusal: version.kind === "version" ? version : placementUnknown("backend manifest contract_version is malformed") };
+    return {
+      ok: false,
+      refusal:
+        version.kind === "version" ? version : placementUnknown("backend manifest contract_version is malformed"),
+    };
   }
   if (typeof m.unit !== "string" || m.unit === "") {
     return { ok: false, refusal: placementUnknown("backend manifest names no unit") };
@@ -672,7 +693,10 @@ export function validateManifest(value: unknown, expectedUnit?: string): Checked
   if (expectedUnit !== undefined && m.unit !== expectedUnit) {
     return {
       ok: false,
-      refusal: placementUnknown("backend manifest names a different unit; conflicting placement fails closed", m.generation),
+      refusal: placementUnknown(
+        "backend manifest names a different unit; conflicting placement fails closed",
+        m.generation,
+      ),
     };
   }
   return {
@@ -734,7 +758,7 @@ export function advanceManifest(
     backend: next.backend,
     database_id:
       next.backend === "d1"
-        ? next.databaseId ?? (current.backend === "d1" ? current.database_id : undefined)
+        ? (next.databaseId ?? (current.backend === "d1" ? current.database_id : undefined))
         : undefined,
     generation: current.generation + 1,
     cutover_seq: next.cutoverSeq,

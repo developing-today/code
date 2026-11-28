@@ -683,13 +683,35 @@ fn restore_changelogs(
     Ok(changelogs)
 }
 
-/// Writes a snapshot to `path` atomically: the new document lands
-/// under a temporary name in the same directory and is renamed over
-/// the old one, so a crash mid-write leaves the previous snapshot
-/// (or none), never a torn one for the next restart to read.
+/// Writes a snapshot to `path` durably and atomically, through the
+/// crate-wide durable-write idiom (#16358): the new document is
+/// written under a temporary name in the same directory, fsynced,
+/// renamed over the old one, and the parent directory is synced
+/// after the rename. A crash mid-write therefore leaves the previous
+/// snapshot (or none) — never a torn one for the next restart to
+/// read — and once this returns `Ok(())` the new snapshot itself
+/// survives a crash: neither its bytes nor the rename that installed
+/// it can be silently rolled back. A failure of the post-rename
+/// directory sync surfaces as an error, not success, even though the
+/// new file is already installed at that point.
 fn write_note_snapshot_file(
     path: &std::path::Path,
     snapshot: &NoteCheckpointSnapshot,
+) -> Result<(), NoteSnapshotError> {
+    write_note_snapshot_file_with_parent_sync(path, snapshot, |dir| {
+        std::fs::File::open(dir)?.sync_all()
+    })
+}
+
+/// [`write_note_snapshot_file`] with the parent-directory sync step
+/// supplied by the caller: the same injectable seam
+/// [`id_core::durable_write::write_durable_with_parent_sync`]
+/// provides, so a test can observe — and inject — the post-rename
+/// sync failure.
+fn write_note_snapshot_file_with_parent_sync(
+    path: &std::path::Path,
+    snapshot: &NoteCheckpointSnapshot,
+    sync_parent: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
 ) -> Result<(), NoteSnapshotError> {
     let bytes =
         serde_json::to_vec_pretty(snapshot).map_err(|source| NoteSnapshotError::Corrupt {
@@ -699,14 +721,11 @@ fn write_note_snapshot_file(
     let mut tmp_os = path.as_os_str().to_owned();
     tmp_os.push(".tmp");
     let tmp = PathBuf::from(tmp_os);
-    std::fs::write(&tmp, bytes).map_err(|source| NoteSnapshotError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    std::fs::rename(&tmp, path).map_err(|source| NoteSnapshotError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    id_core::durable_write::write_durable_with_parent_sync(path, &tmp, &bytes, sync_parent)
+        .map_err(|source| NoteSnapshotError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(source),
+        })?;
     Ok(())
 }
 
@@ -2715,6 +2734,86 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_rejects_slice_content_outside_editor_schema() {
+        // Oracle: web/src/editor.ts content expressions — a `table`
+        // holds `table_row+`, a cell holds `paragraph+`, a `paragraph`
+        // holds inline nodes only. A slice violating any of them is
+        // refused before storage, like the list_item case above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "table", "content": [{
+                "type": "table_cell", "content": [{"type": "text", "text": "bad"}]
+            }]}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("table"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "table", "content": [{
+                "type": "table_row", "content": [{
+                    "type": "table_cell", "content": [{"type": "paragraph", "content": [
+                        {"type": "text", "text": "ok"}
+                    ]}]
+                }]
+            }]}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_slice_with_unopenable_depths() {
+        // Oracle: prosemirror-model's `Slice` contract — an open
+        // depth requires that many openable (non-leaf) nodes on that
+        // side of the fragment. A lone text node claiming
+        // `openStart: 1` fits the size check but is a slice no cut
+        // can produce; `replace` throws for it on every client, so
+        // it is refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "text", "text": "bad"}], "openStart": 1}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("openStart"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control at exactly the openable bound: an empty paragraph
+        // opens one level on each side (the paragraph-split shape).
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
@@ -3882,6 +3981,69 @@ mod tests {
 
         let fresh = CollabState::new().with_note_snapshot_path(dir.path().join("absent.json"));
         assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
+    }
+
+    #[test]
+    fn test_note_snapshot_file_write_round_trips_and_leaves_no_temp() {
+        // #16358: the persist half of the snapshot round-trip — what
+        // write_note_snapshot_file lands at the path parses back as
+        // the same snapshot, a rewrite replaces it, and no temp file
+        // is left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let snapshot = NoteCheckpointSnapshot {
+            events: Vec::new(),
+            policies: Vec::new(),
+            changelogs: Vec::new(),
+            grants: None,
+        };
+
+        write_note_snapshot_file(&path, &snapshot).unwrap();
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, snapshot);
+
+        write_note_snapshot_file(&path, &snapshot).unwrap();
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted, snapshot);
+
+        let mut tmp_os = path.as_os_str().to_owned();
+        tmp_os.push(".tmp");
+        assert!(!PathBuf::from(tmp_os).exists());
+    }
+
+    #[test]
+    fn test_note_snapshot_parent_sync_failure_is_an_error_not_success() {
+        // #16358: a post-rename parent-directory sync failure must
+        // surface as an error — reporting success would claim a
+        // durability the rename does not have. The new file is
+        // already installed at that point (the AfterRename stage);
+        // the error is how the caller learns the install is not yet
+        // durable.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let snapshot = NoteCheckpointSnapshot {
+            events: Vec::new(),
+            policies: Vec::new(),
+            changelogs: Vec::new(),
+            grants: None,
+        };
+
+        let err = write_note_snapshot_file_with_parent_sync(&path, &snapshot, |_| {
+            Err(std::io::Error::other("injected parent sync failure"))
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(err, NoteSnapshotError::Io { .. }),
+            "a parent sync failure is an I/O error, not success: {err}"
+        );
+        assert!(
+            err.to_string().contains("AfterRename"),
+            "the error names the post-rename stage: {err}"
+        );
+        assert!(path.exists(), "the rename already installed the file");
     }
 
     /// A note owned by `owner`, scoped so nobody else reads it, in a

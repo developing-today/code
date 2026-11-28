@@ -32,7 +32,7 @@ const approveDeny = [
   { id: "deny", label: "Deny" },
 ];
 
-async function brokerQuestion(extra: Partial<NeedsDrewInput> = {}, handle = "session:1") {
+async function brokerQuestion(extra: Partial<NeedsDrewInput> = {}, handle = "session") {
   const file = await storeFile();
   const ledgerId = `actions-exec-ext:${handle}`;
   const raised = await raiseNeedsDrew(
@@ -116,7 +116,7 @@ describe("resolveBrokerAnswer (#14149 §2)", () => {
   test("radio: a mapped option resolves", async () => {
     const { file, ledgerId } = await brokerQuestion();
     const q = await recordAnswer(file, ledgerId, { optionId: "deny", via: "test" });
-    expect(resolveBrokerAnswer(q!)).toEqual({ kind: "resolved", handle: "session:1", approve: false });
+    expect(resolveBrokerAnswer(q!)).toEqual({ kind: "resolved", handle: "session", approve: false });
   });
 
   test("radio: free text with no option is unresolvable, never dropped", async () => {
@@ -124,7 +124,7 @@ describe("resolveBrokerAnswer (#14149 §2)", () => {
     const q = await recordAnswer(file, ledgerId, { freeText: "only on Tuesdays", via: "test" });
     expect(resolveBrokerAnswer(q!)).toEqual({
       kind: "unresolvable",
-      handle: "session:1",
+      handle: "session",
       reason: "free-text answer has no approve/deny mapping",
     });
   });
@@ -208,7 +208,7 @@ describe("resolveBrokerAnswer (#14149 §2)", () => {
     const q = await recordAnswer(file, ledgerId, { optionId: "approve", via: "test" });
     const legacy = { ...q! };
     delete legacy.resolutionMap;
-    expect(resolveBrokerAnswer(legacy)).toEqual({ kind: "resolved", handle: "session:1", approve: true });
+    expect(resolveBrokerAnswer(legacy)).toEqual({ kind: "resolved", handle: "session", approve: true });
   });
 });
 
@@ -223,9 +223,9 @@ describe("radio -> checklist conversion is lossless (#14149 §3)", () => {
     expect(converted.answer).toEqual(answered!.answer);
     expect(converted.brokerMapping).toEqual(answered!.brokerMapping);
     expect(converted.resolutionMap).toEqual(answered!.resolutionMap);
-    expect(needsDrewAnswerHandle(converted)).toBe("session:1");
+    expect(needsDrewAnswerHandle(converted)).toBe("session");
     // The radio answer reads as a one-item selection after conversion.
-    expect(resolveBrokerAnswer(converted)).toEqual({ kind: "resolved", handle: "session:1", approve: true });
+    expect(resolveBrokerAnswer(converted)).toEqual({ kind: "resolved", handle: "session", approve: true });
   });
 
   test("conversion refuses to reuse an existing id", async () => {

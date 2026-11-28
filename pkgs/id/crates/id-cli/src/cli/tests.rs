@@ -2334,9 +2334,41 @@ fn test_cli_parse_world_max_per_account() {
         Some(Command::Serve(args)) => assert_eq!(args.world_max_per_account, 0),
         _ => panic!("Expected Serve command"),
     }
-    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x", "--world-max-per-account", "3"]);
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-max-per-account",
+        "3",
+    ]);
     match cli.command {
         Some(Command::Serve(args)) => assert_eq!(args.world_max_per_account, 3),
+        _ => panic!("Expected Serve command"),
+    }
+}
+
+#[test]
+fn test_cli_parse_world_storage_max_per_account() {
+    // #1067 F12.10: opt-in per-account storage quota, `0` keeps the
+    // unconfigured hub's behaviour.
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert_eq!(args.world_storage_max_per_account, 0),
+        _ => panic!("Expected Serve command"),
+    }
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-storage-max-per-account",
+        "1073741824",
+    ]);
+    match cli.command {
+        Some(Command::Serve(args)) => assert_eq!(args.world_storage_max_per_account, 1_073_741_824),
         _ => panic!("Expected Serve command"),
     }
 }

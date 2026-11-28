@@ -9,12 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import {
-  ReferenceStore,
-  checkAccess,
-  REFERENCE_SCHEMA_STATEMENTS,
-  type Partition,
-} from "../src/references.ts";
+import { ReferenceStore, checkAccess, REFERENCE_SCHEMA_STATEMENTS, type Partition } from "../src/references.ts";
 import { FailClosed } from "../src/routing.ts";
 
 const WRITER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -145,16 +140,10 @@ test("publication: a live publication reference in the public DB grants any call
   assert.equal(decision.via, "publication");
   assert.equal(decision.dbId, "public");
   // Publication never leaks into a tenant partition.
-  assert.equal(
-    checkAccess({ contentId: CONTENT, partition: US_PRIVATE, authorizedDbs: [], publicDb }).allowed,
-    false,
-  );
+  assert.equal(checkAccess({ contentId: CONTENT, partition: US_PRIVATE, authorizedDbs: [], publicDb }).allowed, false);
   // Unpublishing is reference removal.
   publicDb.removeReference(row.reference_id, { actor: WRITER, now: T1 });
-  assert.equal(
-    checkAccess({ contentId: CONTENT, partition: US_PUBLIC, authorizedDbs: [], publicDb }).allowed,
-    false,
-  );
+  assert.equal(checkAccess({ contentId: CONTENT, partition: US_PUBLIC, authorizedDbs: [], publicDb }).allowed, false);
 });
 
 test("a publication reference cannot be minted outside the public database", () => {
@@ -185,10 +174,7 @@ test("tenant-restricted access requires the restricted class on the reference", 
   const tenant = makeStore("tenant-r", US_RESTRICTED);
   // A standard-class reference in the same partition is not enough.
   tenant.createReference({ contentId: CONTENT, refClass: "standard", createdBy: WRITER, now: T0 });
-  assert.equal(
-    checkAccess({ contentId: CONTENT, partition: US_RESTRICTED, authorizedDbs: [tenant] }).allowed,
-    false,
-  );
+  assert.equal(checkAccess({ contentId: CONTENT, partition: US_RESTRICTED, authorizedDbs: [tenant] }).allowed, false);
   // The restricted class is.
   tenant.createReference({
     contentId: CONTENT,

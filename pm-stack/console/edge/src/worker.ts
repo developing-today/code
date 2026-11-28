@@ -332,10 +332,7 @@ export default {
     // an answer that names no verdict keeps nothing.
     const transportBinding = env.QUEUE_TRANSPORT_ALERT;
     if (transportBinding !== undefined) {
-      const verdict = await fetchQueueTransport(
-        (request: Request) => transportBinding.fetch(request),
-        askedAt,
-      );
+      const verdict = await fetchQueueTransport((request: Request) => transportBinding.fetch(request), askedAt);
       if (verdict !== null) {
         ctx.waitUntil(
           stub.fetch(

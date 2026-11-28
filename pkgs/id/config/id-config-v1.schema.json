@@ -89,7 +89,12 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "default": false, "type": ["boolean", "null"] },
-            "timeout_ms": { "description": "A direct query's timeout. Default: fanout.per_peer_timeout_ms.", "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+            "timeout_ms": {
+              "description": "A direct query's timeout. Default: fanout.per_peer_timeout_ms.",
+              "maximum": 30000,
+              "minimum": 1,
+              "type": ["integer", "null"]
+            }
           },
           "type": ["object", "null"]
         },
@@ -108,7 +113,11 @@
             "adapter": { "$ref": "#/$defs/link_adapter" },
             "enabled": { "default": false, "type": ["boolean", "null"] },
             "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] },
-            "sync_scope": { "description": "Default: behavior.sync_scope.", "enum": ["metadata", "full", null], "type": ["string", "null"] }
+            "sync_scope": {
+              "description": "Default: behavior.sync_scope.",
+              "enum": ["metadata", "full", null],
+              "type": ["string", "null"]
+            }
           },
           "type": ["object", "null"]
         }
@@ -142,7 +151,11 @@
       "additionalProperties": false,
       "description": "One peer relationship (#9111 record section 3.2; the #9141 PeerPolicy plus fan-out fields). The class is a ceiling and operations is the grant. Load rejects: relay_granted without fully_trusted; the relay operation without relay_granted; sync.accept on send_only; sync.send on accept_signed_from; any operation on unknown; a repeated operation; expires_at not after valid_from. peer_id is unique in the document.",
       "properties": {
-        "class": { "default": "unknown", "enum": ["fully_trusted", "send_only", "accept_signed_from", "unknown"], "type": "string" },
+        "class": {
+          "default": "unknown",
+          "enum": ["fully_trusted", "send_only", "accept_signed_from", "unknown"],
+          "type": "string"
+        },
         "expires_at": { "default": null, "format": "date-time", "type": ["string", "null"] },
         "operations": {
           "default": [],
@@ -187,8 +200,14 @@
       "additionalProperties": false,
       "description": "The storage plane (#9111 record section 3.4): which adapter family backs each store. An absent key or null takes the built-in default. Load rejects an adapter or durability this build does not advertise (record section 6.5 step 4); this build advertises redb with fsync for local_store and event_log, and no object-store adapter.",
       "properties": {
-        "event_log": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The event log. Default sync_participation none." },
-        "local_store": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The local persistent store. Default sync_participation full." },
+        "event_log": {
+          "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }],
+          "description": "The event log. Default sync_participation none."
+        },
+        "local_store": {
+          "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }],
+          "description": "The local persistent store. Default sync_participation full."
+        },
         "object_store": {
           "anyOf": [
             {
@@ -221,7 +240,11 @@
       "description": "One tier's placement and retention (#9111 record section 3.5). An absent key or null takes the default. A tier label never authorizes access. Load rejects object_store placement unless storage.object_store is bound.",
       "properties": {
         "placement": { "default": "local", "enum": ["local", "object_store", null], "type": ["string", "null"] },
-        "retention": { "default": "indefinite", "pattern": "^(indefinite|[0-9]*[1-9][0-9]*d)$", "type": ["string", "null"] }
+        "retention": {
+          "default": "indefinite",
+          "pattern": "^(indefinite|[0-9]*[1-9][0-9]*d)$",
+          "type": ["string", "null"]
+        }
       },
       "type": "object"
     }

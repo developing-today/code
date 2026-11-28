@@ -181,10 +181,7 @@ export function planUnfreeze(current: SourceFence | null, request: FenceRequest)
 
 /** The sealed fence after the switch. Sealing is idempotent at the same
  * epoch and refuses an epoch older than the fence's. */
-export function planSeal(
-  current: SourceFence | null,
-  request: FenceRequest,
-): { fence: SourceFence; changed: boolean } {
+export function planSeal(current: SourceFence | null, request: FenceRequest): { fence: SourceFence; changed: boolean } {
   if (current === null) throw new FailClosed(409, "not_fenced", "only a frozen store can be sealed");
   if (current.migration_id !== request.migrationId) {
     throw new FailClosed(409, "fence_held", "another migration holds this store's fence");

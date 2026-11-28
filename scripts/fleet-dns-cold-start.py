@@ -49,8 +49,19 @@ RECORD_VERSION = "fleet-door1"
 # Keys a DNS record must never carry: credential material by any name,
 # and liveness claims (DNS is never a liveness source, §1.2).
 FORBIDDEN_KEYS = {
-    "credential", "credentials", "token", "secret", "bearer", "password",
-    "key", "auth", "health", "last_seen", "status", "alive", "liveness",
+    "credential",
+    "credentials",
+    "token",
+    "secret",
+    "bearer",
+    "password",
+    "key",
+    "auth",
+    "health",
+    "last_seen",
+    "status",
+    "alive",
+    "liveness",
 }
 PUBLIC_KIND_URL = re.compile(r"^https://[^/@?#\s]+(/[^?#\s]*)?$")
 
@@ -182,7 +193,7 @@ def resolve_candidates(lines):
         line = line.strip()
         if not line or line.startswith(";") or "fleet-door1" not in line:
             continue
-        value = line[line.index("v=fleet-door1"):]
+        value = line[line.index("v=fleet-door1") :]
         candidates.append(parse_record_value(value.rstrip('"; ')))
     return sorted(candidates, key=lambda c: (c["machine"], c["offer"]))
 

@@ -1453,10 +1453,19 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
   if (payload["dedupe_exempt"] === true) return null;
   const kind = typeof payload["kind"] === "string" ? payload["kind"] : "";
   const family =
-    kind === "small_fix" ? "fix" : kind === "triage" ? "triage" : kind === "pr_shepherd" ? "pr_shepherd" : kind === "prompt" ? "prompt" : null;
+    kind === "small_fix"
+      ? "fix"
+      : kind === "triage"
+        ? "triage"
+        : kind === "pr_shepherd"
+          ? "pr_shepherd"
+          : kind === "prompt"
+            ? "prompt"
+            : null;
   if (family === null) return null;
   const promptObj = payload["prompt"];
-  const promptId = kind === "prompt" && isObj(promptObj) && typeof promptObj["id"] === "string" ? promptObj["id"] : null;
+  const promptId =
+    kind === "prompt" && isObj(promptObj) && typeof promptObj["id"] === "string" ? promptObj["id"] : null;
   if (kind === "prompt" && promptId === null) return null;
   const issueObj = payload["issue"];
   const issue = kind === "prompt" ? 0 : isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
@@ -1475,7 +1484,10 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
     if (Array.isArray(prsRaw)) for (const el of prsRaw) collect(el);
     prs = [...prs].sort((a, b) => a - b);
   }
-  const key = promptId !== null ? `${repo}#${promptId}` : `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
+  const key =
+    promptId !== null
+      ? `${repo}#${promptId}`
+      : `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
   return { kind, repo, issue, family, promptId, key };
 }
 

@@ -47,9 +47,7 @@ function freshTenancyDb(): DatabaseSync {
 
 function tableNames(db: DatabaseSync): string[] {
   const rows = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-    )
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all() as { name: string }[];
   return rows.map((r) => r.name);
 }
@@ -195,9 +193,9 @@ test("the never-central guard actually bites", () => {
 
 test("peer principle: one participant_kind vocabulary, no hosted-only objects", () => {
   const db = freshTenancyDb();
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tenant_db'")
-    .get() as { sql: string };
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tenant_db'").get() as {
+    sql: string;
+  };
   for (const kind of ["user_hosted", "user_native", "self_hosted_node", "public"]) {
     assert.ok(row.sql.includes(`'${kind}'`), `participant_kind must include ${kind}`);
   }
@@ -206,9 +204,9 @@ test("peer principle: one participant_kind vocabulary, no hosted-only objects", 
   const withKind = tableNames(db).filter((t) => columnNames(db, t).includes("participant_kind"));
   assert.deepEqual(withKind, ["tenant_db"]);
   // No schema object is named for one participant kind.
-  const objects = db
-    .prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
-    .all() as { name: string }[];
+  const objects = db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all() as {
+    name: string;
+  }[];
   for (const { name } of objects) {
     assert.ok(!/hosted/.test(name), `schema object ${name} special-cases hosted tenants`);
   }
@@ -252,9 +250,7 @@ test("closed vocabularies and foreign keys are enforced", () => {
   assert.throws(
     () =>
       db
-        .prepare(
-          "INSERT INTO account (account_id, sub, created_at, state, tier) VALUES ('x', 's', ?, 'bogus', 't')",
-        )
+        .prepare("INSERT INTO account (account_id, sub, created_at, state, tier) VALUES ('x', 's', ?, 'bogus', 't')")
         .run(NOW),
     /CHECK/,
   );
@@ -263,7 +259,9 @@ test("closed vocabularies and foreign keys are enforced", () => {
   assert.throws(
     () =>
       db
-        .prepare("INSERT INTO binding (binding_id, account_id, iroh_id, status, bound_at) VALUES (?, 'nope', 'k', 'active', ?)")
+        .prepare(
+          "INSERT INTO binding (binding_id, account_id, iroh_id, status, bound_at) VALUES (?, 'nope', 'k', 'active', ?)",
+        )
         .run(BINDING_A, NOW),
     /FOREIGN KEY/,
   );

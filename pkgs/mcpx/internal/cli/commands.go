@@ -801,7 +801,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err := a.ensureSchemas(ctx, c, ns); err != nil {
 			return err
 		}
-	} else if err := a.ensureAnySchemas(ctx, c); err != nil {
+	} else if err := a.ensureRunSchemas(ctx, c); err != nil {
 		return err
 	}
 
@@ -1404,6 +1404,24 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
+// ensureRunSchemas blocks until every known namespace has been read at
+// least once. A run snapshots the client at generation time: unlike a tool
+// call, which awaits its schema read daemon-side, a client generated from
+// a cold cache bakes lazy namespaces in, and the script then sees an empty
+// tools list. The wait happens only on a cold cache; a warm run pays
+// nothing beyond the namespace listing.
+func (a *App) ensureRunSchemas(ctx context.Context, c *Client) error {
+	known, err := c.Namespaces(ctx, a.Profile)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(known))
+	for _, n := range known {
+		names = append(names, n.Namespace)
+	}
+	return a.ensureSchemas(ctx, c, names)
+}
+
 // ensureAnySchemas starts a schema read when a namespace has none yet and
 // returns without waiting for it (#1868 point 3 slice 2).
 //
@@ -1439,13 +1457,40 @@ func (a *App) ensureAnySchemas(ctx context.Context, c *Client) error {
 func (a *App) startBackgroundRefresh(c *Client) {
 	timeout := a.Settings().Duration("daemon.refreshTimeout")
 	if timeout <= 0 {
-		timeout = 3 * time.Minute
+		timeout = defaults.RefreshTimeout
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		_, _ = c.Refresh(ctx)
 	}()
+}
+
+// ensureRunSchemas blocks until every mounted namespace has schemas.
+// A script reads the generated client (tool listings, describe) locally,
+// so serving it a cold empty client is wrong even though tool *calls*
+// would await their schema read daemon-side via CallGenerated. This is
+// the pre-#1868 blocking behavior, kept for run only: every other
+// implicit path backgrounds the refresh (ensureAnySchemas), and an
+// explicit --ns selection blocks in ensureSchemas.
+func (a *App) ensureRunSchemas(ctx context.Context, c *Client) error {
+	known, err := c.Namespaces(ctx, a.Profile)
+	if err != nil {
+		return err
+	}
+	missing := false
+	for _, n := range known {
+		if !n.Cached && n.Error == "" {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+	a.notice("reading tool schemas for the first time...")
+	_, err = c.Refresh(ctx)
+	return err
 }
 
 // buildPrelude imports the client and binds each namespace as a bare
@@ -1775,7 +1820,7 @@ func (a *App) reapStoppedSupervisors(stateDir, configPath string) {
 	// for the whole drain window; retry until it is over rather than
 	// for a fixed few attempts, or the reap gives up mid-drain and the
 	// child outlives the stop it was cut by.
-	deadline := time.Now().Add(defaults.ExecDrainTimeout + 5*time.Second)
+	deadline := time.Now().Add(defaults.ExecDrainTimeout + defaults.ExecDrainGrace)
 	for {
 		outcomes = mcpclient.ReapSupervisors(stateDir, names, nil)
 		refused := false

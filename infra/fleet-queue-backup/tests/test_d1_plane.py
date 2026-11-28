@@ -147,9 +147,7 @@ class D1PlaneTests(unittest.TestCase):
         # enter the dump, the meta record, or the backup copy (#14943).
         live = self.fake.find_database(fq_common.LIVE_D1_NAME)
         conn = self.fake.dbs[live["uuid"]]["conn"]
-        conn.execute(
-            "CREATE TABLE __turso_internal_seq_tasks (seq INTEGER)"
-        )
+        conn.execute("CREATE TABLE __turso_internal_seq_tasks (seq INTEGER)")
         conn.execute("INSERT INTO __turso_internal_seq_tasks VALUES (3)")
         conn.commit()
         result = export_d1_to_d1.export_with_clients(

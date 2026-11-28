@@ -7,25 +7,82 @@
 # volumes are never touched. This is a rehearsal driver, NOT the
 # laptop-off drill: it runs on the backup host and uses the local copy.
 #
-# Usage: restore-rehearsal.sh [YYYY-MM-DD]   (default: today's generation)
-# Contract (#3352): zero or one Gregorian date (0001-01-01..9999-12-31).
-# Flags/unknown/excess args exit 2 before filesystem checks, subprocesses,
-# cleanup or writes. No options (including --help or --) are accepted.
+# Usage: restore-rehearsal.sh --backup-record-file FILE [--max-backup-age-hours N]
+#                          [YYYY-MM-DD]   (default day: today's generation;
+#                          default max age: 36 hours)
+# Contract (#3352): --backup-record-file is required; --max-backup-age-hours
+# takes a positive integer; zero or one Gregorian date (0001-01-01..9999-12-31).
+# Unknown, malformed or excess args exit 2 before filesystem checks,
+# subprocesses, cleanup or writes. The rehearsal is REFUSED (exit 3, before
+# anything is extracted or any container starts) unless the backup record
+# describes a complete generation with a valid archive identity and verified
+# local, R2, and Drive copies finished within the max age — the same consumer
+# gate the cutover drivers (kaneo-cutover.sh promote, grist-pad-sync.sh
+# --mode final) enforce via pm-stack/scripts/restore-point-check.py, so a
+# rehearsal never reports success against a missing, failed, incomplete,
+# unverified, or stale generation.
 # Requires: docker, sqlite3, zstd, curl; images postgres:16-alpine,
 # gristlabs/grist-oss, ghcr.io/perpetualsoftware/pad,
 # ghcr.io/usekaneo/kaneo (present on the laptop).
 set -euo pipefail
-usage_error() {
-  echo "invalid argument: $1; usage: restore-rehearsal.sh [YYYY-MM-DD]" >&2
+USAGE="usage: restore-rehearsal.sh --backup-record-file FILE [--max-backup-age-hours N] [YYYY-MM-DD]"
+usage() {
+  echo "$USAGE" >&2
+}
+fail_usage() {
+  echo "restore-rehearsal: $1" >&2
+  usage
   exit 2
 }
-if (($# > 1)); then usage_error "$2"; fi
-if (($# == 1)); then
-  [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "$1"
-  year=$((10#${1:0:4}))
-  month=$((10#${1:5:2}))
-  day=$((10#${1:8:2}))
-  ((year >= 1 && month >= 1 && month <= 12 && day >= 1)) || usage_error "$1"
+BACKUP_RECORD_FILE=""
+MAX_BACKUP_AGE_HOURS=36
+POSITIONAL=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --backup-record-file | --max-backup-age-hours)
+    opt="$1"
+    [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
+    val="$2"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
+    esac
+    shift 2
+    ;;
+  --backup-record-file=* | --max-backup-age-hours=*)
+    opt="${1%%=*}"
+    val="${1#*=}"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
+    esac
+    shift
+    ;;
+  --*) fail_usage "unexpected argument '$1'" ;;
+  *)
+    POSITIONAL+=("$1")
+    shift
+    ;;
+  esac
+done
+[ "${#POSITIONAL[@]}" -le 1 ] || fail_usage "unexpected argument '${POSITIONAL[1]}' (at most one date)"
+# All usage validation finishes before any subprocess: no date, filesystem,
+# docker, or python call happens on a usage-error path.
+[ -n "$BACKUP_RECORD_FILE" ] || fail_usage "--backup-record-file is required"
+[ -r "$BACKUP_RECORD_FILE" ] || fail_usage "backup record file '$BACKUP_RECORD_FILE' is not readable"
+case "$MAX_BACKUP_AGE_HOURS" in
+'' | *[!0-9]*) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+0) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+esac
+if (("${#POSITIONAL[@]}" == 1)); then
+  DATE_ARG="${POSITIONAL[0]}"
+  [[ $DATE_ARG =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail_usage "invalid date '$DATE_ARG' (want YYYY-MM-DD)"
+  year=$((10#${DATE_ARG:0:4}))
+  month=$((10#${DATE_ARG:5:2}))
+  day=$((10#${DATE_ARG:8:2}))
+  ((year >= 1 && month >= 1 && month <= 12 && day >= 1)) || fail_usage "invalid date '$DATE_ARG' (not a Gregorian date)"
   max_day=31
   case $month in
   4 | 6 | 9 | 11) max_day=30 ;;
@@ -34,14 +91,23 @@ if (($# == 1)); then
     if ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))); then max_day=29; fi
     ;;
   esac
-  ((day <= max_day)) || usage_error "$1"
-  DAY=$1
+  ((day <= max_day)) || fail_usage "invalid date '$DATE_ARG' (not a Gregorian date)"
+  DAY=$DATE_ARG
 else
   DAY=$(date +%F)
 fi
 SCRATCH="$HOME/restore-rehearsal-6816"
 SRC="$SCRATCH/src"
 BK="$HOME/backups/pm-stack/$DAY/pm-stack-$DAY.tar.zst"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fail closed before anything is extracted or any container starts: the
+# rehearsal only means something against a verified restore point.
+if ! RESTORE_POINT_OUT="$(python3 -I "$SCRIPT_DIR/restore-point-check.py" \
+  --record "$BACKUP_RECORD_FILE" --max-age-hours "$MAX_BACKUP_AGE_HOURS" 2>&1)"; then
+  echo "restore-rehearsal: REFUSED — rehearsal requires a fresh verified backup restore point; nothing extracted, no containers started. $RESTORE_POINT_OUT" >&2
+  exit 3
+fi
+echo "restore-rehearsal: $RESTORE_POINT_OUT"
 T_ALL=$(date +%s)
 say() { echo "== $* =="; }
 elapsed() { echo "[$1] $(($(date +%s) - $2))s"; }

@@ -9,21 +9,29 @@ import { El } from "./dom.ts";
 class Input extends El {
   value = "";
   returnValue = "";
-  get textContent() { return super.textContent; }
-  set textContent(text: string) { this.replaceChildren(text); }
+  get textContent() {
+    return super.textContent;
+  }
+  set textContent(text: string) {
+    this.replaceChildren(text);
+  }
   showModal() {}
   focus() {}
   addEventListener(name: string, fn: any, options?: { once?: boolean }) {
-    const wrapped = options?.once ? (event: any) => {
-      this.listeners[name] = this.listeners[name].filter((f) => f !== wrapped);
-      fn(event);
-    } : fn;
+    const wrapped = options?.once
+      ? (event: any) => {
+          this.listeners[name] = this.listeners[name].filter((f) => f !== wrapped);
+          fn(event);
+        }
+      : fn;
     super.addEventListener(name, wrapped);
   }
 }
 
 function browser() {
-  const frame = new Map(["ask", "ask-input", "ask-ok", "ask-title", "ask-text", "ask-label", "toast"].map((id) => [id, new Input(id)]));
+  const frame = new Map(
+    ["ask", "ask-input", "ask-ok", "ask-title", "ask-text", "ask-label", "toast"].map((id) => [id, new Input(id)]),
+  );
   let result: any = { state: "refused", note: "No connection" };
   const sent: any[] = [];
   const completions: (() => void)[] = [];
@@ -34,30 +42,50 @@ function browser() {
   };
   const ui = readFileSync(new URL("../public/ui.js", import.meta.url), "utf8").replaceAll("export ", "");
   const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8")
-    .replace(/^import .*;$/gm, "").replaceAll("export ", "");
-  const hooks = runInNewContext(`${ui}\n${app}\nloadDoc = async () => {}; draw = () => completeSend();\n({ questionCard, setStore: (store) => { outbox = store; } });`, {
-    document, PAGES: [], navigator: {}, setTimeout: () => 0, clearTimeout: () => {},
-    completeSend: () => completions.shift()?.(),
-    self: { PMOutbox: {
-      make: (kind: string, args: unknown) => ({ id: "answer-id", kind, args }),
-      rule: () => "keep",
-      httpSend: async (entry: any) => { sent.push(entry); return result; },
-      classify: (answer: any) => answer,
-      sendInOrder: async (_store: any, _id: any, send: any) => {
-        const out = await send({ kind: "question.answer" });
-        return { entry: { state: "waiting" }, others: [], signin: false, offline: false, ...out };
+    .replace(/^import .*;$/gm, "")
+    .replaceAll("export ", "");
+  const hooks = runInNewContext(
+    `${ui}\n${app}\nloadDoc = async () => {}; draw = () => completeSend();\n({ questionCard, setStore: (store) => { outbox = store; } });`,
+    {
+      document,
+      PAGES: [],
+      navigator: {},
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+      completeSend: () => completions.shift()?.(),
+      self: {
+        PMOutbox: {
+          make: (kind: string, args: unknown) => ({ id: "answer-id", kind, args }),
+          rule: () => "keep",
+          httpSend: async (entry: any) => {
+            sent.push(entry);
+            return result;
+          },
+          classify: (answer: any) => answer,
+          sendInOrder: async (_store: any, _id: any, send: any) => {
+            const out = await send({ kind: "question.answer" });
+            return { entry: { state: "waiting" }, others: [], signin: false, offline: false, ...out };
+          },
+        },
       },
-    } },
-  });
+    },
+  );
   const input = frame.get("ask-input")!;
   const dialog = frame.get("ask")!;
   function open(q: any) {
     const card = hooks.questionCard({ options: [], recommended: [], links: [], q: "Which?", ...q });
-    card.find("button").find((b: El) => b.textContent === "Write an answer").fire("click");
+    card
+      .find("button")
+      .find((b: El) => b.textContent === "Write an answer")
+      .fire("click");
   }
-  async function settle() { await Promise.resolve(); }
+  async function settle() {
+    await Promise.resolve();
+  }
   async function answer(q: any, words: string) {
-    const done = new Promise<void>((resolve) => { completions.push(resolve); });
+    const done = new Promise<void>((resolve) => {
+      completions.push(resolve);
+    });
     open(q);
     input.value = words;
     dialog.returnValue = "ok";
@@ -66,8 +94,22 @@ function browser() {
     // of microtasks, determines when its handoff has finished.
     await done;
   }
-  function cancel() { dialog.returnValue = ""; dialog.fire("close"); }
-  return { open, answer, cancel, input, sent, hooks, settle, outcome: (out: any) => { result = out; } };
+  function cancel() {
+    dialog.returnValue = "";
+    dialog.fire("close");
+  }
+  return {
+    open,
+    answer,
+    cancel,
+    input,
+    sent,
+    hooks,
+    settle,
+    outcome: (out: any) => {
+      result = out;
+    },
+  };
 }
 
 const first = { set: "board", ledger: "decisions", qid: "q1" };
@@ -76,10 +118,18 @@ test("answer draft: an older acceptance cannot erase a newer failed submission, 
   const b = browser();
   let accept!: (out: any) => void;
   let refuse!: (out: any) => void;
-  b.outcome(new Promise((resolve) => { accept = resolve; }));
+  b.outcome(
+    new Promise((resolve) => {
+      accept = resolve;
+    }),
+  );
   const older = b.answer(first, "same exact words");
   await b.settle();
-  b.outcome(new Promise((resolve) => { refuse = resolve; }));
+  b.outcome(
+    new Promise((resolve) => {
+      refuse = resolve;
+    }),
+  );
   const newer = b.answer(first, "same exact words");
   await b.settle();
   accept({ state: "done" });
@@ -116,7 +166,13 @@ for (const state of ["done", "held", "kept"]) {
     await b.answer(first, "first draft");
     await b.answer(other, "other draft");
     const stored: any[] = [];
-    if (state === "kept") b.hooks.setStore({ put: async (entry: any) => { stored.push(entry); }, all: async () => stored });
+    if (state === "kept")
+      b.hooks.setStore({
+        put: async (entry: any) => {
+          stored.push(entry);
+        },
+        all: async () => stored,
+      });
     b.outcome({ state: state === "kept" ? "waiting" : state, note: "Accepted" });
     await b.answer(first, "accepted draft");
     if (state === "kept") expect(stored[0].args).toEqual({ ...first, text: "accepted draft" });

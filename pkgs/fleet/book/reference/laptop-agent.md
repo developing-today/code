@@ -79,7 +79,7 @@ fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 | Flag        | Argument | Default        | Meaning                                                                                                                  |
 | ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
-| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                           |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                 |
 | `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
 | `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 
@@ -108,11 +108,11 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 fleet laptop-agent run [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
-| Flag        | Argument | Default        | Meaning                                                                                                                                  |
-| ----------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
-| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
-| `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
+| Flag        | Argument | Default        | Meaning                                                                                                                                             |
+| ----------- | -------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                                      |
+| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                           |
+| `--`        | —        | required       | Separator; everything after it is the command.                                                                                                      |
 | `--timeout` | `SECS`   | 120 (ignored)  | Accepted for Python-CLI compatibility and ignored: detached jobs have no client-side timeout; use `poll --wait` to bound waiting. Must be positive. |
 
 ### Behaviour
@@ -233,7 +233,7 @@ fleet laptop-agent fetch REMOTE_PATH LOCAL_PATH
 
 ### Behaviour
 
-Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
+Hash-checked copy with resume. First it sizes and hashes the remote file _on the laptop_ (`wc -c` and `shasum -a 256` through `/exec`). An existing destination is resumed from its current size — only the missing tail is pulled, in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` — and a destination longer than the remote file is refused, never appended to. The SHA-256 of the complete file (existing prefix + downloaded tail) is verified against the remote hash before anything is appended — a mismatch writes nothing and exits 1. On success it prints the legacy receipt: `fetched N bytes from REMOTE -> LOCAL in T round trip(s)`, with `(resumed from offset K)` when a partial destination was continued.
 
 ### Exit codes
 

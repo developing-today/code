@@ -49,7 +49,12 @@ beforeAll(async () => {
     // laptop this hub runs on — the bind collides (EADDRINUSE) and the
     // child dies before readiness. Pin the child to a sibling port the
     // same way the other server-booting suites do (#1047 slice).
-    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_FRESHNESS_PORT: String(port + 1000), PM_AGG_SOURCE: "fixtures" },
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_FRESHNESS_PORT: String(port + 1000),
+      PM_AGG_SOURCE: "fixtures",
+    },
     stdout: "pipe",
     stderr: "inherit",
   });

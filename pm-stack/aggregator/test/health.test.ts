@@ -881,10 +881,12 @@ describe("quota-gatherer rows (#14062)", () => {
   // Oracle: only documented split meters share identity; punctuation and
   // an unknown credential label cannot establish a common account.
   test("unknown dotted services retain separate credentials", () => {
-    expect(dedupeGathererProviders([
-      row("custom", "custom.pool", "first account"),
-      row("custom", "custom.pool", "second account"),
-    ])).toHaveLength(2);
+    expect(
+      dedupeGathererProviders([
+        row("custom", "custom.pool", "first account"),
+        row("custom", "custom.pool", "second account"),
+      ]),
+    ).toHaveLength(2);
   });
 
   // Oracle: equal-state readings select newest sync without mutating input.

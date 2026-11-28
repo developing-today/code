@@ -476,26 +476,21 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 	return nil
 }
 
-// stderrIsTerminal is a seam for tests: the ioctl answer for os.Stderr.
-var stderrIsTerminal = func() bool { return isTerminal(os.Stderr) }
-
 // reportFinalResult prints a run's result for a person at a
 // terminal when the script's own output did not already show it:
 // a snippet whose final expression is its answer (CODE-19) may
 // print nothing at all, and a result that merely repeats the
 // stdout parse must not be printed twice.
 func (a *App) reportFinalResult(res *execsvc.Result) {
-	if res.Runtime != "" {
+	if res.Runtime != "" && a.showRuntimeNotice() {
 		// A progress notice, not part of the answer: keep it out of
 		// the way of anything parsing the output, the same gate every
 		// other notice goes through (bare/json callers read the
-		// record stream, not stderr hints). A piped stderr is a
-		// caller, not a person: the harness captures it together
-		// with stdout, so a trailing line breaks every parse after
-		// the top-level value (run 46042116668).
-		if stderrIsTerminal() {
-			a.notice("JavaScript runtime: " + res.Runtime)
-		}
+		// record stream, not stderr hints). The terminal check keeps it
+		// off piped stderr too: the e2e harness captures stderr together
+		// with stdout, so an unconditional line breaks bare-output
+		// assertions and JSON parses (run 46042116668).
+		a.notice("JavaScript runtime: " + res.Runtime)
 	}
 	if !res.ResultPresent && res.Result == nil {
 		return
@@ -520,6 +515,22 @@ func (a *App) reportFinalResult(res *execsvc.Result) {
 	}
 	_, _ = fmt.Fprintln(os.Stdout, string(b))
 }
+
+// showRuntimeNotice says whether the resolved-runtime line may print. It
+// names the runtime for a person at a terminal in the default text
+// rendering; anywhere else -- a pipe or redirect, --json, or a
+// machine-readable log format -- the line is stderr noise that breaks
+// callers parsing combined output (every e2e run captures stderr together
+// with stdout), and the structured forms already carry the runtime.
+func (a *App) showRuntimeNotice() bool {
+	if a.JSON || a.machineOutput {
+		return false
+	}
+	return stderrIsTerminal()
+}
+
+// stderrIsTerminal is a seam for tests: the ioctl answer for os.Stderr.
+var stderrIsTerminal = func() bool { return isTerminal(os.Stderr) }
 
 // fetchArtifacts pulls bodies the daemon did not place for us.
 //

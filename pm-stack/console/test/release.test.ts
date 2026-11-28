@@ -411,7 +411,9 @@ process.exit(status);
     reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "v0") });
     const got = await release();
     expect(got.code).toBe(0);
-    expect(state.did).toEqual([`wrangler deploy --name ${REAL} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z --message git ${SHA}`]);
+    expect(state.did).toEqual([
+      `wrangler deploy --name ${REAL} --var VERSION:${SHA} --var DEPLOYED_AT:2026-11-27T10:00:00.000Z --message git ${SHA}`,
+    ]);
     expect(serving(REAL)).toEqual({ kind: "app", full: SHA });
     // If what it deployed does not answer, the run fails. There is no
     // putting back across a change of classes.
@@ -470,7 +472,10 @@ process.exit(status);
 
   test("the scratch run starts from nothing, shows each step, and leaves nothing behind", async () => {
     // A scratch Worker left by a run that was cut off, and the real one in service.
-    reset({ [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [SCRATCH]: worker("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "v0") });
+    reset({
+      [REAL]: worker("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+      [SCRATCH]: worker("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "v0"),
+    });
     const got = await release("--scratch");
     expect(got.code).toBe(0);
     expect(state.did).toEqual([

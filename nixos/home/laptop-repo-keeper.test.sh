@@ -55,6 +55,11 @@ residue_paths=(
   'residue/.pre-warm-state'
   'residue/resume-build'
   'residue/proxy.mjs.new'
+  # Mid-name forms (code#16014): the warm-up scripts produce names like
+  # codex-proxy.mjs.pre-warm-<date>, where the residue marker sits after
+  # a real basename, not at its start.
+  'bin/codex-proxy.mjs.pre-warm-20261024'
+  'bin/foo.resume-build'
 )
 for path in "${residue_paths[@]}"; do
   mkdir -p "$R1/$(dirname "$path")"

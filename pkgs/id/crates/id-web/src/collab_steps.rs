@@ -22,11 +22,25 @@
 //!   document and every accepted step, so an out-of-range position is
 //!   refused even when the step is otherwise well formed.
 //!
+//! Slice nodes are also checked against the content expressions of
+//! `editor.ts`: each container node may hold only the child types its
+//! expression admits (a `paragraph` holds inline nodes, a `table` holds
+//! rows, a row holds cells, a cell holds paragraphs, and so on). Only
+//! child types are checked, never minimum counts or ordering, so the
+//! open, partial nodes a slice legitimately carries stay valid.
+//!
+//! A slice's open depths are checked against the slice itself: an
+//! `openStart`/`openEnd` claims that many nodes are cut through on
+//! that side, so the fragment must have that many openable (non-leaf)
+//! nodes down its first/last-child chain — the bound `ProseMirror`'s
+//! own `Slice.maxOpen` computes, and the condition its `Slice`
+//! constructor documents. A depth past that bound (a lone text node
+//! claiming `openStart: 1`, an empty paragraph claiming 2) is a slice
+//! no cut can produce; `replace` throws for it on every client.
+//!
 //! This does not yet prove that a structurally plausible step applies
-//! against the evolving document. Slice validation also remains partial:
-//! `list_item` rejects direct text children, but other content-expression
-//! violations are deferred. Full server-side application is the later
-//! stage of #1618.
+//! against the evolving document. Full server-side application is the
+//! later stage of #1618.
 
 use serde_json::{Map, Value};
 
@@ -337,13 +351,16 @@ fn slice_size(schema: StepSchema, slice: Option<&Value>) -> Result<u64, String> 
         Some(Value::Object(slice)) => slice,
         Some(_) => return Err("`slice` must be a JSON object".to_owned()),
     };
-    let content = match slice.get("content") {
-        None | Some(Value::Null) => 0,
-        Some(Value::Array(nodes)) => fragment_size(schema, nodes, 0)?,
+    let nodes: &[Value] = match slice.get("content") {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(nodes)) => nodes,
         Some(_) => return Err("slice `content` must be an array".to_owned()),
     };
+    let content = fragment_size(schema, nodes, 0)?;
     let open_start = optional_depth(slice, "openStart")?;
     let open_end = optional_depth(slice, "openEnd")?;
+    check_open_depth("openStart", open_start, openable_depth(schema, nodes, true))?;
+    check_open_depth("openEnd", open_end, openable_depth(schema, nodes, false))?;
     content
         .checked_sub(open_start)
         .and_then(|rest| rest.checked_sub(open_end))
@@ -363,10 +380,113 @@ fn optional_depth(slice: &Map<String, Value>, field: &str) -> Result<u64, String
     }
 }
 
+/// The depth to which a fragment can be open on one side: the number
+/// of non-leaf nodes down its first-child (start) or last-child (end)
+/// chain. This is `ProseMirror`'s `Slice.maxOpen` bound — text and
+/// leaf nodes cannot be cut through, and an empty container is open
+/// exactly one level. The fragment has already been validated by
+/// [`fragment_size`], so malformed nodes simply end the chain.
+fn openable_depth(schema: StepSchema, nodes: &[Value], start: bool) -> u64 {
+    let mut depth = 0;
+    let mut current = if start { nodes.first() } else { nodes.last() };
+    while let Some(node) = current {
+        let Some(kind) = node.get("type").and_then(Value::as_str) else {
+            break;
+        };
+        if kind == "text" || schema.is_leaf(kind) {
+            break;
+        }
+        depth += 1;
+        let children = node.get("content").and_then(Value::as_array);
+        current = match children {
+            Some(children) if start => children.first(),
+            Some(children) => children.last(),
+            None => None,
+        };
+    }
+    depth
+}
+
+fn check_open_depth(field: &str, open: u64, openable: u64) -> Result<(), String> {
+    if open > openable {
+        return Err(format!(
+            "slice `{field}` {open} exceeds the nodes openable on that side of its content ({openable})"
+        ));
+    }
+    Ok(())
+}
+
 fn fragment_size(schema: StepSchema, nodes: &[Value], depth: usize) -> Result<u64, String> {
     nodes.iter().try_fold(0u64, |total, node| {
         node_size(schema, node, depth).map(|size| total.saturating_add(size))
     })
+}
+
+/// Node types in the rich schema's `block` group (`editor.ts`:
+/// `prosemirror-schema-basic`, the list/task/table extensions and the
+/// GFM blocks).
+const BLOCK_NODES: &[&str] = &[
+    "paragraph",
+    "blockquote",
+    "horizontal_rule",
+    "heading",
+    "code_block",
+    "ordered_list",
+    "bullet_list",
+    "task_list",
+    "table",
+    "front_matter",
+    "footnote_definition",
+];
+
+/// Node types in the rich schema's `inline` group.
+const INLINE_NODES: &[&str] = &[
+    "text",
+    "image",
+    "hard_break",
+    "html_inline",
+    "footnote_reference",
+];
+
+/// Check a slice node's children against its content expression in
+/// `editor.ts`: `paragraph`/`heading` are `inline*`, `code_block` is
+/// `text*`, `blockquote`/`footnote_definition` are `block+`,
+/// `ordered_list`/`bullet_list` are `list_item+`, `task_list` is
+/// `task_list_item+`, `list_item`/`task_list_item` are
+/// `paragraph block*`, `table` is `table_row+`, `table_row` is
+/// `(table_cell | table_header)+` and `table_cell`/`table_header` are
+/// `paragraph+`.
+///
+/// Only child types are checked — never minimum counts (`+` vs `*`) or
+/// ordering — because a slice legitimately carries open, partial nodes
+/// (an empty `blockquote` wrapper, a split `paragraph`). A child of the
+/// wrong type, by contrast, can never be produced by the editor's
+/// schema and makes `Node.fromJSON` throw on every receiving client.
+/// Children that are not objects or carry no string `type` are left to
+/// the recursion in [`node_size`], which refuses them.
+fn check_content_expression(kind: &str, children: &[Value]) -> Result<(), String> {
+    let allowed: &[&str] = match kind {
+        "paragraph" | "heading" => INLINE_NODES,
+        "code_block" => &["text"],
+        "blockquote" | "footnote_definition" | "list_item" | "task_list_item" => BLOCK_NODES,
+        "ordered_list" | "bullet_list" => &["list_item"],
+        "task_list" => &["task_list_item"],
+        "table" => &["table_row"],
+        "table_row" => &["table_cell", "table_header"],
+        "table_cell" | "table_header" => &["paragraph"],
+        _ => return Ok(()),
+    };
+    for child in children {
+        let Some(child_kind) = child.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !allowed.contains(&child_kind) {
+            return Err(format!(
+                "`{kind}` content cannot contain a direct `{child_kind}` child"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The size of one node inside a slice, checked against the schema.
@@ -401,16 +521,8 @@ fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, Stri
         Some(Value::Array(children)) => Some(children.as_slice()),
         Some(_) => return Err(format!("node `{kind}` has non-array `content`")),
     };
-    // `editor.ts` declares `list_item` content as `paragraph block*`.
-    // A bare text child cannot be produced by a valid rich-schema item.
-    if kind == "list_item"
-        && content.is_some_and(|children| {
-            children
-                .iter()
-                .any(|child| child.get("type").and_then(Value::as_str) == Some("text"))
-        })
-    {
-        return Err("list_item content cannot contain a direct text child".to_owned());
+    if let Some(children) = content {
+        check_content_expression(kind, children)?;
     }
     if kind == "text" {
         if content.is_some_and(|children| !children.is_empty()) {
@@ -604,6 +716,195 @@ mod tests {
         let bold = json!({"stepType": "addMark", "from": 1, "to": 2, "mark": {"type": "strong"}});
         assert!(check_steps(raw(), size, &[bold]).is_err());
         assert!(StepSchema::for_mode(ContentMode::Binary).is_none());
+    }
+
+    #[test]
+    fn slice_content_expressions_are_enforced() {
+        // Oracle: the content expressions declared in `web/src/editor.ts`.
+        // Each step wraps one violating node in a replace slice.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // paragraph / heading are `inline*`: no block children.
+            (
+                json!({"type": "paragraph", "content": [{"type": "paragraph"}]}),
+                "paragraph",
+            ),
+            (
+                json!({"type": "heading", "content": [{"type": "code_block"}]}),
+                "heading",
+            ),
+            // code_block is `text*`.
+            (
+                json!({"type": "code_block", "content": [{"type": "paragraph"}]}),
+                "code_block",
+            ),
+            // blockquote is `block+`: no direct inline children.
+            (
+                json!({"type": "blockquote", "content": [{"type": "text", "text": "x"}]}),
+                "blockquote",
+            ),
+            (
+                json!({"type": "footnote_definition", "content": [{"type": "text", "text": "x"}]}),
+                "footnote_definition",
+            ),
+            // Lists hold only their item type.
+            (
+                json!({"type": "bullet_list", "content": [{"type": "paragraph"}]}),
+                "bullet_list",
+            ),
+            (
+                json!({"type": "ordered_list", "content": [{"type": "task_list_item"}]}),
+                "ordered_list",
+            ),
+            (
+                json!({"type": "task_list", "content": [{"type": "list_item"}]}),
+                "task_list",
+            ),
+            // Items are `paragraph block*`: no direct inline children
+            // (the slice-3 `list_item` case, now via the general rule).
+            (
+                json!({"type": "list_item", "content": [{"type": "text", "text": "x"}]}),
+                "list_item",
+            ),
+            (
+                json!({"type": "task_list_item", "content": [{"type": "image"}]}),
+                "task_list_item",
+            ),
+            // Table structure: table > row > cell/header > paragraph.
+            (
+                json!({"type": "table", "content": [{"type": "table_cell"}]}),
+                "table",
+            ),
+            (
+                json!({"type": "table_row", "content": [{"type": "paragraph"}]}),
+                "table_row",
+            ),
+            (
+                json!({"type": "table_cell", "content": [{"type": "text", "text": "x"}]}),
+                "table_cell",
+            ),
+            (
+                json!({"type": "table_header", "content": [{"type": "blockquote"}]}),
+                "table_header",
+            ),
+        ];
+        for (node, parent) in cases {
+            let reason = refused(node);
+            assert!(reason.contains(parent), "{reason}");
+            assert!(reason.contains("cannot contain"), "{reason}");
+        }
+        // Valid controls: every expression above satisfied, including a
+        // full table nest and a list item mixing paragraph + block.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"}, {"type": "hard_break"},
+                {"type": "image", "attrs": {"src": "y"}}]}),
+            json!({"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}),
+            json!({"type": "blockquote", "content": [{"type": "paragraph"}]}),
+            json!({"type": "list_item", "content": [
+                {"type": "paragraph"}, {"type": "blockquote"}]}),
+            json!({"type": "task_list", "content": [
+                {"type": "task_list_item", "content": [{"type": "paragraph"}]}]}),
+            json!({"type": "table", "content": [{"type": "table_row", "content": [
+                {"type": "table_header", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "h"}]}]},
+                {"type": "table_cell", "content": [{"type": "paragraph"}]}]}]}),
+            // Empty containers stay valid: counts are not checked, so
+            // open/partial slice nodes are unaffected.
+            json!({"type": "table_cell"}),
+            json!({"type": "bullet_list"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn slice_open_depths_cannot_exceed_its_openable_edges() {
+        // Oracle: prosemirror-model's `Slice` contract — a non-zero
+        // open depth requires nodes of at least that depth on that
+        // side of the fragment (`Slice.maxOpen` walks the non-leaf
+        // first/last-child chain; an empty paragraph opens exactly
+        // one level). Each step below fits the old size check: its
+        // open depths sum to no more than its content size.
+        let refused = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // A text node cannot be cut through.
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openStart": 1}),
+                "openStart",
+            ),
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openEnd": 1}),
+                "openEnd",
+            ),
+            // A leaf node cannot be cut through either.
+            (
+                json!({"content": [{"type": "image", "attrs": {"src": "y"}}], "openStart": 1}),
+                "openStart",
+            ),
+            // An empty paragraph opens exactly one level, not two.
+            (
+                json!({"content": [{"type": "paragraph"}], "openStart": 2}),
+                "openStart",
+            ),
+            // paragraph > text opens one level (the text stops the chain).
+            (
+                json!({"content": [{"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}], "openStart": 2}),
+                "openStart",
+            ),
+            // blockquote > paragraph > text opens two levels, not three.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "x"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+            // The end chain follows last children: blockquote >
+            // paragraph > hard_break (leaf) still opens only two.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "hard_break"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+        ];
+        for (slice, field) in cases {
+            let reason = refused(slice);
+            assert!(reason.contains(field), "{reason}");
+            assert!(reason.contains("openable"), "{reason}");
+        }
+        // Valid controls at exactly the openable bound, including the
+        // split-paragraph shape slice 1 already accepted.
+        let valid = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).is_ok()
+        };
+        for slice in [
+            json!({"content": [{"type": "text", "text": "x"}]}),
+            json!({"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "paragraph"}, {"type": "paragraph"}],
+                   "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "blockquote", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}]}], "openStart": 2, "openEnd": 2}),
+            json!({"content": [{"type": "paragraph", "content": [
+                {"type": "hard_break"}]}], "openStart": 1, "openEnd": 1}),
+        ] {
+            assert!(valid(slice.clone()), "refused valid {slice}");
+        }
     }
 
     #[test]

@@ -1832,6 +1832,7 @@
         "pkgs/id/crates/id-sync/tests/federation_b22.rs",
         "pkgs/id/crates/id-sync/tests/federation_b23.rs",
         "pkgs/id/crates/id-sync/tests/federation_b24.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b27.rs",
         "pkgs/id/crates/id-sync/tests/federation_b28.rs",
         "pkgs/id/crates/id-sync/tests/federation_b31.rs",
         "pkgs/id/crates/id-sync/tests/federation_b32.rs",

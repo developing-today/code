@@ -20,11 +20,10 @@ import {
   mobileView,
   workViewLike,
   type ViewContext,
-  type WorkView,
 } from "../src/work-mobile-views.ts";
 import { itemMatchesView } from "../src/views.ts";
 // Type-only import keeps the runtime dependency one-way (views <- projection).
-import type {} from "../src/work-projection.ts";
+import type { WorkView } from "../src/work-projection.ts";
 
 const GEN = "2026-11-26T12:00:00Z";
 const CTX: ViewContext = {
@@ -41,8 +40,7 @@ const base = (work_id: string, rest: Partial<WorkProjectionInput> = {}): WorkVie
     ...rest,
   } as WorkProjectionInput);
 
-const ready = (id: string): WorkView =>
-  base(id, { queue: { eligible: true, explicitly_prepared: true } });
+const ready = (id: string): WorkView => base(id, { queue: { eligible: true, explicitly_prepared: true } });
 const review = (id: string): WorkView => base(id, { github_state: { value: "closed", source: "github" } });
 const blocked = (id: string): WorkView => base(id, { queue: { blocked: true } });
 const backlog = (id: string): WorkView => base(id, {});
@@ -75,8 +73,16 @@ describe("work_mobile_views/v1 pure filter", () => {
     expect(got.refs).toEqual([]);
     expect(got.unavailable).toBeNull();
     expect(got.undecided).toEqual([
-      { ref: { authority_id: "fleet-authority", work_id: "h1" }, deciding_fact: "intrinsic_urgency", state: "policy_undefined" },
-      { ref: { authority_id: "fleet-authority", work_id: "q1" }, deciding_fact: "intrinsic_urgency", state: "policy_undefined" },
+      {
+        ref: { authority_id: "fleet-authority", work_id: "h1" },
+        deciding_fact: "intrinsic_urgency",
+        state: "policy_undefined",
+      },
+      {
+        ref: { authority_id: "fleet-authority", work_id: "q1" },
+        deciding_fact: "intrinsic_urgency",
+        state: "policy_undefined",
+      },
     ]);
   });
 
@@ -132,7 +138,11 @@ describe("work_mobile_views/v1 pure filter", () => {
     const blocking = mobileView(views, "blocking", CTX);
     expect(blocking.refs).toEqual([]);
     expect(blocking.undecided).toEqual([
-      { ref: { authority_id: "fleet-authority", work_id: "b1" }, deciding_fact: "relations", state: "policy_undefined" },
+      {
+        ref: { authority_id: "fleet-authority", work_id: "b1" },
+        deciding_fact: "relations",
+        state: "policy_undefined",
+      },
     ]);
   });
 
@@ -237,8 +247,6 @@ describe("work_mobile_views/v1 grouping and saved filters (slice 2)", () => {
   });
 
   test("work_mobile_views_group_dedupe_is_a_validation_error", () => {
-    expect(() => groupWorkViews([backlog("b1"), ready("b1")], "repo")).toThrow(
-      "work_mobile_views_duplicate_input",
-    );
+    expect(() => groupWorkViews([backlog("b1"), ready("b1")], "repo")).toThrow("work_mobile_views_duplicate_input");
   });
 });

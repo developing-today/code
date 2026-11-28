@@ -54,7 +54,7 @@
 //! no charging, delay, or gating happens in this phase.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -343,8 +343,11 @@ impl WorldCache {
         // `artifacts/` forever, invisible to `total_bytes` and the LRU
         // budget. Remove every artifact file no indexed entry
         // references. Best-effort and bounded to this one directory
-        // scan; staged writes (`.{hash}.tmp`, see `store`) are not
-        // artifacts and are left alone.
+        // scan. Staged writes (`.{hash}.tmp`, see `store`) are also
+        // reclaimed (#16280): a staging file present at `open` belongs
+        // to a store that crashed before its rename — it can never
+        // become a completed artifact, and leaving it leaks bytes the
+        // LRU budget cannot see. Other dotfiles are left alone.
         let referenced: BTreeSet<&str> = index
             .entries
             .values()
@@ -357,7 +360,8 @@ impl WorldCache {
                 let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
-                if name.starts_with('.') || referenced.contains(name) {
+                let is_stale_staging = name.starts_with('.') && name.ends_with(".tmp");
+                if referenced.contains(name) || (name.starts_with('.') && !is_stale_staging) {
                     continue;
                 }
                 if file.file_type().is_ok_and(|kind| kind.is_file()) {
@@ -432,18 +436,38 @@ impl WorldCache {
         if self.has_determinism_proof(compiler_blake3, platform_tree_hash) {
             return Ok(true);
         }
-        let path = self
-            .root
-            .join("proofs")
-            .join(format!("{compiler_blake3}--{platform_tree_hash}.json"));
+        let dir = self.root.join("proofs");
+        let path = dir.join(format!("{compiler_blake3}--{platform_tree_hash}.json"));
         let body = serde_json::json!({
             "compiler_blake3": compiler_blake3,
             "platform_tree_hash": platform_tree_hash,
             "artifact_hash": first_artifact_hash,
             "proved_at": now_seconds(),
         });
-        std::fs::write(&path, body.to_string())
+        // Durable install (#16280): stage in a sibling temp file,
+        // sync it, rename over the final name, then sync the parent
+        // directory — the same idiom as `write_entry`. A bare write
+        // reported success for a proof a crash could still take away,
+        // and the pair was already in the in-memory index by then.
+        let mut staged = tempfile::NamedTempFile::new_in(&dir)
+            .with_context(|| format!("stage determinism proof in {}", dir.display()))?;
+        std::io::Write::write_all(&mut staged, body.to_string().as_bytes())
             .with_context(|| format!("write determinism proof {}", path.display()))?;
+        staged
+            .as_file()
+            .sync_all()
+            .with_context(|| format!("sync determinism proof {}", path.display()))?;
+        staged
+            .persist(&path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("install determinism proof {}", path.display()))?;
+        Self::sync_dir(&dir).with_context(|| {
+            format!(
+                "{}: sync after rename; the write at {} is not durable",
+                dir.display(),
+                path.display()
+            )
+        })?;
         if let Ok(mut index) = self.index.lock() {
             index.proofs.insert(pair);
         }
@@ -565,11 +589,31 @@ impl WorldCache {
         let existing_ok =
             std::fs::read(&artifact_path).is_ok_and(|bytes| artifact_hash(&bytes) == hash);
         if !existing_ok {
-            let temp = self.root.join("artifacts").join(format!(".{hash}.tmp"));
-            std::fs::write(&temp, artifact)
-                .with_context(|| format!("write cached artifact {}", temp.display()))?;
+            // Durable install (#16280): sync the staged bytes before
+            // the rename and the artifacts directory after it, so a
+            // `store` that returns `Stored` names an artifact that
+            // survives a crash — the entry metadata written below has
+            // been fully synced since #16244, and an entry pointing at
+            // a lost artifact degrades to miss + evict + recompile.
+            let artifacts_dir = self.root.join("artifacts");
+            let temp = artifacts_dir.join(format!(".{hash}.tmp"));
+            {
+                let mut file = std::fs::File::create(&temp)
+                    .with_context(|| format!("write cached artifact {}", temp.display()))?;
+                std::io::Write::write_all(&mut file, artifact)
+                    .with_context(|| format!("write cached artifact {}", temp.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("sync cached artifact {}", temp.display()))?;
+            }
             std::fs::rename(&temp, &artifact_path)
                 .with_context(|| format!("install cached artifact {}", artifact_path.display()))?;
+            Self::sync_dir(&artifacts_dir).with_context(|| {
+                format!(
+                    "{}: sync after rename; the write at {} is not durable",
+                    artifacts_dir.display(),
+                    artifact_path.display()
+                )
+            })?;
         }
         let now = now_seconds();
         let mut entry = CacheEntry {
@@ -704,6 +748,13 @@ impl WorldCache {
             );
         }
         removed.len()
+    }
+
+    /// Sync a directory so a rename inside it is itself durable.
+    fn sync_dir(dir: &Path) -> Result<()> {
+        std::fs::File::open(dir)
+            .and_then(|dir_file| dir_file.sync_all())
+            .with_context(|| format!("sync cache directory {}", dir.display()))
     }
 
     fn write_entry(&self, entry: &CacheEntry) -> Result<()> {
@@ -1208,6 +1259,73 @@ mod tests {
             .map(|file| file.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec![format!("{}.json", cache_key(&input("s")))]);
+    }
+
+    #[test]
+    fn a_crashed_store_staging_file_is_reclaimed_on_reopen() {
+        // Oracle: #16280 — a store that crashes between the staging
+        // write and the rename leaves `.{hash}.tmp` behind; it can
+        // never become a completed artifact, so `open` reclaims it
+        // instead of leaking bytes outside `total_bytes`/the LRU
+        // budget, while the completed artifact keeps serving.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+        let good_hash = artifact_hash(b"artifact");
+        {
+            let cache = WorldCache::open(root.clone(), 1 << 20).unwrap();
+            cache
+                .store(
+                    &input("s"),
+                    "alice",
+                    CacheScope::Author,
+                    b"artifact",
+                    "roc 1",
+                )
+                .unwrap();
+            // Simulate the pre-rename crash: a staging file for an
+            // artifact whose install never completed.
+            std::fs::write(
+                root.join("artifacts").join(".deadbeef.tmp"),
+                b"partial-bytes",
+            )
+            .unwrap();
+        }
+        let cache = WorldCache::open(root.clone(), 1 << 20).unwrap();
+        assert!(!root.join("artifacts").join(".deadbeef.tmp").exists());
+        assert!(root.join("artifacts").join(&good_hash).exists());
+        assert_eq!(cache.entry_count(), 1);
+        assert_eq!(cache.total_bytes(), b"artifact".len() as u64);
+        // No invisible bytes: the artifacts directory holds exactly
+        // the one completed artifact.
+        let names: Vec<String> = std::fs::read_dir(root.join("artifacts"))
+            .unwrap()
+            .map(|file| file.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![good_hash]);
+    }
+
+    #[test]
+    fn a_recorded_proof_survives_a_reopen_without_entries() {
+        // Oracle: #16280 — the determinism proof is installed with
+        // the same sync discipline as entries, so a recorded proof is
+        // still on record after a reopen even when no entry survives
+        // alongside it, and the proofs directory holds exactly the
+        // proof's final name (no staging file left behind).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+        {
+            let cache = WorldCache::open(root.clone(), 1 << 20).unwrap();
+            cache
+                .record_determinism_proof("compiler-a", "platform-a", "h", "h")
+                .unwrap();
+        }
+        let names: Vec<String> = std::fs::read_dir(root.join("proofs"))
+            .unwrap()
+            .map(|file| file.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["compiler-a--platform-a.json".to_owned()]);
+        let cache = WorldCache::open(root, 1 << 20).unwrap();
+        assert!(cache.has_determinism_proof("compiler-a", "platform-a"));
     }
 
     #[test]
