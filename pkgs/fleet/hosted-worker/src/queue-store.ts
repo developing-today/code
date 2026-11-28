@@ -288,11 +288,14 @@ export class FixtureQueueStore implements QueueStore {
 
   async liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]> {
     const live = new Set(statuses);
-    return [...this.tasks.values()]
+    // Go through allTasks() like tasksByDedupe: subclasses that stage a
+    // snapshot by overriding allTasks() (the edge door's EnqueueStore,
+    // #16506) must have their staged rows seen here too — reading the
+    // private map directly made cross-queue identity holders invisible
+    // and the enqueue verb inserted a duplicate task.
+    return (await this.allTasks())
       .filter((t) => live.has(t.status))
-      .filter((t) => isObj(t.payload) && (t.payload as Record<string, unknown>)["kind"] === kind)
-      .sort((a, b) => a.id - b.id)
-      .map((t) => clone(t));
+      .filter((t) => isObj(t.payload) && (t.payload as Record<string, unknown>)["kind"] === kind);
   }
 
   async claimedExpired(nowIso: string): Promise<TaskRow[]> {
