@@ -11,7 +11,8 @@
 //
 // State lives in one SQLite-backed Durable Object so passes never race.
 // GET / is a status page that can turn on phone alerts (Web Push), and
-// GET /status is the same view as JSON (no secrets).
+// GET /status is the same view as JSON (no secrets). GET /version names
+// the deployed commit, unauthenticated (#15793 criterion 1).
 import { DurableObject } from "cloudflare:workers";
 import { makeGitHub } from "./github.js";
 import { classifyHealthz, emptyState } from "./logic.js";
@@ -21,6 +22,7 @@ import { runPass } from "./run.js";
 import { publicStatus, renderStatusPage } from "./status.js";
 import { ICON_SVG, MANIFEST, SERVICE_WORKER } from "./pwa.js";
 import { pushAll, validEndpoint, vapidKeys } from "./webpush.js";
+import { versionAnswer } from "./version.js";
 
 const MAX_SUBS = 20;
 const TEST_EVERY_MS = 30 * 1000;
@@ -193,6 +195,12 @@ export default {
     const { pathname } = new URL(request.url);
     const text = (body, type) =>
       new Response(body, { headers: { "Content-Type": type, "Cache-Control": "no-cache" } });
+    if (pathname === "/version") {
+      // #15793 criterion 1: unauthenticated, ahead of every other route
+      // — it reads no state and no secret.
+      if (request.method !== "GET") return new Response("method not allowed\n", { status: 405 });
+      return Response.json(versionAnswer(env));
+    }
     if (request.method === "POST") {
       if (["/subscribe", "/unsubscribe", "/test-push"].includes(pathname)) {
         const body = await request.text();
