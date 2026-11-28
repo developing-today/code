@@ -1785,13 +1785,22 @@ pub struct BlockersView {
     pub ready: bool,
 }
 
-/// The blockers read view (D8) for `target_key`: stub, always empty.
+/// The blockers read view (D8) for `target_key`: every edge that gates
+/// the work's readiness with why it holds, in input order, plus whether
+/// the work is ready. Only active hard `blocks` edges targeting the work
+/// gate (DEP-04 §6.1); hierarchy, soft, resolved, removed and quarantined
+/// edges, and edges targeting other work, appear nowhere in the view.
 pub fn blockers(target_key: &str, edges: &[Edge], complete: bool) -> BlockersView {
-    let _ = (target_key, edges, complete);
-    BlockersView {
-        holders: Vec::new(),
-        ready: false,
-    }
+    let holders = edges
+        .iter()
+        .filter(|edge| edge.gates_readiness() && edge.target.key() == target_key)
+        .map(|edge| HoldingBlocker {
+            edge_id: edge.edge_id.clone(),
+            state: blocker_state(edge),
+        })
+        .collect::<Vec<_>>();
+    let ready = blockers_ready(complete, holders.len());
+    BlockersView { holders, ready }
 }
 
 /// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
