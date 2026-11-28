@@ -1563,6 +1563,91 @@ fn test_a_veto_needs_manage_a_grant_it_has_seen() {
     );
 }
 
+#[test]
+fn test_a_grantor_may_veto_its_own_grant_and_the_grants_below_it_fall() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(veto("v0", 2, g, "d1", &["d1"]));
+    events.push(delegate("d3", 3, g, 4, Role::Read, false, &["v0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "v0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, "d3"),
+        Outcome::Refused(Refusal::NoChain),
+        "3 held only through d1, which its grantor cut"
+    );
+    assert!(!p.grant_in_force(&id("d1")));
+    assert!(p.grant_in_force(&id("d0")), "the grantor's own grant stands");
+}
+
+#[test]
+fn test_a_grantor_may_not_veto_a_grant_it_did_not_make() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(veto("v0", 2, g, "d0", &["d0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotManager));
+    assert!(p.grant_in_force(&id("d0")));
+}
+
+#[test]
+fn test_a_grantee_may_not_veto_the_grant_it_received() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(veto("v0", 3, g, "d1", &["d1"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotManager));
+    assert!(p.grant_in_force(&id("d1")));
+}
+
+#[test]
+fn test_a_grant_reanchored_at_the_group_is_vetoed_by_a_manager_only() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(member(
+        "x0",
+        1,
+        g,
+        MemberOp::Remove {
+            member: key(2),
+            mode: RemoveMode::ReassignToGroup,
+        },
+        &["d1"],
+    ));
+    events.push(veto("v0", 3, g, "d1", &["x0"]));
+    events.push(veto("v1", 1, g, "d1", &["x0"]));
+    let p = project(&events);
+    assert_eq!(
+        outcome(&p, "v0"),
+        Outcome::Refused(Refusal::NotManager),
+        "the removed grantor left no grantor of record, so the grantee may not veto"
+    );
+    assert_eq!(outcome(&p, "v1"), Outcome::Applied);
+    assert!(!p.grant_in_force(&id("d1")));
+}
+
+#[test]
+fn test_a_transfer_reissued_grant_is_vetoed_by_its_reissuer() {
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::Transfer));
+    events.push(add("a2", 1, g, 5, Role::Write, &["a1"]));
+    events.push(delegate("d2", 1, g, 5, Role::Write, true, &["a2"]));
+    events.push(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]));
+    events.push(delegate("d4", 3, g, 6, Role::Read, false, &["x0"]));
+    events.push(veto("v0", 2, g, "d1", &["x0"]));
+    events.push(veto("v1", 5, g, "d1", &["x0"]));
+    events.push(delegate("d3", 3, g, 4, Role::Read, false, &["v1"]));
+    let p = project(&events);
+    assert_eq!(
+        outcome(&p, "v0"),
+        Outcome::Refused(Refusal::NotActive),
+        "the removed grantor is no longer the grantor of record"
+    );
+    assert_eq!(outcome(&p, "v1"), Outcome::Applied, "5 reissued d1");
+    assert_eq!(outcome(&p, "d4"), Outcome::Applied, "before the veto, 5 reached 3");
+    assert_eq!(outcome(&p, "d3"), Outcome::Refused(Refusal::NoChain));
+}
+
 /// The S2 spike's delegation DAG (`spikes/shared/s2-auth/src/delegation.rs`), with the owner 1,
 /// Joe 2, Dan 3, Jim 4, Zed 5, Yan 6, Quinn 7, Eve 8, Kim 9, Lou 10 and Xav 11. Joe is removed by
 /// s9. `alt` adds Dan's grant to Jim (s16). The removal has an explicit per-removal mode.

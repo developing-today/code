@@ -177,6 +177,13 @@ impl Engine {
         if !known {
             return Ok(Err(Refusal::UnknownGrant));
         }
+        if self.is_grantor_of_record(by_id, grant, author, &seen) {
+            return Ok(Ok(Decision {
+                group,
+                action: None,
+                effect: Effect::Veto(grant),
+            }));
+        }
         if author_role < Role::Manage {
             return Ok(Err(Refusal::NotManager));
         }
@@ -422,33 +429,7 @@ impl Engine {
                 .collect();
             if !transfers.is_empty() {
                 for (removal, successor) in transfers {
-                    let successors: Vec<Key> = match successor {
-                        RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => {
-                            vec![key]
-                        }
-                        RemoveSuccessor::Admin => self
-                            .admins_at_position(by_id, &group, &removal.after)
-                            .into_iter()
-                            .collect(),
-                        RemoveSuccessor::Actor => {
-                            // `removal.actor` is the removing event's author key, which
-                            // may be an authorized device key rather than the account
-                            // itself: membership and `holds` are account-level, so
-                            // resolve the device to its account at the removal's
-                            // position, or the reissue check fails and the grants are
-                            // silently revoked instead of transferred.
-                            let actor = self
-                                .authorized_device_account(
-                                    by_id,
-                                    group,
-                                    removal.actor,
-                                    &removal.after,
-                                )
-                                .map(|(account, _)| account)
-                                .unwrap_or(removal.actor);
-                            vec![actor]
-                        }
-                    };
+                    let successors = self.successors_of(by_id, group, removal, successor);
                     for successor in successors {
                         let holds_now = self.holds(group, successor, grant.scope, after)?;
                         if holds_now
@@ -571,5 +552,71 @@ impl Engine {
         self.vetoes.iter().any(|(veto, target)| {
             *target == grant && past.contains(veto) && self.settled.contains(veto)
         })
+    }
+
+    /// Whether `author` is the grant's grantor of record as seen at a position: the grantor who
+    /// made it, or the successor a transfer removal in that position reissued it to (design
+    /// §4 D2). A grant re-anchored at the group has no grantor and matches no author.
+    fn is_grantor_of_record(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        grant: Hash,
+        author: Key,
+        seen: &BTreeSet<Hash>,
+    ) -> bool {
+        let Some(target) = self.grants.get(&grant) else {
+            return false;
+        };
+        if target.from == Some(author) {
+            return true;
+        }
+        let Some(original) = target.from else {
+            return false;
+        };
+        let grant_past = causal_past(by_id, &[grant]);
+        self.removals.values().any(|removal| {
+            removal.group == target.group
+                && removal.member == original
+                && seen.contains(&removal.id)
+                && self.settled.contains(&removal.id)
+                && !grant_past.contains(&removal.id)
+                && causal_past(by_id, &[removal.id]).contains(&grant)
+                && match removal.mode {
+                    RemoveMode::Transfer(opts) => self
+                        .successors_of(by_id, target.group, removal, opts.successor)
+                        .contains(&author),
+                    _ => false,
+                }
+        })
+    }
+
+    /// The accounts a transfer names as the successor that reissues the removed member's grants.
+    fn successors_of(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        removal: &Removal,
+        successor: RemoveSuccessor,
+    ) -> Vec<Key> {
+        match successor {
+            RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => vec![key],
+            RemoveSuccessor::Admin => self
+                .admins_at_position(by_id, &group, &removal.after)
+                .into_iter()
+                .collect(),
+            RemoveSuccessor::Actor => {
+                // `removal.actor` is the removing event's author key, which
+                // may be an authorized device key rather than the account
+                // itself: membership and `holds` are account-level, so
+                // resolve the device to its account at the removal's
+                // position, or the reissue check fails and the grants are
+                // silently revoked instead of transferred.
+                let actor = self
+                    .authorized_device_account(by_id, group, removal.actor, &removal.after)
+                    .map(|(account, _)| account)
+                    .unwrap_or(removal.actor);
+                vec![actor]
+            }
+        }
     }
 }
