@@ -67,10 +67,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::replication::{
-    ReplicationCursor, ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
-    SignedReplicationEnvelope, advance_cursor, chain_base_cursor,
+    advance_cursor, chain_base_cursor, ReplicationCursor, ReplicationError, ReplicationKind,
+    ReplicationTracker, SignedReplicationEnvelope, SESSION_NONCE_BYTES,
 };
-use super::{JOURNAL_VERSION, JournalEntry, MAX_JOURNAL_VERSION};
+use super::{JournalEntry, JOURNAL_VERSION, MAX_JOURNAL_VERSION};
 
 /// File name of the committed replica journal inside the receiver's
 /// directory: the exact JSONL bytes the writer's journal stores.
@@ -134,6 +134,9 @@ pub enum ReceiverError {
     /// header. Refused at open, before anything is served or appended.
     #[error("durable replica journal is corrupt: {0}")]
     CorruptReplica(String),
+    /// A committed snapshot is required before a tail-only session can begin.
+    #[error("incremental replication requires a previously committed snapshot")]
+    NoCommittedBase,
     /// One uncommitted transfer staged more than
     /// [`MAX_STAGED_TRANSFER_BYTES`]; the session is poisoned.
     #[error("staged transfer exceeds the {MAX_STAGED_TRANSFER_BYTES}-byte bound")]
@@ -325,6 +328,44 @@ impl DurableReceiver {
         self.staged = None;
         self.staged_directory = None;
         self.staged_module = None;
+    }
+
+    /// Begin a tail-only session from the cursor of the currently committed
+    /// journal. The cursor is recomputed by `open` under the pinned source,
+    /// never accepted from the incremental sender. A first tail in this
+    /// session therefore appends only to the exact chain already on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReceiverError::NoCommittedBase`] when no snapshot has
+    /// committed yet, or the underlying replication error if the stored
+    /// journal's version cannot resume.
+    pub fn begin_incremental_session(
+        &mut self,
+        session_nonce: [u8; SESSION_NONCE_BYTES],
+    ) -> Result<(), ReceiverError> {
+        let cursor = self
+            .committed_cursor
+            .ok_or(ReceiverError::NoCommittedBase)?;
+        let version = self.header_version.ok_or(ReceiverError::NoCommittedBase)?;
+        self.session = ReplicationTracker::resume_from_verified_cursor(
+            &self.world_id,
+            self.pinned_source,
+            version,
+            session_nonce,
+            cursor,
+        )
+        .ok();
+        if self.session.is_none() {
+            return Err(ReceiverError::NoCommittedBase);
+        }
+        // Mark the session as started: unlike a reset session, the first
+        // accepted frame must be a tail at the verified committed cursor.
+        self.session_started = true;
+        self.staged = None;
+        self.staged_directory = None;
+        self.staged_module = None;
+        Ok(())
     }
 
     /// Abandon the live session (disconnect): staged bytes are dropped
@@ -706,8 +747,8 @@ fn validate_committed_journal(
 mod tests {
     use super::*;
     use crate::world::replication::{
-        ReplicationEnvelope, SignedReplicationEnvelope, chain_payload, frame_digest,
-        journal_entry_line, split_entry_payload,
+        chain_payload, frame_digest, journal_entry_line, split_entry_payload, ReplicationEnvelope,
+        SignedReplicationEnvelope,
     };
     use ed25519_dalek::{Signer, SigningKey};
     use tempfile::TempDir;
@@ -1007,6 +1048,56 @@ mod tests {
         // The refusal touched neither the committed state nor the disk.
         assert_eq!(receiver.committed_cursor(), None);
         assert!(!dir.path().join(REPLICA_DIRECTORY_FILE).exists());
+    }
+
+    #[test]
+    fn incremental_session_appends_tail_to_verified_committed_cursor() {
+        // Oracle: the receiver's journal bytes and cursor after a signed
+        // tail-only session, following a previously committed snapshot.
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let source = source_of(&key);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let original = journal_payload(1);
+        feed_snapshot(&mut receiver, &key, NONCE, 1, &original);
+        let before = receiver.committed_cursor().unwrap();
+        let extra = extra_entry();
+
+        receiver.begin_incremental_session(NONCE2).unwrap();
+        let tail =
+            ReplicationEnvelope::tail(WORLD, source, 1, NONCE2, before, [0; 32], extra.clone())
+                .unwrap();
+        let after = tail.cursor_after;
+        let frame = sign(tail, &key);
+        let digest = frame_digest(&frame);
+        assert!(matches!(
+            receiver.accept_frame(&frame).unwrap(),
+            ReceiverProgress::Staged {
+                kind: ReplicationKind::Tail,
+                ..
+            }
+        ));
+        let terminal = ReplicationEnvelope::terminal(WORLD, source, 1, NONCE2, after, digest);
+        assert_eq!(
+            receiver.accept_frame(&sign(terminal, &key)).unwrap(),
+            ReceiverProgress::Committed { cursor: after }
+        );
+
+        let mut expected = original;
+        expected.extend_from_slice(&extra);
+        assert_eq!(receiver.read_journal().unwrap(), expected);
+        assert_eq!(receiver.committed_cursor(), Some(after));
+    }
+
+    #[test]
+    fn incremental_session_is_unavailable_without_a_committed_base() {
+        // Oracle: an empty replica has no cursor from which to accept a tail.
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let mut receiver = receiver(&dir, &key);
+        assert!(receiver.begin_incremental_session(NONCE).is_err());
+        assert!(!receiver.session_active());
     }
 
     #[test]

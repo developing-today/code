@@ -90,8 +90,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    JOURNAL_VERSION, JOURNAL_VERSION_PORTALS, JournalEntry, MAX_CHECKPOINT_PART_BYTES,
-    MAX_JOURNAL_VERSION, journal_version_required_by,
+    journal_version_required_by, JournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_PORTALS,
+    MAX_CHECKPOINT_PART_BYTES, MAX_JOURNAL_VERSION,
 };
 
 /// Domain separator bound into every signature and hash-chain step, so a
@@ -1002,6 +1002,29 @@ impl ReplicationTracker {
         })
     }
 
+    /// Resume a tail-only session from a cursor recomputed from a
+    /// committed journal under this exact world/source/header. Callers
+    /// must not accept a cursor supplied by an untrusted peer.
+    pub(crate) fn resume_from_verified_cursor(
+        world_id: &str,
+        pinned_source: [u8; 32],
+        header_version: u32,
+        session_nonce: [u8; SESSION_NONCE_BYTES],
+        cursor: ReplicationCursor,
+    ) -> Result<Self, ReplicationError> {
+        if !(JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&header_version) {
+            return Err(ReplicationError::UnsupportedJournalVersion(header_version));
+        }
+        Ok(Self {
+            world_id: world_id.to_string(),
+            pinned_source,
+            session_nonce,
+            header_version,
+            cursor,
+            last_frame_digest: [0; 32],
+        })
+    }
+
     /// The current verified chain position.
     #[must_use]
     pub fn cursor(&self) -> ReplicationCursor {
@@ -1699,16 +1722,12 @@ mod tests {
         }
         let chunks = split_entry_payload(&big).unwrap();
         assert!(chunks.len() >= 2);
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES)
-        );
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.ends_with(b"\n") && !chunk.is_empty())
-        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.ends_with(b"\n") && !chunk.is_empty()));
         assert_eq!(chunks.concat(), big);
         // One entry larger than the bound can never be replicated.
         let giant_line = vec![b'y'; MAX_REPLICATION_PAYLOAD_BYTES + 1];
@@ -1754,11 +1773,9 @@ mod tests {
         let journal_bytes: Vec<u8> = entries.iter().flat_map(journal_entry_line).collect();
         let chunks = split_entry_payload(&journal_bytes).unwrap();
         assert!(chunks.len() > 1);
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES)
-        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MAX_REPLICATION_PAYLOAD_BYTES));
 
         let key = signing_key(9);
         let source = source_of(&key);
