@@ -374,6 +374,7 @@ mod tests {
                     "lease-seconds",
                     "lane",
                     "task",
+                    "tasks",
                     "count",
                     "from-session",
                     "platform",
@@ -387,7 +388,7 @@ mod tests {
                     "remaining-budget-minutes",
                     "manual-override",
                 ],
-                &["handoff", "bind"],
+                &["handoff", "bind", "take-over"],
             )
         };
         // Bare: no arguments at all — the probing shape.
@@ -418,6 +419,7 @@ mod tests {
             .is_none()
         );
         assert!(bare_claim_refusal(&mk(&["--task", "123"]), &None).is_none());
+        assert!(bare_claim_refusal(&mk(&["--tasks", "123,124"]), &None).is_none());
         assert!(bare_claim_refusal(&mk(&["--filter", "repo = code"]), &None).is_none());
         assert!(
             bare_claim_refusal(
