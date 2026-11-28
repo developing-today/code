@@ -1740,6 +1740,30 @@ pub fn active_hard_blocker_count(edges: &[Edge]) -> usize {
     edges.iter().filter(|edge| edge.gates_readiness()).count()
 }
 
+/// Why one edge holds, for the blockers read view (D8): quarantined
+/// edges are held aside by import or repair; a resolved edge with an
+/// override in force reports the override; an edge whose external
+/// end has no provider id blocks by default; anything else that
+/// reaches the view is unsatisfied. Precedence follows
+/// `validate_resolution`: only a resolved edge may carry an
+/// override, so quarantine is checked first.
+pub fn blocker_state(edge: &Edge) -> BlockerState {
+    if edge.status == EdgeStatus::Quarantined {
+        return BlockerState::Quarantined;
+    }
+    if edge
+        .resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.override_)
+    {
+        return BlockerState::OverrideActive;
+    }
+    if edge.source.missing_node_id() || edge.target.missing_node_id() {
+        return BlockerState::UnresolvedExternal;
+    }
+    BlockerState::Unsatisfied
+}
+
 /// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
 /// The SQL insert carries its own `:max_reach`; this constant is the
 /// pure-model default the tests and callers without a measured broker
@@ -3127,6 +3151,46 @@ mod tests {
             assert!(transition(Some(*status), *status).is_err());
         }
         assert!(transition(None, EdgeStatus::Active).is_ok());
+    }
+
+    #[test]
+    fn pmo_dep_blocker_state_names_why_it_holds() {
+        // Oracle: D8. The blockers view names one reason per holding
+        // edge: quarantined edges are held aside, an override in force
+        // wins over the ends, an unresolved external blocks by
+        // default, and a plain active hard blocker is unsatisfied.
+        let mut plain = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        plain.hardness = Hardness::Hard;
+        plain.validate().unwrap();
+        assert_eq!(blocker_state(&plain), BlockerState::Unsatisfied);
+
+        // Only an imported or migrated edge with certainty uncertain
+        // may keep an end without a provider id; it still gates.
+        let mut unresolved = edge(Relation::Blocks, issue("a/x", "7", None), work("1"));
+        unresolved.hardness = Hardness::Hard;
+        assert_eq!(unresolved.validate().unwrap_err().code(), "unresolved_ref");
+        unresolved.reason_code = EdgeOrigin::Imported;
+        unresolved.certainty = Certainty::Uncertain;
+        unresolved.validate().unwrap();
+        assert!(unresolved.gates_readiness());
+        assert_eq!(blocker_state(&unresolved), BlockerState::UnresolvedExternal);
+
+        // A quarantined edge is held aside even though it is hard blocks.
+        let mut quarantined = unresolved.clone();
+        quarantined.status = EdgeStatus::Quarantined;
+        quarantined.resolution = resolved("imported_cycle_held_aside");
+        quarantined.validate().unwrap();
+        assert!(transition(Some(EdgeStatus::Active), EdgeStatus::Quarantined).is_ok());
+        assert!(!quarantined.gates_readiness());
+        assert_eq!(blocker_state(&quarantined), BlockerState::Quarantined);
+
+        // An override is resolved-only; while in force it names the hold.
+        let mut overridden = unresolved.clone();
+        overridden.status = EdgeStatus::Resolved;
+        overridden.resolution = resolved("owner_override");
+        overridden.resolution.as_mut().unwrap().override_ = true;
+        overridden.validate().unwrap();
+        assert_eq!(blocker_state(&overridden), BlockerState::OverrideActive);
     }
 
     fn end_strategy() -> impl Strategy<Value = EdgeEnd> {
