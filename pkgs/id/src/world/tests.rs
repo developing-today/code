@@ -5900,6 +5900,107 @@ mod tests {
             .unwrap();
         assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
     }
+    #[test]
+    fn probe_parse_wants_accepts_non_object_args() {
+        for bad in ["42", "\"co\"", "[{\"prefix\":\"co\"}]", "true"] {
+            let doc = format!(
+                "{{\"v\":1,\"requests\":[{{\"id\":\"r1\",\"cap\":\"records.read\",\"args\":{bad}}}]}}"
+            );
+            let wants = crate::world_caps::parse_wants(&doc)
+                .unwrap_or_else(|e| panic!("args={bad} should parse today: {e}"));
+            assert_eq!(wants.requests.len(), 1);
+            println!("ACCEPTED args={bad} -> {:?}", wants.requests[0].args);
+        }
+        // Controls: object args and absent args parse as documented.
+        assert!(crate::world_caps::parse_wants(
+            "{\"v\":1,\"requests\":[{\"id\":\"r1\",\"cap\":\"records.read\",\"args\":{\"prefix\":\"co\"}}]}"
+        )
+        .is_ok());
+        assert!(crate::world_caps::parse_wants(
+            "{\"v\":1,\"requests\":[{\"id\":\"r1\",\"cap\":\"records.read\"}]}"
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn probe_records_read_non_object_args_unscoped() {
+        #[derive(Debug, Default)]
+        struct ArgsProbe {
+            answered: BTreeSet<String>,
+            results: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>>,
+        }
+        impl WorldProgram for ArgsProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result"
+                        && let Some(id) = value["id"].as_str()
+                    {
+                        self.answered.insert(id.to_owned());
+                        self.results.lock().unwrap().insert(id.to_owned(), value);
+                    }
+                }
+                Ok(())
+            }
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"count": 1, "other": 2, "zebra": 3}).to_string(),
+                ))
+            }
+            fn wants(&mut self) -> Result<Option<String>> {
+                let requests: Vec<serde_json::Value> = [
+                    ("control-prefix", "records.read", serde_json::json!({"prefix": "co"})),
+                    ("bad-args-num", "records.read", serde_json::json!(42)),
+                    ("bad-args-string", "records.read", serde_json::json!("co")),
+                    ("bad-args-array", "records.read", serde_json::json!([{"prefix": "co"}])),
+                    ("bad-args-bool", "records.read", serde_json::json!(true)),
+                    ("bad-args-history", "chat.history", serde_json::json!("2")),
+                ]
+                .into_iter()
+                .filter(|(id, _, _)| !self.answered.contains(*id))
+                .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+                .collect();
+                Ok(Some(
+                    serde_json::json!({"v": 1, "requests": requests}).to_string(),
+                ))
+            }
+        }
+        let mut core = world(128);
+        core.ledger.set_granted(BTreeSet::from([
+            "records.read".to_owned(),
+            "chat.history".to_owned(),
+        ]));
+        let captured: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let probe = ArgsProbe {
+            results: captured.clone(),
+            ..Default::default()
+        };
+        let mut actor = WorldActor::for_test(core, Box::new(probe), None);
+        actor.after_change().await;
+        let captured = captured.lock().unwrap();
+        println!("CAPTURED: {}", serde_json::to_string_pretty(&*captured).unwrap());
+        let keys = |id: &str| -> Vec<String> {
+            let r = &captured[id];
+            assert_eq!(r["ok"], true, "{r}");
+            r["value"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["key"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(keys("control-prefix"), vec!["count".to_owned()]);
+        // BUG (probe asserts today's behavior): a non-object args collapses to
+        // no arguments at all, widening the scoped read to every record.
+        let all = vec!["count".to_owned(), "other".to_owned(), "zebra".to_owned()];
+        assert_eq!(keys("bad-args-num"), all);
+        assert_eq!(keys("bad-args-string"), all);
+        assert_eq!(keys("bad-args-array"), all);
+        assert_eq!(keys("bad-args-bool"), all);
+        assert_eq!(captured["bad-args-history"]["ok"], true);
+    }
 }
 
 #[cfg(test)]
