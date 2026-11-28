@@ -28,6 +28,13 @@ export const SERVICE_NAME = "fleet-hosted";
 export const DEFAULT_AUDIENCE = "fleet-hosted";
 
 export interface HostedEnv {
+  /** Deployed commit (#15793): stamped per deploy as the VERSION
+   * var by cf-worker-versions-release.yml (`--var VERSION:<sha>` on
+   * the versions upload). A plain commit SHA, not a secret; the
+   * /version route reports it so the edge probe can name the commit
+   * this Worker was deployed from. Absent -> /version answers
+   * "unknown", never a guessed value. */
+  VERSION?: string;
   RP_ISSUER?: string;
   RP_AUDIENCE?: string;
   RP_JWKS_URI?: string;
@@ -170,6 +177,10 @@ export interface GitHubAppConfig {
 
 export interface HostedConfig {
   version: string;
+  /** The deployed commit parsed from the VERSION var (#15793), or
+   * null when unstamped — /version then answers "unknown". Distinct
+   * from `version` above, which is the package's own version. */
+  deployedCommit: string | null;
   /** RP validation config, or null when no issuer is configured. */
   rp: RpValidationConfig | null;
   /** Tenancy directory, or null when none is configured/readable. */
@@ -335,6 +346,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
 
   return {
     version: HOSTED_VERSION,
+    deployedCommit: parseDeployedCommit(env.VERSION),
     rp,
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
@@ -352,6 +364,14 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     bridge: parseBridgeConfig(env),
     d1Bound: env.QUEUE_D1 != null,
   };
+}
+
+/** The deployed commit (#15793): the trimmed VERSION var, or null
+ * when unset/blank — an unstamped deploy names no commit, and
+ * /version answers "unknown" rather than inventing one. */
+function parseDeployedCommit(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
 }
 
 /** The queue libSQL file (#12589 follow-on): a trimmed path, or
