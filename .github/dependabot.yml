@@ -43,7 +43,6 @@ updates:
       - "/pkgs/message-bridge/worker"
       - "/pkgs/pkarr-worker"
       - "/pkgs/pkarr-worker/gha-toolchain"
-      - "/pkgs/queue-transport-alert/worker"
       - "/pkgs/web-gen-api-axum/end2end"
       - "/pkgs/web-gen-api/end2end"
       - "/pm-stack/console"
