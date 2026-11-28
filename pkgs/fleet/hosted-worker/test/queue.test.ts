@@ -663,6 +663,47 @@ test("heartbeat, checkpoint, park and wake round-trip a claim", async () => {
   assert.equal((reclaimed["row"] as JsonObject)["id"], id);
 });
 
+test("default pick withholds broker-owned-condition and person_answer parks past their timer (#16424)", async () => {
+  // The #13091 term exclusion, ported: a parked row whose
+  // ready_condition.kind is task_terminal, task_status, event_seen
+  // or person_answer is NOT released by the default pick when its
+  // not_before lapses — it leaves only via wake. A plain time park
+  // keeps releasing on its timer.
+  for (const kind of ["task_terminal", "task_status", "event_seen", "person_answer"]) {
+    const { store } = setup();
+    await enqueue(store, nativeEnv(), fixPacket());
+    const claimed = await claim(store, nativeEnv(), {});
+    const id = (claimed["row"] as JsonObject)["id"] as number;
+    const parked = await verb(store, nativeEnv(), "park", {
+      task_id: id,
+      worker: "worker-a",
+      not_before: iso(clock + 60),
+      ready_condition: { kind },
+      reason: `waiting on ${kind}`,
+    });
+    assert.equal(parked["ok"], true);
+    assert.equal((parked["row"] as JsonObject)["status"], "parked");
+    clock += 61; // the timer has lapsed
+    const skipped = await claim(store, nativeEnv(), { worker: "worker-b" });
+    assert.equal(skipped["row"], null, `${kind} park must not be served on its timer`);
+    const still = (await store.allTasks())[0];
+    assert.equal(still.status, "parked", `${kind} park stays parked pre-wake`);
+    const woken = await verb(store, nativeEnv(), "wake", { task_id: id, worker: "worker-a", reason: "condition met" });
+    assert.equal((woken["row"] as JsonObject)["status"], "queued");
+    const served = await claim(store, nativeEnv(), { worker: "worker-b" });
+    assert.equal((served["row"] as JsonObject)["id"], id, `${kind} park is served post-wake`);
+  }
+  // Control: a time park with a lapsed timer is served as before.
+  const { store } = setup();
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), {});
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  await verb(store, nativeEnv(), "park", { task_id: id, worker: "worker-a", delay_seconds: 30 });
+  clock += 31;
+  const served = await claim(store, nativeEnv(), { worker: "worker-b" });
+  assert.equal((served["row"] as JsonObject)["id"], id, "time park still releases on its timer");
+});
+
 test("release requires a reason and returns the task to the queue", async () => {
   const { store } = setup();
   await enqueue(store, nativeEnv(), fixPacket());

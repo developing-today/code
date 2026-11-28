@@ -25,7 +25,11 @@
 // claim+lane+bind, all present here), the sweep and
 // quarantine-recheck background verbs (dep-recheck IS ported,
 // including wake's forced recheck), merge-intent stack verbs,
-// creation-outbox verbs, signal-count, coverage.
+// creation-outbox verbs, signal-count, coverage. The sweep's
+// absence does not extend to claim eligibility: #13091's
+// parked-term exclusion IS ported in eligibleDefault (#16424) —
+// broker-owned-condition and person_answer parks are withheld
+// from the timer release and leave only via wake.
 
 import {
   asI64,
@@ -864,6 +868,28 @@ async function scopeMatch(
   return true;
 }
 
+/** #13091's parked-term exclusion, ported (#16424): a parked row
+ * whose ready_condition names a broker-owned condition
+ * (task_terminal / task_status / event_seen) or a person's answer
+ * (person_answer) is not the default pick's to release on its
+ * timer — the park-revalidation sweeper (not ported) and verbWake
+ * own those releases. Serving them on the clock hands work to a
+ * lane that can only re-park it (the 2026-11-23 double-serve
+ * incidents). Mirrors the broker's PARKED_TERM_EXCLUSION SQL
+ * (turso_queue/claim.rs): a missing ready_condition, or one
+ * without a string kind, reads as 'time' and stays timer-eligible. */
+const PARKED_TERM_EXCLUDED_KINDS: ReadonlySet<string> = new Set([
+  "task_terminal",
+  "task_status",
+  "event_seen",
+  "person_answer",
+]);
+
+function parkedTermExcluded(row: TaskRow): boolean {
+  const kind = isObj(row.ready_condition) ? row.ready_condition["kind"] : undefined;
+  return PARKED_TERM_EXCLUDED_KINDS.has(typeof kind === "string" ? kind : "time");
+}
+
 function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolean {
   if (row.manual_only) return false;
   const required = requiredBudget(row);
@@ -876,6 +902,7 @@ function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolea
     live = gate;
   } else if (
     row.status === "parked" &&
+    !parkedTermExcluded(row) &&
     ((row.not_before !== null && row.not_before <= now) || (row.wait_kind === "capacity" && bypass))
   ) {
     live = gate;
@@ -1115,6 +1142,10 @@ function byIdClaimable(row: TaskRow, now: string): boolean {
     return row.attempts < row.max_attempts && (row.not_before === null || row.not_before <= now);
   }
   if (row.status === "handed_off") return isHandedOff(row);
+  // Parked rows are never by-id claimable (as natively), so the
+  // #13091 parked-term exclusion (#16424) holds here a fortiori:
+  // a broker-owned-condition or person_answer park leaves only
+  // via wake, never via a by-id claim on its timer.
   return false;
 }
 
