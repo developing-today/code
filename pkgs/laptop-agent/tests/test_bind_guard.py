@@ -7,6 +7,7 @@ Run with: python3 -m unittest discover -s pkgs/laptop-agent/tests -p "test_bind_
 
 import os
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -21,6 +22,18 @@ _clean_env = {
     for k, v in os.environ.items()
     if not k.startswith(("LAPTOP_AGENT_", "FLEET_CTX_"))
 }
+# Hermetic token fixture (#16558): the scrub above removes
+# LAPTOP_AGENT_TOKEN_FILE, and laptop_agent reads its token at import
+# time from the default $HOME/.config/laptop-agent/token, exiting 3
+# when that file is missing — as it is on any runner with no live
+# daemon, which turned this module into a unittest loader ERROR.
+# Point HOME at a fixture dir carrying a token at the default path so
+# the import is hermetic.
+_fixture_home = Path(tempfile.mkdtemp(prefix="bind-guard-home-"))
+_fixture_token = _fixture_home / ".config" / "laptop-agent" / "token"
+_fixture_token.parent.mkdir(parents=True)
+_fixture_token.write_text("bind-guard-test-token\n")
+_clean_env["HOME"] = str(_fixture_home)
 with patch.dict(os.environ, _clean_env, clear=True):
     _spec = importlib.util.spec_from_file_location("bind_guard_agent", AGENT)
     la = importlib.util.module_from_spec(_spec)
