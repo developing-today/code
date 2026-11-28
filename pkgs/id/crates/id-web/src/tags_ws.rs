@@ -1,0 +1,748 @@
+//! Tag WebSocket and REST API handlers.
+//!
+//! Provides real-time tag change notifications via WebSocket and a REST API
+//! for tag CRUD operations.
+//!
+//! ## WebSocket (`/ws/tags`)
+//!
+//! Streams [`TagEvent`]s as JSON text messages. Clients subscribe to receive
+//! live updates when tags are set, deleted, or transferred anywhere in the
+//! system. No inbound messages are expected (fire-and-forget stream).
+//!
+//! ## REST API
+//!
+//! - `GET  /api/tags?subject=README.md` — list tags for a subject
+//! - `GET  /api/tags?key=label` — find all files with a given tag key
+//! - `GET  /api/tags?key=label&value=rust` — find files by key+value
+//! - `GET  /api/tags` — list all tags in the global namespace
+//! - `GET  /api/tags/search?q=<query>` — search tags with structured syntax
+//! - `POST /api/tags` — set a tag
+//! - `DELETE /api/tags` — delete a tag
+//!
+//! Every endpoint accepts an optional `ns` parameter: `global` (default),
+//! `node` (this node's private namespace) or the name of a custom paired
+//! namespace.
+//!
+//! ## Binary values
+//!
+//! Tag values are arbitrary bytes. Responses carry `value` as lossy UTF-8 for
+//! display; when the stored value is not valid UTF-8 they additionally set
+//! `binary: true` and `value_b64` (standard base64, lossless). Requests may
+//! supply `value_b64` instead of `value` to set or match a binary value.
+//!
+//! ## Delete modes (`DELETE /api/tags`)
+//!
+//! - `all: true` — delete every tag of the subject
+//! - `all_values: true` — delete every tag with this subject and key
+//! - otherwise — delete the exact `(subject, key, value)` tag (a request with
+//!   no value deletes the value-less key-only tag)
+
+use axum::{
+    Json,
+    extract::{Query, State, WebSocketUpgrade, ws::Message},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use futures::{SinkExt, StreamExt};
+use id_core::frames::MAX_FRAME_BYTES;
+use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::Receiver;
+
+use super::AppState;
+use id_store::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
+
+/// Resolve the `ns` request parameter to a namespace pair.
+///
+/// `None` and `"global"` select the global namespace, `"node"` this node's
+/// private one, anything else must name a custom *paired* namespace.
+fn resolve_ns<'a>(ts: &'a TagStore, name: Option<&str>) -> Result<&'a NamespacePair, String> {
+    match name {
+        None | Some("global") => Ok(&ts.global),
+        Some("node") => Ok(&ts.node),
+        Some(other) => match ts.custom.get(other) {
+            Some(CustomNamespace::Paired(pair)) => Ok(pair),
+            Some(CustomNamespace::Single(_)) => {
+                Err(format!("namespace {other:?} is not an α/Ω pair"))
+            }
+            None => Err(format!("unknown namespace {other:?}")),
+        },
+    }
+}
+
+const fn bad_ns(message: String) -> (StatusCode, Json<ApiResponse>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiResponse {
+            ok: false,
+            message: Some(message),
+            count: None,
+        }),
+    )
+}
+
+/// Pick the value bytes from the `value` / `value_b64` request fields.
+fn request_value(
+    value: Option<&String>,
+    value_b64: Option<&String>,
+) -> Result<Option<Vec<u8>>, String> {
+    match (value, value_b64) {
+        (Some(_), Some(_)) => Err("give either value or value_b64, not both".to_owned()),
+        (Some(v), None) => Ok(Some(v.as_bytes().to_vec())),
+        (None, Some(b)) => B64
+            .decode(b)
+            .map(Some)
+            .map_err(|e| format!("value_b64 is not valid base64: {e}")),
+        (None, None) => Ok(None),
+    }
+}
+
+fn to_response(t: Tag) -> TagResponse {
+    let binary = t.value.as_ref().is_some_and(|v| !v.is_utf8());
+    TagResponse {
+        subject: t.subject.display_lossy(),
+        key: t.key.display_lossy(),
+        value_b64: t
+            .value
+            .as_ref()
+            .filter(|v| !v.is_utf8())
+            .map(|v| B64.encode(v.as_bytes())),
+        value: t.value.map(|v| v.display_lossy()),
+        binary,
+        timestamp: t.timestamp,
+    }
+}
+
+// ============================================================================
+// REST types
+// ============================================================================
+
+/// Query parameters for GET /api/tags.
+#[derive(Debug, Deserialize)]
+pub struct TagQuery {
+    /// Filter by subject (filename).
+    pub subject: Option<String>,
+    /// Filter by tag key.
+    pub key: Option<String>,
+    /// Filter by tag value (requires `key`).
+    pub value: Option<String>,
+    /// Namespace to query (default: "global").
+    pub ns: Option<String>,
+}
+
+/// Query parameters for GET /api/tags/search.
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    /// Search query string (supports: `key:`, `:value`, `key:value`, `"literal"`, bare word).
+    pub q: String,
+    /// Namespace to search (default: "global").
+    pub ns: Option<String>,
+}
+
+/// Request body for POST /api/tags (set a tag).
+#[derive(Debug, Deserialize)]
+pub struct SetTagRequest {
+    pub subject: String,
+    pub key: String,
+    pub value: Option<String>,
+    /// Binary value as standard base64 (instead of `value`).
+    pub value_b64: Option<String>,
+    /// Namespace to write to (default: "global").
+    pub ns: Option<String>,
+}
+
+/// Request body for DELETE /api/tags.
+#[derive(Debug, Deserialize)]
+pub struct DelTagRequest {
+    pub subject: String,
+    pub key: String,
+    pub value: Option<String>,
+    /// Binary value as standard base64 (instead of `value`).
+    pub value_b64: Option<String>,
+    /// If true, delete all tags for this subject.
+    #[serde(default)]
+    pub all: bool,
+    /// If true, delete every tag with this subject and key, whatever the value.
+    #[serde(default)]
+    pub all_values: bool,
+    /// Namespace (default: "global").
+    pub ns: Option<String>,
+}
+
+/// A tag in REST responses.
+#[derive(Debug, Serialize)]
+pub struct TagResponse {
+    pub subject: String,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Lossless base64 of the value, present only when it is not valid UTF-8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_b64: Option<String>,
+    /// True when the value is not valid UTF-8 (`value` is then lossy).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
+    pub timestamp: u64,
+}
+
+/// Generic success/error response.
+#[derive(Debug, Serialize)]
+pub struct ApiResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
+// ============================================================================
+// WebSocket handler
+// ============================================================================
+
+/// WebSocket upgrade handler for `/ws/tags`.
+///
+/// After upgrade, streams tag events as JSON text frames. No inbound
+/// messages are processed (ping/pong only for keepalive).
+pub async fn ws_tags_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_tags_socket(socket, state))
+}
+
+enum TagBroadcastRead {
+    Event(id_store::tags::TagEvent),
+    Lagged(u64),
+    Closed,
+}
+
+async fn recv_tag_broadcast(receiver: &mut Receiver<id_store::tags::TagEvent>) -> TagBroadcastRead {
+    match receiver.recv().await {
+        Ok(event) => TagBroadcastRead::Event(event),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+            TagBroadcastRead::Lagged(skipped)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => TagBroadcastRead::Closed,
+    }
+}
+
+/// Handle a tag WebSocket connection.
+///
+/// Subscribes to the `TagStore` broadcast channel and forwards events
+/// as JSON text messages. Exits when the client disconnects or the
+/// broadcast channel is closed.
+async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppState) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = state.tag_store.subscribe();
+
+    // Spawn a task to drain inbound messages (keeps the socket alive).
+    let mut drain_handle = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            // Respond to pings, ignore everything else.
+            if let Message::Close(_) = msg {
+                break;
+            }
+        }
+    });
+
+    // Forward broadcast events to the WebSocket. The loop also ends
+    // when the inbound side finishes (a disconnect, a close frame, or
+    // a protocol error such as an oversized message): nobody is
+    // reading any more, so the socket must close instead of lingering.
+    loop {
+        let received = tokio::select! {
+            received = recv_tag_broadcast(&mut rx) => received,
+            _ = &mut drain_handle => break,
+        };
+        match received {
+            TagBroadcastRead::Event(event) => {
+                let json = match serde_json::to_string(&event) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!("[tags_ws] Failed to serialize event: {e}");
+                        continue;
+                    }
+                };
+                if sender.send(Message::Text(json.into())).await.is_err() {
+                    break; // Client disconnected.
+                }
+            }
+            TagBroadcastRead::Lagged(skipped) => {
+                tracing::warn!("[tags_ws] Lagged {skipped} events; closing to force client resync");
+                let _ = sender.send(Message::Close(None)).await;
+                break;
+            }
+            TagBroadcastRead::Closed => {
+                break; // Channel closed (TagStore dropped).
+            }
+        }
+    }
+
+    drain_handle.abort();
+    tracing::debug!("[tags_ws] Client disconnected");
+}
+
+// ============================================================================
+// REST handlers
+// ============================================================================
+
+/// GET /api/tags — query tags.
+///
+/// Supports filtering by subject, key, key+value, or listing all.
+pub async fn get_tags_handler(
+    State(state): State<AppState>,
+    Query(query): Query<TagQuery>,
+) -> impl IntoResponse {
+    let tag_store = &state.tag_store;
+    let ns = match resolve_ns(tag_store, query.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message).into_response(),
+    };
+
+    let result = match (
+        query.subject.as_deref(),
+        query.key.as_deref(),
+        query.value.as_deref(),
+    ) {
+        // value without key is not a value search — refuse rather than
+        // silently dropping the filter (see /api/tags/search for `:value`).
+        (Some(_), None, Some(_)) | (None, None, Some(_)) => {
+            return bad_ns(
+                "value filter requires the `key` query parameter (use /api/tags/search?q=:value for a value-only search)".to_owned(),
+            )
+            .into_response();
+        }
+        // Subject + key + value → exact lookup
+        (Some(subject), Some(key), value) => tag_store
+            .get_by_key(ns, subject.as_bytes(), key.as_bytes())
+            .await
+            .map(|tags| {
+                tags.into_iter()
+                    .filter(|t| {
+                        value.is_none()
+                            || t.value.as_ref().map(id_store::tags::TagValue::as_bytes)
+                                == value.map(str::as_bytes)
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        // Subject only → all tags for that file
+        (Some(subject), None, _) => tag_store.get_tags(ns, subject.as_bytes()).await,
+        // Key + value (no subject) → search by key+value across all files
+        (None, Some(key), Some(value)) => {
+            tag_store
+                .find_by_key_value(ns, key.as_bytes(), value.as_bytes())
+                .await
+        }
+        // Key only → search by key name across all files
+        (None, Some(key), None) => tag_store.find_by_key(ns, key.as_bytes()).await,
+        // No filters → list all
+        (None, None, _) => tag_store.list_all(ns).await,
+    };
+
+    match result {
+        Ok(tags) => {
+            let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
+            (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("[tags_ws] Query failed: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    ok: false,
+                    message: Some(format!("{e:#}")),
+                    count: None,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /api/tags — set a tag.
+pub async fn set_tag_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SetTagRequest>,
+) -> impl IntoResponse {
+    let tag_store = &state.tag_store;
+    let ns = match resolve_ns(tag_store, req.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message),
+    };
+    let value = match request_value(req.value.as_ref(), req.value_b64.as_ref()) {
+        Ok(v) => v,
+        Err(message) => return bad_ns(message),
+    };
+
+    match tag_store
+        .set_tag(
+            ns,
+            req.subject.as_bytes(),
+            req.key.as_bytes(),
+            value.as_deref(),
+            b"",
+        )
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(ApiResponse {
+                ok: true,
+                message: None,
+                count: None,
+            }),
+        ),
+        Err(e) => {
+            tracing::error!("[tags_ws] Set tag failed: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    ok: false,
+                    message: Some(format!("{e:#}")),
+                    count: None,
+                }),
+            )
+        }
+    }
+}
+
+/// DELETE /api/tags — delete a tag or all tags for a subject.
+pub async fn del_tag_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DelTagRequest>,
+) -> impl IntoResponse {
+    let tag_store = &state.tag_store;
+    let ns = match resolve_ns(tag_store, req.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message),
+    };
+    let value = match request_value(req.value.as_ref(), req.value_b64.as_ref()) {
+        Ok(v) => v,
+        Err(message) => return bad_ns(message),
+    };
+
+    let result = if req.all {
+        tag_store
+            .del_all_tags(ns, req.subject.as_bytes())
+            .await
+            .map(Some)
+    } else if req.all_values {
+        tag_store
+            .delete_matching(ns, req.subject.as_bytes(), req.key.as_bytes(), None)
+            .await
+            .map(Some)
+    } else {
+        tag_store
+            .del_tag(
+                ns,
+                req.subject.as_bytes(),
+                req.key.as_bytes(),
+                value.as_deref(),
+            )
+            .await
+            .map(|()| None)
+    };
+
+    match result {
+        Ok(count) => (
+            StatusCode::OK,
+            Json(ApiResponse {
+                ok: true,
+                message: None,
+                count,
+            }),
+        ),
+        Err(e) => {
+            tracing::error!("[tags_ws] Delete tag failed: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    ok: false,
+                    message: Some(format!("{e:#}")),
+                    count: None,
+                }),
+            )
+        }
+    }
+}
+
+/// GET /api/tags/search?q=<query> — search tags using structured query syntax.
+///
+/// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
+/// bare word searches. Multiple terms (space-separated) are ANDed together.
+pub async fn search_tags_handler(
+    State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> impl IntoResponse {
+    let tag_store = &state.tag_store;
+    let ns = match resolve_ns(tag_store, query.ns.as_deref()) {
+        Ok(ns) => ns,
+        Err(message) => return bad_ns(message).into_response(),
+    };
+
+    if let Err(e) = id_store::tags::parse_search_query(&query.q) {
+        return bad_ns(format!("invalid search query: {e}")).into_response();
+    }
+
+    match tag_store.search_by_query(ns, &query.q).await {
+        Ok(tags) => {
+            let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
+            (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("[tags_ws] Search failed: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    ok: false,
+                    message: Some(format!("{e:#}")),
+                    count: None,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use futures::{SinkExt as _, StreamExt as _};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use std::{net::SocketAddr, time::Duration};
+    use tokio_tungstenite::tungstenite::Message as ClientMessage;
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::AppState;
+    use id_core::frames::MAX_FRAME_BYTES;
+    use id_store::tags::TagStore;
+
+    async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "tags-ws-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        // Seed: a.md has label=rust + label=go, b.md has label=rust.
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"go"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"b.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        let state = AppState::new(
+            store,
+            None,
+            "tags-ws-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (
+            super::super::routes::create_router(
+                state,
+                super::super::security::WebSecurity::default(),
+            ),
+            dir,
+            endpoint,
+            docs,
+        )
+    }
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    async fn serve(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_plus_value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn key_plus_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subject_key_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        let tags = body.as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["subject"], "a.md");
+        assert_eq!(tags[0]["value"], "rust");
+    }
+
+    #[tokio::test]
+    async fn subject_only_key_only_and_unfiltered_are_unchanged() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        // Web UI call shape (?subject= at main.ts:909) returns the subject's tags.
+        let (status, body) = get(&app, "/api/tags?subject=a.md").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+
+        let (status, body) = get(&app, "/api/tags?key=label").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+
+        let (status, body) = get(&app, "/api/tags").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn websocket_caps_inbound_messages_and_keeps_tag_events_working() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let address = serve(app.clone()).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws/tags"))
+            .await
+            .unwrap();
+
+        client
+            .send(ClientMessage::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        let pong = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for ping response")
+            .expect("WebSocket closed after ping")
+            .expect("WebSocket failed after ping");
+        assert!(matches!(pong, ClientMessage::Pong(payload) if payload == vec![1, 2, 3]));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tags")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"subject":"ws.md","key":"label","value":"rust"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let event = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for tag event")
+            .expect("WebSocket closed before tag event")
+            .expect("WebSocket failed before tag event");
+        let ClientMessage::Text(event) = event else {
+            panic!("expected tag event text frame, got {event:?}");
+        };
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["type"], "set");
+        assert_eq!(event["subject"], "ws.md");
+        assert_eq!(event["key"], "label");
+        assert_eq!(event["value"], "rust");
+
+        client
+            .send(ClientMessage::Text("x".repeat(MAX_FRAME_BYTES + 1).into()))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("oversized message did not close the WebSocket");
+        assert!(
+            matches!(
+                closed,
+                None | Some(Err(_)) | Some(Ok(ClientMessage::Close(_)))
+            ),
+            "oversized message was not rejected: {closed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_lag_is_classified_as_resync_required() {
+        use id_store::tags::TagEvent;
+
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        for subject in ["first.md", "second.md"] {
+            sender
+                .send(TagEvent::DelAll {
+                    ns: "global".to_owned(),
+                    subject: subject.to_owned(),
+                })
+                .unwrap();
+        }
+
+        assert!(matches!(
+            recv_tag_broadcast(&mut receiver).await,
+            TagBroadcastRead::Lagged(1)
+        ));
+        assert!(matches!(
+            recv_tag_broadcast(&mut receiver).await,
+            TagBroadcastRead::Event(TagEvent::DelAll { subject, .. }) if subject == "second.md"
+        ));
+    }
+}

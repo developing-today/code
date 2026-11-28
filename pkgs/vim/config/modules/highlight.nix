@@ -1,0 +1,1 @@
+{ highlight.ExtraWhitespace.bg = "red"; }

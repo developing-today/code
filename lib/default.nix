@@ -1,0 +1,1967 @@
+/*
+  {
+    config,
+    inputs,
+    host,
+    hostName,
+    system,
+    stateVersion,
+    lib,
+    modulesPath,
+    pkgs,
+    ...
+  }:
+*/
+inputs:
+let
+  lib = merge [
+    inputs.nixpkgs.lib
+    inputs.home-manager.lib
+  ];
+
+  root =
+    if builtins.hasAttr "outPath" inputs.self then
+      inputs.self.outPath # Flake-based setup
+    else
+      toString ./.; # Traditional Nix setup, resolve to project root
+
+  pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
+
+  merge =
+    array:
+    let
+      flattenDeep = x: if builtins.isList x then builtins.concatMap flattenDeep x else [ x ];
+      # mergeWithConcat = a: b:
+      #   let
+      #     merge = path: l: r:
+      #       if builtins.isList l && builtins.isList r
+      #       then l ++ r
+      #       else if builtins.isAttrs l && builtins.isAttrs r
+      #       then inputs.nixpkgs.lib.attrsets.recursiveUpdateWith (merge (path + ".")) l r
+      #       else r;
+      #   in merge "" a b;
+
+    in
+    builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { } (flattenDeep array);
+
+  matrix =
+    spec: f:
+    map (combo: f (lib.genAttrs (builtins.attrNames spec) (name: combo.${name}))) (
+      lib.cartesianProduct (lib.genAttrs (builtins.attrNames spec) (name: spec.${name}))
+    );
+
+  mkEnv =
+    name: value:
+    lib.writeText "${name}.env" (
+      lib.concatStringsSep "\n" (lib.mapAttrsToList (n: v: "${n}=${v}") value)
+    );
+
+  mergeAttrs =
+    f: attrs:
+    lib.foldlAttrs (
+      acc: name: value:
+      (merge [
+        acc
+        (f name value)
+      ])
+    ) { } attrs;
+
+  from-root = path: "${root}/${path}";
+
+  public-key = protocol: alias: builtins.readFile (from-root "keys/${protocol}-${alias}.pub");
+  group-key = alias: public-key "ssh-group" alias;
+  host-key = alias: public-key "ssh-host" alias;
+  user-key = alias: public-key "ssh-user" alias;
+
+  nixos-user-configuration =
+    options: name:
+    merge [
+      rec {
+        inherit name;
+        enable = true;
+        uid = 1000;
+        groups = [ "wheel" ];
+        keys = [ (lib.user-key name) ];
+        email = "nixos-user-${name}@developing-today.com";
+        aliases = [
+          "hi@developing-today.com"
+          "abuse@developing-today.com"
+          "dmca@developing-today.com"
+          "drewrypope@gmail.com"
+        ];
+        # a nixos user optionally contains a home manager user?
+      }
+      options
+    ];
+
+  nixos-host-configuration-base =
+    options: name:
+    merge [
+      rec {
+        inherit name;
+        type = name; # should type allow a list of types?
+        # tags?
+        system = "x86_64-linux";
+        init = from-root "nixos/init";
+        stateVersion = "26.11";
+        group-key = lib.group-key name;
+        # groups =
+        # or maybe secretGroups =
+        email = "nixos-host-${name}@developing-today.com";
+        sshKey = lib.host-key name; # allow multiple ssh keys
+        users = [ ];
+        user-modules = [ ];
+        user-imports = [ ];
+        modules = [ ];
+        imports = [ ];
+        hardware = [ "" ];
+        hardware-modules = [ ];
+        hardware-imports = [ ];
+        networking = "dhcp";
+        wireless = [ ];
+        wireless-modules = [ ];
+        wireless-imports = [ ];
+        wireless-secrets-template = config: "";
+        # TODO: wire networking in and allow other networking options,
+        #       allow choosing wireless ? nixos only allows one wireless interface ?
+        #       check out topology and todo-apu2.nix
+        #       allow bridging interfaces
+        #       allow nat/packet forwarding
+        #       allow firewall things
+        #       allow disable ipv6
+        #       allow dhcpd and static ip addresses
+        profiles = [ ];
+        profile-modules = [ ];
+        profile-imports = [ ];
+        darwin-profiles = [ ];
+        darwin-profile-modules = [ ];
+        darwin-profile-imports = [ ];
+        darwin-modules = [ ];
+        darwin-imports = [ ];
+        disks = [ ];
+        disk-modules = [ ];
+        disk-imports = [ ];
+        bootstrap = false; # TODO: make this work or delete?
+        vm = false;
+        # users # TODO: make this work host has users which have home-manager-users
+      }
+      options
+    ];
+  nixos-host-configuration =
+    options: name:
+    let
+      host = nixos-host-configuration-base options name;
+    in
+    merge [
+      host
+      {
+        wireless-secrets-template =
+          config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
+      }
+    ];
+
+  default-home-manager-user-configuration = name: {
+    # TODO: make this work? integrate into users?
+    system = "x86_64-linux";
+    stateVersion = "26.11";
+    home = {
+      ide = rec {
+        inherit name;
+        enable = true;
+        email = "home-manager-user-${name}@developing-today.com";
+      };
+      shell.enable = true;
+      user = {
+        inherit name;
+        enable = true;
+      };
+    };
+  };
+  home-manager-user-configuration =
+    name: options:
+    merge [
+      (default-home-manager-user-configuration name)
+      options
+    ];
+
+  ensure-list = x: if builtins.isList x then x else [ x ];
+
+  make-paths = strings: basePath: map (str: basePath + "/${str}") (ensure-list strings);
+
+  make-hardware-paths =
+    {
+      basePath ? from-root "nixos/hardware-configuration",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-hardware = make-hardware-paths { };
+
+  make-user-paths =
+    {
+      basePath ? from-root "nixos/users",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-users = make-user-paths { };
+
+  make-profile-paths =
+    {
+      basePath ? from-root "nixos",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-profiles = make-profile-paths { };
+
+  make-disk-paths =
+    {
+      basePath ? from-root "nixos/disks",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-disks = make-disk-paths { };
+
+  make-wireless-paths =
+    {
+      basePath ? from-root "nixos/networking/wireless",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-wireless = make-wireless-paths { };
+
+  make-wireless-template =
+    host: config:
+    builtins.concatStringsSep "\n" (
+      map (i: config.sops.placeholder."wireless_${i}") (ensure-list host.wireless)
+    );
+
+  # TODO: make-sd-card-installer-configurations
+  # TODO: make-unattended-sd-card-installer-configurations
+  # TODO: make-sd-card-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/sd-card
+  # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/sd-card/sd-image.nix
+  # https://myme.no/posts/2022-12-01-nixos-on-raspberrypi.html
+  # https://github.com/lucernae/nixos-pi
+  # nix build .#nixosConfigurations.rpi.config.system.build.sdImage to build the sd card image, and
+  # nix build .#nixosConfigurations.rpi.config.system.build.toplevel to build (only) the system
+
+  # TODO: make-netboot-installer-configurations
+  # TODO: make-unattended-netboot-installer-configurations
+  # TODO: make-netboot-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/netboot
+
+  # TODO: make-vm/cloud-installer-configurations?
+
+  make-unattended-installer-configurations = # TODO: make-bootstrap-versions
+    configurations:
+    lib.mapAttrs' (
+      name: config:
+      lib.nameValuePair "unattended-installer_offline_${name}" (
+        inputs.unattended-installer.lib.diskoInstallerWrapper
+          {
+            lib = inputs.nixpkgs.lib;
+            inherit (config) pkgs config;
+          }
+          {
+            # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+            config = {
+              # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+              isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+              unattendedInstaller = {
+                successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+                preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+                postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+                preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+                postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+              };
+            };
+          }
+      )
+    ) configurations;
+
+  make-vm-configurations =
+    hosts:
+    lib.mapAttrs' (
+      hostName: host-generator:
+      let
+        vmName = "vm_" + hostName;
+      in
+      lib.nameValuePair vmName (
+        make-nixos-from-config (
+          make-host-config vmName (
+            name:
+            merge [
+              (host-generator name)
+              { vm = true; }
+            ]
+          )
+        )
+      )
+    ) hosts;
+
+  make-host-config =
+    hostName: host-generator:
+    let
+      host = host-generator hostName;
+    in
+    {
+      inherit inputs;
+      inherit host hostName; # move hostName into host?
+      inherit (host) system stateVersion; # move into host?
+      lib = _self;
+    };
+
+  # nixpkgs source with repo-local patches applied (see patches/nixpkgs/).
+  # applyPatches needs a concrete system for its stdenv; use the host's.
+  patched-nixpkgs-src =
+    config:
+    config.inputs.nixpkgs.legacyPackages.${config.system}.applyPatches {
+      name = "nixpkgs-patched";
+      src = config.inputs.nixpkgs;
+      patches = [ (from-root "patches/nixpkgs/neededforboot-nixos-unstable.patch") ];
+    };
+
+  make-nixos-from-config =
+    config:
+    let
+      src = patched-nixpkgs-src config;
+      # replicate nixpkgs flake's nixosSystem wrapper, but against the PATCHED
+      # source so nixos module files come from the patched tree
+      patched-lib = import (src + "/lib");
+    in
+    import (src + "/nixos/lib/eval-config.nix") {
+      lib = patched-lib;
+      system = null;
+      specialArgs = {
+        inherit (config)
+          inputs
+          host
+          hostName
+          system
+          stateVersion
+          lib
+          ;
+      };
+      modules = ensure-list config.host.init ++ [
+        # keep pkgs.path / <nixpkgs> pointing at the patched tree
+        (_: {
+          config.nixpkgs.flake.source = src.outPath;
+        })
+      ];
+    };
+
+  make-nixos-configurations = lib.mapAttrs (
+    hostName: host-generator: make-nixos-from-config (make-host-config hostName host-generator)
+  );
+
+  make-vim =
+    let
+      enablePkgs =
+        args:
+        builtins.mapAttrs (
+          n: v:
+          merge [
+            v
+            { enable = true; }
+          ]
+        ) args;
+      enablePlugins =
+        attrSet:
+        if attrSet ? plugins then
+          merge [
+            attrSet
+            { plugins = enablePkgs attrSet.plugins; }
+          ]
+        else
+          attrSet;
+      enableLspServers =
+        attrSet:
+        if attrSet ? lsp && attrSet.lsp ? servers then
+          merge [
+            attrSet
+            {
+              lsp = merge [
+                attrSet.lsp
+                { servers = enablePkgs attrSet.lsp.servers; }
+              ];
+            }
+          ]
+        else
+          attrSet;
+      enableColorschemes =
+        attrSet:
+        if attrSet ? colorschemes then
+          merge [
+            attrSet
+            { colorschemes = enablePkgs attrSet.colorschemes; }
+          ]
+        else
+          attrSet;
+      enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
+    in
+    inputs.flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        # TODO: check upstream neovim-nightly-overlay for a fixed tree-sitter cargoHash, then drop this local rebuild
+        # neovim-nightly-overlay pins a stale cargoHash for its bundled tree-sitter; rebuild with the current one
+        nightlySrc = inputs.neovim-nightly-overlay.outPath;
+        stock = import inputs.nixpkgs { inherit system; };
+        nightlyDeps = import (nightlySrc + "/flake/packages/neovim-dependencies.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+        };
+        nightlyTreeSitter =
+          (import (nightlySrc + "/flake/packages/tree-sitter.nix") {
+            inherit (stock) lib;
+            pkgs = stock;
+            neovim-dependencies = nightlyDeps;
+          }).overrideAttrs
+            (oa: {
+              cargoHash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              cargoDeps = stock.rustPlatform.fetchCargoVendor {
+                name = "${oa.pname}-cargo-deps";
+                src = nightlyDeps.treesitter;
+                hash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              };
+            });
+        nightlyNeovim = import (nightlySrc + "/flake/packages/neovim.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+          neovim-dependencies = nightlyDeps;
+          tree-sitter = nightlyTreeSitter;
+        };
+        pkgs = import inputs.nixpkgs {
+          ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+          # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
+          inherit system;
+          config = {
+            allowBroken = true;
+            allowUnfree = true;
+            allowUnfreePredicate = _: true;
+            permittedInsecurePackages = [
+              "olm-3.2.16"
+              "electron"
+              "qtwebkit-5.212.0-alpha4"
+            ];
+          };
+          overlays = [
+            inputs.neovim-nightly-overlay.overlays.default
+            (_: _: { neovim-unwrapped = nightlyNeovim; })
+          ];
+        };
+        module = import (from-root "pkgs/vim/config") { inherit enableModules pkgs; };
+        neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
+          inherit pkgs;
+          inherit module;
+        };
+        nixosModules = inputs.nixvim.nixosModules.nixvim;
+        homeManagerModules = inputs.nixvim.homeManagerModules.nixvim;
+      in
+      {
+        packages = {
+          default = neovim;
+        };
+        inherit nixosModules; # unsure how to overlay nightly here.
+        inherit homeManagerModules; # unsure how to overlay nightly here.
+        vimOverlay = final: prev: { inherit neovim; };
+        inherit enableModules;
+        inherit enableColorschemes;
+        inherit enableLspServers;
+        inherit enablePkgs;
+        inherit enablePlugins;
+      }
+    );
+
+  make-clan = # hosts:
+    let
+      # Usage see: https://docs.clan.lol
+      clan = inputs.clan-core.lib.clan {
+        inherit (inputs) self;
+        meta.name = "developing-today";
+        # Prerequisite: boot into the installer.
+        # See: https://docs.clan.lol/getting-started/installer
+        # local> mkdir -p ./machines/machine1
+        # local> Edit ./machines/<machine>/configuration.nix to your liking.
+        machines = {
+          # The name will be used as hostname by default.
+          user = { };
+          # sara = { };
+        };
+        # clanServices replacements for the clanModules.* imports that
+        # modules/shared.nix used to carry (clanModules was removed
+        # upstream; see #159). state-version is not listed here:
+        # clanCore enables it by default.
+        inventory.instances = {
+          # Runs the OpenSSH server with persistent host keys.
+          # Root's authorized keys stay in machines/user/configuration.nix.
+          sshd = {
+            roles.server.tags.all = { };
+            # The old sshd module only generated host keys; CA-signed host
+            # certificates are a new-service extra that would require
+            # shared openssh-ca vars this repo does not have.
+            roles.server.settings.certificate.enable = false;
+          };
+          # Generates the root password (was clanModules.root-password).
+          user-root = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "root";
+          };
+          # Zerotier network (was clan.core.networking.zerotier.controller
+          # in machines/user/configuration.nix; the direct option was
+          # removed upstream). This machine is the controller and a peer.
+          zerotier = {
+            module.name = "zerotier";
+            roles.controller.machines.user = { };
+            roles.peer.machines.user = { };
+          };
+          # Generates the "user" password (was clanModules.user-password).
+          user-user = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "user";
+          };
+        };
+      };
+    in
+    {
+      inherit (clan.config) nixosConfigurations clanInternals;
+      clan = clan.config;
+      devShells =
+        inputs.nixpkgs-unstable.lib.genAttrs
+          [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
+          (
+            system:
+            let
+              # The flake's canonical nixpkgs (nixpkgs-unstable) -- the same
+              # tree the system, shell.nix and the id sub-flake use, so
+              # `nix develop` and `nix-shell` resolve identical versions.
+              pkgs = import inputs.nixpkgs-unstable {
+                inherit system;
+                overlays = [ (import inputs.id-rust-overlay) ];
+                # The dev shell includes the Android SDK (nix-common.nix):
+                # androidenv is unfree and its derivations are gated on license
+                # acceptance. Both are required for `nix develop` to evaluate.
+                config = {
+                  allowUnfree = true;
+                  android_sdk.accept_license = true;
+                };
+              };
+              # Import shared configuration (same as shell.nix)
+              nixCommon = import ../nix-common.nix { inherit pkgs; };
+
+              # Bun pinned to the pristine official 1.4.5 build
+              # (#13337) — the upstream release binary, installed
+              # untouched. The nixpkgs package is a patchelf repack,
+              # and the repacked binary crashes vitest workers at
+              # startup on the fleet runner hosts (both x86_64 flavors,
+              # at 1.4.2 and 1.4.5), while the pristine 1.4.5 binary
+              # passes the same suite in the same runner; the evidence
+              # table is recorded on #13337. 1.4.5 is also the
+              # fleet-build Containerfile's pin. The pristine binary
+              # needs the system loader at runtime (/lib64/ld-linux or
+              # nix-ld, both present on the fleet's machines and in the
+              # fleet-build container); shells only. Bump version +
+              # hashes together, deliberately.
+              bunPinned =
+                let
+                  zips = {
+                    "x86_64-linux" = {
+                      file = "bun-linux-x64.zip";
+                      hash = "sha256-WCYOHQDhVan4VY5fXl1miwZQ3hNxCUnMeutJdXx0kFY=";
+                    };
+                    "aarch64-linux" = {
+                      file = "bun-linux-aarch64.zip";
+                      hash = "sha256-EkeG+qsv7hosvxqyHtkjizI8eDF5TW5hFYvHbw4SFpQ=";
+                    };
+                    "aarch64-darwin" = {
+                      file = "bun-darwin-aarch64.zip";
+                      hash = "sha256-mNY87B6ZYhDS4b8MDp+pR/7fnXvLes4A0kUdokvavwk=";
+                    };
+                  };
+                  zip = zips.${pkgs.stdenv.hostPlatform.system};
+                in
+                pkgs.stdenvNoCC.mkDerivation {
+                  pname = "bun";
+                  version = "1.4.5";
+                  src = pkgs.fetchzip {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/${zip.file}";
+                    inherit (zip) hash;
+                  };
+                  installPhase = ''
+                    runHook preInstall
+                    install -Dm 755 bun $out/bin/bun
+                    ln -s bun $out/bin/bunx
+                    runHook postInstall
+                  '';
+                  meta = {
+                    description = "Incredibly fast JavaScript runtime, bundler, test runner, and package manager (pristine upstream binary)";
+                    homepage = "https://bun.sh";
+                    license = pkgs.lib.licenses.mit;
+                  };
+                };
+            in
+            {
+              default = pkgs.mkShell {
+                inherit (nixCommon)
+                  NIX_CONFIG
+                  TREEFMT_TREE_ROOT_CMD
+                  buildInputs
+                  nativeBuildInputs
+                  shellHook
+                  ;
+                # OpenSSL configuration for native builds
+                inherit (nixCommon.opensslEnv)
+                  OPENSSL_DIR
+                  OPENSSL_LIB_DIR
+                  OPENSSL_INCLUDE_DIR
+                  PKG_CONFIG_PATH
+                  ;
+                # Shared packages + clan-cli (only available via flake input)
+                packages = nixCommon.packages ++ [
+                  inputs.clan-core.packages.${system}.clan-cli
+                ];
+              };
+
+              # Minimal shell for the mcpx CI lint leg (#1996). The
+              # default shell above is the whole monorepo environment
+              # (Rust, Android SDK, clan, Haskell, ...); realising it on
+              # a cold GitHub runner took longer than the lint job's
+              # whole 20-minute timeout and the job was cancelled
+              # before any linter ran (PR #2718, run 41122626395).
+              # This shell carries only the lint tools, from the same
+              # pinned nixpkgs-unstable, so the leg's tool versions are
+              # still flake-pinned (Approach C) but its closure is just
+              # the tools themselves.
+              mcpx-lint = pkgs.mkShell {
+                packages = with pkgs; [
+                  # go_1_27 is the repo's Go toolchain (nix-common.nix
+                  # fmtBins); plain `go` may lag the go.mod directive.
+                  go_1_27
+                  golangci-lint
+                  shellcheck
+                  actionlint
+                ];
+              };
+
+              # The mcpx development shell (#1983): the local test
+              # environment at the flake's versions, so a suite run on
+              # a laptop tests what the nix package ships. package.nix
+              # builds with go_1_27 and wraps deno, bun-bin and nodejs
+              # from this same nixpkgs; the host CI legs instead take
+              # deno/bun/node from setup-* actions at unrelated
+              # versions, and only the nix-e2e leg covers the wrapped
+              # set. This shell is that set plus the tools a local
+              # e2e run needs (git, python3 for the sqlite3 seed) and
+              # the linters. Like mcpx-lint above, it is deliberately
+              # lean: the default shell is the whole monorepo
+              # environment, which is the "impractical setup" #1983
+              # set out to remove for mcpx work.
+              mcpx = pkgs.mkShell {
+                packages = with pkgs; [
+                  go_1_27
+                  gopls
+                  deno
+                  bunPinned
+                  nodejs
+                  git
+                  python3
+                  golangci-lint
+                ];
+              };
+
+              # Lean shell for the fleet build container and GHA job
+              # containers (dezren39/fleet, containers/fleet-build).
+              # Same motivation as mcpx-lint above: `default` is the
+              # whole monorepo workstation environment (Android SDK,
+              # clan, desktop tooling via nix-common.nix) and is far
+              # too heavy to warm into a shared CI image. This shell
+              # carries only the CI toolchains — the repo's pinned
+              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
+              # all from the same nixpkgs-unstable tree as `default`,
+              # so container CI and the workstation agree on versions.
+              # The fleet image warms THIS shell for this repo.
+              fleet = pkgs.mkShell {
+                packages = [
+                  nixCommon.rustToolchain
+                ]
+                ++ (with pkgs; [
+                  git
+                  jq
+                  ripgrep
+                  go_1_27
+                  bunPinned
+                  nodejs
+                  zig
+                ]);
+              };
+            }
+          );
+    };
+
+  make-root-apps = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+
+      # Common metadata for all root apps
+      commonMeta = {
+        homepage = "https://github.com/developing-today/code";
+        license = with pkgs.lib.licenses; [
+          mit
+          asl20
+        ];
+      };
+
+      # Helper to create a runnable app with metadata
+      mkApp = drv: description: {
+        type = "app";
+        program = "${drv}/bin/${drv.name}";
+        meta = commonMeta // {
+          inherit description;
+        };
+      };
+
+      # ─── Dynamic app generation from justfile ──────────────────────────
+      #
+      # Apps are generated from just-recipes.json (produced by `just just-recipes`).
+      # To add a new nix app: add a recipe to root.just, run `just lockfiles`,
+      # and the app appears automatically as `nix run .#<recipe-name>`.
+      #
+      justRecipes = builtins.fromJSON (builtins.readFile ../just-recipes.json);
+
+      # Build a nix app from a just recipe
+      mkRecipeApp =
+        name: recipe:
+        let
+          description = if recipe.doc != null then recipe.doc else "Run 'just ${name}'";
+        in
+        mkApp (pkgs.writeShellScriptBin name ''
+          exec ${pkgs.just}/bin/just ${name} "$@"
+        '') description;
+
+      # Filter: exclude private recipes and 'default' (handled separately)
+      publicRecipes = pkgs.lib.filterAttrs (
+        name: recipe: !(recipe.private or false) && name != "default"
+      ) justRecipes.recipes;
+
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
+        wrapWithRuntimes = false;
+        doCheck = false;
+      };
+      mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
+        mcpx = mcpxContainerBinary;
+      };
+      mcpxTestImage = pkgs.dockerTools.buildLayeredImage {
+        name = "mcpx-e2e-test";
+        tag = "ci";
+        # This is a test harness, not the shipped image: Go builds the fake
+        # MCP server at test time, and the suite requires all wrapped runtimes.
+        # The mcpx executable is the same unwrapped artifact used by the user
+        # image; source is mounted read-only by the workflow.
+        contents = with pkgs; [
+          bash
+          bun
+          cacert
+          coreutils
+          deno
+          git
+          go_1_27
+          mcpxContainerBinary
+          nodejs
+          python3
+        ];
+        extraCommands = ''
+          mkdir -p tmp work usr/bin
+          chmod 1777 tmp work
+          ln -s ${pkgs.coreutils}/bin/env usr/bin/env
+        '';
+        config = {
+          Entrypoint = [ "${pkgs.bash}/bin/bash" ];
+          Cmd = [
+            "-lc"
+            "cd /workspace/pkgs/mcpx && go test ./internal/e2e -count=1 -timeout 30m"
+          ];
+          User = "0:0";
+          WorkingDir = "/workspace";
+          Env = [
+            "GOFLAGS=-buildvcs=false"
+            "HOME=/tmp"
+            "MCPX_TEST_BINARY=${mcpxContainerBinary}/bin/mcpx"
+            "MCPX_TEST_REQUIRE=deno,bun,node,python3"
+            "PATH=${
+              pkgs.lib.makeBinPath (
+                with pkgs;
+                [
+                  bash
+                  bun
+                  coreutils
+                  deno
+                  git
+                  go_1_27
+                  nodejs
+                  python3
+                ]
+              )
+            }:${mcpxContainerBinary}/bin"
+            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          ];
+        };
+      };
+      identity = pkgs.callPackage ../pkgs/identity/package.nix { };
+      identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
+        inherit identity;
+      };
+      identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
+      mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
+      atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
+      idDocs = pkgs.callPackage ../pkgs/id/docs.nix { };
+      pmDocs = pkgs.callPackage ../pm-stack/docs.nix { };
+      codeDocs = pkgs.callPackage ../pkgs/code-book/docs.nix { };
+      labDocs = pkgs.callPackage ../pkgs/lab/docs.nix { };
+      mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
+      idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
+      pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
+        cf = pkgs.callPackage ../pkgs/cf { };
+      };
+      developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
+      # Issue #5767, phase 2: Worker flake packages + their deploy apps.
+      coldStoreRehydrator = pkgs.callPackage ../pkgs/cold-store-reaper/worker/package.nix { };
+      coldStoreRehydratorDeploy = pkgs.callPackage ../pkgs/cold-store-reaper/worker/deploy.nix {
+        coldStoreRehydratorBundle = coldStoreRehydrator;
+      };
+      labOpsHub = pkgs.callPackage ../pkgs/lab-ops-hub/package.nix { };
+      labOpsHubDeploy = pkgs.callPackage ../pkgs/lab-ops-hub/deploy.nix {
+        inherit labOpsHub;
+      };
+      cfContainerHello = pkgs.callPackage ../pkgs/cf-container-hello/package.nix { };
+      cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
+        inherit cfContainerHello;
+      };
+      queueTransportAlert = pkgs.callPackage ../pkgs/queue-transport-alert/worker/package.nix { };
+      queueTransportAlertDeploy = pkgs.callPackage ../pkgs/queue-transport-alert/worker/deploy.nix {
+        inherit queueTransportAlert;
+        cf = pkgs.callPackage ../pkgs/cf { };
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
+      messageBridge = pkgs.callPackage ../pkgs/message-bridge/worker/package.nix { };
+      messageBridgeDeploy = pkgs.callPackage ../pkgs/message-bridge/worker/deploy.nix {
+        inherit messageBridge;
+        cf = pkgs.callPackage ../pkgs/cf { };
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
+      # Issue #5767, external-Worker slice: the hatch-personal Workers'
+      # deploy apps (pinned rev staged at deploy time).
+      agentInboxDeploy = pkgs.callPackage ../pkgs/external-workers/agent-inbox-deploy.nix { };
+      webhookGatewayDeploy = pkgs.callPackage ../pkgs/external-workers/webhook-gateway-deploy.nix { };
+      webhookGatewaySinkDeploy =
+        pkgs.callPackage ../pkgs/external-workers/webhook-gateway-sink-deploy.nix
+          { };
+    in
+    {
+      packages = {
+        inherit
+          mcpx
+          identity
+          idMailDeploy
+          pkarrDeploy
+          developingTodayBackupDeploy
+          coldStoreRehydrator
+          coldStoreRehydratorDeploy
+          labOpsHub
+          labOpsHubDeploy
+          cfContainerHello
+          cfContainerHelloDeploy
+          queueTransportAlert
+          queueTransportAlertDeploy
+          messageBridge
+          messageBridgeDeploy
+          agentInboxDeploy
+          webhookGatewayDeploy
+          webhookGatewaySinkDeploy
+          ;
+        mcpx-docs = mcpxDocs;
+        fleet-docs = fleetDocs;
+        atlas-docs = atlasDocs;
+        id-docs = idDocs;
+        pm-docs = pmDocs;
+        code-docs = codeDocs;
+        lab-docs = labDocs;
+        mcpx-real-servers = mcpxRealServers;
+        mcpx-container = mcpxContainer;
+        identity-image = identityImage;
+        identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        mcpx-e2e-test-image = mcpxTestImage;
+      };
+      checks = {
+        # The packaging test (#1981): run the built mcpx artifact --
+        # never the source tree -- with an empty HOME: --version,
+        # the wrapper PATH (via `mcpx doctor` in a scrubbed
+        # environment), the man page and completions, and a stdio
+        # serve handshake. The script is the single source, shared
+        # with the hand-run command in pkgs/mcpx/AGENTS.md.
+        mcpx-packaging =
+          pkgs.runCommand "mcpx-packaging-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.gzip
+                pkgs.jq
+              ];
+            }
+            ''
+              bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
+              touch $out
+            '';
+
+        # Drift guard for the generated root just-recipes.json (#8029):
+        # fails when the checked-in JSON disagrees with the root justfile
+        # on the semantic recipe fields — the root counterpart of the
+        # pkgs/id just-recipes-drift guard (#2729). The script projects
+        # out generation noise (absolute source path, body
+        # serialisation), so this is green on any correctly regenerated
+        # file. Runs in a copied tree: `just --dump` at the root needs
+        # the root justfile, root.just, and the pkgs/id module file.
+        just-recipes-root-drift =
+          pkgs.runCommand "just-recipes-root-drift-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.just
+              ];
+            }
+            ''
+              tree=$PWD/tree
+              mkdir -p $tree/pkgs/id $tree/scripts
+              cp ${../justfile} $tree/justfile
+              cp ${../root.just} $tree/root.just
+              cp ${../just-recipes.json} $tree/just-recipes.json
+              cp ${../pkgs/id/justfile} $tree/pkgs/id/justfile
+              cp ${../scripts/just-recipes-root-check.sh} $tree/scripts/just-recipes-root-check.sh
+              cp ${../scripts/just-recipes-root-check-test.sh} $tree/scripts/just-recipes-root-check-test.sh
+              cd $tree
+              bash scripts/just-recipes-root-check.sh
+              bash scripts/just-recipes-root-check-test.sh
+              touch $out
+            '';
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # The e2e suite spawns daemon/runtime process trees and needs init to
+        # reap them. Expose the flake-built test image as the check output;
+        # mcpx-test runs the suite in that image with Docker's --init, outside
+        # the Nix build sandbox where those process trees cannot be reaped.
+        mcpx-e2e = mcpxTestImage;
+      };
+      apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
+        id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
+        developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
+        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
+        lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
+        cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
+        queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
+        message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";
+        agent-inbox-deploy = mkApp agentInboxDeploy "Deploy the agent-inbox Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-deploy = mkApp webhookGatewayDeploy "Deploy the webhook-gateway Worker from the pinned dezren39/hatch-personal source — deploy the sink first on a fresh account (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-sink-deploy = mkApp webhookGatewaySinkDeploy "Deploy the webhook-gateway-sink Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
+        mcpx = {
+          type = "app";
+          program = "${mcpx}/bin/mcpx";
+          meta = commonMeta // {
+            description = "mcpx MCP gateway and Code Mode execution runner";
+          };
+        };
+      };
+    }
+  );
+
+  make-id =
+    let
+      idFlake = import ../pkgs/id/flake.nix;
+      idInputNames = builtins.attrNames idFlake.inputs;
+      idInputs = builtins.listToAttrs (
+        map (name: {
+          inherit name;
+          value = inputs.${"id-${name}"};
+        }) idInputNames
+      );
+      idOutputs =
+        let
+          result = idFlake.outputs (
+            idInputs
+            // {
+              self = result // {
+                outPath = "${inputs.self}/pkgs/id";
+              };
+              # Root NixOS runtime output; the ID flake's named test
+              # checks remain available and run through id-check CI.
+              checkRuntimePackages = false;
+              inherit (inputs) crane;
+            }
+          );
+        in
+        result;
+      prefixAttr =
+        attr: excludes:
+        if builtins.hasAttr attr idOutputs then
+          {
+            ${attr} = builtins.mapAttrs (
+              system: items:
+              builtins.listToAttrs (
+                builtins.concatMap (
+                  name:
+                  if builtins.elem name excludes then
+                    [ ]
+                  else
+                    [
+                      {
+                        name = "id-${name}";
+                        value = items.${name};
+                      }
+                    ]
+                ) (builtins.attrNames items)
+              )
+            ) idOutputs.${attr};
+          }
+        else
+          { };
+    in
+    merge [
+      (prefixAttr "apps" [
+        "default"
+        "just"
+      ])
+      (prefixAttr "checks" [ "default" ])
+      { inherit (idOutputs) packages; }
+      # 'id' app: runs the id binary
+      {
+        apps = builtins.mapAttrs (system: _: {
+          id = idOutputs.apps.${system}.default;
+        }) idOutputs.apps;
+      }
+      # Root formatter: format root + pkgs/id
+      (inputs.flake-utils.lib.eachDefaultSystem (
+        system:
+        let
+          pkgs = import inputs.nixpkgs-unstable {
+            inherit system;
+            overlays = [ (import inputs.id-rust-overlay) ];
+          };
+          nixCommon = import ../nix-common.nix { inherit pkgs; };
+          inherit (nixCommon) fmtBins;
+
+          # Read excludes from treefmt.toml so we can filter passed files
+          treefmtConfig = builtins.fromTOML (builtins.readFile ../treefmt.toml);
+          excludes =
+            if treefmtConfig ? global && treefmtConfig.global ? excludes then
+              treefmtConfig.global.excludes
+            else
+              [ ];
+
+          formatCheck = pkgs.writeShellScriptBin "format-check" ''
+                        export PATH="${pkgs.lib.makeBinPath (fmtBins ++ [ pkgs.python3 ])}:$PATH"
+                        if [ "$#" -eq 0 ]; then
+                          echo "usage: nix run .#format-check -- <changed-file>..." >&2
+                          return 2 2>/dev/null || exit 2
+                        fi
+
+                        filter_script=$(cat << 'PYEOF'
+            import sys, fnmatch
+
+            excludes = [
+            ${builtins.concatStringsSep "\n" (map (x: "    \"${x}\",") excludes)}
+            ]
+
+            filtered = []
+            for f in sys.argv[1:]:
+                excluded = False
+                for excl in excludes:
+                    if fnmatch.fnmatch(f, excl):
+                        excluded = True
+                        break
+                    if excl.endswith("/**") and f.startswith(excl[:-2]):
+                        excluded = True
+                        break
+                    if excl.startswith("**/") and (f == excl[3:] or f.endswith("/" + excl[3:])):
+                        excluded = True
+                        break
+                    if f == excl:
+                        excluded = True
+                        break
+                if not excluded:
+                    filtered.append(f)
+
+            for f in filtered:
+                print(f + '\0', end=''')
+            PYEOF
+            )
+                        filtered_files=()
+                        while IFS= read -r -d $'\0' file; do
+                            filtered_files+=("$file")
+                        done < <(python3 -c "$filter_script" "$@")
+
+                        if [ ''${#filtered_files[@]} -eq 0 ]; then
+                          echo "No files to format after applying treefmt excludes."
+                          return 0 2>/dev/null || exit 0
+                        else
+                          exec treefmt \
+                            --config-file "$PWD/treefmt.toml" \
+                            --tree-root "$PWD" \
+                            --fail-on-change \
+                            "''${filtered_files[@]}"
+                        fi
+          '';
+          # Write-mode twin of format-check, for the auto-format
+          # workflow (.github/workflows/auto-format.yml): same
+          # treefmt invocation without --fail-on-change.
+          format = pkgs.writeShellScriptBin "format" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            if [ "$#" -eq 0 ]; then
+              echo "usage: nix run .#format -- <changed-file>..." >&2
+              exit 2
+            fi
+            exec treefmt \
+              --config-file "$PWD/treefmt.toml" \
+              --tree-root "$PWD" \
+              "$@"
+          '';
+        in
+        {
+          apps.format-check = {
+            type = "app";
+            program = "${formatCheck}/bin/format-check";
+          };
+          apps.format = {
+            type = "app";
+            program = "${format}/bin/format";
+          };
+
+          formatter = pkgs.writeShellScriptBin "formatter" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
+            just fix "$@"
+            # Format id sub-project
+            if [ -d pkgs/id ]; then
+              (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter)
+            fi
+          '';
+          checks = {
+            # Validate all formatters at once via treefmt --ci
+            treefmt-check = pkgs.stdenv.mkDerivation {
+              name = "treefmt-check";
+              src = inputs.self;
+              nativeBuildInputs = fmtBins;
+              buildPhase = ''
+                treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "treefmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            # Per-formatter checks (read-only validation)
+            nixfmt-check = pkgs.stdenv.mkDerivation {
+              name = "nixfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.nixfmt ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  | xargs nixfmt --check
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "nixfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            biome-check = pkgs.stdenv.mkDerivation {
+              name = "biome-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.biome ];
+              buildPhase = ''
+                biome format --check --config-path . \
+                  --files-ignore-unknown=true \
+                  $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
+                    -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
+                    -not -path './pkgs/id/*' \
+                    -not -path './.opencode/*' \
+                    -not -path './pkgs/dht/*' \
+                    -not -path '*/node_modules/*' \
+                    -not -path '*/target/*') \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "biome-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rustfmt-check = pkgs.stdenv.mkDerivation {
+              name = "rustfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rustfmt ];
+              buildPhase = ''
+                find . -name '*.rs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './pkgs/dht/*' \
+                  -not -path '*/target/*' \
+                  -exec rustfmt --check --edition 2024 {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rustfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            statix-check = pkgs.stdenv.mkDerivation {
+              name = "statix-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.statix ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  -print0 | while IFS= read -r -d "" f; do
+                    statix check -- "$f" || true
+                  done
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "statix-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            prettier-check = pkgs.stdenv.mkDerivation {
+              name = "prettier-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remoed 2026-04-03
+              buildPhase = ''
+                find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
+                  -o -name '*.scss' -o -name '*.yaml' \) \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec prettier --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "prettier-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shfmt-check = pkgs.stdenv.mkDerivation {
+              name = "shfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shfmt ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shfmt -d -i 2 -s {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            taplo-check = pkgs.stdenv.mkDerivation {
+              name = "taplo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.taplo ];
+              buildPhase = ''
+                find . -name '*.toml' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path '*/target/*' \
+                  -exec taplo check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "taplo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shellcheck-check = pkgs.stdenv.mkDerivation {
+              name = "shellcheck-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shellcheck ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shellcheck {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shellcheck-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ruff-check = pkgs.stdenv.mkDerivation {
+              name = "ruff-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.ruff ];
+              buildPhase = ''
+                find . -name '*.py' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec ruff format --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ruff-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rufo-check = pkgs.stdenv.mkDerivation {
+              name = "rufo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rufo ];
+              buildPhase = ''
+                find . -name '*.rb' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec rufo --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rufo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            elm-format-check = pkgs.stdenv.mkDerivation {
+              name = "elm-format-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.elmPackages.elm-format ];
+              buildPhase = ''
+                find . -name '*.elm' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec elm-format --validate {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "elm-format-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            gofmt-check = pkgs.stdenv.mkDerivation {
+              name = "gofmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.go ];
+              buildPhase = ''
+                found=$(find . -name '*.go' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec gofmt -l {} +) || true
+                if [ -n "$found" ]; then
+                  echo "Files not formatted by gofmt:"
+                  echo "$found"
+                fi
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "gofmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ormolu-check = pkgs.stdenv.mkDerivation {
+              name = "ormolu-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.haskellPackages.ormolu ];
+              buildPhase = ''
+                find . -name '*.hs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path './examples/haskell/*' \
+                  -exec ormolu --mode check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ormolu-check passed at $(date)" > $out/result.txt
+              '';
+            };
+          };
+        }
+      ))
+    ];
+
+  # Flake checks for the laptop-backups shell suites (#1841): the suites
+  # in nixos/home drive the real backup and watchdog scripts with
+  # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
+  # that copies nixos/home somewhere writable and runs one suite. Until
+  # this wiring they ran only by hand on the laptop, so a regression in
+  # the backup scripts reached CI only when somebody remembered to run
+  # them. inputs.self is copied, not run in place: the store path is
+  # read-only and the suites write beside themselves.
+  make-laptop-backups-checks = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      suites = [
+        "atlas-backup"
+        "laptop-autocommit-in-progress"
+        "laptop-autocommit-merge-abort"
+        "laptop-autocommit-oversized"
+        "laptop-backups-watchdog"
+        "laptop-state-backup"
+        "laptop-repo-keeper"
+        "laptop-untracked-review"
+        "openclaw-backup"
+        "oc-password-sync"
+        "pm-dashboard-backup"
+        "pm-dashboard-backup-copy"
+        "pm-dashboard-backup-date"
+        "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-pmp-links"
+        "pm-dashboard-backup-prune"
+        "pm-dashboard-backup-record"
+      ];
+    in
+    {
+      checks = builtins.listToAttrs (
+        map (suite: {
+          name = "laptop-backups-${suite}";
+          value =
+            pkgs.runCommandLocal "check-laptop-backups-${suite}"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.diffutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.git
+                  pkgs.gnutar
+                  pkgs.gzip
+                  pkgs.jq
+                  pkgs.python3
+                  pkgs.sqlite
+                  pkgs.util-linux
+                  pkgs.zstd
+                ];
+              }
+              ''
+                cp -r ${inputs.self}/nixos/home home
+                chmod -R u+w home
+                cd home
+                bash ${suite}.test.sh
+                mkdir -p $out
+                echo "${suite} suite passed" > $out/result.txt
+              '';
+        }) suites
+      );
+    }
+  );
+
+  # fleet multicall binary packages (pkgs/fleet; epic code#5412,
+  # step 1 code#5429). One workspace, capability variants as
+  # separate attrs; the connect-static flavor (musl) is only
+  # offered on Linux, where a static target makes sense.
+  make-fleet = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      # Crane libs for the dependency-split package build (code#8392):
+      # pkgs/fleet compiles its registry dependencies as a separate
+      # derivation per variant when these are passed.
+      craneLib = inputs.crane.mkLib pkgs;
+      fleetPkgs = pkgs.callPackage ../pkgs/fleet {
+        sourceRev = inputs.self.rev or "dirty";
+        inherit craneLib;
+      };
+    in
+    {
+      packages = {
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
+      }
+      // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
+  # pm-stack apps (pkgs/pm-*; code#8171): the projector, aggregator,
+  # dispatch, and git-sync as Nix derivations built from this repo's
+  # pm-stack source. The nixos pm-stack module callPackages the same
+  # files into its units; these outputs make `nix build .#pm-<app>`
+  # the package-level check. ready-for-agent joins them from
+  # pkgs/ready-for-agent — the one pm-stack app packaged from its
+  # pinned upstream npm release rather than repo source (#12909).
+  make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      pmPackages = {
+        pm-projector = pkgs.callPackage ../pkgs/pm-projector/package.nix { };
+        pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
+        pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
+        pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+        ready-for-agent = pkgs.callPackage ../pkgs/ready-for-agent/package.nix { };
+      };
+      mkApp = pkg: program: {
+        type = "app";
+        program = "${pkg}/bin/${program}";
+      };
+    in
+    {
+      packages = pmPackages;
+      # One flake app per program the pm-stack services run, so every
+      # unit's ExecStart binary is also `nix run .#<name>`-able and the
+      # deploy surface is uniform: app + derivation + service (#8171).
+      apps = {
+        pm-projector = mkApp pmPackages.pm-projector "pm-projector";
+        pm-projector-cli = mkApp pmPackages.pm-projector "pm-projector-cli";
+        pm-aggregator = mkApp pmPackages.pm-aggregator "pm-aggregator";
+        pm-aggregator-gather-quota = mkApp pmPackages.pm-aggregator "pm-aggregator-gather-quota";
+        pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
+        pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
+        pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
+        ready-for-agent = mkApp pmPackages.ready-for-agent "ready-for-agent";
+      };
+    }
+  );
+
+  # Archer Slack collector (pkgs/fleet/archer-slack/collector;
+  # code#2137 S2): the Socket Mode listener the laptop's
+  # archer-slack-collector user service runs (nixos/services/
+  # archer-slack callPackages the same file); this output makes
+  # `nix build .#archer-slack-collector` the package-level check,
+  # per the #8171 app + derivation + service surface.
+  make-archer-slack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      archerSlackCollector = pkgs.callPackage ../pkgs/fleet/archer-slack/collector/package.nix { };
+    in
+    {
+      packages.archer-slack-collector = archerSlackCollector;
+      apps.archer-slack-collector = {
+        type = "app";
+        program = "${archerSlackCollector}/bin/archer-slack-collector";
+      };
+    }
+  );
+
+  # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
+  # deployTargets merges this repo's service definitions (design
+  # 2026-11-04 section 3); the checks pin the packet's acceptance --
+  # `deploy list` enumerates the real registry and refuses a malformed one.
+  make-deploy = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      deployPkgs = pkgs.callPackage ../pkgs/deploy {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+      badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
+        builtins.toJSON {
+          broken = {
+            entryPoint = 3;
+            ports = [ 70000 ];
+          };
+        }
+      );
+      validationService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      # Keep each registry valid except for the exact issue #6383 shape.
+      newlineNameRegistry = pkgs.writeText "deploy-targets-newline-name.json" ''
+        {"svc\n": ${builtins.toJSON validationService}}
+      '';
+      duplicateSecretsRegistry = pkgs.writeText "deploy-targets-duplicate-secrets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            secrets = [
+              "secret.name"
+              "secret.name"
+            ];
+          };
+        }
+      );
+      duplicateTargetsRegistry = pkgs.writeText "deploy-targets-duplicate-targets.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            targets = [
+              "laptop"
+              "laptop"
+            ];
+          };
+        }
+      );
+      hostlessHealthCheckRegistry = pkgs.writeText "deploy-targets-hostless-health-check.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            healthCheck = "http://";
+          };
+        }
+      );
+      duplicatePortsRegistry = pkgs.writeText "deploy-targets-duplicate-ports.json" (
+        builtins.toJSON {
+          svc = validationService // {
+            ports = [
+              8080
+              8080
+            ];
+          };
+        }
+      );
+      # Duplicate keys cannot be expressed as a Nix attrset, so these
+      # registries are raw JSON text (issue #6384): load_registry must
+      # reject them naming the duplicated key.
+      dupServiceRegistry = pkgs.writeText "deploy-targets-dup-service.json" ''
+        {"svc": {"class": "bogus-class"}, "svc": {"class": "systemd"}}
+      '';
+      dupFieldRegistry = pkgs.writeText "deploy-targets-dup-field.json" ''
+        {"svc": {"ports": "notalist", "ports": []}}
+      '';
+      # Unhashable restart/class values (issue #6388): arrays/objects
+      # where validate() expects a string. validate() must report
+      # them by field, not crash with a TypeError, and one
+      # crashing-shape service must not suppress another service's
+      # ordinary field reports.
+      unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
+        {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
+      '';
+      validTargetService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      invalidTargetRegistry =
+        name: target:
+        pkgs.writeText name (
+          builtins.toJSON {
+            svc = validTargetService // {
+              targets = [ target ];
+            };
+          }
+        );
+      newlineTargetRegistry = invalidTargetRegistry "deploy-targets-newline.json" "laptop\nFAKE  systemd     evil";
+      spaceTargetRegistry = invalidTargetRegistry "deploy-targets-space.json" "bad name";
+    in
+    {
+      packages.deploy = deployPkgs.deploy;
+      inherit (deployPkgs) deployTargets;
+      checks = {
+        deploy-list =
+          pkgs.runCommandLocal "check-deploy-list"
+            {
+              nativeBuildInputs = [ pkgs.gnugrep ];
+            }
+            ''
+              ${deployPkgs.deploy}/bin/deploy list > list.txt
+              cat list.txt
+              grep -q "queue-broker" list.txt
+              grep -q "cold-store-rehydrator" list.txt
+              grep -q "lab-ops-hub" list.txt
+              grep -q "cf-container-hello" list.txt
+              grep -q "queue-transport-alert" list.txt
+              grep -q "message-bridge" list.txt
+              grep -q "agent-inbox" list.txt
+              grep -q "webhook-gateway" list.txt
+              grep -q "webhook-gateway-sink" list.txt
+              grep -q "secrets-broker" list.txt
+              grep -q "pm-aggregator" list.txt
+              grep -q "pm-projector" list.txt
+              grep -q "pm-tunnel" list.txt
+              grep -q "ready-for-agent" list.txt
+              grep -q "quota-recorder" list.txt
+              grep -q "session-proxy" list.txt
+              grep -q "mcpx" list.txt
+              grep -q "laptop" list.txt
+              mkdir -p $out
+              cp list.txt $out/list.txt
+            '';
+        deploy-dupkeys-property =
+          pkgs.runCommandLocal "check-deploy-dupkeys-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-target-shape-property =
+          pkgs.runCommandLocal "check-deploy-target-shape-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_target_shape_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice3-tests =
+          pkgs.runCommandLocal "check-deploy-slice3-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice4-tests =
+          pkgs.runCommandLocal "check-deploy-slice4-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice4.py} ${../pkgs/deploy/deploy.py} ${../pkgs/deploy/restore.py}
+              mkdir -p $out
+            '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-lazy-targets =
+          pkgs.runCommandLocal "check-deploy-lazy-targets"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_lazy_targets.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-argv-property =
+          pkgs.runCommandLocal "check-deploy-argv-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
+          expect_invalid() {
+            registry="$1"
+            expected="$2"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > out.txt 2> err.txt; then
+              echo "deploy list accepted a malformed registry: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "$expected" err.txt; then
+              echo "deploy list did not report '$expected' for $registry" >&2
+              cat err.txt >&2
+              exit 1
+            fi
+            test ! -s out.txt
+          }
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
+            echo "deploy list accepted a malformed registry" >&2
+            exit 1
+          fi
+          grep -q "entryPoint" err.txt
+          grep -q "ports" err.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupServiceRegistry} > dup-svc-out.txt 2> dup-svc-err.txt; then
+            echo "deploy list accepted a registry with a duplicate service key" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'svc'" dup-svc-err.txt
+          test ! -s dup-svc-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupFieldRegistry} > dup-field-out.txt 2> dup-field-err.txt; then
+            echo "deploy list accepted a registry with a duplicate field" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'ports'" dup-field-err.txt
+          test ! -s dup-field-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${unhashableRegistry} > unhash-out.txt 2> unhash-err.txt; then
+            echo "deploy list accepted a registry with unhashable restart/class values" >&2
+            exit 1
+          fi
+          grep -q "service 'bad': restart must be one of" unhash-err.txt
+          grep -q "service 'bad': class must be one of" unhash-err.txt
+          grep -q "service 'other': class must be one of" unhash-err.txt
+          grep -q "service 'other': restart must be one of" unhash-err.txt
+          if grep -q "Traceback" unhash-err.txt; then
+            echo "deploy list crashed with a traceback on unhashable values" >&2
+            exit 1
+          fi
+          test ! -s unhash-out.txt
+          expect_invalid ${newlineNameRegistry} "name must match"
+          expect_invalid ${duplicateSecretsRegistry} "secrets must not repeat a secret name"
+          expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
+          expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
+          expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          expect_invalid_target() {
+            registry="$1"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > target-out.txt 2> target-err.txt; then
+              echo "deploy list accepted a target with an invalid shape: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "targets must be host/class names matching" target-err.txt; then
+              echo "deploy list did not report the targets field for $registry" >&2
+              cat target-err.txt >&2
+              exit 1
+            fi
+            test ! -s target-out.txt
+          }
+          expect_invalid_target ${newlineTargetRegistry}
+          expect_invalid_target ${spaceTargetRegistry}
+          mkdir -p $out
+          cp err.txt $out/errors.txt
+        '';
+      };
+    }
+  );
+
+  make-mcpx-overlay = {
+    overlays = {
+      default = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+      mcpx = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+    };
+  };
+
+  # The mcpx daemon modules (code#4801): the canonical module files
+  # live in pkgs/mcpx/modules; these outputs wrap them with this
+  # flake's own mcpx build. The opencode fork
+  # re-exports the same files defaulted to its build, and
+  # openchamber passes them through — the option set never forks.
+  make-mcpx-modules =
+    let
+      wrap =
+        module:
+        { lib, pkgs, ... }:
+        {
+          imports = [ module ];
+          services.mcpx.package = lib.mkDefault (
+            pkgs.callPackage ../pkgs/mcpx/package.nix {
+              # Keep the runtime module lean; the standalone package output
+              # still runs this Go check phase.
+              doCheck = false;
+            }
+          );
+        };
+    in
+    {
+      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
+      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
+      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
+    };
+
+  _self = merge [
+    lib
+    {
+      inherit
+        lib
+        root
+        merge
+        matrix
+        from-root
+        public-key
+        group-key
+        host-key
+        user-key
+        pick
+        mkEnv
+        mergeAttrs
+        nixos-user-configuration
+        nixos-host-configuration-base
+        nixos-host-configuration
+        default-home-manager-user-configuration
+        home-manager-user-configuration
+        ensure-list
+        make-paths
+        make-hardware-paths
+        make-hardware
+        make-user-paths
+        make-users
+        make-profile-paths
+        make-profiles
+        make-disk-paths
+        make-disks
+        make-wireless-paths
+        make-wireless
+        make-wireless-template
+        make-vm-configurations
+        make-unattended-installer-configurations
+        make-nixos-from-config
+        make-host-config
+        make-nixos-configurations
+        make-vim
+        make-clan
+        make-root-apps
+        make-id
+        make-mcpx-overlay
+        make-mcpx-modules
+        make-pm-stack
+        make-archer-slack
+        make-laptop-backups-checks
+        make-fleet
+        make-deploy
+        ;
+    }
+  ];
+in
+_self

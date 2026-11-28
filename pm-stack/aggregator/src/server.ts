@@ -1,0 +1,5841 @@
+// The aggregator's HTTP server. Read-mostly: pages are server-rendered
+// HTML and /api/*.json serve the same data machine-first. Slice 3 (#906)
+// adds the app's first writes — dashboard comments (POST /api/comments
+// and its triage/github-result companions); the triage write path
+// (#1152/#1154/#1156) adds dashboard actions (POST /api/actions and
+// its result companion) on the same pattern. Everything underneath
+// (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
+// apply actions; the dashboard only records them.
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Database } from "bun:sqlite";
+import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
+import { decodePathSegment } from "./path-segment.ts";
+import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
+import { PROMPT_STATUSES, PromptsStore, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
+import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
+import {
+  PromptAttachmentsStore,
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
+import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
+import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
+import { EventsStore, emitEvent, pageEvents } from "./events.ts";
+import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
+import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
+import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
+import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
+import {
+  IngestionStore,
+  WatchdogEpisodeStabilizer,
+  ingestActivity,
+  createWatchdogGapSyncQueue,
+  watchdogDeliveries,
+  activityCoverageHtml,
+  gapsHtml,
+  ACTIVITY_SOURCE_COVERAGE,
+  type ActivitySourceStatus,
+} from "./activity.ts";
+import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
+import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
+import { buildOutcomeView, drillOutcomeFacts, type OutcomeDrillSelector } from "./outcome-view.ts";
+import { OutcomeFactStore } from "./outcome-attribution.ts";
+import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
+import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
+import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import {
+  OutageQueueStore,
+  confirmOutageWrite,
+  isStackLocalAddress,
+  outageQueueEligible,
+  queueOutageWrite,
+  rejectOutageWrite,
+  type OutageQueuedWrite,
+} from "./outage-queue.ts";
+import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
+import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
+import {
+  computeCoverage,
+  CoverageSnapshotStore,
+  nextCoverageSnapshot,
+  type CoverageSnapshotFile,
+  type RepoCensus,
+} from "./coverage.ts";
+import { loadConfig } from "./config.ts";
+import { getTursoStoreClient } from "./turso-stores.ts";
+import { createTursoRemotes } from "./remote-stores.ts";
+import { itemServiceLinks } from "./service-links.ts";
+import { loadFeed } from "./feed.ts";
+import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  raiseNeedsDrew,
+  needsDrewIncidentKey,
+  recordAnswer,
+  shouldFetchNeedsDrewCensus,
+  validateNeedsDrew,
+  type NeedsDrewCensus,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import {
+  decisionSetAging,
+  decisionSetOpenState,
+  decisionSetProgress,
+  deferWithSubmissions,
+  dismissDecisionSets,
+  getDecisionDrafts,
+  getDecisionSet,
+  isDeferLean,
+  decisionSetSummary,
+  decisionSetsForView,
+  isDecisionSetView,
+  listDecisionSets,
+  listOpenDecisionSets,
+  raiseDecisionSet,
+  refreshDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  sweepDecisionSets,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  withGeneratedSetId,
+  effectiveQuestionMode,
+  type DecisionItem,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+  decisionsDraftScript,
+} from "./decisions.ts";
+import {
+  appendDecisionEvents,
+  readDecisionEvents,
+  validateDecisionEventInput,
+  type DecisionEventInput,
+} from "./decision-events.ts";
+import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
+import { validateHealthHook, type HealthHookRecord } from "./health-hook.ts";
+import {
+  buildHealth,
+  pageRenderHealth,
+  recordRender,
+  summarizeItemCoverage,
+  type HealthView,
+  type ItemsCoverage,
+} from "./health.ts";
+import { manifestRouteFor } from "./pages.ts";
+import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
+import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
+import { readHostHealthSnapshot } from "./host-health.ts";
+import {
+  allRefs,
+  buildAttention,
+  buildQuotaActions,
+  deriveToday,
+  filterAttentionViewByRefs,
+  projectPace,
+  quotaActionTierItems,
+  type RoadmapGrain,
+} from "./derive.ts";
+import {
+  reconcileRoadmap,
+  roadmapDriftReport,
+  unavailableRoadmapReconciliation,
+  type RoadmapReconciliation,
+} from "./roadmap-reconcile.ts";
+import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
+import { buildEpicRollups } from "./epics.ts";
+import { SpendRollupStore } from "./spend-rollups.ts";
+import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
+import { buildProgramData, programRefs } from "./program.ts";
+import { buildReleaseSnapshots } from "./releases.ts";
+import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
+import {
+  PROJECT_CONFIGS,
+  allProjectRefs,
+  buildProjectDetail,
+  buildProjectSummaries,
+  projectDocTarget,
+  projectConfigById,
+} from "./project-config.ts";
+import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
+import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
+import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
+import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
+import {
+  attentionFragment,
+  attentionSections,
+  ghObjectRef,
+  renderAa,
+  renderAttention,
+  renderAttentionShell,
+  renderBoard,
+  renderBoardBody,
+  renderDiscuss,
+  renderDns,
+  renderConflicts,
+  renderHealth,
+  renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
+  renderChat,
+  renderCommentsQueue,
+  renderPages,
+  renderProgram,
+  renderProgramProject,
+  renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
+  buildRoadmapDrill,
+  renderRoadmap,
+  renderSearch,
+  renderServiceDetail,
+  renderSessions,
+  renderToday,
+  renderTodayBody,
+  renderTodayShell,
+  questionsSectionHtml,
+  type CommentFormOpts,
+  eventTableHtml,
+} from "./render.ts";
+import { buildBriefs } from "./brief.ts";
+import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
+import { timingSafeEqual } from "node:crypto";
+import {
+  classEnabled,
+  getAlertsStore,
+  requestAlertTick,
+  sendClassTestPush,
+  sendTestPush,
+  startAlertEngine,
+  toPublicSubscription,
+  validateNewIncident,
+  validateNewSubscription,
+  type PushPayload,
+} from "./alerts.ts";
+import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
+import { requestNotifyRelaySubscriptionSync, startNotifyRelay } from "./notify-relay.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
+import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import { createMetadataWebhookHandler } from "./webhook-listener.ts";
+import { SW_SOURCE } from "./sw-source.ts";
+import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import type { QueueSnapshot } from "./queue.ts";
+import {
+  deriveSoleDoorPoolIds,
+  isNotificationTestClass,
+  NOTIFICATION_CLASS_DEFAULTS,
+  NOTIFICATION_CLASSES,
+  rollupNotificationSends,
+  type NotificationSnapshot,
+} from "./notifications.ts";
+import { readJsonBody } from "./request-body.ts";
+import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
+import { searchWork } from "./search-view.ts";
+import type { Source } from "./source.ts";
+import { fixtureSource } from "./sources/fixtures.ts";
+import { liveSource } from "./sources/live.ts";
+import { buildQueueView, queueInputsStale } from "./queue-view.ts";
+import { createDashboardResponseDeadline } from "./assembly-deadline.ts";
+import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
+import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
+import { ItemHistoryStore } from "./item-history.ts";
+import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
+import { sampleSloFacets } from "./slo-sampler.ts";
+import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
+import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
+import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
+import type { EscalationSink } from "./escalation.ts";
+import { createEscalationTicker, escalationDelivery, escalationJournalLine } from "./escalation-tick.ts";
+import { emptyState } from "./remediation.ts";
+import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
+import {
+  appendReportBlockConflictResolution,
+  appendReportLateUpdate,
+  compareReportBlock,
+  defaultReportRecordsFile,
+  ReportRecordConflictError,
+  readReportRecords,
+  readReportSnapshots,
+  selectCurrentReportRecords,
+  type ReportLateUpdateOperation,
+  type ReportRecordSource,
+} from "./report-records.ts";
+import { renderReportReview, reportBlockReviews } from "./report-review.ts";
+import {
+  FORECAST_CONTRACT_VERSION,
+  quotaForecastContract,
+  subjectForecastContracts,
+  type ForecastContract,
+} from "./forecast-contract.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
+const cfg = loadConfig();
+// #10383: the bounded routes' last-good survives a restart on disk, so
+// the first request after a deploy serves it instead of a 503.
+const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
+const promptsStore = new PromptsStore(cfg.promptsFile);
+const promptAttachmentsStore = new PromptAttachmentsStore(cfg.promptAttachmentsDir);
+const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
+const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const sloJournal = new SloJournal(cfg.sloJournalFile);
+let sloSummaryCache: { at: number; value: SloFacetSummary[] } | null = null;
+const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
+/** #4824: the Projects/Roadmap spend-beside-progress view over the
+ * #4823 rollup store. A failed read renders no spend block (the
+ * store's absence is already the honest state — ingestion is a
+ * separate slice); it never fabricates zeroed cards. */
+const loadSpendCards = async (): Promise<SpendCardsView | null> => {
+  try {
+    return buildSpendCards(await spendRollupStore.readAll());
+  } catch {
+    return null;
+  }
+};
+
+async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
+  const targets = [...items.values()].filter(
+    (item) => item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  );
+  if (!targets.length) return [];
+  const observedAt = new Date().toISOString();
+  if (cfg.source !== "live") {
+    // #4969 (Codex on PR #5283): fixtures mode must never read the live
+    // harness — deterministic fixture dispatch data, mirroring the
+    // health.ts fixtures boundary. The canned set has no picked-up
+    // work item, so every labelled fixture item is honestly
+    // "not picked up".
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: RFA_NOT_PICKED_UP,
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], mode: "fixtures" },
+    }));
+  }
+  try {
+    const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
+    return targets
+      .map((item) => {
+        const match = /^(.*)#(\d+)$/.exec(item.ref);
+        if (!match) return null;
+        return {
+          ref: item.ref,
+          state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+          provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  } catch {
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: "unavailable",
+      provenance: {
+        source: "ready-for-agent",
+        observedAt,
+        repository: item.ref.split("#")[0],
+        error: "harness read failed",
+      },
+    }));
+  }
+}
+
+/** #1220: the coverage snapshot behind the /projects panel — computed
+ * from the feed's items + the Project pool, rotated weekly by
+ * nextCoverageSnapshot, persisted only when it actually changes. */
+async function coverageSnapshot(
+  census: RepoCensus[] | null,
+  pool: ProjectPoolItem[],
+  poolAvailable: boolean,
+): Promise<CoverageSnapshotFile> {
+  const stored = await coverageStore.read();
+  const next = nextCoverageSnapshot(stored, computeCoverage(census, poolAvailable ? pool : null));
+  const strip = (s: CoverageSnapshotFile | null): string =>
+    s
+      ? JSON.stringify({
+          baseline: s.baseline,
+          weekly: s.weekly ?? null,
+          anchorAt: s.anchorAt ?? "",
+          current: { ...s.current, generatedAt: "" },
+        })
+      : "";
+  if (strip(next) !== strip(stored)) {
+    await coverageStore.write(next).catch(() => {});
+  }
+  return next;
+}
+// #6815: the four formerly laptop-local stores (actions, activity
+// ingestion, usage snapshots, aa-last-good) live in Turso when
+// PM_AGG_STORE_BACKEND=turso. Exactly one backend is active: with
+// "file" (the default) no remote exists and no database call is made.
+const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoStoreClient) : null;
+const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
+// #1744 (Move 1, step 2): dashboard comments join the same switch —
+// canonical in public.shared_comments under the turso backend.
+const commentsStore = new CommentsStore(cfg.commentsFile, undefined, storeRemotes?.comments);
+const viewsStore = new ViewsStore(cfg.viewsFile);
+const eventsStore = new EventsStore(cfg.eventsFile);
+const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
+const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
+const breakGlassTokenStore = new BreakGlassTokenStore(cfg.breakGlassFile);
+const outageQueueStore = new OutageQueueStore(cfg.outageQueueFile);
+
+/**
+ * #9608 (design #1253 section 6): the outage-queueing gate for action
+ * writes whose Access verification failed. Queueing engages only on
+ * the enforcer's 401 (verification failed — a 403 is a verified
+ * identity contradicting the claim, not an outage), only from a
+ * stack-local peer address, and only for eligible writes; anything
+ * else returns null and the caller serves the enforcer's refusal
+ * exactly as before. Throws when the queue/audit write itself fails —
+ * callers map that to a 500 (fail closed: nothing was queued).
+ */
+async function tryQueueOutageAction(
+  action: NewAction,
+  accessStatus: number,
+  remoteAddress: string | undefined,
+): Promise<{ record: OutageQueuedWrite; created: boolean } | null> {
+  if (accessStatus !== 401) return null;
+  if (!isStackLocalAddress(remoteAddress)) return null;
+  if (!outageQueueEligible(action)) return null;
+  return queueOutageWrite({ store: outageQueueStore, events: eventsStore, action });
+}
+const freshnessStore = new FreshnessStore(cfg.freshnessFile);
+
+/** #3976: the 5-minute anti-entropy reconciler over the freshness
+ *  journal. Its one wired canonical reader is the fleet feed — the
+ *  aggregator's own canonical source, fingerprinted exactly as the
+ *  collector's notice identity (generatedAt + sha256 of the file).
+ *  Its health view feeds /health + /api/health via healthContext. */
+const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
+const activityStore = new IngestionStore(cfg.activityFile, storeRemotes?.activity);
+const githubHotListConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubHotListConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: activityStore,
+        events: eventsStore,
+      })
+    : null;
+
+/** #10910: the outcome consumer rides the same sweep as the hot-list
+ *  consumer, under its own projector checkpoint: it projects each fixed
+ *  high-water into the append-only outcome-fact ledger, joining events
+ *  to jobs/sessions/models only through the binding records. */
+const githubOutcomeConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubOutcomeConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: new OutcomeFactStore(cfg.outcomeFile),
+        bindings: new FileOutcomeBindingSource(cfg.outcomeBindingsFile),
+      })
+    : null;
+
+async function githubActivityStatus(): Promise<ActivitySourceStatus> {
+  return (
+    (await activityStore.sourceStatuses()).find((status) => status.source === "github") ?? unconfiguredGithubStatus()
+  );
+}
+
+function activitySourceStatusHtml(status: ActivitySourceStatus): string {
+  const cursorDistance =
+    status.checkpointCursor !== null && status.highWater !== null
+      ? Math.max(0, status.highWater - status.checkpointCursor)
+      : null;
+  const cursorText = status.cursor === null ? "not checkpointed" : String(status.cursor);
+  const checkpointText = status.checkpointCursor === null ? "not checkpointed" : String(status.checkpointCursor);
+  const highWaterText = status.highWater === null ? "unknown" : String(status.highWater);
+  const lagText = cursorDistance === null ? "unknown" : String(cursorDistance);
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const error = status.error ? `; detail: ${escapeHtml(status.error)}` : "";
+  return (
+    `<p>GitHub hot-list consumer: <strong>${status.state}</strong>; processed cursor ${cursorText}; ` +
+    `acknowledged cursor ${checkpointText}; high-water ${highWaterText}; unacknowledged cursor distance ${lagText}; ` +
+    `last successful sweep ${escapeHtml(status.lastSuccessAt ?? "never")}${error}. ` +
+    `Current means caught up to the hot-list high-water, not complete GitHub history.</p>`
+  );
+}
+
+/** #1739: the event log's fire-and-forget sink for source-side
+ *  writers (orchestration publishes, registry merges). Never awaited,
+ *  never throws: a failed event write loses the event, nothing else. */
+function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
+  void emitEvent(eventsStore, event);
+}
+
+/** #3321: the activity-ingestion sink for the source-side writers
+ *  (watchdog episodes, Kaneo board changes, GitHub hot-list rows). Dedupe + checkpoints
+ *  live in the store. The returned promise resolves true only when
+ *  every delivery is durable (ingested or already seen): the live
+ *  source awaits it as the acknowledgment that lets it discard its
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
+  const result = await ingestActivity(activityStore, eventsStore, deliveries);
+  return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3977: source freshness notices are not #1739 activity records.
+ *  This store is owned by the aggregator process; the projector and
+ *  collector reach it only through the loopback publisher listener. */
+async function recordFreshness(input: FreshnessInput): Promise<void> {
+  await freshnessStore.publish(input);
+}
+
+/** #3321: the source-gap sink for the live source's polling gaps
+ *  (Codex P2, PR #5141): a non-null `to` records (or extends) the
+ *  open gap for the source; a null `to` is recovery — the open gap
+ *  resolves as backfilled, since polling has resumed and the next
+ *  diff lands against the preserved baseline. Never throws into the
+ *  source's read path. */
+async function recordSourceGap(source: string, from: string, to: string | null): Promise<void> {
+  try {
+    if (to !== null) {
+      await activityStore.recordGap(source, from, to);
+      return;
+    }
+    for (const gap of await activityStore.gaps()) {
+      if (gap.source === source && gap.status === "open") {
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[activity] WARNING: source gap record failed for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** #3321: pins watchdog episodes to their first-observed `since`
+ *  (Codex P2, PR #5141) — watchdogTierItems assigns `now` for
+ *  several breach kinds, so without this the stream would gain a
+ *  new "episode" on every attention render of one outage. */
+const watchdogEpisodes = new WatchdogEpisodeStabilizer();
+async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
+  return eventsStore.has(kind, ref);
+}
+
+function pickSource(): Source {
+  // #1290: the live source reads the standing delegation default from
+  // the actions store's preference records when it stamps the
+  // needs-user fallbacks onto tier items.
+  return cfg.source === "live"
+    ? liveSource(cfg, {
+        standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+        onEvent: recordStreamEvent,
+        hasEvent: hasStreamEvent,
+        onActivity: recordActivity,
+        onFreshness: recordFreshness,
+        onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
+        snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
+      })
+    : fixtureSource();
+}
+
+const source = pickSource();
+
+/** Lazy quota refresh (#1171): stale page/API loads ask the deployed
+ *  gatherer unit to run again; single-flight + cooldown live in the module. */
+const quotaRefresher = createQuotaRefresher({ trigger: systemdTrigger() });
+
+// #1279: prefer the latest-comment-per-ref read so a busy batch cannot
+// truncate an item's most recent activity out of its brief.
+const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
+  (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
+
+/**
+ * #1267: the live source populates its provenance strings lazily, one
+ * facet per method call — so a consumer that reads provenance()
+ * without exercising the facets (exactly what /api/health did)
+ * reports "fixtures" for facets that are really live, and its answer
+ * depends on which pages were visited since boot. Health therefore
+ * exercises every facet method before reading provenance. Priming is
+ * cached for 60 s (the #1147 probe-cache cadence): facet reads are
+ * mostly cache- or file-backed, and a watchdog polling health must
+ * not fan out to every upstream on every hit. Facet failures never
+ * fail health — a failed facet keeps its honest fallback string,
+ * which is precisely what health exists to report.
+ */
+let lastPrimedAt = 0;
+/** #1141: item coverage measured by the latest priming pass (below),
+ *  from the same board items() resolution that sets facet provenance. */
+let lastItemsCoverage: ItemsCoverage | null = null;
+let priming: Promise<void> | null = null;
+async function ensureProvenancePrimed(): Promise<void> {
+  if (Date.now() - lastPrimedAt < 60_000) return;
+  priming ??= (async () => {
+    try {
+      const { items } = await boardContext();
+      lastItemsCoverage = summarizeItemCoverage(items);
+      const refs = [...items.keys()];
+      await Promise.allSettled([
+        source.roadmap(),
+        source.comments(refs),
+        source.quota(),
+        source.usage(),
+        source.attention(),
+        source.orchestration(),
+        source.dns(),
+        source.aa(),
+        source.registry(),
+        source.projects(),
+      ]);
+    } catch {
+      /* facets that failed keep their fallback strings — health reports those */
+    }
+    lastPrimedAt = Date.now();
+    priming = null;
+  })();
+  await priming;
+}
+
+/**
+ * The source-conflict inbox (#1282 slice 1), assembled from the same facets
+ * the rest of the dashboard reads. Read-only: detection collects what the
+ * facets already report, and no render changes because of it.
+ */
+async function assembleConflicts(): Promise<ConflictInbox> {
+  const [pool, orchestration, usage] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.usage().catch(() => emptyUsageView()),
+  ]);
+  return conflictInbox({ pool, orchestration, services: usage.services });
+}
+
+/**
+ * The one health assembly behind both /health and /api/health
+ * (#1147): primed provenance first (so facet truth never depends on
+ * request order, #1267), then the feed snapshot the section ages and
+ * job lines are measured from, then buildHealth's probes (cached
+ * 60 s inside health.ts). Page and API read this same view, so they
+ * cannot disagree.
+ */
+async function healthContext(prime = true): Promise<HealthView> {
+  // Priming exercises every facet so /health provenance never depends
+  // on request order. Callers that only need the feed snapshot and the
+  // cached probes (the attention path's watchdog assembly, #1148) pass
+  // prime=false: a stalled unrelated facet (e.g. Grist's roadmap API
+  // and its 8s timeout) must not delay attention rendering (Codex P2
+  // on PR #2431). The registry age the watchdog reads comes from the
+  // live source's lastFeed, which attention's own reads already load.
+  if (prime) await ensureProvenancePrimed();
+  const [feed, feedFileMtimeMs, quota] = await Promise.all([
+    loadFeed(cfg.feedFile).catch(() => null),
+    stat(cfg.feedFile)
+      .then((s) => s.mtimeMs)
+      .catch(() => null),
+    source.quota().catch(() => emptyQuotaView()),
+  ]);
+  return buildHealth({
+    mode: cfg.source,
+    cfg,
+    feed,
+    feedFileMtimeMs,
+    quota,
+    diagnosis: source.diagnostics?.().orchestration,
+    detail: source.provenanceDetail?.(),
+    itemsCoverage: lastItemsCoverage,
+    comments: await commentsStore.pendingCounts().catch(() => undefined),
+    conflicts: await assembleConflicts().catch(() => null),
+    pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
+    slo: cfg.source === "fixtures" ? null : await sloSummaries(),
+  });
+}
+
+// SLO error budgets (#9988): summaries are read from the append-only journal
+// and cached for a minute, the same cadence the sampler writes at.
+const SLO_SUMMARY_CACHE_MS = 60_000;
+async function sloSummaries(nowMs = Date.now()): Promise<SloFacetSummary[]> {
+  if (sloSummaryCache && nowMs - sloSummaryCache.at < SLO_SUMMARY_CACHE_MS) return sloSummaryCache.value;
+  const byFacet = groupSamplesByFacet(await sloJournal.readAll().catch(() => []));
+  const value = SLO_DEFINITIONS.map((definition) =>
+    summarizeSloFacet(definition, byFacet.get(definition.id) ?? [], nowMs),
+  );
+  sloSummaryCache = { at: nowMs, value };
+  return value;
+}
+
+/** The identities half of the comment form options, behind a
+ *  stale-while-revalidate cache (#5082, 2026-11-14). commentFormOpts
+ *  is awaited on the request path of /program, /api/program.json and
+ *  /board, and the registry read behind the identities merges the
+ *  feed with a live map of the laptop OpenCode server — ~0.5 s when
+ *  that server is healthy, but 6-10.5 s per call when it stalls under
+ *  load (mapServerSessions' sequential fetches burn their 10 s
+ *  aborts; a failed map was not cached, so every assembly paid the
+ *  stall again). Pool-quota-steward run 381 measured the result:
+ *  /program and /api/program.json 503 at ~10.5 s, /board 200 at
+ *  10.5 s, everything else fast. Identities are comment-form picker
+ *  metadata — they change when sessions start or end, on a minutes
+ *  timescale — so they take the same contract as the page
+ *  assemblies: the first load is awaited (and warmed at boot,
+ *  below); an expired entry serves stale behind a single-flight
+ *  background refresh, so no request ever waits on the registry
+ *  merge again. The per-request githubRefs half is never cached. */
+const commentIdentitiesCache = new TodayCache<AuthorIdentity[]>(TODAY_CACHE_TTL_MS);
+async function commentIdentities(): Promise<AuthorIdentity[]> {
+  return commentIdentitiesCache.get(async () => {
+    const records = await source.registry().catch(() => []);
+    return identitiesFromRecords(records);
+  });
+}
+
+/** Author identities for the comment form: standing + registry sessions. */
+async function commentFormOpts(githubRefs: RefKey[] = []): Promise<CommentFormOpts> {
+  return { githubRefs, identities: await commentIdentities() };
+}
+
+/** Resolve a discuss-page title for any object ref, best-effort. */
+async function discussTitle(objectRef: string): Promise<{ title: string; githubRefs: RefKey[] }> {
+  if (objectRef.startsWith("gh:")) {
+    const ref = objectRef.slice(3);
+    const items = await source.items([ref]).catch(() => new Map());
+    return { title: items.get(ref)?.title ?? `Comments — ${ref}`, githubRefs: [ref] };
+  }
+  if (objectRef.startsWith("session:")) {
+    const id = objectRef.slice("session:".length);
+    const records = await source.registry().catch(() => []);
+    const rec = records.find((r) => r.id === id);
+    return { title: `Comments — ${rec?.label ?? id}`, githubRefs: rec?.taskRefs ?? [] };
+  }
+  if (objectRef.startsWith("orch:")) {
+    const id = objectRef.slice("orch:".length);
+    const section = await source.orchestration().catch(() => null);
+    const item = [...(section?.tiers.needsDrew ?? []), ...(section?.tiers.needsOrchestrator ?? [])].find(
+      (i) => i.id === id,
+    );
+    return {
+      title: `Comments — ${item?.title ?? id}`,
+      githubRefs: item?.ref ? [item.ref] : [],
+    };
+  }
+  const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
+  const item = board.find((b) => b.id === objectRef);
+  if (item) return { title: `Comments — ${item.title}`, githubRefs: item.links.map((l) => l.ref) };
+  const row = rows.find((r) => r.subject === objectRef);
+  if (row) return { title: `Comments — ${row.title}`, githubRefs: row.links.map((l) => l.ref) };
+  return { title: `Comments — ${objectRef}`, githubRefs: [] };
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+// The real service worker (#3676 — design 2026-11-01T03-54-00Z §6
+// step 2): push + notificationclick handlers, with the kill switch's
+// eviction job carried forward per the §6 fallback (cache purge on
+// activate in the worker; foreign-registration unregister in the
+// page-side probe script). Worker source + history: src/sw-source.ts.
+function serviceWorkerResponse(): Response {
+  return new Response(SW_SOURCE, {
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
+// --- Alert throat (#3676) -------------------------------------------------
+
+/** Bearer check for POST /api/alerts: the intake token is resolved
+ * by name from Bitwarden (pm-aggregator.alerts-intake-token) and
+ * compared in constant time; its value is never logged. */
+async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
+  const header = req.headers.get("authorization") ?? "";
+  const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+  if (!presented) return false;
+  const expected = await resolveBwsSecret("pm-aggregator.alerts-intake-token");
+  if (!expected) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// --- Needs-Drew questions (#8568) ------------------------------------------
+
+/** The token-carrying answer-page URL for a raised question. */
+function needsDrewAnswerUrl(item: NeedsDrewQuestion): string {
+  return `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+}
+
+const ANSWER_PAGE_STYLE = `<style>
+  body { font-family: system-ui, sans-serif; background: #0e1117; color: #e6edf3; margin: 0; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.35; }
+  .context { color: #9da7b1; white-space: pre-wrap; }
+  .links a { color: #58a6ff; display: block; margin: 0.35rem 0; overflow-wrap: anywhere; }
+  .options { display: grid; gap: 0.6rem; margin: 1.2rem 0; }
+  button.option { text-align: left; padding: 0.8rem 1rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; }
+  button.option:hover { border-color: #58a6ff; }
+  textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; padding: 0.6rem; }
+  button.submit { margin-top: 0.6rem; padding: 0.7rem 1.2rem; font-size: 1rem; border-radius: 0.5rem;
+    border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+  .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
+</style>`;
+
+/** Render GET /answer/<ledgerId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the question. */
+function renderAnswerPage(item: NeedsDrewQuestion): string {
+  const links = item.links
+    .filter((l) => /^https?:\/\//.test(l))
+    .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+    .join("");
+  if (item.answer) {
+    const chosen = item.answer.optionId
+      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      : null;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+<div class="confirm"><p>Answered${chosen ? `: <strong>${esc(chosen)}</strong>` : ""}.</p>
+${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
+<p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
+</main></body></html>`;
+  }
+  const buttons = item.options
+    .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs Drew — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>${esc(item.question)}</h1>
+${item.context ? `<p class="context">${esc(item.context)}</p>` : ""}
+${links ? `<div class="links">${links}</div>` : ""}
+<div class="options">${buttons}</div>
+<label>Or answer in your own words (optional, sent with a tapped option or on its own):
+<textarea id="freeText" placeholder="Free-text answer"></textarea></label>
+<button class="submit" type="button" id="sendText">Send free-text answer</button>
+<p id="status" class="context"></p>
+<script>
+const token = ${JSON.stringify(item.token)};
+const endpoint = ${JSON.stringify(`/api/needs-drew/${encodeURIComponent(item.ledgerId)}/answer`)};
+async function answer(payload) {
+  const status = document.getElementById('status');
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, ...payload }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    status.textContent = 'Answer recorded — thank you. The fleet worker has been unblocked.';
+    document.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  } catch { status.textContent = 'Sending failed — please try again.'; }
+}
+document.querySelectorAll('button.option').forEach((b) => {
+  b.addEventListener('click', () => {
+    const freeText = document.getElementById('freeText').value.trim();
+    answer({ optionId: b.dataset.option, ...(freeText ? { freeText } : {}) });
+  });
+});
+document.getElementById('sendText').addEventListener('click', () => {
+  const freeText = document.getElementById('freeText').value.trim();
+  if (!freeText) { document.getElementById('status').textContent = 'Write an answer first, or tap an option above.'; return; }
+  answer({ freeText });
+});
+</script>
+</main></body></html>`;
+}
+
+function renderAnswerForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Answer link not available</h1>
+<p class="context">This answer link is unknown or its token does not match. Nothing about the question is shown without the correct link.</p>
+</main></body></html>`;
+}
+
+// --- Decision sets (#8766) -------------------------------------------------
+
+/** The token-carrying decisions-page URL for a raised set. */
+function decisionsPageUrl(set: DecisionSet): string {
+  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+}
+
+/**
+ * The live Questions section for Today / Needs-you (#9354): reads the
+ * decision-set store at request time, keeps sets with open questions,
+ * newest first. A store read failure renders the honest unavailable
+ * section (questionsSectionHtml(null, ...)), never a confident zero.
+ * (listDecisionSets itself reads an absent/corrupt store as empty,
+ * following the store's existing contract.)
+ */
+async function questionsHtml(): Promise<string> {
+  try {
+    const sets = await listDecisionSets(cfg.decisionsFile);
+    const byId = new Map(sets.map((s) => [s.setId, s]));
+    const summaries = sets
+      .map((s) => decisionSetSummary(s))
+      .filter((s) => s.openQuestions > 0)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return questionsSectionHtml(summaries, (s) => {
+      const set = byId.get(s.setId);
+      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+    });
+  } catch {
+    return questionsSectionHtml(null, () => "/decisions");
+  }
+}
+
+/** Append decision-set events (#9335 v2): best-effort — an event-log
+ * failure is logged and never fails the interaction it records. */
+async function logDecisionEvents(inputs: DecisionEventInput[]): Promise<void> {
+  if (!inputs.length) return;
+  try {
+    await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs);
+  } catch (err) {
+    console.error(`decision events: append failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
+function questionRefFor(
+  set: DecisionSet,
+  ledgerId: string,
+  qid: string,
+): { ledgerId: string; qid: string; questionIndex?: number } {
+  const item = set.items.find((i) => i.ledgerId === ledgerId);
+  const idx = item ? item.questions.findIndex((q) => q.qid === qid) : -1;
+  return { ledgerId, qid, ...(idx >= 0 ? { questionIndex: idx + 1 } : {}) };
+}
+
+function eventTypeForKind(kind: DecisionSubmission["kind"]): "submit" | "defer" | "request-info" {
+  return kind === "answered" ? "submit" : kind === "deferred" ? "defer" : "request-info";
+}
+
+function submissionEventPayload(sub: DecisionSubmission): Record<string, unknown> {
+  return {
+    kind: sub.kind,
+    ...(sub.optionId ? { optionId: sub.optionId } : {}),
+    ...(sub.optionIds ? { optionIds: sub.optionIds } : {}),
+    ...(sub.freeText ? { freeText: sub.freeText.slice(0, 2000) } : {}),
+    ...(sub.customAnswer ? { customAnswer: sub.customAnswer.slice(0, 2000) } : {}),
+    ...(sub.lean ? { lean: sub.lean } : {}),
+    ...(sub.note ? { note: sub.note.slice(0, 2000) } : {}),
+    ...(sub.comment ? { comment: sub.comment.slice(0, 2000) } : {}),
+  };
+}
+
+/** Parse a decisions submissions array — shared by /submit and by
+ * /defer's filled-answers-win payload (#8766). */
+function parseDecisionSubmissions(
+  raw: unknown,
+): { ok: true; value: DecisionSubmission[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 256) {
+    return { ok: false, error: "submissions must be an array of 1-256 entries" };
+  }
+  const submissions: DecisionSubmission[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: "submissions entries must be objects" };
+    }
+    const s = entry as Record<string, unknown>;
+    const ledgerId = typeof s.ledgerId === "string" ? s.ledgerId : "";
+    const qid = typeof s.qid === "string" ? s.qid : "";
+    const kind = s.kind;
+    if (!ledgerId || !qid || (kind !== "answered" && kind !== "deferred" && kind !== "request-info")) {
+      return { ok: false, error: "submissions entries require ledgerId, qid and kind answered|deferred|request-info" };
+    }
+    if (kind === "deferred" && !isDeferLean(s.lean)) {
+      return { ok: false, error: "deferred submissions require a lean of none|skeptical|approve" };
+    }
+    submissions.push({
+      ledgerId,
+      qid,
+      kind,
+      ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(Array.isArray(s.optionIds)
+        ? { optionIds: s.optionIds.filter((x): x is string => typeof x === "string") }
+        : {}),
+      ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(typeof s.customAnswer === "string" ? { customAnswer: s.customAnswer } : {}),
+      ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
+      ...(typeof s.note === "string" ? { note: s.note } : {}),
+      ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
+    });
+  }
+  return { ok: true, value: submissions };
+}
+
+const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
+  .group { color: #9da7b1; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; margin: 1.6rem 0 0.4rem; }
+  .item { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 0.8rem 0; background: #11161d; }
+  .item h2 { font-size: 1.1rem; margin: 0 0 0.3rem; line-height: 1.35; }
+  .q { border-top: 1px solid #21262d; padding: 0.8rem 0 0.2rem; margin-top: 0.8rem; }
+  .q p.qq { font-weight: 600; margin: 0 0 0.3rem; }
+  .opt { display: block; padding: 0.45rem 0; cursor: pointer; }
+  .opt input { margin-right: 0.5rem; }
+  select.defer { width: 100%; box-sizing: border-box; margin-top: 0.5rem; padding: 0.55rem; background: #161b22; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 0.5rem; }
+  .done { color: #3fb950; font-size: 0.92rem; padding: 0.35rem 0; }
+  .bar { border: 1px solid #30363d; border-radius: 0.6rem; padding: 1rem; margin: 1.2rem 0; background: #11161d; }
+  .bar button { margin: 0.3rem 0.4rem 0.3rem 0; }
+  button.sendback { background: #6e3feb; }
+  .provided { border: 1px solid #1f6feb; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1b2e; }
+  .provided .ph { color: #58a6ff; font-weight: 600; margin: 0 0 0.3rem; }
+  .provided p { margin: 0; white-space: pre-wrap; }
+  button.reqinfo { background: #8250df; margin-top: 0.4rem; }
+  .bulkchk { font-size: 0.92rem; color: #9da7b1; }
+  #status { min-height: 1.2em; }
+  .chip { display: inline-block; border: 1px solid #30363d; border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.78rem; color: #9da7b1; margin: 0 0.25rem 0.25rem 0; }
+  .chip.reco { border-color: #238636; color: #3fb950; }
+  .desc { border: 1px solid #21262d; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1117; white-space: pre-wrap; color: #c9d1d9; }
+  .combo { color: #9da7b1; font-size: 0.85rem; }
+  .reco-note { color: #3fb950; font-size: 0.9rem; }
+  label.own { display: block; margin-top: 0.6rem; color: #9da7b1; font-size: 0.92rem; }
+  button.defaults { background: #238636; }
+  .submitted-bar { margin: 0.6rem 0; color: #9da7b1; font-size: 0.95rem; }
+  section.item.submitted { display: none; }
+  body.show-submitted section.item.submitted { display: block; opacity: 0.85; }
+  .group.submitted-group { display: none; }
+  body.show-submitted .group.submitted-group { display: block; }
+  button.submit.top { margin: 0.2rem 0 0.4rem; }
+</style>`;
+
+/** Render GET /decisions/<setId>. The caller has already verified the
+ * token; the 403 shape renders nothing about the set. Only open
+ * questions are interactive; resolved ones show as a compact recorded
+ * line. An item whose questions are all resolved renders as a
+ * submitted card, hidden by default (Drew, 2026-11-13): the page's
+ * "Show submitted items" toggle brings it back for review, since the
+ * page has no undo. */
+function renderDecisionsPage(set: DecisionSet): string {
+  const progress = decisionSetProgress(set);
+  const groups: string[] = [];
+  for (const item of set.items) if (!groups.includes(item.group)) groups.push(item.group);
+  const itemCard = (item: DecisionItem): string => {
+    const open = item.questions.filter((q) => !q.resolution);
+    const links = item.links
+      .filter((l) => /^https?:\/\//.test(l))
+      .map((l) => `<a href="${esc(l)}" rel="noreferrer">${esc(l)}</a>`)
+      .join("");
+    const resolvedLines = item.questions
+      .filter((q) => q.resolution)
+      .map((q) => {
+        const r = q.resolution!;
+        const what =
+          r.kind === "deferred"
+            ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
+            : r.kind === "request-info"
+              ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
+              : `answered${
+                  r.optionLabels && r.optionLabels.length > 1
+                    ? `: ${esc(r.optionLabels.join(" + "))}`
+                    : r.optionLabel
+                      ? `: ${esc(r.optionLabel)}`
+                      : r.freeText
+                        ? `: ${esc(r.freeText)}`
+                        : ""
+                }${r.customAnswer ? ` — own answer: ${esc(r.customAnswer)}` : ""}`;
+        return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
+      })
+      .join("");
+    if (open.length === 0) {
+      return `<section class="item submitted" data-ledger="${esc(item.ledgerId)}" data-submitted="1">
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+<div class="done">✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.</div>
+</section>`;
+    }
+    const sortedOpen = open
+      .map((q, i) => ({ q, i }))
+      .sort((a, b) => (a.q.order ?? a.i) - (b.q.order ?? b.i))
+      .map((x) => x.q);
+    const questionBlocks = sortedOpen
+      .map((q) => {
+        const mode = effectiveQuestionMode(q);
+        const recommended = q.recommendedOptionIds ?? [];
+        const chips = (tags?: string[]): string =>
+          (tags ?? []).map((t) => `<span class="chip">${esc(t)}</span>`).join("");
+        const inputs = q.options
+          .map((o) => {
+            const combo =
+              o.combinationOf && o.combinationOf.length
+                ? ` <span class="combo">combines ${o.combinationOf
+                    .map((cid) => esc(q.options.find((x) => x.id === cid)?.label ?? cid))
+                    .join(" + ")}</span>`
+                : "";
+            const isReco = recommended.includes(o.id);
+            return `<label class="opt"><input class="optin" type="${mode === "multi" ? "checkbox" : "radio"}" name="opt-${esc(q.qid)}" value="${esc(o.id)}"${isReco ? ` checked data-recommended="1"` : ""}>${esc(o.label)}${isReco ? ` <span class="chip reco">recommended</span>` : ""}${chips(o.tags)}${combo}</label>`;
+          })
+          .join("");
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}" data-mode="${mode}" data-recommended="${esc(JSON.stringify(recommended))}">
+<p class="qq">${esc(q.question)}${chips(q.tags)}</p>
+${q.description ? `<div class="desc">${esc(q.description)}</div>` : ""}
+${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
+${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
+${recommended.length ? `<p class="reco-note">Recommended default preselected — it is not recorded until you submit.</p>` : ""}
+${inputs}
+<label class="own">My own answer<textarea class="ft" placeholder="My own answer — or a comment (sent back with any action on this question)"></textarea></label>
+<select class="defer">
+<option value="">I'll answer this one</option>
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<textarea class="infonote" placeholder="Need more information first? Say what's missing (optional)"></textarea>
+<button class="reqinfo" type="button" data-reqinfo>Request more information</button>
+</div>`;
+      })
+      .join("");
+    const submitBtn = (cls: string): string =>
+      `<button class="${cls}" type="button" data-submit-item="${esc(item.ledgerId)}">Submit this item</button>`;
+    return `<section class="item" data-ledger="${esc(item.ledgerId)}">
+<label class="bulkchk"><input type="checkbox" class="bulk"> select this item for a bulk action below (defer or request info)</label>
+<h2>${esc(item.title)}</h2>
+${links ? `<div class="links">${links}</div>` : ""}
+${resolvedLines}
+${open.length > 1 ? submitBtn("submit top") : ""}
+${questionBlocks}
+${submitBtn("submit")}
+</section>`;
+  };
+  const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
+  const submittedCount = set.items.filter(isSubmittedItem).length;
+  const body = groups
+    .map((g) => {
+      const groupItems = set.items
+        .filter((i) => i.group === g)
+        .map((item, i) => ({ item, i }))
+        .sort((a, b) => (a.item.order ?? a.i) - (b.item.order ?? b.i))
+        .map((x) => x.item);
+      const cards = groupItems.map(itemCard).join("");
+      const allSubmitted = groupItems.length > 0 && groupItems.every(isSubmittedItem);
+      return cards ? `<div class="group${allSubmitted ? " submitted-group" : ""}">${esc(g)}</div>${cards}` : "";
+    })
+    .join("");
+  const caughtUp = progress.openQuestions === 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decisions — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>${esc(set.title)}</h1>
+<p class="context">${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open across ${progress.openItems} item${progress.openItems === 1 ? "" : "s"} · ${progress.answered} answered · ${progress.deferred} deferred · ${progress.infoRequested} sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.</p>
+${caughtUp ? `<div class="confirm"><p>All caught up — every question in this set has been answered or sent back. Nothing left on this page.</p></div>` : ""}
+<div class="submitted-bar" id="submittedBar"${submittedCount === 0 ? " hidden" : ""}><label><input type="checkbox" id="showSubmitted"> Show submitted items (<span id="submittedCount">${submittedCount}</span>)</label></div>
+${body}
+<div class="bar">
+<p class="context">Bulk actions</p>
+<button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<button class="submit defaults" type="button" id="submitDefaults">Submit defaults</button>
+<p class="context">Submit defaults records the raiser's recommended preselection for every open question that has one (plus any "my own answer" text you typed on those questions). Preselected defaults are shown selected, but they are NOT an answer until you submit them.</p>
+<p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
+<select class="defer" id="bulkLean">
+<option value="none">Defer</option>
+<option value="skeptical">Defer — leaning no</option>
+<option value="approve">Defer — leaning yes</option>
+</select>
+<button class="submit sendback" type="button" id="deferChecked">Defer checked to orchestrator</button>
+<button class="submit sendback" type="button" id="deferAll">Defer ALL remaining</button>
+<p class="context">Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:</p>
+<textarea class="infonote" id="bulkInfoNote" placeholder="Comment for the bulk actions — rides back with the checked items (for request-info: say what's missing)"></textarea>
+<button class="submit reqinfo" type="button" id="reqinfoChecked">Request more info for checked items</button>
+</div>
+<p id="status" class="context"></p>
+<script>
+var TOKEN = ${JSON.stringify(set.token)};
+var SET_ID = ${JSON.stringify(set.setId)};
+function status(msg) { document.getElementById('status').textContent = msg; }
+function pickedValues(block) {
+  var vals = [];
+  block.querySelectorAll('input.optin:checked').forEach(function (i) { vals.push(i.value); });
+  return vals;
+}
+function applySelection(sub, block, vals) {
+  if (!vals.length) return;
+  if (block.getAttribute('data-mode') === 'multi') sub.optionIds = vals;
+  else sub.optionId = vals[0];
+}
+function collect(scopeLedger) {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeLedger && ledger !== scopeLedger) return;
+    var qid = block.getAttribute('data-qid');
+    var lean = block.querySelector('select.defer').value;
+    if (lean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
+      applySelection(dsub, block, pickedValues(block));
+      var dtext = block.querySelector('textarea.ft').value.trim();
+      if (dtext) dsub.comment = dtext;
+      subs.push(dsub); return;
+    }
+    var vals = pickedValues(block);
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (vals.length || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
+      subs.push(sub);
+    }
+  });
+  return subs;
+}
+function applyOpenState(state) {
+  var openByItem = {};
+  state.items.forEach(function (i) { openByItem[i.ledgerId] = i.openQids; });
+  document.querySelectorAll('.q').forEach(function (block) {
+    var open = openByItem[block.getAttribute('data-ledger')] || [];
+    if (open.indexOf(block.getAttribute('data-qid')) === -1) block.remove();
+  });
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.classList.contains('submitted')) return;
+    if (!card.querySelector('.q')) {
+      card.classList.add('submitted');
+      card.setAttribute('data-submitted', '1');
+      card.querySelectorAll('button.submit').forEach(function (el) { el.remove(); });
+      var bulk = card.querySelector('.bulkchk');
+      if (bulk) bulk.remove();
+      var note = document.createElement('div');
+      note.className = 'done';
+      note.textContent = '✓ Submitted — hidden by default. Tick "Show submitted items" at the top of the page to review it.';
+      card.appendChild(note);
+    }
+  });
+  refreshSubmitted();
+  if (!document.querySelector('section.item:not(.submitted)')) {
+    status('All caught up — every question in this set is recorded. You can close this page.');
+  }
+}
+async function post(path, payload) {
+  var res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, payload)) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+async function submit(scopeLedger) {
+  var subs = collect(scopeLedger);
+  if (subs.length === 0) { status('Nothing filled in yet — pick an option, write an answer, or choose a defer.'); return; }
+  status('Sending…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function sendBack(all) {
+  // The flavor picked here is only the DEFAULT for questions nobody
+  // touched: the gather below sends each question's own defer setting
+  // and each filled answer as submissions, the server records those
+  // first, and this payload lean reaches only what is still open.
+  var lean = document.getElementById('bulkLean').value;
+  var payload;
+  var scopeIds = null;
+  if (all) { payload = { lean: lean, allRemaining: true }; }
+  else {
+    var ids = [];
+    document.querySelectorAll('section.item').forEach(function (card) {
+      if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+    });
+    if (ids.length === 0) { status('Check at least one item first, or use ALL remaining.'); return; }
+    payload = { lean: lean, ledgerIds: ids };
+    scopeIds = ids;
+  }
+  // Filled answers win over the bulk defer: everything already filled
+  // in inside the scope rides along as submissions — the server records
+  // them first (answers stay rulings, per-question defers keep their
+  // own lean and comment) and defers only what is still unanswered.
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var ledger = block.getAttribute('data-ledger');
+    if (scopeIds && scopeIds.indexOf(ledger) === -1) return;
+    var qid = block.getAttribute('data-qid');
+    var qlean = block.querySelector('select.defer').value;
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (qlean) {
+      var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
+      applySelection(dsub, block, pickedValues(block));
+      if (text) dsub.comment = text;
+      subs.push(dsub); return;
+    }
+    var vals = pickedValues(block);
+    if (vals.length || text) {
+      var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
+      subs.push(sub);
+    }
+  });
+  if (subs.length) payload.submissions = subs;
+  var bulkComment = document.getElementById('bulkInfoNote').value.trim();
+  if (bulkComment) payload.comment = bulkComment;
+  status('Sending back…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/defer', payload);
+    applyOpenState(out);
+    var recorded = (out.outcomes || []).filter(function (o) { return o.applied; }).length;
+    var msg = 'Deferred ' + out.deferredCount + ' question(s) to the orchestrator';
+    if (recorded) msg = 'Recorded ' + recorded + ' filled-in answer(s) first; deferred the rest — ' + out.deferredCount + ' question(s) deferred to the orchestrator';
+    status(msg + ' — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-submit-item]').forEach(function (b) {
+  b.addEventListener('click', function () { submit(b.getAttribute('data-submit-item')); });
+});
+document.getElementById('submitAll').addEventListener('click', function () { submit(null); });
+document.getElementById('deferChecked').addEventListener('click', function () { sendBack(false); });
+document.getElementById('deferAll').addEventListener('click', function () { sendBack(true); });
+async function requestInfoOne(block) {
+  var note = block.querySelector('textarea.infonote').value.trim();
+  var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'request-info' };
+  if (note) sub.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: [sub] });
+    applyOpenState(out);
+    status('Recorded — that question will come back in a later set with the information added. ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+async function requestInfoChecked() {
+  var ids = [];
+  document.querySelectorAll('section.item').forEach(function (card) {
+    if (card.querySelector('input.bulk').checked) ids.push(card.getAttribute('data-ledger'));
+  });
+  if (ids.length === 0) { status('Check at least one item first.'); return; }
+  var note = document.getElementById('bulkInfoNote').value.trim();
+  var payload = { ledgerIds: ids };
+  if (note) payload.note = note;
+  status('Requesting more information…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/request-info', payload);
+    applyOpenState(out);
+    status('Recorded ' + out.requestedCount + ' question(s) to come back with more information — ' + out.remainingOpenQuestions + ' still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
+  b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
+});
+document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+async function submitDefaults() {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var reco = [];
+    try { reco = JSON.parse(block.getAttribute('data-recommended') || '[]'); } catch (e) { reco = []; }
+    if (!reco.length) return;
+    var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'answered' };
+    if (block.getAttribute('data-mode') === 'multi') sub.optionIds = reco; else sub.optionId = reco[0];
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (text) { sub.freeText = text; sub.customAnswer = text; }
+    subs.push(sub);
+  });
+  if (!subs.length) { status('No recommended defaults in this set.'); return; }
+  status('Submitting defaults…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' default(s) — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+var defaultsBtn = document.getElementById('submitDefaults');
+if (defaultsBtn) defaultsBtn.addEventListener('click', submitDefaults);
+// --- Submitted items hide by default (Drew, 2026-11-13): the toggle
+// brings them back for review; the count tracks server-rendered
+// submitted cards and cards submitted during this session alike.
+function refreshSubmitted() {
+  var n = document.querySelectorAll('section.item.submitted').length;
+  var bar = document.getElementById('submittedBar');
+  if (bar) bar.hidden = n === 0;
+  var c = document.getElementById('submittedCount');
+  if (c) c.textContent = String(n);
+}
+var showSubmittedBox = document.getElementById('showSubmitted');
+if (showSubmittedBox) showSubmittedBox.addEventListener('change', function () {
+  document.body.classList.toggle('show-submitted', showSubmittedBox.checked);
+});
+refreshSubmitted();
+// --- Draft event reporting (#9335): typed-but-not-submitted changes are
+// events too. Debounced per question (2.5s of inactivity), never per
+// keystroke; the server drafts push remains the durable state copy.
+var draftEventTimers = {};
+function reportDraftEvent(block) {
+  var qid = block.getAttribute('data-qid');
+  if (!qid) return;
+  if (draftEventTimers[qid]) clearTimeout(draftEventTimers[qid]);
+  draftEventTimers[qid] = setTimeout(function () {
+    var payload = { selected: pickedValues(block) };
+    var ft = block.querySelector('textarea.ft');
+    if (ft && ft.value.trim()) payload.customAnswer = ft.value.trim().slice(0, 2000);
+    var leanEl = block.querySelector('select.defer');
+    if (leanEl && leanEl.value) payload.lean = leanEl.value;
+    var noteEl = block.querySelector('textarea.infonote');
+    if (noteEl && noteEl.value.trim()) payload.note = noteEl.value.trim().slice(0, 2000);
+    try {
+      fetch('/api/decisions/' + encodeURIComponent(SET_ID) + '/events', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: TOKEN, events: [{ type: 'draft', questionRef: { ledgerId: block.getAttribute('data-ledger'), qid: qid }, payload: payload }] }),
+        keepalive: true
+      }).catch(function () {});
+    } catch (e) { /* events are best-effort */ }
+  }, 2500);
+}
+document.addEventListener('input', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
+document.addEventListener('change', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
+${decisionsDraftScript(set.setId)}
+</script>
+</main></body></html>`;
+}
+
+/** Render GET /decisions — the decision-sets index (#8867, aging #14064). Lists every
+ * set in the store with counts live from decisionSetSummary (the same
+ * numbers the set page itself reports), in today / this-week / recent
+ * (last 7 days, rolling — the index default, so the landing view is
+ * the current workload, not the backlog) / all views with an
+ * open-only toggle, newest first. Sets idle past the abandonment
+ * window collapse under an "abandoned" fold on the all view with a
+ * pointer at the bulk-dismiss operator endpoint. Each row links to the
+ * set's own token-carrying page; the index carries no token of its own
+ * and sits behind the same access as every other aggregator page
+ * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
+ * public surface, and the per-set token model is untouched. */
+const CHICAGO_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, openOnly: boolean): string {
+  const inView = decisionSetsForView(allSets, view);
+  const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
+  const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const abandoned = view === "all" ? inView.filter((s) => decisionSetAging(s) === "abandoned") : [];
+  const abandonedIds = abandoned.map((s) => s.setId);
+  const viewTab = (v: DecisionSetView, label: string): string =>
+    v === view
+      ? `<strong>${label}</strong>`
+      : `<a href="/decisions?view=${v}${openOnly ? "&open=1" : ""}">${label}</a>`;
+  const toggle = openOnly
+    ? `<strong>Open only</strong> · <a href="/decisions?view=${view}">Show all</a>`
+    : `<a href="/decisions?view=${view}&open=1">Open only</a>`;
+  const rows = visible
+    .map((set) => {
+      const s = decisionSetSummary(set);
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? CHICAGO_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
+      const aging = decisionSetAging(set);
+      const agingChip = aging === "abandoned" ? ` · abandoned` : aging === "settled" ? ` · settled` : "";
+      const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
+      const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
+      return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}${esc(agingChip)}</p>
+<p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
+    })
+    .join("");
+  const empty =
+    allSets.length === 0
+      ? `<p class="context">No decision sets have been raised yet.</p>`
+      : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  const abandonedFold = abandonedIds.length
+    ? `<details><summary>${abandonedIds.length} abandoned — idle over 7 days with open questions (bulk-dismiss via POST /api/decisions/dismiss)</summary>
+<p class="context">${abandonedIds.map((id) => `<code>${esc(id)}</code>`).join(" ")}</p></details>`
+    : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
+<body><main><h1>Decision sets</h1>
+<p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("recent", "Recent (7d)")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+${visible.length ? rows : empty}
+${abandonedFold}
+</main></body></html>`;
+}
+
+function renderDecisionsForbidden(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not available — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
+<body><main><h1>Decisions link not available</h1>
+<p class="context">This decisions link is unknown or its token does not match. Nothing about the set is shown without the correct link.</p>
+</main></body></html>`;
+}
+
+/** The PWA manifest (#3315 slice a, landed with #3676): start_url is
+ * the attention view per the design; icons incl. maskable + iOS. */
+const PWA_MANIFEST = {
+  name: "PM Aggregator",
+  short_name: "PM Stack",
+  description: "The PM-stack aggregator: needs-you queues, quotas, health \u2014 and the alert throat.",
+  start_url: "/attention",
+  scope: "/",
+  display: "standalone",
+  background_color: "#0e1117",
+  theme_color: "#161b22",
+  icons: [
+    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ],
+};
+
+/** #1211: the fail-soft facet fallbacks — an empty view is the honest
+ *  degraded form of a facet whose read threw (the renderers already
+ *  banner absent data, e.g. buildAttention's tier-source-missing
+ *  flag); a throwing facet must never 500 a whole page. */
+function emptyQuotaView(): QuotaView {
+  return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+}
+function emptyUsageView(): UsageView {
+  return {
+    services: [],
+    uninstrumentedServices: [],
+    payg: [],
+    charges: [],
+    attention: [],
+    domains: null,
+    subscriptions: [],
+    history: {},
+  };
+}
+
+async function loadBoardContext() {
+  const board = await source.board().catch(() => []);
+  const refs = allRefs(board);
+  const items = await source.items(refs).catch(() => new Map());
+  return { board, items };
+}
+
+// #5082: the board assembly is the stack's most expensive read — a
+// Kaneo login + poll with per-project task pagination, one projector
+// /links call per card, and the items() closure over every ref — and
+// every board-family request used to pay it in full. Under ordinary
+// fleet load the assembly outlives the 10 s dashboard deadline
+// (assembly-deadline.ts), so /board, /api/board.json, and the overview
+// (which embeds the board) 503'd even with every upstream healthy;
+// concurrent cold loads each started their own assembly and multiplied
+// the damage (measured 2026-11-08: 3 concurrent -> 3 assemblies, all
+// 503). The assembly now gets the /today contract (#1179): a short TTL
+// serves warm hits from the last successful read, and concurrent cold
+// requests share one in-flight load.
+//
+// The cache sits BELOW the variant split, which is what makes it safe
+// for every consumer: ?done=all, saved-view filters, and the HTML/JSON
+// renderers are all derived per request from this one context
+// (boardJsonBody / boardJsonViewBody / renderBoard), so no variant can
+// ever be served another variant's body. Provenance stays truthful the
+// same way it does for /today: prov()/provDetail() are still read live
+// per request at the call sites. Fail-soft fallbacks (an empty board
+// when Kaneo is down) are the honest degraded state of the read and
+// are cached as-is until expiry, exactly as #1179 documents; a
+// throwing load is never cached.
+const boardContextCache = new TodayCache<Awaited<ReturnType<typeof loadBoardContext>>>(TODAY_CACHE_TTL_MS);
+async function boardContext(): Promise<Awaited<ReturnType<typeof loadBoardContext>>> {
+  return boardContextCache.get(loadBoardContext);
+}
+
+/** All shared forecast contracts (#3984): epic-completion + stall-risk
+ * per epic subject from the stored item history (#3981), and one
+ * quota-exhaustion contract per quota pool. The rate for a pool is
+ * only usable when the gatherer measured a token burn for a token
+ * window with ok freshness — anything else stays the contract's
+ * first-class quota_rate_unavailable state, never an invented date. */
+async function allForecastContracts(
+  pool: ProjectPoolItem[],
+): Promise<{ byRef: Map<RefKey, ForecastContract[]>; contracts: ForecastContract[] }> {
+  const byRef = new Map<RefKey, ForecastContract[]>();
+  const contracts: ForecastContract[] = [];
+  const add = (c: ForecastContract) => {
+    contracts.push(c);
+    byRef.set(c.subjectRef, [...(byRef.get(c.subjectRef) ?? []), c]);
+  };
+  const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+  if (cutoffs.length) {
+    const poolByRef = new Map(pool.map((it) => [it.ref, it]));
+    const subjects = new Set<RefKey>();
+    for (const cutoff of cutoffs) {
+      for (const item of cutoff.items) {
+        if (item.parentRef) subjects.add(item.parentRef);
+      }
+    }
+    for (const subjectRef of subjects) {
+      const poolItem = poolByRef.get(subjectRef);
+      const statusDisagreement =
+        poolItem &&
+        poolItem.status &&
+        ((poolItem.state === "closed" && poolItem.status !== "Done") ||
+          (poolItem.state === "open" && poolItem.status === "Done"))
+          ? `GitHub state ${poolItem.state} disagrees with Project Status ${poolItem.status}; both are shown, neither is preferred`
+          : null;
+      for (const c of subjectForecastContracts(cutoffs, subjectRef, {
+        updatedAt: poolItem?.updatedAt ?? null,
+        statusDisagreement,
+        scope: `direct native children of ${subjectRef} in the Project #4 pool item history (curated pool scope, not a repo-wide backlog)`,
+      })) {
+        add(c);
+      }
+    }
+  }
+  const quota = await source.quota().catch(() => emptyQuotaView());
+  const asOf = new Date().toISOString();
+  for (const qpool of quota.pools) {
+    const window = qpool.windows
+      .filter((w) => w.limit !== null && w.limit > 0)
+      .sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))[0];
+    const rate =
+      window && window.unit === "tokens" && qpool.burnTokensPerMin != null && qpool.freshness?.state === "ok"
+        ? { amountPerHour: qpool.burnTokensPerMin * 60, observedAt: qpool.freshness.measuredAt }
+        : null;
+    add(
+      quotaForecastContract({
+        poolId: qpool.id,
+        provider: qpool.provider,
+        asOf,
+        unit: window?.unit ?? "tokens",
+        remainingAmount: window ? window.limit! - window.used : null,
+        limitAmount: window?.limit ?? null,
+        nextReset: window?.resetsAt ?? null,
+        rate,
+        scope: `quota pool ${qpool.id} (${qpool.provider}/${qpool.plan})`,
+      }),
+    );
+  }
+  return { byRef, contracts };
+}
+
+async function roadmapContext() {
+  const rows = await source.roadmap().catch(() => []);
+  const refs = allRefs(rows);
+  const [items, poolResult] = await Promise.all([
+    source.items(refs).catch(() => new Map()),
+    source.projects().then(
+      (pool) => ({ pool, failed: false }),
+      () => ({ pool: [] as ProjectPoolItem[], failed: true }),
+    ),
+  ]);
+  // #1144: reconcile the Grist rows against the Project's Kind=Epic
+  // pool items on every roadmap read, so the page flag and the JSON
+  // drift report always describe the same pass as the rows themselves.
+  // Codex P2 on PR 2428: an unread source is NOT an empty source — in
+  // live mode, a Grist fixtures fallback or a fleet feed with no
+  // projects section means reconciliation is unavailable, and no
+  // drift may be asserted from it.
+  let reconciliation: RoadmapReconciliation;
+  if (cfg.source === "live") {
+    const reasons: string[] = [];
+    const roadmapProv = source.provenance().roadmap;
+    if (!roadmapProv.startsWith("live")) reasons.push(`Grist roadmap read unavailable (${roadmapProv})`);
+    if (poolResult.failed) reasons.push("Project pool read failed");
+    const feed = await loadFeed(cfg.feedFile).catch(() => null);
+    if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
+    else if (feed.projects === undefined)
+      reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length
+      ? unavailableRoadmapReconciliation(reasons.join("; "))
+      : reconcileRoadmap(rows, poolResult.pool);
+  } else {
+    reconciliation = reconcileRoadmap(rows, poolResult.pool);
+  }
+  // #1168: the drill-down index rides the same pass as the
+  // reconciliation, and only exists when the reconciliation is
+  // available — an unavailable source must not render as "no epic yet".
+  const drill =
+    reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
+  return { rows, items, pool: poolResult.pool, reconciliation, drill };
+}
+
+async function searchContext(query: string) {
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(
+    isValidRef,
+  );
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
+  const items = await source.items(refs);
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
+}
+
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+const watchdogHeartbeatRecorder = createWatchdogHeartbeatRecorder(async (nowMs) => {
+  await sloJournal.append([watchdogHeartbeatLine(nowMs)]);
+});
+
+/** Record liveness only after a watchdog derivation completes. A timer here
+ * would stay green even if the watchdog work itself stopped making progress. */
+async function recordWatchdogHeartbeat(nowMs: number, scheduled = false): Promise<void> {
+  try {
+    await (scheduled ? watchdogHeartbeatRecorder.scheduled(nowMs) : watchdogHeartbeatRecorder.request(nowMs));
+  } catch (error) {
+    console.error(
+      `[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+// #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
+// current diagnoses (feed age + probes via the health assembly —
+// its probe cache keeps this cheap — plus the orchestration
+// diagnosis and registry facet age). Live mode only: fixtures mode
+// has no real inputs to watch. Derived on attention reads and on the
+// server-owned watchdog tick below, so it does not depend on dashboard
+// traffic. Recovery clears the cards on the next derivation. The health
+// assembly here is deliberately UNPRIMED (see healthContext): the
+// watchdog needs only the feed file, the cached probes, and the
+// registry age from the source's already-loaded feed.
+async function deriveWatchdogItems(
+  diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"],
+  mode: "request" | "scheduled" = "request",
+) {
+  if (cfg.source !== "live") return [];
+  const [health, projectAudit, hostHealth] = await Promise.all([
+    healthContext(false),
+    source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+    // #10141: the host-health collector's snapshot (claimant mode +
+    // PM unit states). A read failure yields null, which the watchdog
+    // surfaces as the snapshot-absent item — the surfacer's own
+    // silence is a breach, never a pass.
+    readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+  ]);
+  const items = watchdogTierItems({
+    now: Date.now(),
+    feedAgeMs: health.feed.ageMs,
+    feedGeneratedAt: health.feed.generatedAt,
+    ...(diagnosis ? { orchestration: diagnosis } : {}),
+    projectAudit,
+    ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
+    probes: health.services
+      .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
+      .map((s) => ({
+        id: s.def.id,
+        name: s.def.name,
+        ok: s.ok,
+        detail: s.detail,
+        ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+      })),
+    hostHealth,
+  });
+  // #3321: every derivation is also an ingestion pass — the current
+  // breach episodes go to the stream (dedupe makes re-derivation a
+  // no-op) and the gap records sync with the breach set. Episodes
+  // are stabilized first (first-observed `since` wins until the
+  // breach clears), so one continuous outage is one delivery.
+  const stableItems = watchdogEpisodes.stabilize(items);
+  void recordActivity(watchdogDeliveries(stableItems));
+  await finishWatchdogGapSync({
+    items,
+    sync: enqueueWatchdogGapSync(activityStore, stableItems),
+    mode,
+    recordHeartbeat: () => recordWatchdogHeartbeat(Date.now(), mode === "scheduled"),
+    onError: (err) => {
+      console.error(
+        `[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    },
+  });
+  return items;
+}
+
+async function loadAttentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs up to eight sequential
+  // GitHub search calls (up to ~64 s when the API is unreachable). Only
+  // the attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
+  const [feed, summary, coverage, census] = await Promise.all([
+    source.attention().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverage().catch(() => []),
+    // A source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
+  ]);
+  // Read the diagnosis AFTER orchestration() has run: the live source
+  // recomputes it on every orchestration read (#1139).
+  const diagnosis = source.diagnostics?.().orchestration;
+  const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  const quotaItems = quota ? quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)) : [];
+  if (quota) {
+    view.orchestratorExtra = [...view.orchestratorExtra, ...quotaItems];
+  }
+  return {
+    view,
+    quotaItems,
+    coverage,
+    orchestration: summary,
+    diagnosis,
+    census,
+  };
+}
+
+// #9850: /api/attention.json is a sentinel-probed health surface, but
+// the assembly above re-reads every source leg on every request — under
+// load that per-request cost is what flapped the feed (multi-second
+// answers at load ~10). Same contract as the today/overview assemblies
+// (#5082): a short-TTL cache with coalesced loads and
+// stale-while-revalidate, one cache per census variant — the census
+// assembly costs up to ~64 s of GitHub search calls and must never
+// ride the JSON path, or vice versa.
+const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
+  TODAY_CACHE_TTL_MS,
+);
+async function attentionContext(opts: { census?: boolean } = {}) {
+  return opts.census
+    ? attentionCensusContextCache.get(() => loadAttentionContext(opts))
+    : attentionContextCache.get(() => loadAttentionContext(opts));
+}
+
+/**
+ * One Datastar patch-elements event (#1444). The fragment root carries
+ * its own id + `data-on:dashrefresh__window` refresh hook, so "outer"
+ * mode replaces the shell's placeholder with a self-refreshing
+ * container. The payload deliberately carries NO `data-init` (#10605):
+ * an outer-mode patch re-mounts the element, so an init trigger inside
+ * the payload would fetch itself again on every patch — a loop. First
+ * paint is driven by the shell placeholder's `data-init` instead.
+ */
+function ssePatch(selector: string, elementHtml: string): string {
+  const lines = elementHtml
+    .split("\n")
+    .map((l) => `data: elements ${l}`)
+    .join("\n");
+  return `event: datastar-patch-elements\ndata: mode outer\ndata: selector ${selector}\n${lines}\n\n`;
+}
+
+function sseResponse(body: string): Response {
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
+/** The render inputs the board page and its fragment share. */
+async function boardRender() {
+  const { board, items } = await boardContext();
+  const [pool, orchestration, formOpts, actionsByObject, counts] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.countsDetailed(),
+  ]);
+  const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+  const refs = [
+    ...new Set(board.flatMap((item) => item.links.map((link) => link.ref)).filter((ref) => poolByRef.has(ref))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const orchestrationStatus = source.diagnostics?.().orchestration.state;
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
+  const act = {
+    actionsByObject,
+    poolByRef,
+    identities: formOpts.identities,
+    briefs,
+  };
+  return { board, items, counts, act };
+}
+
+/** The render inputs the attention page and its fragments share:
+ *  the view, the action/comment stores grouped by object, and the
+ *  effective Needs-you order preference (#1456). */
+async function attentionRender() {
+  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
+  const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+    source.projects().catch(() => []),
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.byObject(),
+    commentsStore.countsDetailed(),
+    actionsStore.all(),
+  ]);
+  const order = effectiveNeedsOrder(allActions);
+  const refs = [
+    ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
+  const act = {
+    actionsByObject,
+    identities: formOpts.identities,
+    commentsByObject,
+    commentOpts: formOpts,
+    needsOrder: order.order,
+    needsOrderPending: order.pending,
+  };
+  return { view, coverage, counts, act, briefs, census };
+}
+
+async function loadTodaySignals() {
+  const [health, quotaResult] = await Promise.all([
+    healthContext(false).catch(() => null),
+    source
+      .quota()
+      .then((quota) => ({ quota, unavailable: false }))
+      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
+  ]);
+  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
+}
+
+// #1179: the shell (/today) and the fragment (/frag/today) both need
+// the health+quota strip, seconds apart on every page view. Bound the
+// repeated live reads with a short TTL; concurrent cold requests share
+// the in-flight load. Provenance stays truthful: prov()/provDetail()
+// are still read live per request at the call sites below.
+const todaySignalsCache = new TodayCache<Awaited<ReturnType<typeof loadTodaySignals>>>(TODAY_CACHE_TTL_MS);
+async function todaySignals(): Promise<Awaited<ReturnType<typeof loadTodaySignals>>> {
+  return todaySignalsCache.get(loadTodaySignals);
+}
+
+async function loadTodayContext() {
+  const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
+    boardContext(),
+    roadmapContext(),
+    attentionContext(),
+    todaySignals(),
+  ]);
+  const diagnosis = source.diagnostics?.().orchestration;
+  const queue = buildQueueView({ board, pool, items, orchestration });
+  return {
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
+    view,
+    coverage,
+    ...signals,
+    queue,
+    queueStale: queueInputsStale(signals.health),
+  };
+}
+
+// #1179: /today?full=1, /frag/today, and /api/today.json all render
+// from this one assembly. Same short-TTL + coalescing contract as the
+// signals cache above; a throwing cold load is never cached (the
+// fetch error boundary still 500s) and expiry serves the stale copy
+// while one background refresh re-reads (#5082 SWR).
+const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
+async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
+  return todayContextCache.get(loadTodayContext);
+}
+
+async function queueContext() {
+  const [{ board, items }, pool, orchestration] = await Promise.all([
+    boardContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.orchestration().catch(() => null),
+  ]);
+  return buildQueueView({ board, pool, items, orchestration });
+}
+
+/** The render inputs the overview (front door, #1134) assembles:
+ *  the attention view, the Project pool, quota, the health view, and
+ *  the board — the same contexts the dedicated pages render from. */
+async function loadOverviewContext() {
+  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
+    attentionContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(),
+    boardContext(),
+    source.orchestration().catch(() => null),
+    actionsStore.byObject().catch(() => new Map()),
+  ]);
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+}
+
+// #5082: same contract as the board assembly above — the overview
+// fan-out (attention + pool + quota + health + board + orchestration)
+// was re-run live on every /, /frag/overview, and /api/overview.json
+// request and tripped the same 10 s deadline. The per-request
+// derivations (deriveOverview / renderOverview) and the provenance
+// reads stay live; only the assembly is cached. The board leg inside
+// rides the boardContext cache, so a cold overview and a cold board
+// share one board assembly.
+const overviewContextCache = new TodayCache<Awaited<ReturnType<typeof loadOverviewContext>>>(TODAY_CACHE_TTL_MS);
+async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverviewContext>>> {
+  return overviewContextCache.get(loadOverviewContext);
+}
+
+// #3976 (Codex review on PR #9193): a freshness notice means canonical
+// data changed, but the TTL caches above could still serve an assembly
+// built before the notice for up to 10s — and nothing re-requests when
+// the TTL expires, so an accepted revision could stay invisible until
+// a later notice or a manual refresh. Invalidate the two assemblies
+// the freshness fragments reread (/frag/overview, /frag/today) the
+// moment a notice becomes durable. The store seam covers every
+// acceptance path — in-process recordFreshness, the IPC handler, and
+// the reconciler's synthetic invalidations all publish through the
+// same store.
+//
+// #5082 (2026-11-14): invalidate, don't clear. Notices land every few
+// minutes (115 in the 3 h before steward run 379), and clear() dropped
+// the cached assembly entirely, so the first post-notice request paid
+// the full cold assembly on the request path. That request is
+// routinely an hourly watch arriving after a quiet gap; when the
+// assembly chain inflated past the 10 s dashboard deadline under load
+// (steward runs 378/379: /api/overview.json 503 at 10.42 s, pass 2
+// clean), the deadline's last-good was always older than its 5-minute
+// staleness cap at that cadence, so the fallback was a hard 503.
+// invalidate() keeps the last assembly servable under the ordinary
+// SWR contract — the first post-notice request serves it immediately
+// and refreshes behind it — and the kick below starts that refresh
+// at notice time, so an accepted revision becomes visible one
+// assembly later without any request paying for the rebuild.
+freshnessStore.onNotice(() => {
+  overviewContextCache.invalidate();
+  todayContextCache.invalidate();
+  attentionContextCache.invalidate();
+  attentionCensusContextCache.invalidate();
+  void overviewContext().catch(() => {});
+  void todayContext().catch(() => {});
+});
+
+/** The live-source half of the /program assembly (#1046 + #1121): the
+ *  items closure for the program refs, the Project pool, the roadmap,
+ *  orchestration, and the coverage census inputs. Everything
+ *  view-dependent (saved-view filtering, briefs, forecasts, the
+ *  render) is derived per request from this bundle in the handler. */
+async function loadProgramSources() {
+  const [items, pool, rows, orchestration, census, poolAvailable] = await Promise.all([
+    source.items(programRefs()).catch(() => new Map()),
+    source.projects().catch(() => []),
+    source.roadmap().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+  ]);
+  return { items, pool, rows, orchestration, census, poolAvailable };
+}
+
+// #5082: /program is a bounded dashboard route with the same failure
+// shape — its source fan-out ran live on every request. Same TTL +
+// single-flight contract as the board/overview assemblies above.
+const programSourcesCache = new TodayCache<Awaited<ReturnType<typeof loadProgramSources>>>(TODAY_CACHE_TTL_MS);
+async function programSources(): Promise<Awaited<ReturnType<typeof loadProgramSources>>> {
+  return programSourcesCache.get(loadProgramSources);
+}
+
+// -- Saved views (#1276) -------------------------------------------------
+// A request names a view three ways, in precedence order: explicit
+// vf.* filter params (the shareable-URL form — reproduces the view for
+// any viewer with no store lookup), a view id (store lookup), or the
+// viewer's own default view (the viewer is named by the `viewer` query
+// param, the dashboard author key "<kind>:<id>"). No view named = the
+// pages render exactly as before.
+
+interface ResolvedView {
+  filters: ViewFilters;
+  view: SavedView | null;
+}
+
+async function resolveView(url: URL): Promise<ResolvedView | null> {
+  const fromQuery = filtersFromQuery(url.searchParams);
+  if (fromQuery) {
+    const id = url.searchParams.get("view");
+    return { filters: fromQuery, view: id ? await viewsStore.get(id).catch(() => null) : null };
+  }
+  const id = url.searchParams.get("view");
+  if (id) {
+    const view = await viewsStore.get(id).catch(() => null);
+    return view ? { filters: view.filters, view } : null;
+  }
+  const viewer = url.searchParams.get("viewer");
+  if (viewer) {
+    const view = await viewsStore.defaultFor(viewer).catch(() => null);
+    return view ? { filters: view.filters, view } : null;
+  }
+  return null;
+}
+
+function poolItemLike(item: ProjectPoolItem): ViewItemLike {
+  return {
+    ref: item.ref,
+    repo: item.repo,
+    area: item.area,
+    horizon: item.horizon,
+    owner: item.author ?? null,
+    state: item.state,
+    epic: item.epicRef ?? null,
+    status: item.status,
+    kind: item.kind,
+  };
+}
+
+function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { project: string; epic: string | null }> {
+  const context = new Map<string, { project: string; epic: string | null }>();
+  for (const item of pool) {
+    const ref = item.ref.replace(/^gh:/i, "").toLowerCase();
+    context.set(ref, {
+      project: item.projectUrl,
+      epic: item.epicRef ?? (item.kind?.toLowerCase() === "epic" ? item.ref : null),
+    });
+  }
+  return context;
+}
+
+function eventFilterFromUrl(
+  url: URL,
+  itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>,
+) {
+  return {
+    kind: url.searchParams.get("kind") ?? undefined,
+    refs: url.searchParams.getAll("ref"),
+    actor: url.searchParams.get("actor") ?? undefined,
+    project: url.searchParams.get("project") ?? undefined,
+    epic: url.searchParams.get("epic") ?? undefined,
+    search: url.searchParams.get("q") ?? undefined,
+    itemContext,
+  };
+}
+
+/** Apply a preference view verb to the views store (#1276). Returns a
+ *  result note for the action record, or throws — the caller maps a
+ *  throw to a rejected action so the audit trail says what happened. */
+async function applyViewAction(action: DashAction): Promise<string> {
+  const owner = ownerKey(action.author);
+  const pl = action.payload;
+  switch (action.verb) {
+    case "save-view": {
+      const view = await viewsStore.save({ owner, name: pl.viewName!, filters: pl.viewFilters! });
+      return `saved view ${view.id} "${view.name}"`;
+    }
+    case "rename-view": {
+      const view = await viewsStore.rename(pl.viewId!, owner, pl.viewName!);
+      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `renamed view ${view.id} to "${view.name}"`;
+    }
+    case "delete-view": {
+      const gone = await viewsStore.remove(pl.viewId!, owner);
+      if (!gone) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `deleted view ${pl.viewId}`;
+    }
+    case "set-default-view": {
+      if (pl.viewId === undefined) {
+        await viewsStore.setDefault(null, owner);
+        return "default view cleared";
+      }
+      const view = await viewsStore.setDefault(pl.viewId, owner);
+      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `default view is now ${view.id} "${view.name}"`;
+    }
+    default:
+      throw new Error(`not a view verb: ${action.verb}`);
+  }
+}
+
+/** The digest (#1278): built live from the same Source as every page;
+ * the archived form is the JSON the generator script wrote. */
+async function digestContext(kind: DigestKind): Promise<Digest> {
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
+    source.projects(),
+    source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
+    source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  return buildDigest({
+    pool,
+    needsDrew,
+    quota,
+    provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
+    now: new Date(),
+    kind,
+  });
+}
+
+const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
+
+function runMetadataFleet(args: string[], input?: string): Promise<string> {
+  const fleetBin = process.env.FLEET_BIN ?? "fleet";
+  return new Promise((resolve, reject) => {
+    const child = execFile(fleetBin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (error, stdout) =>
+      error ? reject(new Error(`fleet ${args[0]} failed: ${(error as Error).message}`)) : resolve(stdout),
+    );
+    if (input !== undefined && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
+
+async function withMetadataTempFile<T>(prefix: string, content: string, run: (path: string) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  const path = join(directory, "payload.json");
+  try {
+    await writeFile(path, content, { mode: 0o600 });
+    return await run(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const metadataDbPath =
+  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
+const metadataWebhookHandler = createMetadataWebhookHandler({
+  secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
+  db: metadataDb,
+  epicSlugs: async (item: IngestionItem): Promise<EpicSlugMap> => {
+    const output = await runMetadataFleet([
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      item.repo,
+      "--state",
+      "all",
+      "--limit",
+      "1000",
+      "--json",
+      "number,labels",
+    ]);
+    const rows: unknown = JSON.parse(output);
+    if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
+    const slugs: EpicSlugMap = new Map();
+    for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
+      if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
+      if (!labels.includes("kind/epic")) continue;
+      for (const label of labels) {
+        const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
+        if (slug && !slugs.has(slug)) slugs.set(slug, { repo: item.repo, number: row.number as number });
+      }
+    }
+    return slugs;
+  },
+  writeBack: async (item, body) => {
+    await withMetadataTempFile("pm-metadata-webhook-", body, async (path) => {
+      await runMetadataFleet([
+        "gh",
+        item.kind === "issue" ? "issue" : "pr",
+        "edit",
+        String(item.number),
+        "--repo",
+        item.repo,
+        "--body-file",
+        path,
+      ]);
+    });
+  },
+  enqueueTriage: async (packet) => {
+    await withMetadataTempFile("pm-metadata-triage-", JSON.stringify(packet, null, 2), async (path) => {
+      await runMetadataFleet(["queue", "enqueue", path, "--queue", "repo-health-code-pilot"]);
+    });
+  },
+});
+
+async function handler(req: Request, remoteAddress?: string): Promise<Response> {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const prov = () => source.provenance();
+  const provDetail = () => source.provenanceDetail?.();
+
+  if (path === "/webhooks/github") return metadataWebhookHandler(req);
+
+  if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
+    try {
+      const records = await readReportRecords(reportRecordsLocation);
+      const snapshots = await readReportSnapshots(reportRecordsLocation);
+      const current = selectCurrentReportRecords(records);
+      if (path === "/api/reports.json") {
+        return json({
+          records: current,
+          conflicts: reportBlockReviews(records, current).map((review) => ({
+            periodId: review.periodId,
+            blockId: review.blockId,
+            storedRecordId: review.storedRecord.id,
+            renderedRecordId: review.renderedRecord.id,
+            comparison: review.comparison,
+          })),
+        });
+      }
+      return html(
+        renderReportReview(
+          reportBlockReviews(records, current),
+          records.length,
+          new Date(),
+          current,
+          new Set(snapshots.map((snapshot) => snapshot.record.period.id)),
+        ),
+      );
+    } catch {
+      if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
+      return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/resolve") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid resolution body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid resolution body" }, 400);
+    }
+    const storedRecordId = typeof body.storedRecordId === "string" ? body.storedRecordId : "";
+    const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const strategy = body.strategy;
+    if (
+      !storedRecordId ||
+      !renderedRecordId ||
+      !blockId ||
+      typeof strategy !== "string" ||
+      !["stored", "rendered", "edited", "combined"].includes(strategy)
+    ) {
+      return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
+    }
+    if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
+      return json({ error: "resolvedText must be text" }, 400);
+    }
+    let records;
+    try {
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const storedRecord = records.find((record) => record.id === storedRecordId);
+    const renderedRecord = records.find((record) => record.id === renderedRecordId);
+    if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
+    if (
+      storedRecord.period.id !== renderedRecord.period.id ||
+      storedRecord.templateVersion !== renderedRecord.templateVersion
+    ) {
+      return json({ error: "compared records must have the same period and template" }, 400);
+    }
+    const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
+    const renderedBlock = renderedRecord.blocks.find((block) => block.id === blockId);
+    if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
+    const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
+    if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+    const selectedPair = reportBlockReviews(records, selectCurrentReportRecords(records)).some(
+      (review) =>
+        review.blockId === blockId &&
+        review.storedRecord.id === storedRecordId &&
+        review.renderedRecord.id === renderedRecordId,
+    );
+    const selectedText =
+      strategy === "stored" ? storedBlock.text : strategy === "rendered" ? renderedBlock.text : body.resolvedText;
+    const exactRetry = records.some((candidate) =>
+      candidate.blocks.some(
+        (block) =>
+          block.id === blockId &&
+          block.text === selectedText &&
+          block.resolution?.sourceRecordId === storedRecordId &&
+          block.resolution.comparedRecordId === renderedRecordId &&
+          block.resolution.strategy === strategy,
+      ),
+    );
+    if (!selectedPair && !exactRetry) {
+      return json({ error: "compared records are not the current review selection" }, 409);
+    }
+    try {
+      const result = await appendReportBlockConflictResolution(
+        reportRecordsLocation,
+        storedRecord,
+        blockId,
+        comparison,
+        strategy as "stored" | "rendered" | "edited" | "combined",
+        new Date().toISOString(),
+        typeof body.resolvedText === "string" ? body.resolvedText : undefined,
+        renderedRecordId,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "report resolution failed";
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(
+                message,
+              )
+            ? 400
+            : 500;
+      return json({ error: message }, status);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/late-update") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid late update body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid late update body" }, 400);
+    }
+    const reportRecordId = typeof body.reportRecordId === "string" ? body.reportRecordId : "";
+    const operation = body.operation;
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const text = typeof body.text === "string" ? body.text : "";
+    const relatedAt = typeof body.relatedAt === "string" ? body.relatedAt : "";
+    const lateOperations = ["quote", "append", "banner", "event-log", "feedback"];
+    if (
+      !reportRecordId ||
+      !blockId ||
+      !text.trim() ||
+      !relatedAt ||
+      typeof operation !== "string" ||
+      !lateOperations.includes(operation)
+    ) {
+      return json({ error: "reportRecordId, a permitted operation, blockId, text and relatedAt are required" }, 400);
+    }
+    let source: ReportRecordSource | undefined;
+    if (body.source !== undefined) {
+      if (!body.source || typeof body.source !== "object" || Array.isArray(body.source))
+        return json({ error: "invalid late update source" }, 400);
+      const candidate = body.source as Record<string, unknown>;
+      if (
+        typeof candidate.id !== "string" ||
+        typeof candidate.uri !== "string" ||
+        typeof candidate.observedAt !== "string"
+      ) {
+        return json({ error: "late update source requires id, uri and observedAt" }, 400);
+      }
+      source = { id: candidate.id, uri: candidate.uri, observedAt: candidate.observedAt };
+    }
+    let records;
+    try {
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const current = records.find((record) => record.id === reportRecordId);
+    if (!current) return json({ error: "unknown report record" }, 404);
+    try {
+      const result = await appendReportLateUpdate(
+        reportRecordsLocation,
+        current,
+        operation as ReportLateUpdateOperation,
+        { id: blockId, text, relatedAt },
+        new Date().toISOString(),
+        source,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "late report update failed";
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report operation |quote report update|feedback report update|each late report update|block relatedAt|source observedAt|late update source|duplicate report block)/.test(
+                message,
+              )
+            ? 400
+            : 500;
+      return json({ error: message }, status);
+    }
+  }
+
+  // --- #3978: freshness delivery for browsers ------------------------------
+  // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
+  // #3977 journal only. Scope is server-derived from the page name; a caller
+  // cannot widen it, and no notice carries source payload or a secret.
+  if (req.method === "GET" && (path === "/freshness/stream" || path === "/api/freshness-events.json")) {
+    const delivery = await freshnessDeliveryResponse(req, url, { reader: freshnessStore });
+    if (delivery !== null) return delivery;
+  }
+
+  // --- Author identities for the on-demand picker (#1179) ------------------
+  // List pages render author pickers with the standing identities only;
+  // the full standing + per-session list is fetched once, on first use.
+  if (req.method === "GET" && path === "/api/author-identities") {
+    const records = await source.registry().catch(() => []);
+    return json({ identities: identitiesFromRecords(records) });
+  }
+
+  // #9604: role mappings are managed only by a verified Access owner.
+  // The asserted author here is deliberately fixed; request-body identity
+  // or role claims never authorize registry changes.
+  if (
+    path === "/api/admin/identity-registry" &&
+    (req.method === "GET" || req.method === "POST" || req.method === "DELETE")
+  ) {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    let auditActor: string;
+    if (access.verified && access.author.kind === "drew") {
+      // Access-verified owner proceeds exactly as before; a presented
+      // break-glass token is never touched on this path.
+      auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+    } else {
+      // #9608: the Access/IdP-outage path. A presented single-use
+      // break-glass token is consumed atomically (with its audit
+      // event) and authorizes exactly this one admin request;
+      // anything invalid — or no token at all — fails closed.
+      const presented = presentedBreakGlassToken(req);
+      if (!presented) return json({ error: "verified Access owner required" }, 403);
+      const grant = await authorizeWithBreakGlassToken({
+        store: breakGlassTokenStore,
+        events: eventsStore,
+        token: presented,
+      });
+      if (!grant.ok) return json({ error: grant.error }, 403);
+      auditActor = grant.auditActor;
+    }
+    if (req.method === "GET") return json({ registry: await identityRegistryStore.list() });
+    try {
+      const body = await readJsonBody(req);
+      if (req.method === "POST") {
+        const parsed = validateIdentityMapping(body);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const result = await identityRegistryStore.set(parsed.identity, parsed.role, auditActor);
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: parsed.identity,
+            previousRole: result.previousRole,
+            role: parsed.role,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+        return json({ registry: result.registry, previousRole: result.previousRole });
+      }
+      const identity =
+        typeof body === "object" && body !== null ? (body as { identity?: unknown }).identity : undefined;
+      if (
+        typeof identity !== "string" ||
+        identity.trim() === "" ||
+        identity.trim().length > 200 ||
+        /\s/.test(identity.trim())
+      ) {
+        return json({ error: "identity must be a non-empty whitespace-free string (max 200 chars)" }, 400);
+      }
+      const result = await identityRegistryStore.remove(identity.trim());
+      if (result.previousRole !== null) {
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: identity.trim(),
+            previousRole: result.previousRole,
+            role: null,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+      }
+      return json({ registry: result.registry, previousRole: result.previousRole });
+    } catch (error) {
+      return json(
+        { error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` },
+        500,
+      );
+    }
+  }
+
+  // #9605: exchange the already-verified Access identity for a short-lived
+  // layer-scoped token. The target and action are request metadata; the
+  // principal and role always come from verified Access + the registry.
+  if (req.method === "POST" && path === "/api/stack-token/exchange") {
+    const access = await enforceAccessAuthor(req, { kind: "agent", id: "exchange", label: "exchange" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (!access.verified || !access.identity) return json({ error: "verified Access identity required" }, 403);
+    const secret = cfg.stackTokenSecret;
+    if (!secret) return json({ error: "stack token exchange is not configured" }, 503);
+    const identity = access.identity.sub || access.identity.email;
+    const role: StackTokenRole =
+      access.author.kind === "drew" ? "owner" : await identityRegistryStore.roleFor(identity);
+    if (role === "read-only") return json({ error: "identity role cannot mint write tokens" }, 403);
+    try {
+      const body = await readJsonBody(req);
+      const target =
+        typeof body === "object" && body !== null && typeof (body as { target?: unknown }).target === "string"
+          ? (body as { target: string }).target.trim()
+          : "";
+      const action =
+        typeof body === "object" && body !== null && typeof (body as { action?: unknown }).action === "string"
+          ? (body as { action: string }).action.trim()
+          : "";
+      if (!["kaneo", "pad", "grist"].includes(target))
+        return json({ error: "target must be kaneo, pad, or grist" }, 400);
+      if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(action)) return json({ error: "action is invalid" }, 400);
+      const token = mintStackToken({ sub: identity, role, aud: target, act: action }, secret);
+      return json({ token, tokenType: "Bearer", audience: target, expiresIn: STACK_TOKEN_TTL_SECONDS });
+    } catch (error) {
+      return json({ error: `stack token exchange failed: ${error instanceof Error ? error.message : error}` }, 400);
+    }
+  }
+
+  // --- Dashboard comment writes (#906 §2) --------------------------------
+  if (req.method === "POST" && path === "/api/roadmap/annotations") {
+    try {
+      const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const annotationAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!annotationAccess.ok) return json({ error: annotationAccess.error }, annotationAccess.status);
+      parsed.value.author = annotationAccess.author;
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
+        return json({ error: "objectRef is not a current roadmap row" }, 404);
+      }
+      try {
+        const annotation = await roadmapAnnotationsStore.add(parsed.value);
+        return json({ annotation }, 201);
+      } catch (err) {
+        return json({ error: `annotation persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+    } catch (err) {
+      return json({ error: `invalid annotation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/roadmap/annotations/alias") {
+    try {
+      const body = (await readJsonBody(req)) as { aliasRef?: unknown; stableRef?: unknown };
+      if (typeof body.aliasRef !== "string" || typeof body.stableRef !== "string") {
+        return json({ error: "aliasRef and stableRef are required" }, 400);
+      }
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === body.aliasRef)) {
+        return json({ error: "aliasRef is not a current roadmap row" }, 404);
+      }
+      if (!(await roadmapAnnotationsStore.forObject(body.stableRef)).length) {
+        return json({ error: "stableRef has no existing annotation history" }, 404);
+      }
+      await roadmapAnnotationsStore.addAlias(body.aliasRef, body.stableRef);
+      return json({ aliases: await roadmapAnnotationsStore.aliasEntries() });
+    } catch (err) {
+      return json({ error: `invalid annotation alias: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/prompt") {
+    // #10036 S7 (design #9539 §3.2/§6): a multipart submission carries
+    // file parts under "attachments"; its text fields are shaped into
+    // the same JSON body the validator accepts, the files are persisted
+    // to the attachments dir first, and the record carries their
+    // storage refs. The JSON path is unchanged.
+    let savedAttachments: PromptAttachment[] = [];
+    let parsed: ReturnType<typeof validateNewPrompt>;
+    if ((req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      let form: FormData;
+      try {
+        form = await readMultipartForm(req);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: `invalid multipart body: ${message}` }, message === "body too large" ? 413 : 400);
+      }
+      try {
+        parsed = validateNewPrompt(submissionFieldsFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      try {
+        savedAttachments = await promptAttachmentsStore.saveAll(await uploadedFilesFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (savedAttachments.length > 0) parsed.value.attachments = savedAttachments;
+    } else {
+      parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+    }
+    try {
+      const record = await promptsStore.add(parsed.value);
+      // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
+      // in-band for the answer and returns it in the response body,
+      // bounded by the configured timeout. Async returns the record
+      // immediately, and so does sync-ws — its callers then open the
+      // /ws/prompt/:id channel named by the returned id.
+      if (parsed.value.mode === "sync-block") {
+        const wait = await promptsStore.waitForAnswer(record.id, { timeoutMs: cfg.promptSyncTimeoutMs });
+        const result = syncBlockHttpResult(wait, cfg.promptSyncTimeoutMs);
+        return json(result.body, result.status);
+      }
+      return json({ prompt: record }, 201);
+    } catch (err) {
+      // A submission that failed to persist must not orphan its blobs.
+      for (const attachment of savedAttachments) {
+        await promptAttachmentsStore.remove(attachment.ref).catch(() => {});
+      }
+      return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+    }
+  }
+  if (req.method === "GET" && path === "/api/prompt/unread-count") {
+    const count = await promptsStore.unreadCount();
+    return json({ count, unread: count, total: count });
+  }
+  if (req.method === "GET" && path === "/api/prompt/threads") {
+    return json({ threads: await promptsStore.threads() });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/thread/")) {
+    const threadId = decodeURIComponent(path.slice("/api/prompt/thread/".length));
+    return json({ threadId, prompts: await promptsStore.thread(threadId) });
+  }
+  if (req.method === "GET" && path === "/api/prompt") {
+    const status = url.searchParams.get("status");
+    const page = url.searchParams.get("page") ?? undefined;
+    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const replyTo = url.searchParams.get("replyTo") ?? undefined;
+    const archivedParam = url.searchParams.get("archived");
+    const includeArchived =
+      url.searchParams.get("includeArchived") === "1" || url.searchParams.get("includeArchived") === "true";
+    const archived = archivedParam === "true" ? true : archivedParam === "false" ? false : undefined;
+    const filter: Parameters<typeof promptsStore.list>[0] = {
+      page,
+      status: PROMPT_STATUSES.includes(status as PromptStatus) ? (status as PromptStatus) : undefined,
+      threadId,
+      replyTo,
+      archived,
+      includeArchived,
+    };
+    const prompts = await promptsStore.list(filter);
+    // newest first
+    prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    return json({ prompts });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/") && path.includes("/attachments/")) {
+    // #10036 S7: fetch one attachment blob by its storage ref. The ref
+    // must be carried by the named prompt's record — a ref alone is not
+    // a capability — and the store revalidates the ref's shape before
+    // resolving it. Served as a download (never inline) with nosniff,
+    // so an uploaded HTML file cannot render as a stack page.
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    const segments = rest.split("/");
+    if (segments.length !== 3 || segments[1] !== "attachments") {
+      return json({ error: "prompt not found" }, 404);
+    }
+    const [id, , ref] = segments;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    if (!prompt.attachments.some((a) => a.ref === ref)) {
+      return json({ error: "attachment not found" }, 404);
+    }
+    const found = await promptAttachmentsStore.read(ref);
+    if (!found) return json({ error: "attachment not found" }, 404);
+    return new Response(found.bytes, {
+      headers: {
+        "content-type": found.meta.contentType,
+        "content-length": String(found.bytes.byteLength),
+        "content-disposition": `attachment; filename="${found.meta.name.replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(found.meta.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/")) {
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    if (rest === "thread" || rest.startsWith("thread/")) {
+      // handled above via query; fall through to 404
+    }
+    const id = rest;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    return json({
+      id: prompt.id,
+      status: prompt.status,
+      answer: prompt.answer,
+      error: prompt.error,
+      threadId: prompt.threadId,
+      archived: prompt.archived,
+      read: prompt.read,
+      replyTo: prompt.replyTo,
+      refs: prompt.refs,
+      attachments: prompt.attachments,
+    });
+  }
+  if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
+    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    let body: unknown = null;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      body = null;
+    }
+    const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+    const patch: Parameters<typeof promptsStore.update>[1] = {};
+    if (typeof b.status === "string" && PROMPT_STATUSES.includes(b.status as PromptStatus))
+      patch.status = b.status as PromptStatus;
+    if (typeof b.answer === "string") patch.answer = b.answer;
+    if (typeof b.error === "string") patch.error = b.error;
+    if (typeof b.archived === "boolean") patch.archived = b.archived;
+    if (typeof b.read === "boolean") patch.read = b.read;
+    if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
+    if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const before = await promptsStore.get(id);
+    const updated = await promptsStore.update(id, patch);
+    if (!updated) return json({ error: "prompt not found" }, 404);
+    // #10035 S6 (design #9539 §4): push on async completion, opt-in
+    // per submission (the record's notify flag). Answers land only
+    // through this route, so the terminal transition is detected
+    // here; the send is fire-and-forget — a push failure must never
+    // fail the answer itself.
+    if (promptCompletionTransition(before, updated)) {
+      void (async () => {
+        const store = await getAlertsStore();
+        if (store) await notifyPromptCompletion(store, updated, cfg.publicOrigin);
+      })().catch((err) => {
+        console.error(
+          `[prompt-notify] completion push failed for ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
+    return json({ prompt: updated });
+  }
+  if (req.method === "POST" && path === "/api/comments") {
+    try {
+      const parsed = validateNewComment(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: when Access is configured, authorship derives from
+      // the verified JWT, never the caller-supplied author.
+      const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
+      parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
+      // #1509: a persistence failure is a server error, not bad input -
+      // only the validation/body-parse path above earns a 400.
+      let comment;
+      try {
+        comment = await commentsStore.add(parsed.value, {
+          authorVerified: authorization.authorVerified,
+          // #1253 split 4 (#9606): "verified" only when the author came
+          // from the Access JWT above, never from the request body.
+          provenance: commentAccess.verified ? "verified" : "asserted-legacy",
+        });
+      } catch (err) {
+        return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+      return json({ comment }, 201);
+    } catch (err) {
+      return json({ error: `invalid comment: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/comments/triage") {
+    try {
+      const body = (await readJsonBody(req)) as { ids?: unknown };
+      const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === "string") : [];
+      return json({ triaged: await commentsStore.markTriaged(ids) });
+    } catch (err) {
+      return json({ error: `invalid triage: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/comments/github-result") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown; url?: unknown; error?: unknown };
+      if (typeof body.id !== "string") return json({ error: "id required" }, 400);
+      const updated = await commentsStore.markGithubResult(body.id, {
+        url: typeof body.url === "string" ? body.url : undefined,
+        error: typeof body.error === "string" ? body.error : undefined,
+      });
+      return updated ? json({ comment: updated }) : json({ error: "no such github comment" }, 404);
+    } catch (err) {
+      return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
+  // The triage write path: forms POST DashActions here; the fleet
+  // consumers (orchestration pass) poll state=new and
+  // report outcomes to /api/actions/result. The dashboard itself never
+  // writes GitHub, the Project, or a session server.
+  if (req.method === "POST" && path === "/api/actions") {
+    try {
+      const parsed = validateNewAction(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1253 slice: gate every action write, including non-triage and
+      // preference actions, on the configured Access identity.
+      const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
+      if (!actionAccess.ok) {
+        // #9608 (design #1253 section 6): during an Access/IdP outage
+        // an eligible write from the stack-local network queues as an
+        // unverified claim (provenance: outage-queued) instead of
+        // failing — held out of the actions store until its claimant
+        // confirms it with a fresh login. Anything else keeps the
+        // enforcer's refusal, byte-identical to before.
+        try {
+          const queued = await tryQueueOutageAction(parsed.value, actionAccess.status, remoteAddress);
+          if (queued) {
+            return json(
+              {
+                queued: true,
+                provenance: "outage-queued",
+                queue: queued.record,
+                ...(queued.created ? {} : { deduped: true }),
+              },
+              202,
+            );
+          }
+        } catch (err) {
+          return json({ error: `outage queueing failed: ${err instanceof Error ? err.message : err}` }, 500);
+        }
+        return json({ error: actionAccess.error }, actionAccess.status);
+      }
+      parsed.value.author = actionAccess.author;
+      // #1291/#1293: checks that need the currently published item —
+      // option/survey membership, required-question coverage, proposal
+      // identity, the access/policy auto ban. Enforced only when the
+      // aggregator actually holds a section; with none, the store
+      // stays the permissive boundary of the triage slice and the
+      // consumer rejects what it cannot apply.
+      if (parsed.value.kind === "triage") {
+        const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
+        if (section) {
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
+          if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
+        }
+      }
+      // #1509: persistence failure -> 5xx (see /api/comments above).
+      let added;
+      try {
+        added = await actionsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+      const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
+      // #1276: saved-view preference verbs are applied by the
+      // aggregator itself to the views store and marked applied (or
+      // rejected, with the reason) in the same request — the action
+      // record stays the audit trail for every view change.
+      if (
+        created &&
+        action.kind === "preference" &&
+        (action.verb === "save-view" ||
+          action.verb === "rename-view" ||
+          action.verb === "delete-view" ||
+          action.verb === "set-default-view")
+      ) {
+        try {
+          const note = await applyViewAction(action);
+          const updated = await actionsStore.markResult(action.id, {
+            outcome: "applied",
+            byRun: "aggregator-views",
+            note,
+          });
+          return json({ action: updated ?? action }, 201);
+        } catch (err) {
+          const updated = await actionsStore.markResult(action.id, {
+            outcome: "rejected",
+            byRun: "aggregator-views",
+            note: err instanceof Error ? err.message : String(err),
+          });
+          return json({ action: updated ?? action, error: err instanceof Error ? err.message : String(err) }, 400);
+        }
+      }
+      return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
+    } catch (err) {
+      return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // #1277: bulk triage — one mediated batch, validated and appended
+  // item by item under the exact single-action rules above. Every
+  // accepted item becomes its OWN attributed audit entry (never one
+  // opaque batch record), so the batch is recoverable from the
+  // entries themselves; every rejected item is reported by ref with
+  // its error and appends nothing, so a partial batch never silently
+  // drops work — the failed items simply remain in Needs-you.
+  if (req.method === "POST" && path === "/api/actions/batch") {
+    try {
+      const body = (await readJsonBody(req)) as { actions?: unknown };
+      if (!Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > 100) {
+        return json({ error: "actions must be an array of 1-100 action objects" }, 400);
+      }
+      const entries: unknown[] = body.actions;
+      // The published-item checks (#1291/#1293) need the section once,
+      // not once per item.
+      const section = entries.some(
+        (a) => typeof a === "object" && a !== null && (a as { kind?: unknown }).kind === "triage",
+      )
+        ? await source.orchestration().catch(() => null)
+        : null;
+      const results: {
+        index: number;
+        objectRef: string | null;
+        ok: boolean;
+        action?: unknown;
+        deduped?: boolean;
+        // #9608: set when the item outage-queued instead of recording.
+        queued?: boolean;
+        queueId?: string;
+        error?: string;
+      }[] = [];
+      // One enforcer for the whole batch: the request's JWT is
+      // verified once, not once per action (see access-identity.ts).
+      const enforceBatchAuthor = createAccessAuthorEnforcer(req);
+      for (const [index, raw] of entries.entries()) {
+        const objectRef =
+          typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
+            ? (raw as { objectRef: string }).objectRef
+            : null;
+        const parsed = validateNewAction(raw);
+        if (!parsed.ok) {
+          results.push({ index, objectRef, ok: false, error: parsed.error });
+          continue;
+        }
+        const batchAccess = await enforceBatchAuthor(parsed.value.author);
+        if (!batchAccess.ok) {
+          // #9608: the single-action outage posture, per item — an
+          // eligible item queues as an unverified claim; the rest of
+          // the batch is unaffected.
+          try {
+            const queued = await tryQueueOutageAction(parsed.value, batchAccess.status, remoteAddress);
+            if (queued) {
+              results.push({
+                index,
+                objectRef,
+                ok: true,
+                queued: true,
+                queueId: queued.record.id,
+                ...(queued.created ? {} : { deduped: true }),
+              });
+              continue;
+            }
+          } catch (err) {
+            results.push({
+              index,
+              objectRef,
+              ok: false,
+              error: `outage queueing failed: ${err instanceof Error ? err.message : err}`,
+            });
+            continue;
+          }
+          results.push({ index, objectRef, ok: false, error: batchAccess.error });
+          continue;
+        }
+        parsed.value.author = batchAccess.author;
+        if (parsed.value.kind === "triage" && section) {
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
+          if (problem) {
+            results.push({ index, objectRef, ok: false, error: problem });
+            continue;
+          }
+        }
+        try {
+          const { action, created } = await actionsStore.add(parsed.value);
+          results.push({ index, objectRef, ok: true, action, ...(created ? {} : { deduped: true }) });
+        } catch (err) {
+          results.push({
+            index,
+            objectRef,
+            ok: false,
+            error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+      const recorded = results.filter((r) => r.ok).length;
+      return json({ results, recorded, failed: results.length - recorded }, 200);
+    } catch (err) {
+      return json({ error: `invalid batch: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/result") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown; outcome?: unknown; byRun?: unknown; note?: unknown };
+      if (typeof body.id !== "string") return json({ error: "id required" }, 400);
+      if (body.outcome !== "applied" && body.outcome !== "rejected") {
+        return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
+      }
+      if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
+      const result = await actionsStore.markResultTransition(body.id, {
+        outcome: body.outcome,
+        byRun: body.byRun,
+        note: typeof body.note === "string" ? body.note : undefined,
+      });
+      if (result?.transitioned) {
+        const updated = result.action;
+        // #1739: the action-result route is one of the event log's
+        // writers — the outcome lands in the cross-stack stream.
+        // Fire-and-forget: the response never waits on, and is never
+        // failed by, the event append.
+        recordStreamEvent({
+          actor: updated.appliedByRun ?? capUnits(body.byRun, 200),
+          kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
+          ref: updated.objectRef,
+          summary: capUnits(
+            `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
+              (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            500,
+          ),
+        });
+      }
+      const updated = result?.action;
+      return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
+    } catch (err) {
+      return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Outage-queued action writes (#9608, design #1253 section 6) ---
+  // Queued writes appear ONLY on this read surface, stamped
+  // outage-queued with the claimed author kept a claim — never in
+  // /api/actions.json — until the claimant confirms one with a fresh
+  // verified login (confirm) or it is rejected (reject).
+  if (path === "/api/actions/outage-queue.json") {
+    const state = url.searchParams.get("state");
+    if (state && state !== "queued" && state !== "confirmed" && state !== "rejected") {
+      return json({ error: "state must be one of: queued, confirmed, rejected" }, 400);
+    }
+    let list = await outageQueueStore.list();
+    if (state) list = list.filter((w) => w.state === state);
+    return json({ queue: list });
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/confirm") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Confirmation IS a fresh login: the enforcer must succeed with
+      // a verified identity. The claimed author rides as the asserted
+      // author, so a verified non-owner presenting an owner claim is
+      // refused by the enforcer itself, exactly as on a fresh write.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "identity confirmation requires a fresh verified login" }, 403);
+      }
+      const result = await confirmOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+        release: async (action) => {
+          // The released write passes the same published-item checks
+          // as a fresh POST /api/actions (see that route): the item
+          // may have changed while the write sat in the queue.
+          if (action.kind === "triage") {
+            const section = await source.orchestration().catch(() => null);
+            let item: ReturnType<typeof findTierItem>;
+            if (section) {
+              item = findTierItem(section, action.objectRef);
+              const problem = checkActionAgainstItem(action, item, Date.now());
+              if (problem) return { ok: false as const, status: 400, error: problem };
+            }
+            if (action.verb === "answer" && action.payload.optionId) {
+              action.payload.questionId = questionIdForOption(item, action.payload.optionId) ?? "$options";
+            }
+          }
+          try {
+            const added = await actionsStore.add(action);
+            if (added.duplicateOf) {
+              return {
+                ok: false as const,
+                status: 409,
+                error: `duplicate answer recorded as ${added.action.id}; it points to existing answer action ${added.duplicateOf}`,
+              };
+            }
+            return { ok: true as const, actionId: added.action.id };
+          } catch (err) {
+            return {
+              ok: false as const,
+              status: 500,
+              error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+            };
+          }
+        },
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ confirmed: true, queue: result.record, actionId: result.actionId });
+    } catch (err) {
+      return json({ error: `invalid confirmation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/reject") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Same fresh-login gate as confirm; rejectOutageWrite owns the
+      // claimant/owner authorization for the rejection itself.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "rejecting a queued write requires a fresh verified login" }, 403);
+      }
+      const result = await rejectOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ rejected: true, queue: result.record, byOwner: result.byOwner });
+    } catch (err) {
+      return json({ error: `invalid rejection: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (path === "/api/events.json") {
+    // #1739/#3323: the same source-native stream and filters as /events.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const [health, checkpoints, gaps] = await Promise.all([
+      eventsStore.health(),
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+    ]);
+    return json({
+      events: page.events,
+      health,
+      pagination: { total: filtered.length, snapshotAt: page.snapshotAt, nextCursor: page.nextCursor },
+      activity: {
+        checkpoints,
+        gaps,
+        coverage: ACTIVITY_SOURCE_COVERAGE,
+        freshness: {
+          status: "unknown",
+          reason: "ingestion checkpoints record deliveries, not successful source polls",
+        },
+      },
+    });
+  }
+  if (path === "/events") {
+    // Machine and human surfaces share filters, ordering, and a stable
+    // ingestion snapshot for cursor pagination.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    const projects = [...new Set(pool.map((item) => item.projectUrl))].sort();
+    const epics = new Map<string, string>();
+    for (const item of pool) {
+      if (item.kind?.toLowerCase() === "epic") epics.set(item.ref, item.title);
+      if (item.epicRef)
+        epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
+    }
+    const refs = url.searchParams.getAll("ref");
+    const option = (value: string, label: string, selected: string) =>
+      `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`;
+    const projectOptions = [...new Set([url.searchParams.get("project") ?? "", ...projects].filter(Boolean))]
+      .map((value) => option(value, value, url.searchParams.get("project") ?? ""))
+      .join("");
+    const selectedEpic = url.searchParams.get("epic") ?? "";
+    if (selectedEpic && !epics.has(selectedEpic)) epics.set(selectedEpic, selectedEpic);
+    const epicOptions = [...epics.entries()]
+      .map(([value, label]) => option(value, label, url.searchParams.get("epic") ?? ""))
+      .join("");
+    // Every ref filter is a visible, editable input: hidden preserved
+    // refs could not be removed, so clearing the visible Ref field
+    // still restricted results to the item's linked refs (Codex P2,
+    // PR #5266). A cleared input submits ref="", which filterEvents
+    // ignores, so clearing an input is removing that ref.
+    const refInputs = (refs.length ? refs : [""])
+      .map((ref, index) => `<label>Ref${index ? ` ${index + 1}` : ""} <input name="ref" value="${esc(ref)}"></label>`)
+      .join("");
+    const nextUrl = page.nextCursor ? new URL(url) : null;
+    if (nextUrl && page.nextCursor) nextUrl.searchParams.set("cursor", page.nextCursor);
+    const apiUrl = new URL(url);
+    apiUrl.pathname = "/api/events.json";
+    apiUrl.hash = "";
+    return html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title>` +
+        `<style>body{margin:1rem;font:16px system-ui,sans-serif}form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem}form label{display:grid;gap:.25rem}.tblwrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}table{border-collapse:collapse;min-width:36rem}th,td{border:1px solid #888;padding:.4rem .55rem;text-align:left;vertical-align:top}.muted{color:#666}</style></head><body>` +
+        `<h1>Events</h1><p>Showing ${page.events.length} of ${filtered.length} matching events from a fixed snapshot, newest first. ` +
+        `Machine twin: <a href="${esc(apiUrl.pathname + apiUrl.search)}">/api/events.json</a>.</p>` +
+        `<p class="muted"><strong>Freshness: unknown.</strong> Ingestion checkpoints record deliveries, not successful source polls.</p>` +
+        `<form method="get" action="/events" aria-label="Filter activity events">` +
+        `<label>Project <select name="project"><option value="">All projects</option>${projectOptions}</select></label>` +
+        `<label>Epic <select name="epic"><option value="">All epics</option>${epicOptions}</select></label>` +
+        `<label>Kind <input name="kind" value="${esc(url.searchParams.get("kind") ?? "")}"></label>` +
+        `<label>Actor <input name="actor" value="${esc(url.searchParams.get("actor") ?? "")}"></label>` +
+        refInputs +
+        `<label>Search <input name="q" value="${esc(url.searchParams.get("q") ?? "")}"></label>` +
+        `<label>Page size <select name="limit">${[25, 50, 100].map((n) => option(String(n), String(n), url.searchParams.get("limit") ?? "50")).join("")}</select></label>` +
+        `<button type="submit">Filter</button></form>` +
+        eventTableHtml(page.events) +
+        (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity source status</h2>${activitySourceStatusHtml(await githubActivityStatus())}` +
+        `<h2>Activity gaps</h2><div class="tblwrap">` +
+        gapsHtml(await activityStore.gaps()) +
+        `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
+        activityCoverageHtml() +
+        `</div>` +
+        `</body></html>`,
+    );
+  }
+  if (path === "/api/activity.json") {
+    // #3321: activity-ingestion state — per-source checkpoints, gap
+    // records, and the documented source coverage. The machine twin
+    // of the sections the /events page renders below its table.
+    const [checkpoints, gaps, sources] = await Promise.all([
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+      activityStore.sourceStatuses(),
+    ]);
+    const github = sources.find((status) => status.source === "github") ?? unconfiguredGithubStatus();
+    return json({
+      checkpoints,
+      gaps,
+      sources: [{ ...github, completeHistory: false }],
+      coverage: ACTIVITY_SOURCE_COVERAGE,
+    });
+  }
+  if (path === "/api/views.json") {
+    // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
+    const owner = url.searchParams.get("owner");
+    const views = owner ? await viewsStore.forOwner(owner) : await viewsStore.all();
+    return json({ views });
+  }
+  if (path === "/api/actions.json") {
+    const object = url.searchParams.get("object");
+    const kind = url.searchParams.get("kind");
+    const state = url.searchParams.get("state");
+    // #4620: state=all is the explicit all-history read (audit and
+    // retrospective consumers). It must not fall through to the literal
+    // state filter, which silently returned an empty list while the
+    // store held applied/rejected history — a false zero. Any other
+    // value that is not a real action state is a 400, never an empty
+    // list, so a mistyped filter cannot masquerade as "no history".
+    if (state && state !== "all" && !ACTION_STATES.has(state)) {
+      return json({ error: `state must be one of: all, ${[...ACTION_STATES].join(", ")}` }, 400);
+    }
+    let list = await actionsStore.all();
+    if (object) list = list.filter((a) => a.objectRef === object);
+    if (kind) list = list.filter((a) => a.kind === kind);
+    if (state && state !== "all") list = list.filter((a) => a.state === state);
+    return json({ actions: list, pending: await actionsStore.pendingCounts() });
+  }
+
+  if (path === "/api/comments.json") {
+    const object = url.searchParams.get("object");
+    const kind = url.searchParams.get("kind");
+    const state = url.searchParams.get("state");
+    let list: DashComment[] = await commentsStore.all();
+    if (object) list = list.filter((c) => c.objectRef === object);
+    if (kind) list = list.filter((c) => c.kind === kind);
+    if (state === "new") list = list.filter((c) => c.triageState === "new" || c.githubState === "pending");
+    const all = await commentsStore.all();
+    return json({
+      comments: list,
+      pending: {
+        messages: all.filter((c) => c.kind === "message" && c.triageState === "new").length,
+        github: all.filter((c) => c.kind === "github" && c.githubState === "pending").length,
+      },
+    });
+  }
+
+  if (path === "/") {
+    // #1134: the front door is the overview — shell first, the
+    // summary streams in as a fragment (#1444 pattern). ?full=1
+    // keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderOverviewShell(prov(), provDetail()));
+    }
+    return html(renderOverview(await overviewContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/overview") {
+    const data = await overviewContext();
+    const wrapped = `<div id="overview-main" data-frag data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    return sseResponse(ssePatch("#overview-main", wrapped));
+  }
+  if (path === "/board") {
+    const { board, items, counts, act } = await boardRender();
+    const resolved = await resolveView(url);
+    if (!resolved) {
+      return html(
+        renderBoard(board, items, prov(), counts, provDetail(), act, {
+          showAllDone: url.searchParams.get("done") === "all",
+        }),
+      );
+    }
+    const { board: keptBoard, items: keptItems } = filterBoardForView(board, items, act.poolByRef, resolved.filters);
+    return html(
+      renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
+        showAllDone: url.searchParams.get("done") === "all",
+      }),
+    );
+  }
+  if (path === "/frag/board") {
+    const { board, items, counts, act } = await boardRender();
+    // #8521: the fragment twin applies the same saved view as /board
+    // (PR #4013 missed it), and its refresh URLs re-name the view so
+    // a reload does not silently drop the filter. #7937: the same
+    // treatment for ?done=all — the fragment renders the full Done
+    // strip when the flag is present (PR #3855 wired it only into
+    // /board), and fragBoardUrl carries it across refreshes.
+    const fragUrl = fragBoardUrl(url.searchParams);
+    const resolved = await resolveView(url);
+    const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
+    const wrapped = `<div id="board-main" data-frag data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
+    return sseResponse(ssePatch("#board-main", wrapped));
+  }
+
+  if (path === "/today") {
+    if (url.searchParams.get("full") !== "1") {
+      const signals = await todaySignals();
+      // #9354: the Questions section lives in the SHELL, outside the
+      // #today-main fragment div (see the /frag/today note below).
+      return html(
+        renderTodayShell(
+          prov(),
+          provDetail(),
+          signals.health,
+          signals.quota,
+          signals.quotaUnavailable,
+          await questionsHtml(),
+        ),
+      );
+    }
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    return html(
+      renderToday(
+        today,
+        view,
+        quota,
+        coverage,
+        prov(),
+        provDetail(),
+        health,
+        quotaUnavailable,
+        queue,
+        queueStale,
+        await questionsHtml(),
+      ),
+    );
+  }
+  if (path === "/frag/today") {
+    // #9354: questionsHtml is deliberately NOT passed here — the
+    // /today shell already renders the Questions section outside the
+    // #today-main fragment div, so a fragment refresh carrying it too
+    // would show the section twice on the live page. The shell's copy
+    // is from page load, which its footer states. (?full=1 never uses
+    // the shell, so it passes questionsHtml via renderToday instead.)
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
+    return sseResponse(ssePatch("#today-main", wrapped));
+  }
+
+  if (path === "/digest") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    const archives = await listDigestArchives(cfg.digestsDir);
+    // The dated archive URL (#1278): renders the stored digest verbatim.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return html(renderDigest(archived, archives, prov(), provDetail()));
+      return html(renderDigest(await digestContext("daily"), archives, prov(), provDetail()), 404);
+    }
+    return html(renderDigest(await digestContext(kind), archives, prov(), provDetail()));
+  }
+  if (path === "/queue") {
+    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
+    return html(renderQueue(await queueContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/queue") {
+    const view = await queueContext();
+    const wrapped = `<div id="queue-main" data-frag data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    return sseResponse(ssePatch("#queue-main", wrapped));
+  }
+
+  if (path === "/roadmap") {
+    const { rows, items, pool, reconciliation, drill } = await roadmapContext();
+    const orchestration = await source.orchestration().catch(() => null);
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const poolRefs = new Set(pool.map((item) => item.ref));
+    const briefRefs = [...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref))))];
+    const briefs = buildBriefs(pool, {
+      comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
+      orchestration,
+      orchestrationStatus,
+    });
+    const forecasts = (await allForecastContracts(pool)).byRef;
+    // #4830: the same twin /api/flow-analytics.json serves, computed
+    // the same way — the Roadmap charts render exactly this object.
+    const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
+    const spendCards = await loadSpendCards();
+    const releaseSnapshots = buildReleaseSnapshots(pool);
+    const prioritiesView = url.searchParams.get("view") === "priorities";
+    const g = url.searchParams.get("h") ?? "quarter";
+    const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
+    const resolved = await resolveView(url);
+    // Codex P2, PR #4013: grain links inside renderRoadmap must keep
+    // the active view parameters, or switching grain drops the view.
+    const viewParams = new URLSearchParams();
+    for (const [k, v] of url.searchParams) {
+      if (k === "view" || k === "viewer" || k.startsWith("vf.")) viewParams.set(k, v);
+    }
+    const viewQuery = viewParams.toString();
+    const annotationsFor = async (rs: typeof rows) =>
+      new Map(
+        await Promise.all(
+          rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const),
+        ),
+      );
+    if (!resolved) {
+      return html(
+        renderRoadmap(
+          rows,
+          items,
+          prov(),
+          grain,
+          await commentsStore.countsDetailed(),
+          provDetail(),
+          reconciliation,
+          drill,
+          await annotationsFor(rows),
+          viewQuery,
+          briefs,
+          forecasts,
+          flowAnalytics,
+          spendCards,
+          releaseSnapshots,
+          prioritiesView,
+        ),
+      );
+    }
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    // Codex P2, PR #4013: items linked from a KEPT row keep their
+    // metadata (links/badges in roadmapCard) even when they fail the
+    // item filter themselves — same rule the board handler applies.
+    // Shared with /api/roadmap.json via filterRoadmapForView (#8723).
+    const { rows: keptRows, items: keptItems } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    return html(
+      renderRoadmap(
+        keptRows,
+        keptItems,
+        prov(),
+        grain,
+        await commentsStore.countsDetailed(),
+        provDetail(),
+        reconciliation,
+        drill,
+        await annotationsFor(keptRows),
+        viewQuery,
+        briefs,
+        forecasts,
+        flowAnalytics,
+        spendCards,
+        releaseSnapshots,
+        prioritiesView,
+      ),
+    );
+  }
+
+  if (path === "/api/flow-analytics.json") {
+    // #4829 (step 2 of #1281): the flow-analytics JSON twin — the
+    // exact numbers the step-3 charts (#4830) will render, computed
+    // from the #3981 item-history store. Every group carries its
+    // computation window and gap signal via the shared window block.
+    const cutoffs = await itemHistoryStore.readAll().catch(() => []);
+    return json({
+      generatedAt: new Date().toISOString(),
+      ...computeFlowAnalytics(cutoffs),
+    });
+  }
+
+  if (path === "/api/outcomes.json") {
+    // #10910: the outcome/rollup view over the append-only outcome-fact
+    // ledger (outcome-view.ts) — totals plus per-job/model/session
+    // groups, with drill-through (?drill=job&key=..., ?drill=session&key=...,
+    // ?drill=model&provider=...&model=..., ?drill=issue&ref=...,
+    // ?drill=unattributed&reason=...) returning the exact facts behind
+    // an aggregate, each with its canonical source URL. A corrupt
+    // ledger is an explicit error, never an empty view: a gap in the
+    // evidence must not render as zero activity.
+    let outcomeFacts: Awaited<ReturnType<OutcomeFactStore["readFacts"]>>;
+    try {
+      outcomeFacts = await new OutcomeFactStore(cfg.outcomeFile).readFacts();
+    } catch {
+      return json({ error: "outcome_fact_store_corrupt" }, 500);
+    }
+    const drill = url.searchParams.get("drill");
+    if (drill === null) {
+      return json({ generatedAt: new Date().toISOString(), ...buildOutcomeView(outcomeFacts) });
+    }
+    let selector: OutcomeDrillSelector | null = null;
+    if (drill === "job" || drill === "session") {
+      const key = url.searchParams.get("key")?.trim();
+      if (key) selector = { dimension: drill, key };
+    } else if (drill === "model") {
+      selector = {
+        dimension: "model",
+        providerID: url.searchParams.get("provider")?.trim() || null,
+        modelID: url.searchParams.get("model")?.trim() || null,
+      };
+    } else if (drill === "issue") {
+      const ref = url.searchParams.get("ref")?.trim();
+      if (ref) selector = { dimension: "issue", subjectRef: ref };
+    } else if (drill === "unattributed") {
+      const reason = url.searchParams.get("reason")?.trim();
+      selector = {
+        dimension: "unattributed",
+        reason: reason === "no-binding" || reason === "source-gap" ? reason : null,
+      };
+    }
+    if (!selector) return json({ error: "invalid_outcome_drill" }, 400);
+    return json({
+      generatedAt: new Date().toISOString(),
+      selector,
+      facts: drillOutcomeFacts(outcomeFacts, selector),
+    });
+  }
+
+  if (path === "/api/forecasts.json") {
+    // #3984: the shared forecast contract — the identical objects the
+    // Roadmap and Projects pages render as one-line summaries.
+    const pool = await source.projects().catch(() => []);
+    const { contracts } = await allForecastContracts(pool);
+    const subject = url.searchParams.get("subject");
+    return json({
+      contractVersion: FORECAST_CONTRACT_VERSION,
+      generatedAt: new Date().toISOString(),
+      contracts: subject ? contracts.filter((c) => c.subjectRef === subject) : contracts,
+    });
+  }
+
+  if (path === "/api/quota-analytics.json") {
+    // The analytics & projection model behind /quota's section —
+    // the identical object the page renders from.
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
+    try {
+      return json(
+        buildQuotaAnalytics({
+          quota,
+          usage,
+          quotaCurrentPath: cfg.quotaCurrentFile,
+          mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+          fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+        }),
+      );
+    } catch {
+      return json({ error: "analytics unavailable" }, 503);
+    }
+  }
+
+  if (path === "/quota") {
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
+    // Never block on providers (#1171): decide from the stored measurement,
+    // ask the gatherer to run in the background, render what we have.
+    const refresh = quotaRefresher.request(quota);
+    // Analytics fail-soft: a broken ledger read must never take the
+    // quota page down with it (the builder itself also degrades).
+    let analytics: QuotaAnalytics | null = null;
+    try {
+      analytics = buildQuotaAnalytics({
+        quota,
+        usage,
+        quotaCurrentPath: cfg.quotaCurrentFile,
+        mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+        fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+      });
+    } catch {
+      analytics = null;
+    }
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh, analytics));
+  }
+
+  if (req.method === "POST" && path === "/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    quotaRefresher.manual(quota);
+    return new Response(null, { status: 303, headers: { Location: "/quota" } });
+  }
+
+  const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
+  if (serviceMatch) {
+    const usage = await source.usage().catch(() => emptyUsageView());
+    const svc = usage.services.find((s) => s.id === serviceMatch[1]);
+    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
+    return html(
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      404,
+    );
+  }
+
+  if (path === "/attention") {
+    // #1444: shell first; header/queues/sessions stream in as
+    // fragments. ?full=1 keeps the full server render (no-JS path).
+    // ?refs=<objectRefs> is the digest landing filter (#7193 Codex):
+    // only the named entries render, and the refs ride the fragment
+    // URLs so the streamed sections stay filtered.
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
+    if (url.searchParams.get("full") !== "1") {
+      // #9354: Questions section in the shell, below the sessions
+      // fragment; the /frag/attention/* fragments do not carry it.
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined, await questionsHtml()));
+    }
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    return html(
+      renderAttention(
+        view,
+        rendered.coverage,
+        prov(),
+        rendered.counts,
+        provDetail(),
+        rendered.act,
+        rendered.briefs,
+        rendered.census,
+        await questionsHtml(),
+      ),
+    );
+  }
+  const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
+  if (attnFragMatch) {
+    const section = attnFragMatch[1] as "header" | "queues" | "sessions";
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam
+      ? refsParam
+          .split(",")
+          .map((ref) => ref.trim())
+          .filter(Boolean)
+      : [];
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    const sections = attentionSections(
+      view,
+      rendered.coverage,
+      rendered.counts,
+      rendered.act,
+      rendered.briefs,
+      rendered.census,
+    );
+    return sseResponse(
+      ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)),
+    );
+  }
+  if (path === "/assets/app.css") {
+    // The committed Tailwind + DaisyUI build (Phase C): source is
+    // src/ui.css, rebuilt with `bun run build:css`; never generated at
+    // request time, so a plain pull deploys it like the other assets.
+    const file = Bun.file(new URL("./assets/app.css", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/datastar.js") {
+    // The vendored Datastar bundle (#1444) — a static asset, never a
+    // service worker; /sw.js keeps serving the kill switch.
+    const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+
+  if (path === "/dns") {
+    return html(renderDns(await source.dns(), prov(), provDetail()));
+  }
+  if (path === "/api/dns.json") {
+    const section = await source.dns();
+    return json(section ?? { status: "absent", reason: "no DNS register section in the fleet feed yet" });
+  }
+
+  if (path === "/aa") {
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
+  }
+  if (path === "/api/aa.json") {
+    const section = await source.aa(url.searchParams.get("batch"));
+    return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
+  }
+
+  if (path === "/sessions") {
+    const records = await source.registry();
+    // #1209: window/filter/pagination, shared with the JSON twin.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
+    return html(
+      renderSessions(
+        view.records,
+        prov(),
+        provDetail(),
+        {
+          actionsByObject: await actionsStore.byObject(),
+          identities: identitiesFromRecords(records),
+        },
+        view,
+      ),
+    );
+  }
+  if (path === "/search") {
+    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
+    return html(renderSearch(query, results, items, prov(), provDetail()));
+  }
+  if (path === "/api/search.json") {
+    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
+    return json({ query: query.trim(), total: results.length, results });
+  }
+  if (path === "/api/registry.json") {
+    const records = await source.registry();
+    // #1209: same query pipeline as /sessions — same params, same page.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
+    return json({
+      records: view.records,
+      identities: identitiesFromRecords(records),
+      total: view.matched,
+      totalAll: view.totalAll,
+      hiddenByWindow: view.hiddenByWindow,
+      hiddenByPagination: view.hiddenByPagination,
+      remainingAfterPage: view.remainingAfterPage,
+      windowDays: view.query.windowDays,
+      limit: view.query.limit,
+      offset: view.query.offset,
+    });
+  }
+
+  if (path === "/projects") {
+    // #1497: Projects merged into Program status — the pool view is
+    // the #projects-pool section of /program now. The route redirects
+    // (area filter preserved); /api/projects.json below is unchanged.
+    const area = url.searchParams.get("area");
+    const keep = new URLSearchParams();
+    if (area) keep.set("area", area);
+    for (const facet of ["status", "kind"]) {
+      const v = url.searchParams.get(facet);
+      if (v) keep.set(facet, v);
+    }
+    for (const [k, v] of url.searchParams) {
+      if (k === "view" || k === "viewer" || k.startsWith("vf.")) keep.set(k, v);
+    }
+    const qs = keep.toString();
+    const target = qs ? `/program?${qs}#projects-pool` : "/program#projects-pool";
+    return new Response(null, { status: 302, headers: { Location: target } });
+  }
+  // #1279: briefs need the latest comment per item, guaranteed per ref —
+  // the bulk comments() read can truncate an item's latest comment away
+  // in a busy batch, so prefer the source's per-ref latest read.
+  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // report. The page and its JSON twin are the same projection, assembled
+  // once per request — they cannot disagree about what disagrees.
+  if (path === "/conflicts" || path === "/api/conflicts.json") {
+    const inbox = await assembleConflicts();
+    if (path === "/api/conflicts.json") return json(inbox);
+    return html(renderConflicts(inbox, prov(), provDetail()));
+  }
+
+  if (path === "/api/projects.json") {
+    const [pool, census, poolAvailable, audit] = await Promise.all([
+      source.projects().catch(() => []),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+      source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+    ]);
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the JSON twin of the brief panels on the pool cards — the
+    // identical brief objects, built with comment activity folded in.
+    const [briefComments, orchestration] = await Promise.all([
+      pool.length ? briefCommentsFor(pool.map((p) => p.ref)) : Promise.resolve([]),
+      source.orchestration().catch(() => null),
+    ]);
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
+    const resolved = await resolveView(url);
+    const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
+    const outRefs = new Set(outPool.map((item) => item.ref));
+    return json({
+      project: "developing-today#4",
+      items: outPool,
+      // Build with the full pool so a filtered-out blocker can still have
+      // its state resolved, but only expose briefs for the visible items.
+      briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
+      audit,
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
+      coverage: coverage.current,
+      coverageBaseline: coverage.baseline,
+    });
+  }
+
+  if (path === "/program" || path === "/api/program.json") {
+    // #1046 + #1121: /program is the projects index. Editorial content
+    // from src/program.ts (the pm-dashboard doc) and the project
+    // registry in src/project-config.ts; the live half derived from
+    // the same Source the other views read (items / projects /
+    // roadmap / orchestration), each facet failing soft on its own.
+    // #5082: the live-source fan-out rides the programSources cache
+    // (TTL + single-flight); the local-store reads and everything
+    // view-dependent below stay per-request.
+    const [{ items, pool, rows, orchestration, census, poolAvailable }, formOpts, actionsByObject] = await Promise.all([
+      programSources(),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
+    // #1276 (Codex P2, PR #4013): /projects redirects here with the
+    // view parameters preserved, but this handler never resolved the
+    // view — apply it to the pool before rendering, exactly as
+    // /api/projects.json does, so shared/default views filter the
+    // HTML page (and its JSON twin) too.
+    const resolved = await resolveView(url);
+    const viewPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
+    const data = {
+      ...buildProgramData(items, viewPool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
+    };
+    if (path === "/api/program.json") return json(data);
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the pool cards on /program carry the same comment-backed
+    // briefs as the JSON twin — building them here, not the comment-less
+    // fallback projectsBodyHtml would derive on its own.
+    const briefs = buildBriefs(pool, {
+      comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
+      orchestration,
+      orchestrationStatus: source.diagnostics?.().orchestration.state,
+    });
+    return html(
+      renderProgram(data, items, prov(), provDetail(), {
+        pool: viewPool,
+        designBoards: data.designBoards,
+        area: url.searchParams.get("area"),
+        status: url.searchParams.get("status"),
+        kind: url.searchParams.get("kind"),
+        audit: source.projectAudit ? await source.projectAudit().catch(() => null) : null,
+        orchestration,
+        coverage,
+        actionsByObject,
+        identities: formOpts.identities,
+        briefs,
+        forecasts: (await allForecastContracts(viewPool)).byRef,
+        // #4830: the Projects page (merged into /program, #1497)
+        // renders the #4829 twin as charts, computed as the endpoint
+        // computes it.
+        flowAnalytics: computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => [])),
+        // #4824: spend beside progress on the pool cards.
+        spend: await loadSpendCards(),
+      }),
+    );
+  }
+
+  const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
+  if (programProjectMatch) {
+    const config = projectConfigById(programProjectMatch[1]);
+    if (!config) {
+      return html(
+        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        404,
+      );
+    }
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
+    // #9922: the id page's Path to Phase 12 panel — fetch the #1235
+    // body snapshot when the source carries one, and resolve the
+    // steps' refs into the items map so the join in render sees live
+    // state for every step, not just the config's tracked refs.
+    let phase12: Phase12Snapshot | null = null;
+    if (config.id === "id" && source.phase12) {
+      phase12 = await source.phase12().catch(() => null);
+      if (phase12) {
+        const stepRefs = parsePhase12Steps(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = stepRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #9924: the id page's Build health panel — the Actions-API
+    // snapshot, when the source carries one.
+    let buildHealth: BuildHealthSnapshot | null = null;
+    if (config.id === "id" && source.buildHealth) {
+      buildHealth = await source.buildHealth().catch(() => null);
+    }
+    // #9921: the id page's Queue & fleet panel — the read-only
+    // fleet-queue collector snapshot (#9920), when the source
+    // carries one.
+    let queueSnap: QueueSnapshot | null = null;
+    if (config.id === "id" && source.queue) {
+      queueSnap = await source.queue().catch(() => null);
+    }
+    // #9926: the id page's Phase 12 readiness panel — #534's body
+    // (design checklist) and the F-item issues' timeline PR
+    // cross-references, when the source carries them; the F-item
+    // refs join the items map so the projection sees live states.
+    let f12: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null = null;
+    if (config.id === "id") {
+      const [design, prRefs] = await Promise.all([
+        source.phase12Design ? source.phase12Design().catch(() => null) : Promise.resolve(null),
+        source.f12PrRefs ? source.f12PrRefs().catch(() => null) : Promise.resolve(null),
+      ]);
+      f12 = { design, prRefs };
+      if (phase12) {
+        const fRefs = parseF12Items(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = fRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #9923 step 3: the Phase tracker's F-item mapping snapshot
+    // (planning/roadmaps/id.md via the source), when the source
+    // carries one, with the mapped refs resolved into the items map
+    // like the phase12 steps above.
+    let phaseMapping: PhaseMappingSnapshot | null = null;
+    if (config.id === "id" && source.phaseMapping) {
+      phaseMapping = await source.phaseMapping().catch(() => null);
+      if (phaseMapping) {
+        const mapRefs = [...new Set(phaseMapping.entries.map((e) => `${PHASE_MAPPING_REPO}#${e.number}`))];
+        const missing = mapRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #1108 remainder: the project's derived doc (roadmap
+    // description + newest status record) from the checkout-reading
+    // source, when it carries one; null keeps the registry text.
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
+    return html(
+      renderProgramProject(
+        buildProjectDetail(config, items, pool, rows, projectDoc),
+        items,
+        prov(),
+        provDetail(),
+        pool,
+        phase12,
+        buildHealth,
+        f12,
+        queueSnap,
+        phaseMapping,
+        {
+          orchestration,
+          actionsByObject,
+          identities: formOpts.identities,
+          orchestrationState: source.diagnostics?.().orchestration.state,
+        },
+      ),
+    );
+  }
+  if (path === "/api/program-project.json") {
+    const id = url.searchParams.get("id") ?? "";
+    const config = projectConfigById(id);
+    if (!config) return json({ error: "unknown project", id }, 404);
+    const [items, pool, rows] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+    ]);
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
+    return json(buildProjectDetail(config, items, pool, rows, projectDoc));
+  }
+
+  if (path === "/health") {
+    const view = await healthContext();
+    return html(renderHealth(view, prov()));
+  }
+
+  if (path === "/pages") {
+    return html(renderPages(prov(), pageRenderHealth()));
+  }
+
+  if (path === "/comments") {
+    return html(renderCommentsQueue(await commentsStore.all(), prov()));
+  }
+
+  if (path === "/chat") {
+    // #10035 S6: the threaded chat/session view over the prompt
+    // store. list() with includeArchived returns every record; the
+    // render hides archived unless ?archived=1 asks for them.
+    const showArchived = url.searchParams.get("archived") === "1";
+    return html(renderChat(await promptsStore.list({ includeArchived: true }), prov(), { showArchived }));
+  }
+
+  if (path === "/api/comments/queue.json") {
+    const all = await commentsStore.all();
+    return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
+  }
+
+  const discussMatch = /^\/discuss\/(.+)$/.exec(path);
+  if (discussMatch) {
+    // #2748: a malformed percent-encoding is a JSON 400, never a raw
+    // URIError out of the handler.
+    const objectRef = decodePathSegment(discussMatch[1]);
+    if (objectRef === null) {
+      return json({ error: `malformed percent-encoding in path segment: ${discussMatch[1]}` }, 400);
+    }
+    const { title, githubRefs } = await discussTitle(objectRef);
+    const thread = await commentsStore.forObject(objectRef);
+    return html(renderDiscuss(objectRef, title, thread, await commentFormOpts(githubRefs), prov()));
+  }
+
+  if (path === "/api/overview.json") {
+    return json(deriveOverview(await overviewContext()));
+  }
+  if (path === "/api/board.json") {
+    const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
+    const resolved = await resolveView(url);
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    // Filter the policy-eligible board against the full item lookup
+    // BEFORE the done-strip limit (#8058): limiting first dropped a
+    // view's matching done cards outside the global newest 100.
+    // boardJsonViewBody then applies the limit and restricts the
+    // shipped items to the selected cards, so the response stays
+    // bounded as #5082 requires — the full closure is only a lookup.
+    const bounded = boardJsonViewBody(
+      board,
+      items,
+      (b) => linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+      { showAllDone },
+    );
+    return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
+  }
+  if (path === "/api/releases.json") {
+    // #9067 (design section 4/6): milestone close-out snapshots over
+    // the collector's per-item milestone ingestion — program
+    // milestones get retroactive counts, release milestones get the
+    // close-out record (counts split closed vs carried-over, the
+    // release date, and the description line).
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    return json({
+      generatedAt: new Date().toISOString(),
+      source: "project pool milestone ingestion (#9067)",
+      releases: buildReleaseSnapshots(pool),
+    });
+  }
+  if (path === "/api/roadmap.json") {
+    const { rows, items, reconciliation } = await roadmapContext();
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const genealogyRows = enrichRoadmapRows(rows, pool);
+    if (url.searchParams.get("view") === "priorities") {
+      genealogyRows.sort((a, b) => {
+        const rank = (row: typeof a) => {
+          const match = /#(\d+)$/.exec(row.priority ?? "");
+          return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        };
+        return rank(a) - rank(b) || a.title.localeCompare(b.title);
+      });
+    }
+    const resolved = await resolveView(url);
+    if (!resolved) {
+      const annotatedRows = await Promise.all(
+        genealogyRows.map(async (row) => ({
+          ...row,
+          annotations: await roadmapAnnotationsStore.forObject(row.subject),
+        })),
+      );
+      return json({
+        rows: annotatedRows,
+        items: [...items.values()],
+        drift: roadmapDriftReport(reconciliation),
+        annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      });
+    }
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    // #8723: the same rule as the HTML twin -- items linked from a
+    // kept row ship even when they fail the view themselves.
+    const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
+    const keptItems = [...keptItemMap.values()];
+    const annotatedKeptRows = await Promise.all(
+      enrichRoadmapRows(keptRows, pool).map(async (row) => ({
+        ...row,
+        annotations: await roadmapAnnotationsStore.forObject(row.subject),
+      })),
+    );
+    return json({
+      rows: annotatedKeptRows,
+      items: keptItems,
+      drift: roadmapDriftReport(reconciliation),
+      annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      view: resolved.view?.id ?? null,
+    });
+  }
+  if (path === "/api/quota.json") {
+    // Extended in place for the hub (design §1.1): the pools/burn/choices
+    // shape is unchanged for existing consumers (quota-guidance); the
+    // hub sections and extractor health ride as additional top-level keys. Snapshot history
+    // stays out of this twin — it is per-service, on the service twin.
+    const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    // #1171: a stale read returns immediately with refresh state instead of
+    // waiting on provider calls; the gatherer runs in the background.
+    const refresh = quotaRefresher.request(quota);
+    return json({
+      ...quota,
+      refresh,
+      saas: usage.services,
+      payg: usage.payg,
+      charges: usage.charges,
+      attention: usage.attention,
+      domains: usage.domains,
+      subscriptions: usage.subscriptions,
+
+      uninstrumentedServices: usage.uninstrumentedServices,
+      extractorHealth: {
+        pools: quota.pools.map((pool) => ({
+          id: pool.id,
+          ...(pool.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+        services: usage.services.map((service) => ({
+          id: service.id,
+          ...(service.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+      },
+    });
+  }
+  if (req.method === "POST" && path === "/api/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    const refresh = quotaRefresher.manual(quota);
+    // generatedAt is the client's poll baseline (#6125): the manual
+    // refresh is only done when quota-current.json advances past it.
+    return json({ requested: refresh.triggered, refresh, generatedAt: quota.gatherer?.generatedAt ?? null });
+  }
+  if (path === "/api/quota/service.json") {
+    const id = url.searchParams.get("id") ?? "";
+    const usage = await source.usage();
+    const svc = usage.services.find((s) => s.id === id);
+    if (!svc) return json({ error: "unknown service", id }, 404);
+    const history = usage.history[svc.id] ?? [];
+    const paces = [...new Set(history.map((r) => r.metricId))]
+      .map((metricId) => ({ metricId, pace: projectPace(history, metricId) }))
+      .filter((p) => p.pace);
+    return json({ service: svc, history, paces });
+  }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
+  }
+  if (path === "/api/attention.json") {
+    // Slice 2: the flat array shape stays; entries are now current-only
+    // (expired dropped) and tier-annotated (tier/drewReason/
+    // orchestratorNote, source, parentId). #1148: the derived watchdog
+    // tier items are appended in their TierItem shape (tier-annotated
+    // needs-orchestrator) so machine consumers see the same queue the
+    // HTML renders — the array shape itself is unchanged (Codex P2
+    // on PR #2431). #3317: include non-session needs-drew items too,
+    // matching the full queue rendered by the attention page.
+    const { view, quotaItems } = await attentionContext();
+    return json([
+      ...view.all,
+      ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
+      ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+      // #1174 (Codex P2, PR #4695): the synthesized quota tasks ride along
+      // in the same TierItem shape — this endpoint is the machine-first
+      // interface the attention page advertises, so the quota tasks must
+      // be discoverable here, not only in the HTML orchestrator tier.
+      ...quotaItems.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+    ]);
+  }
+  if (path === "/api/coverage.json") {
+    const { view, coverage } = await attentionContext();
+    return json({ coverage, expired: view.expiredCount });
+  }
+  if (path === "/api/today.json") {
+    const { today } = await todayContext();
+    return json(today);
+  }
+  if (path === "/api/digest.json") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
+    return json(await digestContext(kind));
+  }
+  if (path === "/api/digests.json") {
+    return json({ archives: await listDigestArchives(cfg.digestsDir) });
+  }
+  if (path === "/api/queue.json") {
+    return json(await queueContext());
+  }
+  if (path === "/api/orchestration.json") {
+    // #899: the orchestration job's tiers + goal measurements. Absent
+    // means "not measured yet" — never an empty queue. #1148: the
+    // aggregator-derived watchdog items ride along as an additive
+    // field (the published section itself stays verbatim) so JSON
+    // consumers can see derived queue items next to the published
+    // tiers (Codex P2 on PR #2431).
+    const section = await source.orchestration();
+    const diagnosis = source.diagnostics?.().orchestration;
+    const derivedWatchdogItems = await deriveWatchdogItems(diagnosis);
+    return json(
+      section
+        ? { ...section, derivedWatchdogItems }
+        : { status: "absent", reason: "no orchestration run has published yet", derivedWatchdogItems },
+    );
+  }
+  if (path === "/sw.js") {
+    // The real worker (#3676; source + §6 history in src/sw-source.ts).
+    return serviceWorkerResponse();
+  }
+  if (path === "/manifest.webmanifest") {
+    return new Response(JSON.stringify(PWA_MANIFEST, null, 2), {
+      headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" },
+    });
+  }
+  const iconMatch = /^\/icons\/(icon-192\.png|icon-512\.png|icon-maskable-512\.png|apple-touch-icon\.png)$/.exec(path);
+  if (iconMatch) {
+    const file = Bun.file(new URL(`./assets/icons/${iconMatch[1]}`, import.meta.url));
+    if (!(await file.exists())) return json({ error: "icon missing" }, 404);
+    return new Response(file, { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
+  }
+  if (path === "/assets/push-client.js") {
+    const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/prompt-badge.js") {
+    const file = Bun.file(new URL("./assets/prompt-badge.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/freshness-client.js") {
+    const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/api/sw-probe") {
+    // Design §6 step 2: pages report the registrations they see
+    // (counted, no content); GET exposes the running summary.
+    if (req.method === "POST") {
+      try {
+        const body = (await readJsonBody(req)) as { registrations?: unknown; evicted?: unknown };
+        return json(recordSwProbe(body));
+      } catch (err) {
+        return json({ error: `invalid probe: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json(swProbeSummary());
+  }
+
+  // --- Alert throat (#3676): subscription API -------------------------
+  // #13979: method gating precedes the store check so a removed GET
+  // stays a 405 even when the alerts store is unavailable (fixtures /
+  // store outage would otherwise mask it as a 503).
+  if (path === "/api/push/subscriptions") {
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      return json({ error: "method not allowed" }, 405);
+    }
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    if (req.method === "POST") {
+      try {
+        const parsed = validateNewSubscription(await readJsonBody(req));
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const row = await store.upsertSubscription(parsed.value);
+        requestNotifyRelaySubscriptionSync();
+        return json({ subscription: toPublicSubscription(row) }, 201);
+      } catch (err) {
+        return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    if (req.method === "DELETE") {
+      try {
+        const body = (await readJsonBody(req)) as { endpoint?: unknown };
+        if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
+        const deleted = await store.deleteSubscription(body.endpoint);
+        if (deleted) requestNotifyRelaySubscriptionSync();
+        return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
+      } catch (err) {
+        return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  if (path === "/api/push/test") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendTestPush(store, cfg.publicOrigin);
+    return json(summary);
+  }
+
+  // Per-class test sends (#3318): one test per preference class,
+  // honouring the stored class toggles, landing per design §3.
+  if (path === "/api/push/test-class") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    let cls: unknown;
+    try {
+      cls = ((await readJsonBody(req)) as { class?: unknown })?.class;
+    } catch {
+      return json({ error: "invalid test-class body" }, 400);
+    }
+    if (!isNotificationTestClass(cls)) return json({ error: "unknown notification class" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendClassTestPush(store, cfg.publicOrigin, cls);
+    return json(summary);
+  }
+
+  // --- Alert throat (#3676): incident intake + ack/close --------------
+  if (req.method === "POST" && path === "/api/alerts") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    try {
+      const rawBody: unknown = await readJsonBody(req);
+      const parsed = validateNewIncident(rawBody);
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const ext =
+        rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
+      const hasNeedsDrew = ext.needsDrew !== undefined;
+      const hasStackHealth = ext.stackHealth !== undefined;
+      const hasDecisionSet = ext.decisionSet !== undefined;
+      const hasHealthHook = ext.healthHook !== undefined;
+      // #12602 (#12599 decision b): the healthHook extension carries the
+      // full C3 incident record to the alerts ledger. It is gated and
+      // validated BEFORE the incident insert, unlike the extensions
+      // below, because a valid record rides the insert onto the opened
+      // event's detail; a malformed one is a 400 naming the field,
+      // before anything is stored.
+      let healthHook: HealthHookRecord | undefined;
+      if (hasHealthHook) {
+        if (parsed.value.source !== "health-hook") {
+          return json({ error: 'healthHook extension is only accepted for source "health-hook"' }, 400);
+        }
+        const hv = validateHealthHook(ext.healthHook);
+        if (!hv.ok) return json({ error: hv.error }, 400);
+        healthHook = hv.value;
+      }
+      const { incident, created } = await store.postIncident(parsed.value, healthHook ? { healthHook } : undefined);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post; #12602 adds
+      // healthHook, which may co-ride with stackHealth (health-hook
+      // source only, gated above) and with nothing else. A VALIDATION
+      // failure of an extension is a 400 (the poster's bug should be
+      // loud at the poster), while a store failure is logged and never
+      // fails the incident post.
+      if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
+        return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
+        return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
+      }
+      if (hasNeedsDrew) {
+        const v = validateNeedsDrew(ext.needsDrew);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
+          requestAlertTick();
+          return json(
+            { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
+            status,
+          );
+        } catch (err) {
+          console.error(`alerts intake: needsDrew raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      if (hasStackHealth) {
+        const v = validateStackHealth(ext.stackHealth);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          await setStackHealth(cfg.stackHealthFile, v.value);
+          const auditEvent = healthHookAuditEvent({
+            title: parsed.value.title,
+            source: parsed.value.source,
+            stackHealth: v.value,
+          });
+          if (auditEvent) {
+            try {
+              await eventsStore.record(auditEvent);
+            } catch (err) {
+              console.error(
+                `alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`,
+              );
+            }
+          }
+          if (v.value.state === "up") {
+            // #12602: a healthHook recovery record rides the closed
+            // event's detail of the incident it closes.
+            await store.closeOpenIncidentByKey(
+              parsed.value.source,
+              parsed.value.key,
+              healthHook?.state === "up" ? { healthHook } : undefined,
+            );
+          }
+          requestAlertTick();
+        } catch (err) {
+          console.error(`alerts intake: stackHealth update failed (${err instanceof Error ? err.message : "error"})`);
+        }
+        return json({ incident, created }, status);
+      }
+      if (hasDecisionSet) {
+        const v = validateDecisionSet(ext.decisionSet);
+        if (!v.ok) return json({ error: v.error }, 400);
+        try {
+          const beforeSet = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
+          const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          if (!beforeSet) {
+            await logDecisionEvents([
+              {
+                setId: set.setId,
+                type: "set.created",
+                payload: {
+                  via: "api/alerts",
+                  source: parsed.value.source,
+                  title: set.title,
+                  items: set.items.length,
+                  questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+                },
+              },
+            ]);
+          }
+          requestAlertTick();
+          return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
+        } catch (err) {
+          console.error(`alerts intake: decisionSet raise failed (${err instanceof Error ? err.message : "error"})`);
+          return json({ incident, created }, status);
+        }
+      }
+      return json({ incident, created }, status);
+    } catch (err) {
+      return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Needs-Drew answers (#8568) --------------------------------------
+  const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
+  if (req.method === "POST" && needsDrewAnswerMatch) {
+    const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid answer body" }, 400);
+    }
+    // No bearer: the per-question token is the authority.
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item || typeof body.token !== "string" || body.token !== item.token) {
+      return json({ error: "unknown question or bad token" }, 403);
+    }
+    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
+    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+      return json({ error: "optionId is not one of the question options" }, 400);
+    }
+    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
+    if (body.freeText !== undefined && freeText === undefined) {
+      return json({ error: "freeText must be a string" }, 400);
+    }
+    if (optionId === undefined && !freeText?.trim()) {
+      return json({ error: "optionId or freeText required" }, 400);
+    }
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
+      ...(optionId !== undefined ? { optionId } : {}),
+      ...(freeText !== undefined ? { freeText } : {}),
+      via: "api",
+    });
+    if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #8605: the answer resolves the question, so close its alert
+    // incident — the raiser posted it under this question's source with
+    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
+    // Best-effort, like the stack-health close in the intake above: a
+    // store failure is logged and never fails the recorded answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) {
+        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
+        requestAlertTick();
+      }
+    } catch (err) {
+      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+    }
+    return json({
+      ledgerId,
+      answered: true,
+      answer: {
+        ...(updated.answer.optionId !== undefined ? { optionId: updated.answer.optionId } : {}),
+        ...(updated.answer.freeText !== undefined ? { freeText: updated.answer.freeText } : {}),
+        at: updated.answer.at,
+        via: updated.answer.via,
+      },
+    });
+  }
+  const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && answerPageMatch) {
+    const ledgerId = decodePathSegment(answerPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const item = ledgerId === null ? null : await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    // Unknown question or token mismatch: 403, and the question is
+    // never rendered — the token is the only authority here.
+    if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
+    return html(renderAnswerPage(item));
+  }
+  // --- Decision-set submit API + event log (#9335 v2) -----------------
+  // POST /api/decision-sets (alias: /api/decision-sets/submit): the
+  // authenticated submit API. Intake-bearer auth, the same token as
+  // /api/alerts. Body: the bare v2 set object or { decisionSet: {...} }
+  // (a sibling `source` string is honored). setId may be omitted — a
+  // UUID is minted. The response returns the setId and the full token
+  // page URL to the authenticated submitter ONLY; the URL is never
+  // logged. Exactly one push per set: a fresh raise requests the alert
+  // tick exactly like the /api/alerts decisionSet path; a re-submit of
+  // an existing setId is idempotent and sends no second push.
+  if (req.method === "POST" && (path === "/api/decision-sets" || path === "/api/decision-sets/submit")) {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(req);
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    const prepared = withGeneratedSetId(rawBody);
+    const ext =
+      prepared && typeof prepared === "object" && !Array.isArray(prepared) ? (prepared as Record<string, unknown>) : {};
+    const candidate = ext.decisionSet !== undefined ? ext.decisionSet : prepared;
+    const v = validateDecisionSet(candidate);
+    if (!v.ok) return json({ error: v.error }, 400);
+    const source = typeof ext.source === "string" && ext.source ? ext.source : "decisions-ledger";
+    // #9354 refresh mode: a sibling `refresh: true` opts a standing
+    // (ledger-mirror) set into refreshDecisionSet — contents are
+    // replaced, token/createdAt/source and resolutions-by-qid are
+    // preserved. No push and no set.created event on a refresh: the
+    // set is not new, and a standing set refreshed hourly must not
+    // push hourly. Refresh of a not-yet-existing set is a normal
+    // create (201, created: true, push + set.created as usual).
+    const refresh = ext.refresh === true;
+    const before = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
+    try {
+      if (refresh && before) {
+        const set = await refreshDecisionSet(cfg.decisionsFile, v.value, source);
+        // The event log accepts a set-level "edit" event without a
+        // questionRef (validateDecisionEventInput / the type enum
+        // include "edit"), so a refresh is recorded that way.
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "edit",
+            payload: {
+              via: "api/decision-sets",
+              refresh: true,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        const pageUrl = decisionsPageUrl(set);
+        return json({ setId: set.setId, pageUrl, url: pageUrl, created: false, refreshed: true }, 200);
+      }
+      const set = await raiseDecisionSet(cfg.decisionsFile, v.value, source);
+      if (!before) {
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "set.created",
+            payload: {
+              via: "api/decision-sets",
+              source,
+              title: set.title,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        requestAlertTick();
+      }
+      const pageUrl = decisionsPageUrl(set);
+      return json({ setId: set.setId, pageUrl, url: pageUrl, created: !before }, before ? 200 : 201);
+    } catch (err) {
+      console.error(`decision-sets submit: raise failed (${err instanceof Error ? err.message : "error"})`);
+      return json({ error: "decision set raise failed" }, 500);
+    }
+  }
+  // Decision-set events: read (activity processor polling) + report
+  // (the page's draft/edit events). Two prefixes name the same routes:
+  // /api/decision-sets/<setId>/events (the documented contract) and
+  // /api/decisions/<setId>/events (the page's own prefix).
+  // Auth: the intake bearer OR the per-set token (as ?t=, as a bearer,
+  // or — for POST — as body.token). Nothing about the set's events is
+  // served without one of them.
+  const decisionEventsMatch = /^\/api\/(?:decision-sets|decisions)\/([^/]+)\/events$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionEventsMatch) {
+    const setId = decodePathSegment(decisionEventsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set) return json({ error: "unknown set" }, 404);
+    const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const tokenOk = (t: unknown): boolean => typeof t === "string" && t.length > 0 && t === set.token;
+    if (req.method === "GET") {
+      const qToken = url.searchParams.get("t") ?? "";
+      if (!tokenOk(qToken) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const since = url.searchParams.get("since") ?? undefined;
+      const limitRaw = Number(url.searchParams.get("limit") ?? "");
+      const page = await readDecisionEvents(cfg.decisionsEventsFile, setId, {
+        since,
+        ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+      });
+      return json({ setId, events: page.events, nextCursor: page.nextCursor, count: page.count });
+    }
+    let evBody: { token?: unknown; events?: unknown };
+    try {
+      evBody = (await readJsonBody(req)) as typeof evBody;
+    } catch {
+      return json({ error: "invalid events body" }, 400);
+    }
+    if (!tokenOk(evBody.token) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!Array.isArray(evBody.events) || evBody.events.length < 1 || evBody.events.length > 32) {
+      return json({ error: "events must be an array of 1-32 entries" }, 400);
+    }
+    const inputs: DecisionEventInput[] = [];
+    for (const rawEv of evBody.events) {
+      const ve = validateDecisionEventInput(rawEv);
+      if (!ve.ok) return json({ error: ve.error }, 400);
+      inputs.push({
+        setId,
+        type: ve.value.type,
+        ...(ve.value.questionRef ? { questionRef: ve.value.questionRef } : {}),
+        payload: ve.value.payload,
+      });
+    }
+    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(
+      () => null,
+    );
+    if (!stored) return json({ error: "event append failed" }, 500);
+    return json({ appended: stored.length, eventIds: stored.map((e) => e.eventId) });
+  }
+  // --- Decision sets (#8766) -------------------------------------------
+  // --- Decision-sets index (#8867) --------------------------------------
+  // GET /decisions: every set in the store, counts computed live at
+  // request time. The index carries no token of its own — it sits behind
+  // the same access as the rest of the aggregator (tailnet origin /
+  // Cloudflare Access), and each row links onward to the set's own
+  // token-carrying page.
+  if (req.method === "GET" && path === "/decisions") {
+    const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
+    const viewParam = url.searchParams.get("view");
+    // Default is the rolling last-7-days window (#14064): the landing
+    // view is the current workload, with all-time behind the toggle.
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
+    return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
+  }
+  const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
+  if (req.method === "GET" && decisionsPageMatch) {
+    const setId = decodePathSegment(decisionsPageMatch[1]);
+    const token = url.searchParams.get("t") ?? "";
+    const set = setId === null ? null : await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    // Unknown set or token mismatch: 403, and the set is never rendered
+    // — the per-set token is the only authority here.
+    if (!set || !token || token !== set.token) return html(renderDecisionsForbidden(), 403);
+    return html(renderDecisionsPage(set));
+  }
+  const decisionsSubmitMatch = /^\/api\/decisions\/([^/]+)\/submit$/.exec(path);
+  if (req.method === "POST" && decisionsSubmitMatch) {
+    const setId = decodePathSegment(decisionsSubmitMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; submissions?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedSubs = parseDecisionSubmissions(body.submissions);
+    if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+    const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = parsedSubs.value.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+    );
+    return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
+  }
+  const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
+  if (req.method === "POST" && decisionsDeferMatch) {
+    const setId = decodePathSegment(decisionsDeferMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: {
+      token?: unknown;
+      lean?: unknown;
+      ledgerIds?: unknown;
+      allRemaining?: unknown;
+      submissions?: unknown;
+      comment?: unknown;
+    };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid defer body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!isDeferLean(body.lean)) {
+      return json({ error: "lean must be none|skeptical|approve" }, 400);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    // Filled answers win over the bulk defer (#8766): submissions the
+    // page gathered from filled-in fields are recorded FIRST, and only
+    // the still-unanswered questions in scope are deferred.
+    let submissions: DecisionSubmission[] = [];
+    if (body.submissions !== undefined) {
+      const parsedSubs = parseDecisionSubmissions(body.submissions);
+      if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
+      submissions = parsedSubs.value;
+    }
+    const result = await deferWithSubmissions(
+      cfg.decisionsFile,
+      setId,
+      submissions,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      body.lean,
+      typeof body.comment === "string" ? body.comment : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents([
+      ...result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = submissions.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+      ...(result.deferredCount > 0
+        ? [
+            {
+              setId,
+              type: "defer" as const,
+              payload: {
+                bulk: true,
+                deferredCount: result.deferredCount,
+                lean: body.lean as string,
+                scope: all ? "allRemaining" : "checked",
+              },
+            } satisfies DecisionEventInput,
+          ]
+        : []),
+    ]);
+    return json({
+      outcomes: result.outcomes,
+      deferredCount: result.deferredCount,
+      ...decisionSetOpenState(result.set),
+    });
+  }
+  const decisionsReqInfoMatch = /^\/api\/decisions\/([^/]+)\/request-info$/.exec(path);
+  if (req.method === "POST" && decisionsReqInfoMatch) {
+    const setId = decodePathSegment(decisionsReqInfoMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    let body: { token?: unknown; note?: unknown; ledgerIds?: unknown; allRemaining?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid request-info body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const all = body.allRemaining === true;
+    const ledgerIds = Array.isArray(body.ledgerIds)
+      ? body.ledgerIds.filter((x): x is string => typeof x === "string")
+      : [];
+    if (!all && ledgerIds.length === 0) {
+      return json({ error: "ledgerIds or allRemaining required" }, 400);
+    }
+    const result = await requestInfoOpenQuestions(
+      cfg.decisionsFile,
+      setId,
+      all ? { allRemaining: true as const } : { ledgerIds },
+      typeof body.note === "string" ? body.note : undefined,
+    );
+    if (!result) return json({ error: "unknown set" }, 404);
+    if (result.requestedCount > 0) {
+      await logDecisionEvents([
+        {
+          setId,
+          type: "request-info",
+          payload: {
+            bulk: true,
+            requestedCount: result.requestedCount,
+            scope: all ? "allRemaining" : "checked",
+            ...(typeof body.note === "string" && body.note ? { note: body.note.slice(0, 2000) } : {}),
+          },
+        },
+      ]);
+    }
+    return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
+  }
+
+  // --- Decision-set aging operators (#14064) ---------------------------
+  // Dismiss and sweep sit behind the alerts-intake bearer (operator
+  // surface, same as the alert writes): they close questions without
+  // a per-set token, so no token path may reach them.
+  if (req.method === "POST" && path === "/api/decisions/dismiss") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { setIds?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid dismiss body" }, 400);
+    }
+    if (!Array.isArray(body.setIds) || body.setIds.length > 512) {
+      return json({ error: "setIds must be an array of up to 512 set ids" }, 400);
+    }
+    const setIds = body.setIds.filter((x): x is string => typeof x === "string" && x.length > 0);
+    const result = await dismissDecisionSets(cfg.decisionsFile, setIds);
+    return json(result);
+  }
+  if (req.method === "POST" && path === "/api/decisions/sweep") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { answeredElsewhere?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid sweep body" }, 400);
+    }
+    if (!Array.isArray(body.answeredElsewhere) || body.answeredElsewhere.length > 1024) {
+      return json({ error: "answeredElsewhere must be an array of up to 1024 entries" }, 400);
+    }
+    const answeredElsewhere = (body.answeredElsewhere as Array<Record<string, unknown>>)
+      .filter((e) => e && typeof e === "object" && typeof e.qid === "string" && e.qid)
+      .map((e) => ({
+        qid: e.qid as string,
+        ...(typeof e.optionId === "string" ? { optionId: e.optionId } : {}),
+        ...(typeof e.optionLabel === "string" ? { optionLabel: e.optionLabel } : {}),
+        ...(typeof e.freeText === "string" ? { freeText: e.freeText } : {}),
+        ...(typeof e.comment === "string" ? { comment: e.comment } : {}),
+      }));
+    const result = await sweepDecisionSets(cfg.decisionsFile, answeredElsewhere);
+    return json(result);
+  }
+  const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
+    const setId = decodePathSegment(decisionsDraftsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (req.method === "GET") {
+      const token = url.searchParams.get("t") ?? "";
+      // Unknown set or token mismatch: 403, nothing about the set's
+      // drafts is shown without the correct link.
+      if (!set || !token || token !== set.token) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const drafts = await getDecisionDrafts(cfg.decisionsFile, setId).catch(() => null);
+      return json({
+        drafts: drafts ?? { questions: {}, bulk: [], bulkLean: "", bulkNote: "", updatedAt: "" },
+      });
+    }
+    let body: { token?: unknown; drafts?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid drafts body" }, 400);
+    }
+    // No bearer: the per-set token is the authority.
+    if (!set || typeof body.token !== "string" || body.token !== set.token) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    const parsedDrafts = validateDecisionDraftUpsert(body.drafts);
+    if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
+    const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
+    if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.applied.map((qid) => {
+        const entry = result.drafts.questions[qid];
+        const ledgerId = qid.slice(0, qid.lastIndexOf("#")) || qid;
+        return {
+          setId,
+          type: "draft" as const,
+          questionRef: questionRefFor(set, ledgerId, qid),
+          payload: {
+            ...(entry?.opt ? { opt: entry.opt } : {}),
+            ...(entry?.opts ? { opts: entry.opts } : {}),
+            ...(entry?.ft ? { freeText: entry.ft.slice(0, 2000) } : {}),
+            ...(entry?.lean ? { lean: entry.lean } : {}),
+            ...(entry?.note ? { note: entry.note.slice(0, 2000) } : {}),
+          },
+        } satisfies DecisionEventInput;
+      }),
+    );
+    return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
+  }
+  const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
+  if (req.method === "POST" && alertActionMatch) {
+    const id = alertActionMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const result = alertActionMatch[2] === "ack" ? await store.ackIncident(id) : await store.closeIncident(id);
+    if (!result.incident) return json({ error: "no such incident", id }, 404);
+    return json({ incident: result.incident, transitioned: result.transitioned });
+  }
+  // Per-incident read (#12602): the incident plus its full ledger
+  // event history — C6's detail path for the healthHook incident
+  // records stored on the opened/closed event details.
+  const alertReadMatch = /^\/api\/alerts\/([\w-]+)$/.exec(path);
+  if (req.method === "GET" && alertReadMatch) {
+    const id = alertReadMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    return json({ incident, events });
+  }
+  if (path === "/alerts" || path === "/api/alerts.json") {
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const [incidents, events, subscriptions] = await Promise.all([
+        store.listIncidents(),
+        store.recentEvents(),
+        store.listSubscriptions(),
+      ]);
+      if (path === "/api/alerts.json") return json({ incidents, events });
+      return html(
+        renderAlerts(
+          { available: true, incidents, events, subscriptions, ackWindowMin: cfg.alerts.ackWindowMin },
+          prov(),
+          VAPID_PUBLIC_KEY,
+        ),
+      );
+    } catch {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/alerts/preferences" || path === "/api/alerts/preferences.json") {
+    // #3318: subscription preferences — per-class toggles, quiet
+    // hours, this-browser state, per-class test sends. Writes go
+    // through the existing /api/push/subscriptions upsert; this
+    // route only reads the stored subscriptions for the form.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const subscriptions = await store.listSubscriptions();
+      if (path === "/api/alerts/preferences.json")
+        return json({
+          available: true,
+          subscriptions: subscriptions.map(toPublicSubscription),
+          classes: NOTIFICATION_CLASSES,
+          defaults: NOTIFICATION_CLASS_DEFAULTS,
+        });
+      return html(renderNotificationPreferences({ available: true, subscriptions }, prov(), VAPID_PUBLIC_KEY));
+    } catch {
+      return path === "/alerts/preferences"
+        ? html(renderNotificationPreferences({ available: false, subscriptions: [] }, prov(), VAPID_PUBLIC_KEY))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/notifications" || path === "/api/notifications.json") {
+    // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+    // Same reachability as every dashboard page (the tailnet origin);
+    // the only alerts write surface stays the bearer-gated intake.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const sends = await store.listSends();
+      const rollup = rollupNotificationSends(sends, new Date());
+      if (path === "/api/notifications.json") return json(rollup);
+      return html(renderNotifications({ available: true, rollup }, prov()));
+    } catch {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/api/health") {
+    // #1267: prime first — health's answer must not depend on
+    // request order. `sections` carries the structured diagnosis
+    // (#1140) beside the provenance strings for machine consumers.
+    // #1147 extends the shape in place (services/feed/pages/jobs
+    // added from the same assembly /health renders; the existing
+    // status/source/sections keys are unchanged).
+    const [view, hostHealth] = await Promise.all([
+      healthContext(),
+      // #3989 criterion 6: expose the collector's active host and the
+      // newest verified backup generation (date / finish time / hash /
+      // destinations) on the existing machine health surface. A failed
+      // or unreadable generation remains explicit; never synthesize a
+      // healthy restore point from missing data.
+      readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+    ]);
+    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    body.hostHealth = hostHealth
+      ? { host: hostHealth.host, backup: hostHealth.backup }
+      : { host: null, backup: null, state: "unavailable" };
+    const diag = source.diagnostics?.();
+    if (diag) body.sections = diag;
+    body.services = view.services.map((s) => ({
+      id: s.def.id,
+      state: s.state,
+      ok: s.ok,
+      detail: s.detail,
+      ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+    }));
+    body.feed = {
+      generatedAt: view.feed.generatedAt,
+      fileMtime: view.feed.fileMtime,
+      sections: view.feed.sections,
+    };
+    body.quotaGatherer = view.quotaGatherer;
+    body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
+    body.jobs = view.jobs;
+    body.comments = view.comments;
+    body.conflicts = view.conflicts;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
+    // #3976: push health (journal + reconciler state) reaches the
+    // machine surface too, from the same assembly /health renders.
+    body.push = view.push;
+    body.degraded = view.degraded;
+    return json(body);
+  }
+
+  const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);
+  const itemMatch = /^\/item\/(.+)$/.exec(path);
+  const matchedItemPath = itemJsonMatch ?? itemMatch;
+  if (matchedItemPath) {
+    // #2748: same guard as /discuss — JSON 400 on malformed encoding.
+    const encodedId = matchedItemPath[1];
+    const id = decodePathSegment(encodedId);
+    if (id === null) {
+      return json({ error: `malformed percent-encoding in path segment: ${encodedId}` }, 400);
+    }
+    const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
+    const roadmapRow = rows.find((r) => r.subject === id);
+    const subject = board.find((b) => b.id === id) ?? roadmapRow;
+    if (subject) {
+      const title = subject.title;
+      const links = subject.links;
+      const refs = allRefs([subject]);
+      const activityRefs = [...new Set([id, ...refs].map((ref) => ref.replace(/^gh:/i, "")))];
+      const activityQuery = new URLSearchParams();
+      for (const ref of activityRefs) activityQuery.append("ref", ref);
+      const [itemEvents, itemGaps] = await Promise.all([
+        eventsStore.list({ refs: activityRefs }),
+        activityStore.gaps(),
+      ]);
+      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
+        await Promise.all([
+          source.items(refs).catch(() => new Map()),
+          source.comments(refs).catch(() => []),
+          commentsStore.all(),
+          source.registry().catch(() => []),
+          source.projects().catch(() => []),
+          source.orchestration().catch(() => null),
+          actionsStore.all(),
+          roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+        ]);
+      const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
+      const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
+      const briefs = buildBriefs(pool, {
+        comments: briefComments,
+        orchestration,
+        orchestrationStatus: source.diagnostics?.().orchestration.state,
+      });
+      // Dashboard comments for this item live on its own subject ref
+      // and on each linked GitHub ref (gh:<ref>) — one merged thread.
+      const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
+      const dashComments = allComments.filter((c) => wanted.has(c.objectRef));
+      const sessions = records.filter((r) => r.taskRefs.some((ref) => refs.includes(ref)));
+      // #1154: when one of the item's refs is in the Project pool, the
+      // item page carries the status-request control for that pool item.
+      const pooled = pool.find((p) => refs.includes(p.ref));
+      const genealogy = pooled ? deriveGenealogy(pooled, pool) : null;
+      const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
+      const dispatchStates = await readyAgentDispatchStates(items);
+      if (itemJsonMatch) {
+        return json({
+          subject,
+          linkedItems: [...items.values()],
+          dispatchStates,
+          ...(genealogy ? { ancestors: genealogy.ancestors, release: genealogy.release } : {}),
+        });
+      }
+      const extras = {
+        dashComments,
+        ...(roadmapRow ? { roadmapAnnotations } : {}),
+        formRef: id,
+        serviceLinks: itemServiceLinks(subject),
+        formOpts: await commentFormOpts(refs),
+        sessions,
+        actions: allActions.filter((a) => wanted.has(a.objectRef)),
+        ...(pooled
+          ? {
+              statusRequest: {
+                objectRef: ghObjectRef(pooled.ref),
+                targetRef: pooled.ref,
+                currentStatus: pooled.status ?? null,
+              },
+            }
+          : {}),
+        ...(epicRollup ? { epicRollup } : {}),
+        ...(genealogy ? { genealogySentence: genealogy.sentence } : {}),
+        briefs,
+        ...(dispatchStates.length ? { dispatchStates } : {}),
+        activity: {
+          events: itemEvents,
+          globalHref: `/events?${activityQuery.toString()}`,
+          gaps: itemGaps,
+          coverage: ACTIVITY_SOURCE_COVERAGE,
+        },
+      };
+      return html(renderItem(title, id, links, items, comments, prov(), extras));
+    }
+    // #4969 (Codex on PR #5283): an unresolved /api/item/<id>.json id
+    // gets the structured JSON 404, not the HTML page response.
+    if (itemJsonMatch) return notFoundResponse(path);
+    return html(
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
+      404,
+    );
+  }
+
+  return notFoundResponse(path);
+}
+
+/**
+ * #1147's render registry: every successful HTML page render is
+ * recorded against its manifest route (subroutes count toward their
+ * parent page), so /health can report each page's real last-render
+ * time — measured from actual traffic, never self-probed. The mapping
+ * lives with the manifest (#1135) so nav reachability and render
+ * attribution can never disagree.
+ */
+
+async function fetchHandler(req: Request, remoteAddress?: string): Promise<Response> {
+  // #1211: the top-level error boundary. A throwing handler degrades
+  // to a styled 500 page (JSON for /api) instead of rejecting the
+  // fetch; the render-health record below still runs, accounting the
+  // failure as an unsuccessful render.
+  let res: Response;
+  try {
+    res = await dashboardResponseWithinDeadline(req, () => handler(req, remoteAddress));
+  } catch (err) {
+    console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
+    res = errorBoundaryResponse(new URL(req.url).pathname, err);
+  }
+  if (req.method === "GET") {
+    const route = manifestRouteFor(new URL(req.url).pathname);
+    if (route && (res.headers.get("content-type") ?? "").includes("text/html")) {
+      recordRender(route, res.status < 400);
+    }
+  }
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
+}
+
+/** Per-socket state for the /ws/prompt/:id channel (#10033 S3). */
+interface PromptWsData {
+  promptId: string;
+  session?: PromptWsSession;
+}
+
+/**
+ * #10033 S3: upgrade a /ws/prompt/:id request. An unknown prompt id is
+ * a plain 404 JSON response (no upgrade attempted); a refused upgrade
+ * is a 400. On success the websocket handlers below own the socket and
+ * this fetch returns nothing further.
+ */
+async function promptWsUpgrade(
+  req: Request,
+  server: Bun.Server<PromptWsData>,
+  pathname: string,
+): Promise<Response | undefined> {
+  const id = decodeURIComponent(pathname.slice("/ws/prompt/".length));
+  const prompt = await promptsStore.get(id);
+  if (!prompt) return json({ error: "prompt not found" }, 404);
+  if (server.upgrade(req, { data: { promptId: id } })) return undefined;
+  return json({ error: "websocket upgrade failed" }, 400);
+}
+
+// One server per bind address (PM_AGG_HOSTS). Deployment on the
+// laptop binds loopback + the tailnet address, like Pad/Grist — no
+// public route (Drew, 2026-10-25: public only behind a password).
+const servers = cfg.hosts.map((hostname) =>
+  Bun.serve<PromptWsData>({
+    hostname,
+    port: cfg.port,
+    // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
+    // Bun's 10s default idle timeout and the patch response gets killed
+    // mid-render; 60s gives the heavy contexts room without going unbounded.
+    idleTimeout: 60,
+    fetch(req, server) {
+      const pathname = new URL(req.url).pathname;
+      // #10033 S3: the sync-ws channel upgrades ahead of the ordinary
+      // request pipeline — it is a socket, not a rendered response.
+      if (pathname.startsWith("/ws/prompt/")) return promptWsUpgrade(req, server, pathname);
+      if (req.method === "POST" && pathname === "/api/prompt") {
+        // A sync-block submission may legitimately hold its request for
+        // the full configured answer wait (120s default), past the 60s
+        // socket idle timeout above; lift this request's cap to cover
+        // the wait plus margin (Bun caps the value at 255).
+        server.timeout(req, Math.min(255, Math.ceil(cfg.promptSyncTimeoutMs / 1000) + 5));
+      }
+      // #9608: the peer address rides along so the outage-queueing
+      // path can require a stack-local origin (design #1253 §6).
+      return fetchHandler(req, server.requestIP(req)?.address);
+    },
+    websocket: {
+      open(ws) {
+        const session = createPromptWsSession({
+          store: promptsStore,
+          promptId: ws.data.promptId,
+          socket: {
+            send: (data) => {
+              ws.send(data);
+            },
+            close: (code, reason) => {
+              ws.close(code, reason);
+            },
+          },
+          timeoutMs: cfg.promptSyncTimeoutMs,
+        });
+        ws.data.session = session;
+        void session.start();
+      },
+      message() {
+        // The channel is server-to-client only; inbound frames are ignored.
+      },
+      close(ws) {
+        ws.data.session?.stop();
+      },
+    },
+  }),
+);
+
+for (const server of servers) {
+  console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
+}
+
+// #5082: warm the quota-analytics aggregates once at boot, and the
+// page assemblies with them. The aggregates warm-up no longer calls
+// buildQuotaAnalytics synchronously: the first build's unsliced scans
+// measure ~12 s of uninterrupted event-loop time over the 21 GB
+// ledger, and a request that arrived during the old warm-up queued
+// behind the whole window — the first /api/program.json after a
+// restart measured 26.4 s against ~0.03 s warm (2026-11-13
+// follow-up). primeAttemptAggregates fills the same cache through
+// the day-sliced stale-while-revalidate refresh instead, so the loop
+// stays responsive; later builds ride that cache as before, and a
+// /quota request landing before the prime settles still pays the
+// synchronous cold build on its own path (unchanged semantics).
+// programSources joins the warmed assemblies in the same follow-up:
+// it was the one major assembly left out, so /program's first
+// post-restart request always paid its cold fan-out on the request
+// path, inside whatever loop backlog the boot window left behind.
+setTimeout(() => {
+  void (async () => {
+    try {
+      primeAttemptAggregates();
+      await Promise.allSettled([
+        boardContext(),
+        overviewContext(),
+        todayContext(),
+        programSources(),
+        commentIdentities(),
+      ]);
+      // #9781: warm the briefs' latest comments for the program pool
+      // too — the board briefs read a subset of the same refs, so one
+      // prime covers both pages, and neither page's first post-restart
+      // request pays the per-ref projector fan-out.
+      const warmed = await programSources().catch(() => null);
+      if (warmed?.pool.length) {
+        await briefCommentsFor(warmed.pool.map((p) => p.ref));
+      }
+    } catch {
+      // fail-soft: the first real request retries its own assembly
+    }
+  })();
+}, 0);
+
+// Cross-process publishers get a separate loopback-only listener; never
+// add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
+const freshnessIpcServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: cfg.freshnessPort,
+  fetch: createFreshnessIpcHandler(freshnessStore),
+});
+console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// #3976: start the anti-entropy loop in live mode — one pass now,
+// then the 5-minute cadence. Fixtures mode has no journal to reconcile.
+if (cfg.source === "live") {
+  void freshnessReconciler.reconcile().catch(() => undefined);
+  freshnessReconciler.start();
+}
+
+// #8570: pm-core consolidation — in live mode the quota gatherer and
+// the fleet-feed collector also run as in-process schedulers on the
+// seam's cadences (quota 15 minutes, fleet-feed 5 minutes), ahead of
+// the systemd timer-unit cutover (a later slice of this issue).
+// Shutdown is tied to process signals inside the wiring.
+if (cfg.source === "live") {
+  startPmCoreSchedulers({ feedFile: cfg.feedFile });
+}
+
+// Collector feeds are replaced on a ~5-minute cadence. Land their
+// snapshot records from a server-owned writer tick rather than from
+// usage() so GET /quota and /quota/service/* never require store writes.
+const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
+if (source.ingestSnapshots) {
+  let snapshotIngestRunning = false;
+  const ingestSnapshots = async (): Promise<void> => {
+    if (snapshotIngestRunning) return;
+    snapshotIngestRunning = true;
+    try {
+      await source.ingestSnapshots?.();
+    } catch {
+      // Feed and store failures are retried on the next tick; reads stay up.
+    } finally {
+      snapshotIngestRunning = false;
+    }
+  };
+  void ingestSnapshots(); // recover the latest feed immediately on startup
+  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
+// The hot-list consumer is a server-owned writer just like snapshot
+// ingestion: it runs immediately on startup and then periodically, never
+// as a side effect of rendering a page. A failed sweep leaves the remote
+// checkpoint untouched and is retried on the next tick.
+const GITHUB_HOT_LIST_INTERVAL_MS = 60_000;
+if (githubHotListConsumer) {
+  let githubSyncRunning = false;
+  const syncGithubHotList = async (): Promise<void> => {
+    if (githubSyncRunning) return;
+    githubSyncRunning = true;
+    try {
+      await githubHotListConsumer.sync();
+      if (githubOutcomeConsumer) {
+        const outcome = await githubOutcomeConsumer.sync();
+        if (outcome.error) {
+          console.error(`[activity] WARNING: GitHub outcome sync ${outcome.state}: ${outcome.error}`);
+        }
+      }
+    } catch (error) {
+      console.error(
+        `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      githubSyncRunning = false;
+    }
+  };
+  void syncGithubHotList();
+  const timer = setInterval(() => void syncGithubHotList(), GITHUB_HOT_LIST_INTERVAL_MS);
+  timer.unref?.();
+} else {
+  void activityStore.setSourceStatus(unconfiguredGithubStatus()).catch((error) => {
+    console.error(
+      `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+}
+
+// SLO sampler (#9988): one sample per facet per minute, appended to the
+// journal from the same health view /health renders. Live mode only.
+const SLO_SAMPLE_INTERVAL_MS = 60_000;
+if (cfg.source !== "fixtures") {
+  let sloSampling = false;
+  const sampleSlo = async (): Promise<void> => {
+    if (sloSampling) return;
+    sloSampling = true;
+    try {
+      const view = await healthContext(false);
+      await sloJournal.append(sampleSloFacets(view, Date.now()));
+    } catch (error) {
+      console.error(`[slo] WARNING: SLO sample failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      sloSampling = false;
+    }
+  };
+  void sampleSlo();
+  const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
+}
+
+// #9991: the §4 escalation sinks — the real journal/feed/push surfaces
+// escalation.ts's delivery step was built against. Journal: the
+// aggregator's append-only watchdog journal (the SLO journal file,
+// where the watchdog heartbeat already rides). Feed: the activity
+// stream #1148's watchdog reports into. Push: the page-health-push
+// path — sendPush fanned out over the alerts store's subscriptions
+// with the incident class enabled, sends logged like the test-push
+// path (design §6 question 1 is unanswered, so the interim channel is
+// the existing one, per #9991's acceptance). The push sink receives
+// only the page payload, so its sends-ledger rows carry the stable
+// objectRef below; the journal and feed entries carry the facet.
+const ESCALATION_PAGE_OBJECT_REF = "watchdog-escalation";
+const escalationSink: EscalationSink = {
+  journal: async (entry) => {
+    await sloJournal.append([escalationJournalLine(entry)]);
+  },
+  feedEvent: async (entry) => {
+    const result = await recordActivity([escalationDelivery(entry)]);
+    if (result.failed > 0) {
+      throw new Error(`activity ingestion failed for ${result.failedIds.join(", ")}`);
+    }
+  },
+  push: async (page) => {
+    const store = await getAlertsStore();
+    if (!store) return { ok: false, gone: false, error: "alerts store unavailable" };
+    const subs = (await store.listSubscriptions()).filter((sub) => classEnabled(sub, "incident"));
+    if (subs.length === 0) {
+      return { ok: false, gone: false, error: "no push subscription has the incident class enabled" };
+    }
+    const payload: PushPayload = {
+      class: "incident",
+      objectRef: ESCALATION_PAGE_OBJECT_REF,
+      url: `${cfg.publicOrigin}/alerts`,
+      title: page.title,
+      body: page.body,
+    };
+    let sent = 0;
+    let lastError = "push was not delivered";
+    for (const sub of subs) {
+      const outcome = await sendPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
+      if (outcome.ok) {
+        sent += 1;
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "sent" });
+        await store.noteSubscriptionAlive(sub.endpoint);
+      } else if (outcome.gone) {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "gone" });
+        await store.noteSubscriptionGone(sub.endpoint);
+        lastError = outcome.error;
+      } else {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "error" });
+        lastError = outcome.error;
+      }
+    }
+    return sent > 0 ? { ok: true, status: 201 } : { ok: false, gone: false, error: lastError };
+  },
+};
+
+const escalationTicker = createEscalationTicker({
+  summaries: (now) => sloSummaries(now),
+  // No remediation executor host exists yet (escalation-tick.ts's seam
+  // note): the empty state is the stack's actual remediation
+  // condition — nothing attempted, nothing in flight, no breaker open.
+  remediationState: (now) => emptyState(now),
+  sink: escalationSink,
+});
+
+// Watchdog derivation must not depend on dashboard traffic or push
+// subscriptions. Its heartbeat is written only after deriveWatchdogItems
+// completes health/audit reads and gap sync. Keep this timer independent
+// of the alert engine and attention routes: their availability is not
+// evidence that the watchdog itself ran.
+const WATCHDOG_RUN_INTERVAL_MS = 5 * 60_000;
+if (cfg.source === "live") {
+  let watchdogRunInProgress = false;
+  const runWatchdog = async (): Promise<void> => {
+    if (watchdogRunInProgress) return;
+    watchdogRunInProgress = true;
+    try {
+      // Refresh the live orchestration diagnosis before deriving cards.
+      // A source failure is not a successful watchdog pass.
+      await source.orchestration();
+      await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
+      // #9991: the §4 escalation pass rides the same scheduled tick,
+      // in its own try/catch — an escalation failure must not fail
+      // the watchdog pass whose heartbeat deriveWatchdogItems wrote.
+      try {
+        await escalationTicker.tick();
+      } catch (error) {
+        console.error(
+          `[watchdog] WARNING: escalation pass failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      watchdogRunInProgress = false;
+    }
+  };
+  void runWatchdog();
+  const timer = setInterval(() => void runWatchdog(), WATCHDOG_RUN_INTERVAL_MS);
+  timer.unref?.();
+}
+
+// The alert throat's engine (#3676): the ~60s delivery/escalation
+// tick (live mode only, fail-soft — see src/alerts.ts).
+startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
+  const [
+    attention,
+    quota,
+    health,
+    actions,
+    comments,
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+    opencodeConfigText,
+  ] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
+    listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []),
+    listOpenDecisionSets(cfg.decisionsFile).catch(() => []),
+    listStackHealthDown(cfg.stackHealthFile).catch(() => []),
+    readStackHealthStates(cfg.stackHealthFile).catch(() => ({})),
+    // #8882: the section-risk join reads the deployed config's route
+    // leaf sets; a missing/unreadable config yields no membership.
+    readFile(cfg.opencodeConfigFile, "utf8").catch(() => ""),
+  ]);
+  const drewActivity = [
+    ...actions
+      .filter((action) => action.author.kind === "drew")
+      .map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments
+      .filter((comment) => comment.author.kind === "drew")
+      .map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+  ];
+  return {
+    attention: attention.view,
+    quota,
+    health,
+    drewActivity,
+    soleDoorPoolIds: deriveSoleDoorPoolIds(quota),
+    sectionPools: sectionPoolIdsFromConfig(
+      opencodeConfigText,
+      quota.pools.map((pool) => pool.id),
+    ),
+    needsDrewRaised,
+    decisionSets,
+    stackHealthDown,
+    stackHealthStates,
+  };
+});
+
+// The notify relay's laptop half (#8569 Phase 2 step 1): ~60s
+// heartbeats to the pm-notify edge Durable Object + the
+// subscription mirror that authorizes its sends. A no-op until
+// PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
+// and fail-soft once running — the edge is a mirror of this
+// stack, never a dependency of it.
+startNotifyRelay(cfg, () => getAlertsStore());

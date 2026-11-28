@@ -1,0 +1,21 @@
+{
+  "description": "fleet-hosted (#12583, component C of #9081): the hosted fleet front door \u2014 one Cloudflare Worker with route modules for the stamping, query, queue, ingestion and sync doors over one auth/tenancy plumbing layer. Real: RP-token auth validation, tenancy mapping, health/capabilities (#12583), the session registry (#12584), stamp signatures (#12586), the stamping create path (#12585), the Metadata query surface (#12587), the queue front door (#12589), the ingestion receiver + sweeper (#12590), and the sync door (#12591) \u2014 every component-C door is live, plus the direct-Turso read path's token mint + scope inspector (#12592) and the thin TS CLI that carries callers to all of them (#12588). Local-only; no deployment.",
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  },
+  "name": "fleet-hosted",
+  "private": true,
+  "bin": {
+    "fleet-hosted": "./cli.ts"
+  },
+  "scripts": {
+    "cli": "node --experimental-transform-types cli.ts",
+    "dev": "wrangler dev",
+    "smoke": "node --experimental-transform-types smoke/smoke.mjs",
+    "test": "node --experimental-transform-types --test test/auth.test.ts test/tenancy.test.ts test/capabilities.test.ts test/doors.test.ts test/sessions.test.ts test/session-parity.test.ts test/stamp-sig.test.ts test/stamping.test.ts test/github.test.ts test/query.test.ts test/query-cli.test.ts test/queue.test.ts test/libsql-queue-parity.test.ts test/ingestion.test.ts test/backfill.test.ts test/backfill-cli.test.ts test/sync.test.ts test/sync-cli.test.ts test/direct-read.test.ts test/cli.test.ts test/bridge.test.ts test/libsql-hrana-parity.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

@@ -1,0 +1,26 @@
+[package]
+name = "atlas-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Atlas search semantics as a library: filters and sensitivity ceilings, FTS + vector branches, RRF fusion, the result envelope, Turso and Local backends. A faithful port of the Python atlas_search.py (developing-today/code#5352, design section 4)."
+
+[dependencies]
+atlas-embed = { path = "../atlas-embed" }
+atlas-proto = { path = "../atlas-proto" }
+base64 = "0.23"
+blake3 = "1"
+rusqlite = { version = "0.43", features = ["bundled", "functions"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+unicode-normalization = "0.1"
+zstd = "0.14"
+thiserror = "2"
+ureq = { version = "3", features = ["rustls"] }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+# Same proptest version the fleet-queue / pkgs-id crates use.
+proptest = "1.12"

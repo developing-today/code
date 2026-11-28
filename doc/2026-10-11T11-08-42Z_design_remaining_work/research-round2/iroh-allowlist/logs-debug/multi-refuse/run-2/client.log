@@ -1,0 +1,17 @@
+2026-10-11T17:26:45.172381Z  INFO harness: dialing with one loopback hint role="client" event="start" me=ed4928c628 kind=connect ticket=[127.0.0.1:48149]
+2026-10-11T17:26:45.173340Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:26:45.173492Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=ResolveRemote(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state::path_state: added addressing information
+2026-10-11T17:26:45.173600Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: local addrs updated, triggering holepunching
+2026-10-11T17:26:45.173616Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: not holepunching: no connections
+2026-10-11T17:26:45.173638Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: Address Lookup not configured
+2026-10-11T17:26:45.175590Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=SendDatagram(..) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: sending datagram to all known paths paths=[Ip(127.0.0.1:48149)]
+2026-10-11T17:26:45.213844Z DEBUG noq_proto::connection: multipath negotiated initial_max_path_id=7
+2026-10-11T17:26:45.216328Z DEBUG noq_proto::connection: n0's nat traversal negotiated max_remote_addresses=32 max_local_addresses=32
+2026-10-11T17:26:45.227354Z TRACE RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(95571349276000) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:57988, 10.200.0.2:57988, 127.0.0.1:57988}
+2026-10-11T17:26:45.229265Z DEBUG RemoteStateActor{remote=8a88e3dd74}:handle_message{msg=AddConnection(95571349276000) send_tasks=FuturesUnorderedBounded { len: 0, .. }}:do_holepunching: iroh::_events::qnt::init: remote=8a88e3dd74 local_candidates={10.200.0.1:57988, 10.200.0.2:57988, 127.0.0.1:57988} remote_candidates={}
+2026-10-11T17:26:45.230925Z  INFO harness: connect() returned a Connection role="client" event="connect_ok" elapsed_ms=58.408902999999995 remote_info=["Ip(127.0.0.1:48149)/Active"]
+2026-10-11T17:26:45.267944Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:26:45.268580Z  INFO harness: peer closed role="client" event="closed_by_peer" elapsed_ms=96.07043499999999 why=closed by peer: not on allowlist (code 4097) dbg=ApplicationClosed(ApplicationClose { error_code: 4097, reason: b"not on allowlist" }) remote_info=["Ip(127.0.0.1:48149)/Active"]
+2026-10-11T17:26:45.471394Z  INFO harness: final snapshot role="client" event="remote_info_final" remote_info=["Ip(127.0.0.1:48149)/Active"]
+2026-10-11T17:26:45.471645Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor cancelled
+2026-10-11T17:26:45.471690Z TRACE RemoteStateActor{remote=8a88e3dd74}: iroh::socket::remote_map::remote_state: actor terminating

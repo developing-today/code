@@ -1,0 +1,15 @@
+{
+  "name": "message-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: remote MCP connector that sends and receives messages (transport only; the console is the website)",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "deploy": "echo 'deploy through the flake: nix run .#message-bridge-deploy' >&2; exit 1"
+  },
+  "devDependencies": {
+    "cf": "1.0.0-beta.20",
+    "wrangler": "4.147.0"
+  }
+}

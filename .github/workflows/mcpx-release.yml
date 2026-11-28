@@ -1,0 +1,391 @@
+# Automatic tag-push releases disabled by owner, 2026-11-13; manual snapshot remains.
+name: mcpx release
+
+# Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.3, §3, §5;
+# #1881). It produces channel 1 (release binaries + checksums), exercises
+# channel 2 (the curl|sh installer) against them, and builds channel 3 (the
+# container image) from the same version stamp -- publishing the image to
+# GHCR on a tag, building it only on a snapshot.
+#
+# mcpx lives in pkgs/mcpx of a monorepo, so its releases need a scheme that
+# cannot collide with another package's: tags are `mcpx/vX.Y.Z`, and this
+# workflow triggers on exactly that prefix.
+#
+# The version's single source is pkgs/mcpx/VERSION. A tag that disagrees with
+# it is refused before anything is built -- a release whose name and whose
+# `mcpx --version` differ is the failure this workflow exists to prevent.
+#
+# A manual run (workflow_dispatch) is a snapshot: it builds the same three
+# artifacts with the same script and uploads them as a workflow artifact,
+# without publishing a release. That run is the proof the release path works,
+# and it is how a person checks a change before tagging. The one exception
+# is a dispatch with publish=true (#9900): the container job then also
+# pushes the image to GHCR — the only publish path left for an existing
+# tag since tag-push triggers were disabled — while the GitHub-release
+# job stays push-only, so a dispatch never creates or re-creates a
+# release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (default: pkgs/mcpx/VERSION)"
+        required: false
+        type: string
+      publish:
+        description: "Publish the container image to GHCR for the version above (release publish; does not create a GitHub release)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+  packages: write
+
+# CI tier policy: see .github/ci-policy.md
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    name: "release: main-gate check"
+    # Manual runs are non-publishing snapshots; tag pushes must pass the gate.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require a green main-gate for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/release-gate.sh
+
+  artifacts:
+    name: "release: build artifacts"
+    needs: release-gate
+    # Keep dispatch snapshots runnable while requiring the gate for every
+    # tag-push path (including the GHCR container push below).
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release-gate.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          # Monorepo: setup-go looks for go.sum at the repository root unless
+          # told otherwise (same reason as .github/workflows/mcpx.yml).
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - name: Resolve the version, and refuse a tag that disagrees with it
+        id: version
+        working-directory: pkgs/mcpx
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          file_version=$(tr -d '\n' <VERSION)
+          if [ "$EVENT" = "push" ]; then
+            # mcpx/v1.2.3 -> 1.2.3
+            tag_version=${REF_NAME#mcpx/v}
+            if [ "$tag_version" != "$file_version" ]; then
+              echo "::error::tag $REF_NAME says $tag_version, pkgs/mcpx/VERSION says $file_version"
+              echo "Bump pkgs/mcpx/VERSION in the commit the tag points at, then re-tag."
+              exit 1
+            fi
+            version=$file_version
+          else
+            # A snapshot builds VERSION unless a version is given; it never
+            # publishes, so a mismatch here is a request, not a release.
+            version=${INPUT_VERSION:-$file_version}
+            version=${version#v}
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=mcpx/v$version" >>"$GITHUB_OUTPUT"
+          echo "building mcpx $version"
+
+      - name: Build the three static artifacts and their checksums
+        working-directory: pkgs/mcpx
+        run: ./scripts/release-artifacts.sh "$RUNNER_TEMP/artifacts" "${{ steps.version.outputs.version }}"
+
+      - name: Smoke-test the host binary's reported version
+        # The version stamp is the whole point of the ldflags wiring, so read
+        # it back off the artifact this runner can execute.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -C "$RUNNER_TEMP/smoke" -xzf "$RUNNER_TEMP/artifacts/mcpx-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz"
+          got=$("$RUNNER_TEMP/smoke/mcpx" --version)
+          echo "mcpx --version: $got"
+          case "$got" in
+          *"${{ steps.version.outputs.version }}"*) ;;
+          *) echo "::error::artifact reports '$got', expected ${{ steps.version.outputs.version }}"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/artifacts/*.tar.gz
+            ${{ runner.temp }}/artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  installer:
+    name: "release: installer exercise"
+    # The curl|sh installer (decision 0005 §2.2, §6.5) consumes the artifacts
+    # built above, so it is exercised here against a snapshot: install into a
+    # temp prefix and read the version back. A tag release also runs it, and
+    # `publish` waits for it, so a release cannot ship an installer that no
+    # longer works against the tarballs it just built.
+    needs: artifacts
+    # A skipped release-gate (push-only) skips the whole downstream chain
+    # unless each job opts back in: preserve dispatch snapshots here too.
+    if: always() && needs.artifacts.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: mcpx-${{ needs.artifacts.outputs.version }}
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Install the snapshot into a temp prefix
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+          MCPX_PREFIX: ${{ runner.temp }}/prefix
+        run: |
+          set -euo pipefail
+          sh pkgs/mcpx/scripts/install.sh
+          got=$("$MCPX_PREFIX/mcpx" --version)
+          echo "installed binary reports: $got"
+          case "$got" in
+          *"$MCPX_VERSION"*) ;;
+          *) echo "::error::installed binary reports '$got', expected $MCPX_VERSION"; exit 1 ;;
+          esac
+
+      - name: Resolve the default version past another package's release
+        # The default (no MCPX_VERSION) resolution must not use
+        # /releases/latest: that is the newest release of the whole repo,
+        # and other packages publish here too. Feed the installer a fixture
+        # releases list whose newest entry is a graph release, followed by
+        # an mcpx prerelease, followed by the real mcpx release.
+        env:
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+          MCPX_PREFIX: ${{ runner.temp }}/prefix-default
+        run: |
+          set -euo pipefail
+          version="${{ needs.artifacts.outputs.version }}"
+          cat >"$RUNNER_TEMP/releases.json" <<EOF
+          [
+            {
+              "tag_name": "graph/v9.9.9",
+              "draft": false,
+              "prerelease": false
+            },
+            {
+              "tag_name": "mcpx/v9.9.9",
+              "draft": false,
+              "prerelease": true
+            },
+            {
+              "tag_name": "mcpx/v$version",
+              "draft": false,
+              "prerelease": false
+            }
+          ]
+          EOF
+          MCPX_RELEASES_URL="file://$RUNNER_TEMP/releases.json" sh pkgs/mcpx/scripts/install.sh
+          got=$("$MCPX_PREFIX/mcpx" --version)
+          echo "default-resolved install reports: $got"
+          case "$got" in
+          *"$version"*) ;;
+          *) echo "::error::default resolution installed '$got', expected $version"; exit 1 ;;
+          esac
+
+      - name: Install system-wide with --system
+        # docs/install.md promises `sh -s -- --system` for /usr/local/bin.
+        # The runner owns /usr/local/bin, so no sudo is needed to prove the
+        # flag selects that prefix; an unknown argument must be refused
+        # before anything is downloaded or installed.
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+        run: |
+          set -euo pipefail
+          if sh pkgs/mcpx/scripts/install.sh --bogus 2>"$RUNNER_TEMP/err"; then
+            echo "::error::the installer accepted an unknown argument"
+            exit 1
+          fi
+          grep -q "unknown argument" "$RUNNER_TEMP/err" || {
+            echo "::error::unknown-argument refusal gave the wrong error:"
+            cat "$RUNNER_TEMP/err"
+            exit 1
+          }
+          rm -f /usr/local/bin/mcpx
+          sh pkgs/mcpx/scripts/install.sh --system
+          got=$(/usr/local/bin/mcpx --version)
+          echo "system-wide install reports: $got"
+          case "$got" in
+          *"$MCPX_VERSION"*) ;;
+          *) echo "::error::system-wide install reports '$got', expected $MCPX_VERSION"; exit 1 ;;
+          esac
+
+      - name: Refuse a tampered artifact
+        # The installer verifies the checksum; prove it by breaking one. An
+        # installer that only *says* it verifies teaches the wrong habit.
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_PREFIX: ${{ runner.temp }}/tampered-prefix
+        run: |
+          set -euo pipefail
+          cp -r "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/tampered"
+          asset="$RUNNER_TEMP/tampered/mcpx-$MCPX_VERSION-x86_64-linux.tar.gz"
+          printf 'x' >>"$asset"
+          if MCPX_BASE_URL="$RUNNER_TEMP/tampered" sh pkgs/mcpx/scripts/install.sh 2>"$RUNNER_TEMP/err"; then
+            echo "::error::the installer accepted an artifact whose checksum does not match"
+            exit 1
+          fi
+          grep -q "checksum mismatch" "$RUNNER_TEMP/err" || {
+            echo "::error::installer failed for the wrong reason:"
+            cat "$RUNNER_TEMP/err"
+            exit 1
+          }
+          echo "tampered artifact refused, as it must be"
+
+  container:
+    name: "release: container image"
+    # Channel 3 (decision 0005 §2.3, §6.6; Nix cutover #5771): the shipped
+    # image is the Nix-built packages.x86_64-linux.mcpx-container artifact,
+    # whose tag comes from pkgs/mcpx/VERSION — the same single source the
+    # release version is read from. A tag push — or a dispatch with
+    # publish=true (#9900) — pushes it to GHCR; a plain snapshot builds
+    # it and reads `mcpx --version` back without publishing.
+    needs: artifacts
+    # Same always() opt-in as installer above: a skipped release-gate must
+    # not silently drop the snapshot container build on manual runs.
+    if: always() && needs.artifacts.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            # #774: when the Magic Nix Cache proxy throttles (HTTP 418),
+            # fall back to building from source instead of hard-failing
+            # the job on the narinfo fetch. fallback only, deliberately
+            # no accept-flake-config (root flake nixConfig needs cgroups).
+            fallback = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' || inputs.publish
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the image at the release version, and read it back
+        env:
+          VERSION: ${{ needs.artifacts.outputs.version }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          # Lowercased: GHCR rejects uppercase, and an owner or repo name can
+          # carry it. The image sits under the repository, so it cannot
+          # collide with another package's image in the same org.
+          IMAGE: ghcr.io/${{ github.repository }}/mcpx
+        run: |
+          set -euo pipefail
+          image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+          loaded=$(docker load -i mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$loaded"
+          echo "loaded $loaded"
+          case "$loaded" in
+          *":$VERSION") ;;
+          *) echo "::error::Nix image tag '$loaded' does not match release version '$VERSION' (pkgs/mcpx/VERSION is the single source)"; exit 1 ;;
+          esac
+          docker tag "$loaded" "$image:$VERSION"
+          if [ "$PUBLISH" = "true" ]; then
+            docker tag "$loaded" "$image:latest"
+          fi
+          got=$(docker run --rm "$image:$VERSION" --version)
+          echo "image mcpx --version: $got"
+          case "$got" in
+          *"$VERSION"*) ;;
+          *) echo "::error::image reports '$got', expected $VERSION"; exit 1 ;;
+          esac
+          if [ "$PUBLISH" = "true" ]; then
+            docker push "$image:$VERSION"
+            docker push "$image:latest"
+            echo "published $image:$VERSION"
+          else
+            echo "snapshot: built $image:$VERSION, not pushed"
+          fi
+
+  publish:
+    name: "release: publish"
+    # Only a tag publishes. A snapshot run stops at the artifacts and the
+    # installer exercise above.
+    if: github.event_name == 'push'
+    needs: [artifacts, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: mcpx-${{ needs.artifacts.outputs.version }}
+          path: dist
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.artifacts.outputs.tag }}
+          VERSION: ${{ needs.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          cat >notes.md <<EOF
+          Static mcpx $VERSION binaries for x86_64-linux, aarch64-linux and
+          aarch64-darwin (CGO_ENABLED=0), with SHA256SUMS. Verify before use:
+
+              sha256sum -c SHA256SUMS
+
+          A bare binary has no JavaScript runtime: \`mcpx run\` and \`mcpx exec\`
+          need Deno, Bun or Node on PATH until you install one (\`mcpx doctor\`
+          says which it found). On Linux the static build's pure-Go os/user
+          parses /etc/passwd instead of asking NSS, and its resolver does not
+          honour nsswitch.conf. See pkgs/mcpx/docs/decisions/0005-release-pipeline.md.
+          EOF
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "mcpx $VERSION" \
+            --notes-file notes.md \
+            ./*.tar.gz SHA256SUMS

@@ -1,0 +1,23 @@
+{
+  "adapters": [
+    {
+      "name": "tailscale",
+      "command": "tailscale",
+      "description": "This machine's tailnet, read through the tailscale CLI already installed and logged in here. No credential is declared or needed: the CLI's own session is the authentication, which is the point of the adapter route for this request (#1936).",
+      "tools": [
+        {
+          "name": "listTailnet",
+          "description": "The tailnet from tailscale status --json: the CurrentTailnet block (name, MagicDNS suffix), this machine's own node, and every peer node with its addresses and online state.",
+          "args": ["status", "--json"],
+          "json": true
+        },
+        {
+          "name": "listHostnames",
+          "description": "The hostnames on the tailnet from tailscale status --json: this machine's HostName and DNSName, and every peer's HostName and DNSName.",
+          "args": ["status", "--json"],
+          "json": true
+        }
+      ]
+    }
+  ]
+}

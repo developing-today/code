@@ -1,0 +1,11 @@
+{
+  "defaultCap": 10,
+  "laneCaps": {
+    "in-flight": 10,
+    "to-do": 10,
+    "in-progress": 10,
+    "in-review": 10
+  },
+  "projectCaps": {},
+  "epicCaps": {}
+}

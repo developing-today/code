@@ -1,0 +1,10 @@
+2026-10-11T17:22:44.724454Z  INFO harness: bound role="server" event="ready" mode=Refuse id=8a88e3dd74 port=50928 direct=["10.200.0.1:50928", "10.200.0.2:50928", "127.0.0.1:50928"]
+2026-10-11T17:22:44.782872Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:46132) alpns=["n30/allowlist/0"]
+2026-10-11T17:22:44.843166Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:22:44.847241Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(139632876460864) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:50928, 10.200.0.2:50928, 127.0.0.1:50928}
+2026-10-11T17:22:44.847438Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(139632876460864) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:22:44.847686Z DEBUG RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: connections are not good enough, triggering holepunching
+2026-10-11T17:22:44.847713Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:22:44.847789Z  INFO harness: hook runs role="server" event="after_handshake" peer=ed4928c628 allowed=false enforce=true
+2026-10-11T17:22:44.848127Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:22:44.848208Z  INFO harness: no Connection was handed to the application role="server" event="handshake_refused" peer=Some("ed4928c628") error=Connection was rejected locally dbg=Connection was rejected locally remote_info_after_refusal=["Ip(127.0.0.1:46132)/Active"]

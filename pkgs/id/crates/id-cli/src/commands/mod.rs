@@ -1,0 +1,120 @@
+//! Command implementations for the `id` CLI tool.
+//!
+//! This module contains all command handlers organized by function:
+//!
+//! - **[`serve`]**: Server that accepts connections from peers
+//! - **[`client`]**: Client endpoint creation for connecting to serve
+//! - **[`put`]**: Store blobs (local, remote, stdin, files)
+//! - **[`get`]**: Retrieve blobs (local, remote, by name, by hash)
+//! - **[`find`]**: Search and retrieve matching blobs
+//! - **[`list`]**: List stored blobs
+//! - **[`id`]**: Print node identity
+//! - **[`peers`]**: Discover and list known peers
+//! - **[`tag`]**: Manage metadata tags (set, del, list, search)
+//! - **[`repl`]**: Interactive REPL context management
+//!
+//! # Command Flow
+//!
+//! Commands follow a consistent pattern for local vs remote operations:
+//!
+//! ```text
+//! ┌───────────────────────────────────────────────────────────────┐
+//! │                      Command Entry                            │
+//! └───────────────────────────────────────────────────────────────┘
+//!                              │
+//!                              ▼
+//!              ┌───────────────────────────────┐
+//!              │   Is first arg a NODE_ID?     │
+//!              │      (64 hex chars)           │
+//!              └───────────────────────────────┘
+//!                    │                  │
+//!                   Yes                 No
+//!                    │                  │
+//!                    ▼                  ▼
+//!          ┌─────────────────┐  ┌─────────────────┐
+//!          │  Remote Mode    │  │  Local Mode     │
+//!          │  - Connect via  │  │  - Check for    │
+//!          │    relay/direct │  │    running serve│
+//!          │  - Use protocol │  │  - Open store   │
+//!          └─────────────────┘  │    directly     │
+//!                               └─────────────────┘
+//! ```
+//!
+//! # Examples
+//!
+//! ```rust,ignore
+//! use id_cli::commands::{cmd_put_local_file, cmd_get_local, cmd_list};
+//!
+//! // Store a file
+//! cmd_put_local_file("./data.txt", Some("my-data".to_string())).await?;
+//!
+//! // List all stored files
+//! cmd_list(None, false).await?;
+//!
+//! // Retrieve the file
+//! cmd_get_local("my-data", "./output.txt").await?;
+//! ```
+
+pub mod claim;
+pub mod client;
+pub mod doc;
+pub mod find;
+pub mod gallery;
+pub mod get;
+pub mod group;
+pub mod id;
+pub mod key;
+pub mod keyset;
+pub mod keyset_recovery;
+pub mod list;
+#[cfg(feature = "sandbox")]
+pub mod match_audit;
+pub mod peers;
+pub mod petname;
+pub mod publish;
+pub mod put;
+pub mod repl;
+pub mod send;
+pub mod serve;
+#[cfg(feature = "web")]
+pub mod serve_publications;
+pub mod tag;
+pub mod text;
+pub mod walk;
+#[cfg(feature = "world")]
+pub mod world;
+pub mod writer_set;
+
+pub use claim::cmd_claim;
+pub use client::{create_local_client_endpoint, create_local_operator_endpoint};
+pub use doc::cmd_doc;
+pub use find::{
+    PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
+};
+pub use gallery::cmd_gallery;
+pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
+pub use group::{cmd_delegate, cmd_group, cmd_revoke};
+pub use id::cmd_id;
+pub use key::cmd_key;
+pub use keyset::cmd_keyset;
+pub use list::{cmd_list, cmd_list_remote};
+#[cfg(feature = "sandbox")]
+pub use match_audit::cmd_match_audit;
+pub use peers::{PeersOptions, cmd_peers};
+pub use petname::cmd_petname;
+pub use publish::{cmd_publications, cmd_publish, cmd_unpublish};
+pub use put::{
+    cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
+    cmd_put_one_remote,
+};
+pub use repl::{ReplContext, ReplContextInner};
+pub use send::cmd_send;
+pub use serve::{
+    ServeInfo, ServeOptions, build_access_policy, cmd_serve, create_serve_lock, get_serve_info,
+    is_process_alive, remove_serve_lock,
+};
+pub use tag::{cmd_migrate_tags, cmd_tag};
+pub use walk::cmd_walk;
+#[cfg(feature = "world")]
+pub use world::cmd_world;
+pub use writer_set::cmd_writer_sets;

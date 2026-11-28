@@ -1,0 +1,74 @@
+   Compiling s4-blobs v0.0.0 (/home/user/work/spikes/s4-blobs)
+    Finished `release` profile [optimized] target(s) in 9.01s
+     Running `target/release/s4-blobs`
+== (a) hash equivalence: p2panda Body::hash() vs iroh-blobs hash
+size=        0 equal=true  body=af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 blob=af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+size=     1024 equal=true  body=e7286ea9aaf93be743a2a2a7d2ddd34a2a9e26aafa4367903f20face1b0e8061 blob=e7286ea9aaf93be743a2a2a7d2ddd34a2a9e26aafa4367903f20face1b0e8061
+size=    65536 equal=true  body=d0bb951dc42dd03e2d1c37b7287789ada77ba6237fc7b703604a1763d6856567 blob=d0bb951dc42dd03e2d1c37b7287789ada77ba6237fc7b703604a1763d6856567
+size=  1048576 equal=true  body=e171222f1a7ad0f9c88bdcb2aebf1c30553bc33c375f60b23002007bc834e07a blob=e171222f1a7ad0f9c88bdcb2aebf1c30553bc33c375f60b23002007bc834e07a
+size= 10485760 equal=true  body=8a9354f4e9164f29b4a06161e2793323c939e41df9fa1c0f1a165d81493dd27e blob=8a9354f4e9164f29b4a06161e2793323c939e41df9fa1c0f1a165d81493dd27e
+
+== (b) fetch by hash, no ticket, presets::Minimal on localhost
+provider id=b1d2cfc7af direct_addrs=3
+Downloader run 1: bytes_ok=true body_hash_eq_requested=true took_ms=20.2
+Downloader run 2: bytes_ok=true body_hash_eq_requested=true took_ms=17.4
+Downloader run 3: bytes_ok=true body_hash_eq_requested=true took_ms=19.5
+no lookup, connect(addr) + GetRequest::blob(hash): bytes_ok=true took_ms=20.9
+
+== (c) authorised fetch: EventMask get and get_many = RequestMode::Intercept
+allow list = {A}; A=2053461912 D=1107cc0073 gated=db46ad4996 open=acfcf92cea
+A -> gated, get        served=true  reset=None       bytes_ok=true => as expected
+D -> gated, get        served=false reset=Some(1)    io: stream reset by peer: error 1: stream reset by peer: error 1 => as expected
+A -> gated, get_many   served=true  reset=None       bytes_ok=true => as expected
+D -> gated, get_many   served=false reset=Some(1)    io: stream reset by peer: error 1: stream reset by peer: error 1 => as expected
+D -> open, get         served=true  reset=None       bytes_ok=true => as expected
+D -> open, get_many    served=true  reset=None       bytes_ok=true => as expected
+Downloader get: A -> gated served=true; D -> gated served=false
+gate decisions (provider side):
+    get d94ed12defc551af7cea37289f18e29acee3068e795e7fc06cb2a7a111c526e9 from 2053461912 -> Ok(())
+    get d94ed12defc551af7cea37289f18e29acee3068e795e7fc06cb2a7a111c526e9 from 1107cc0073 -> Err(Permission)
+    get_many of 2 hashes from 2053461912 -> Ok(())
+    get_many of 2 hashes from 1107cc0073 -> Err(Permission)
+    get d94ed12defc551af7cea37289f18e29acee3068e795e7fc06cb2a7a111c526e9 from 2053461912 -> Ok(())
+    get d94ed12defc551af7cea37289f18e29acee3068e795e7fc06cb2a7a111c526e9 from 1107cc0073 -> Err(Permission)
+
+== (d) verified streaming: corrupted bytes are rejected
+control (on disk, untouched): served_ok=true
+case 1 data bit flip, block 37: provider local export ok=false (inner error: Error::Io: Error::Io: LeafHashMismatch(592))
+case 1 data bit flip, block 37: fetch_error=Some("read: stream reset by peer: error 3: stream reset by peer: error 3") reset_code=Some(3)
+case 1 data bit flip, block 37: held_blocks=18 contiguous_from_0=true held_correct=true bad_block_held=false
+case 2 outboard file len=4032 (expected 63 * 64 = 4032)
+case 2 outboard bit flip: provider local export ok=false (inner error: Error::Io: Error::Io: ParentHashMismatch(TreeNode(767)))
+case 2 outboard bit flip: fetch_error=Some("read: stream reset by peer: error 3: stream reset by peer: error 3") reset_code=Some(3)
+case 2 outboard bit flip: held_blocks=10 contiguous_from_0=true held_correct=true bad_block_held=false
+wire flip, last leaf: fetch_error=Some("leaf hash mismatch: 1008") reset_code=None
+wire flip, last leaf: held_blocks=63 contiguous_from_0=true held_correct=true bad_block_held=false
+cases: data_flip_rejected=true outboard_flip_rejected=true wire_flip_rejected=true
+
+== (e) storage: MemStore vs FsStore
+MemStore run 1: add_10MiB_ms=3.1 read_10MiB_ms=8.6
+MemStore run 2: add_10MiB_ms=3.2 read_10MiB_ms=8.3
+MemStore run 3: add_10MiB_ms=3.0 read_10MiB_ms=4.7
+FsStore run 1: add_10MiB_ms=9.9 read_10MiB_ms=9.2
+FsStore run 2: add_10MiB_ms=6.3 read_10MiB_ms=9.6
+FsStore run 3: add_10MiB_ms=7.0 read_10MiB_ms=10.5
+-- FsStore layout by size (default inline limits: data and outboard up to 16 KiB)
+size=     1024 persisted_after_reopen=true
+    blobs.db 49152
+size=    16384 persisted_after_reopen=true
+    blobs.db 1056768
+size=    17408 persisted_after_reopen=true
+    blobs.db 49152
+    data/39c5351cb4afe9abe5a7d8f78671d3adee4a54bfd5b676f4e5ea3fcd7bddc799.data 17408
+size=    65536 persisted_after_reopen=true
+    blobs.db 49152
+    data/6f823dc02e4b849703e08422873f0222c0718d8b234e044422809f055a7c9896.data 65536
+size=  1048576 persisted_after_reopen=true
+    blobs.db 49152
+    data/b279e8d5324866d76c8e924aa7d6a0c29d1b4a1305202064cbd24c49aab89c0a.data 1048576
+size= 10485760 persisted_after_reopen=true
+    blobs.db 1056768
+    data/b04c1fb36e052993ed4c2e98e59dac989b46a5675d34ae6083c31d77c1082a9d.data 10485760
+    data/b04c1fb36e052993ed4c2e98e59dac989b46a5675d34ae6083c31d77c1082a9d.obao4 40896
+
+ALL PARTS PASSED

@@ -1,0 +1,13 @@
+{"world":"roc-counter","step":0,"event":null,"view":"{\"kind\":\"screen\",\"version\":1,\"width\":20,\"height\":3,\"rows\":[\"+-counter----------+\",\"| count=0          |\",\"+------------------+\"],\"styles\":[[],[],[]]}","records":"{\"count\":0}","snapshot_hex":"30"}
+{"world":"roc-counter","step":1,"event":"inc","view":"{\"kind\":\"screen\",\"version\":1,\"width\":20,\"height\":3,\"rows\":[\"+-counter----------+\",\"| count=1          |\",\"+------------------+\"],\"styles\":[[],[],[]]}","records":"{\"count\":1}","snapshot_hex":"31"}
+{"world":"roc-counter","step":2,"event":"inc","view":"{\"kind\":\"screen\",\"version\":1,\"width\":20,\"height\":3,\"rows\":[\"+-counter----------+\",\"| count=2          |\",\"+------------------+\"],\"styles\":[[],[],[]]}","records":"{\"count\":2}","snapshot_hex":"32"}
+{"world":"roc-counter","step":3,"event":"inc","view":"{\"kind\":\"screen\",\"version\":1,\"width\":20,\"height\":3,\"rows\":[\"+-counter----------+\",\"| count=3          |\",\"+------------------+\"],\"styles\":[[],[],[]]}","records":"{\"count\":3}","snapshot_hex":"33"}
+{"world":"tic-tac-toe","step":0,"event":null,"view":"---------  plays=0 next=X","records":"{\"board\":\"---------\",\"plays\":0,\"winner\":\"\"}","snapshot_hex":"2d2d2d2d2d2d2d2d2d"}
+{"world":"tic-tac-toe","step":1,"event":"0","view":"X--------  plays=1 next=O","records":"{\"board\":\"X--------\",\"plays\":1,\"winner\":\"\"}","snapshot_hex":"582d2d2d2d2d2d2d2d"}
+{"world":"tic-tac-toe","step":2,"event":"4","view":"X---O----  plays=2 next=X","records":"{\"board\":\"X---O----\",\"plays\":2,\"winner\":\"\"}","snapshot_hex":"582d2d2d4f2d2d2d2d"}
+{"world":"tic-tac-toe","step":3,"event":"1","view":"XX--O----  plays=3 next=O","records":"{\"board\":\"XX--O----\",\"plays\":3,\"winner\":\"\"}","snapshot_hex":"58582d2d4f2d2d2d2d"}
+{"world":"tic-tac-toe","step":4,"event":"4","view":"XX--O----  plays=3 next=O","records":"{\"board\":\"XX--O----\",\"plays\":3,\"winner\":\"\"}","snapshot_hex":"58582d2d4f2d2d2d2d"}
+{"world":"tic-tac-toe","step":5,"event":"9","view":"XX--O----  plays=3 next=O","records":"{\"board\":\"XX--O----\",\"plays\":3,\"winner\":\"\"}","snapshot_hex":"58582d2d4f2d2d2d2d"}
+{"world":"tic-tac-toe","step":6,"event":"8","view":"XX--O---O  plays=4 next=X","records":"{\"board\":\"XX--O---O\",\"plays\":4,\"winner\":\"\"}","snapshot_hex":"58582d2d4f2d2d2d4f"}
+{"world":"tic-tac-toe","step":7,"event":"2","view":"XXX-O---O  plays=5 winner=X","records":"{\"board\":\"XXX-O---O\",\"plays\":5,\"winner\":\"X\"}","snapshot_hex":"5858582d4f2d2d2d4f"}
+{"world":"tic-tac-toe","step":8,"event":"3","view":"XXX-O---O  plays=5 winner=X","records":"{\"board\":\"XXX-O---O\",\"plays\":5,\"winner\":\"X\"}","snapshot_hex":"5858582d4f2d2d2d4f"}
