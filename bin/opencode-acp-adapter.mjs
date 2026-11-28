@@ -79,7 +79,14 @@
 //                             byte cap on the undelimited SSE framing
 //                             prefix held by the event-stream reader
 //                             (default 4194304; see
-//                             EVENT_BUFFER_MAX_BYTES, #16226)
+//                             EVENT_BUFFER_MAX_BYTES, #16226); also
+//                             the shared default for the serveJson
+//                             response-body cap (#16391)
+//   OPENCODE_ACP_SERVE_RESPONSE_MAX_BYTES
+//                             dedicated byte cap on serveJson
+//                             response bodies (default: the
+//                             EVENT_BUFFER_MAX_BYTES value above;
+//                             see SERVE_RESPONSE_MAX_BYTES, #16391)
 //   OPENCODE_ACP_ADAPTER_DEBUG=1 -> diagnostics on stderr (stdout is
 //                             the protocol channel and stays clean)
 //
@@ -233,6 +240,48 @@ const SERVE_REQUEST_TIMEOUT_MS = (() => {
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
 })();
 
+// #16391: the timeout above bounds time, not bytes. serveJson used
+// to buffer every response body whole via res.text() before parsing
+// (and, on the error path, before slicing the surfaced message), so
+// a fast multi-hundred-MB loopback body — buggy/compromised serve,
+// runaway payload — OOMs the adapter (or V8-throws on a >512MB
+// string) before any deadline fires. Read bodies through a byte
+// budget instead: the shared EVENT_BUFFER_MAX_BYTES default (the
+// env override for it applies here too), with a dedicated override.
+// Overflow throws in the same `serve METHOD pathname -> …` shape as
+// HTTP errors and timeouts, so callers/reconciliation handle it the
+// same way.
+const SERVE_RESPONSE_MAX_BYTES = (() => {
+  const dedicated = Number(process.env.OPENCODE_ACP_SERVE_RESPONSE_MAX_BYTES);
+  if (Number.isFinite(dedicated) && dedicated > 0) return Math.floor(dedicated);
+  const shared = Number(process.env.OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES);
+  return Number.isFinite(shared) && shared > 0 ? Math.floor(shared) : 4 * 1024 * 1024;
+})();
+
+async function readServeBodyText(res, method, pathname) {
+  const overflow = () =>
+    new Error(`serve ${method} ${pathname} -> response body exceeded ${SERVE_RESPONSE_MAX_BYTES} bytes`);
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const text = await res.text();
+    if (Buffer.byteLength(text) > SERVE_RESPONSE_MAX_BYTES) throw overflow();
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > SERVE_RESPONSE_MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw overflow();
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQUEST_TIMEOUT_MS } = {}) {
   let res;
   try {
@@ -254,11 +303,19 @@ async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQ
     throw err;
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    // #16391: the error-path read is capped too — an over-budget
+    // error body surfaces the byte-budget error, not the status.
+    let text = '';
+    try {
+      text = await readServeBodyText(res, method, pathname);
+    } catch (err) {
+      if (err?.message?.includes('response body exceeded')) throw err;
+      text = '';
+    }
     throw new Error(`serve ${method} ${pathname} -> ${res.status} ${text.slice(0, 200)}`);
   }
   if (res.status === 204) return null;
-  const text = await res.text();
+  const text = await readServeBodyText(res, method, pathname);
   if (!text) return null;
   const parsed = JSON.parse(text);
   // The v2 API wraps responses in a {data: …} envelope.
