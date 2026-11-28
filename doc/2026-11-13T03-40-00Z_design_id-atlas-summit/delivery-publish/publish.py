@@ -457,6 +457,36 @@ def queue_readback(args, task_id, expected_dedupe):
     return rows[0]
 
 
+def queue_readback_resume(args, task_id, expected_dedupe):
+    """Resume-only readback for an item that already has a queue_id (#10143).
+
+    The fresh-enqueue readback above stays LIVE-only. On resume, an
+    exact-match row (id, queue, dedupe key) in terminal status "done"
+    is a completed disposition: the covered task finished its work
+    after the original run stopped, so the item is covered, not
+    missing. Any other non-LIVE status still refuses.
+    """
+    try:
+        return queue_readback(args, task_id, expected_dedupe)
+    except Refusal:
+        payload = {"queue": QUEUE, "task": int(task_id), "limit": 1, "offset": 0}
+        request = urllib.request.Request(args._broker_url.rstrip("/") + "/list",
+            data=json.dumps(payload).encode(), headers={"X-Agent-Token": args._broker_token, "Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                result = json.loads(response.read())
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            raise Refusal(f"queue broker task readback failed for {task_id}: {exc}") from exc
+        if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("rows"), list):
+            raise Refusal("queue broker list returned invalid response")
+        rows = result["rows"]
+        if (len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("id") == int(task_id)
+                and rows[0].get("queue") == QUEUE and rows[0].get("dedupe_key") == expected_dedupe
+                and rows[0].get("status") == "done"):
+            return rows[0]
+        raise Refusal(f"queue readback lacks exactly one matching LIVE task ({LIVE}) for task {task_id}")
+
+
 def raise_if_unresolved_enqueue(item, sid, dedupe):
     """Refuse to replay an enqueue whose outcome was never recorded.
 
@@ -606,8 +636,15 @@ def publish(args, entries, digest, report_digest, orchestration):
             if item.get("queue_id"):
                 # Never recreate a covered task or revive a terminal row on
                 # resume; a missing/non-live row requires human disposition.
-                row = queue_readback(args, item["queue_id"], dedupe)
+                # #10143: an exact-match terminal-"done" row IS that
+                # disposition; queue_readback_resume records it and still
+                # refuses every other non-LIVE state.
+                row = queue_readback_resume(args, item["queue_id"], dedupe)
                 if row["dedupe_key"] != dedupe: raise Refusal("existing queue row dedupe key mismatch")
+                if row["status"] == "done":
+                    item["queue_disposition"] = ("terminal-done accepted on resume "
+                        + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        + " (human disposition, code#10143)")
                 item["queue_status"] = row["status"]
                 item["phase"] = "covered"; atomic_save(journal,state)
                 outputs.append({"id":sid,"issue":item["issue_url"],"queue_id":item["queue_id"],"status":item["queue_status"]})
