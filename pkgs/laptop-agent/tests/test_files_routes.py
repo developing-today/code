@@ -511,6 +511,155 @@ class FilesRoutesTest(unittest.TestCase):
         )
         self.assertIn("no such directory", reply["error"])
 
+    # -- delegated direct copy (#14219) ----------------------------------
+    #
+    # The oracle is copy_file_direct's fake-daemon arm in
+    # pkgs/fleet/crates/fleet-proxy/src/files.rs: the daemon streams
+    # the source into the destination's deterministic temp (resuming
+    # from a temp that is a prefix of the source), hash-verifies,
+    # then atomically renames. A killed transfer leaves the
+    # destination untouched — at most the temp remains.
+
+    def copy(self, source, dest, sha=None, size=None, mode=None):
+        src = Path(source)
+        data = src.read_bytes() if src.is_file() else b""
+        body = {
+            "source": str(source),
+            "path": str(dest),
+            "sha256": sha if sha is not None else sha_hex(data),
+            "size": len(data) if size is None else size,
+        }
+        if mode is not None:
+            body["mode"] = mode
+        return self.rpc("/files/copy", body)
+
+    def test_copy_lands_hash_identical(self):
+        data = os.urandom(5 * (1 << 20) + 123)  # multi-chunk, hermetic not 100 MiB
+        src = self.work / "src.bin"
+        src.write_bytes(data)
+        dest = self.work / "dst.bin"
+        status, reply = self.copy(src, dest)
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn("error", reply, reply)
+        self.assertEqual(reply["size"], len(data))
+        self.assertEqual(reply["sha256"], sha_hex(data))
+        self.assertEqual(dest.read_bytes(), data)
+        self.assertFalse(Path(temp_for(str(dest), sha_hex(data))).exists())
+
+    def test_copy_empty_file(self):
+        src = self.work / "empty.bin"
+        src.write_bytes(b"")
+        dest = self.work / "empty-dst.bin"
+        status, reply = self.copy(src, dest)
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn("error", reply, reply)
+        self.assertEqual(reply["size"], 0)
+        self.assertEqual(dest.read_bytes(), b"")
+
+    def test_copy_missing_source_errors_and_writes_nothing(self):
+        dest = self.work / "dst.bin"
+        status, reply = self.copy(self.work / "nope.bin", dest)
+        self.assertEqual(status, 200, reply)
+        self.assertIn("error", reply, reply)
+        self.assertFalse(dest.exists())
+
+    def test_copy_changed_source_refused(self):
+        src = self.work / "src.bin"
+        src.write_bytes(b"current-bytes")
+        dest = self.work / "dst.bin"
+        status, reply = self.copy(src, dest, sha=sha_hex(b"stale-bytes"))
+        self.assertEqual(status, 200, reply)
+        self.assertIn("source changed since stat", reply["error"])
+        self.assertFalse(dest.exists())
+        self.assertFalse(
+            Path(temp_for(str(dest), sha_hex(b"stale-bytes"))).exists()
+        )
+
+    def test_copy_size_mismatch_refused(self):
+        src = self.work / "src.bin"
+        data = b"twelve-bytes"
+        src.write_bytes(data)
+        dest = self.work / "dst.bin"
+        status, reply = self.copy(src, dest, size=len(data) + 1)
+        self.assertEqual(status, 200, reply)
+        self.assertIn("source changed since stat", reply["error"])
+        self.assertFalse(dest.exists())
+
+    def test_copy_resumes_from_prefix_temp(self):
+        data = os.urandom(3 * (1 << 20) + 7)
+        src = self.work / "src.bin"
+        src.write_bytes(data)
+        dest = self.work / "dst.bin"
+        sha = sha_hex(data)
+        Path(temp_for(str(dest), sha)).write_bytes(data[: 1 << 20])
+        status, reply = self.copy(src, dest)
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn("error", reply, reply)
+        self.assertEqual(dest.read_bytes(), data)
+
+    def test_copy_restarts_when_temp_is_not_a_prefix(self):
+        data = os.urandom(1024)
+        src = self.work / "src.bin"
+        src.write_bytes(data)
+        dest = self.work / "dst.bin"
+        sha = sha_hex(data)
+        Path(temp_for(str(dest), sha)).write_bytes(os.urandom(1024))
+        status, reply = self.copy(src, dest)
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn("error", reply, reply)
+        self.assertEqual(dest.read_bytes(), data)
+
+    def test_copy_applies_mode(self):
+        src = self.work / "src.bin"
+        src.write_bytes(b"mode-bytes")
+        dest = self.work / "mode-dst.bin"
+        status, reply = self.copy(src, dest, mode=0o640)
+        self.assertEqual(status, 200, reply)
+        self.assertNotIn("error", reply, reply)
+        self.assertEqual(dest.stat().st_mode & 0o777, 0o640)
+
+    def test_copy_validates_paths_and_mode(self):
+        reply = self.err(
+            "/files/copy",
+            {"source": "", "path": str(self.work / "d"), "sha256": "a" * 64, "size": 0},
+        )
+        self.assertIn("path required", reply["error"])
+        reply = self.err(
+            "/files/copy",
+            {
+                "source": str(self.work / "s"),
+                "path": "",
+                "sha256": "a" * 64,
+                "size": 0,
+            },
+        )
+        self.assertIn("path required", reply["error"])
+        reply = self.err(
+            "/files/copy",
+            {
+                "source": str(self.work / "s"),
+                "path": str(self.work / "d"),
+                "sha256": "a" * 64,
+                "size": 0,
+                "mode": "0640",
+            },
+        )
+        self.assertIn("mode must be an integer", reply["error"])
+
+    def test_copy_requires_existing_parent(self):
+        src = self.work / "src.bin"
+        src.write_bytes(b"data")
+        reply = self.err(
+            "/files/copy",
+            {
+                "source": str(src),
+                "path": str(self.work / "no-such-dir" / "f"),
+                "sha256": sha_hex(b"data"),
+                "size": 4,
+            },
+        )
+        self.assertIn("no such directory", reply["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

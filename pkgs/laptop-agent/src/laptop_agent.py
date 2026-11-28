@@ -411,6 +411,28 @@ def _files_sha_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _is_prefix_of(source: Path, temp: Path, have: int) -> bool:
+    """Whether temp's `have` bytes equal the head of source.
+
+    A resumed /files/copy temp is only kept when it is a prefix of
+    the current source; otherwise the copy restarts from empty,
+    mirroring the fake-daemon arm of copy_file_direct in
+    pkgs/fleet/crates/fleet-proxy/src/files.rs.
+    """
+    try:
+        with open(source, "rb") as s, open(temp, "rb") as t:
+            remaining = have
+            while remaining > 0:
+                want = min(1 << 20, remaining)
+                head = s.read(want)
+                if len(head) != want or t.read(want) != head:
+                    return False
+                remaining -= want
+            return t.read(1) == b""
+    except OSError:
+        return False
+
+
 def _fsync_dir(path: Path):
     """Durably record a rename by fsyncing the containing directory.
 
@@ -2012,6 +2034,7 @@ class Handler(BaseHTTPRequestHandler):
             "/files/commit": self._files_commit,
             "/files/abort": self._files_abort,
             "/files/read": self._files_read,
+            "/files/copy": self._files_copy,
         }.get(path)
         if handler is None:
             return self._send(404, {"error": "no such route"})
@@ -2182,6 +2205,98 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return {"error": f"abort {temp}: {e}"}
         return {"ok": True}
+
+    def _files_copy(self, body):
+        # Delegated direct-path copy (#14219): move bytes between two
+        # paths on this host without transiting the caller. The route
+        # semantics are fixed by copy_file_direct and its in-memory
+        # fake daemon in
+        # pkgs/fleet/crates/fleet-proxy/src/files.rs: stream the
+        # source into the destination's deterministic temp (resuming
+        # from a temp that is a prefix of the source), hash-verify,
+        # then atomically rename. A kill at any point leaves the
+        # destination untouched — at most the temp remains, exactly
+        # like an interrupted put. The reply is {size, sha256} of the
+        # committed destination.
+        source = body.get("source")
+        err = _files_validate(source)
+        if err:
+            return {"error": err}
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        try:
+            size = int(body.get("size", -1))
+        except (TypeError, ValueError):
+            return {"error": "size must be an integer"}
+        if size < 0:
+            return {"error": "size must be >= 0"}
+        mode = body.get("mode")
+        if not _files_mode_ok(mode):
+            return {"error": "mode must be an integer in 0..0o7777"}
+        try:
+            src_size = os.stat(source).st_size
+        except FileNotFoundError:
+            return {"error": f"copy {source}: no such file"}
+        except OSError as e:
+            return {"error": f"copy stat {source}: {e}"}
+        if not os.path.isfile(source):
+            return {"error": f"copy {source}: not a regular file"}
+        if src_size != size:
+            return {"error": "source changed since stat"}
+        try:
+            if _files_sha_file(Path(source)) != sha:
+                return {"error": "source changed since stat"}
+        except OSError as e:
+            return {"error": f"copy hash {source}: {e}"}
+        temp = Path(files_temp_path(path, sha))
+        parent = temp.parent
+        if not parent.exists():
+            return {"error": f"no such directory: {parent}"}
+        if not parent.is_dir():
+            return {"error": f"not a directory: {parent}"}
+        try:
+            if temp.exists():
+                have = temp.stat().st_size
+                if have > size or not _is_prefix_of(
+                    Path(source), temp, have
+                ):
+                    temp.unlink()
+            with open(source, "rb") as src, open(
+                temp, "r+b" if temp.exists() else "w+b"
+            ) as dst:
+                dst.seek(0, os.SEEK_END)
+                have = dst.tell()
+                src.seek(have)
+                while True:
+                    block = src.read(FILES_CHUNK_SIZE)
+                    if not block:
+                        break
+                    dst.write(block)
+                dst.flush()
+                os.fsync(dst.fileno())
+            actual = _files_sha_file(temp)
+        except OSError as e:
+            return {"error": f"copy {source} -> {temp}: {e}"}
+        if actual != sha:
+            # Keep the temp: a later attempt resumes or aborts it,
+            # exactly like a hash-mismatched commit.
+            return {"error": "sha256 mismatch", "actual": actual}
+        final_size = temp.stat().st_size
+        try:
+            if mode is not None:
+                os.chmod(temp, int(mode))
+            # Atomic publish: the rename is what makes partial content
+            # at the destination impossible.
+            os.replace(temp, path)
+            _fsync_dir(Path(path).parent)
+        except OSError as e:
+            return {"error": f"copy {temp} -> {path}: {e}"}
+        return {"size": final_size, "sha256": actual}
 
     def _files_read(self, body):
         path = body.get("path")
