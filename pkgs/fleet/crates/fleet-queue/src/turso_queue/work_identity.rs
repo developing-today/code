@@ -23,14 +23,17 @@
 //! the broker knows its own verified completions locally and
 //! absorbs the re-filing itself, no probe involved.
 //!
-//! One completed kind is not completed issue work (#16007): a
-//! triage task completes by filing its fix follow-on, so when that
-//! follow-on later fails or is cancelled (or never landed) and no
-//! live or completed follow-on covers the issue, a completed triage
-//! row must NOT absorb the reconciliation re-filing in either the
-//! dedupe-key check or the completed-identity check below — the
-//! fresh triage task is the recovery path, and `/coverage` (live
-//! rows only) must be able to see it afterwards.
+//! One completed kind is not completed issue work (#16007,
+//! widened #16349): a triage task completes by filing its fix
+//! follow-on, so a completed triage row must NOT absorb a triage
+//! re-filing in either the dedupe-key check or the
+//! completed-identity check below — the fresh triage task is the
+//! reassessment an open labelled issue asks for, and `/coverage`
+//! (live rows only) must be able to see it afterwards. A re-triage
+//! re-serves no fix work: the follow-on it files carries the
+//! deterministic fix key, still absorbed by the #13091 done-fix
+//! rule, and a closed issue retires the revival at claim time
+//! (#10626).
 //!
 //! Only kinds that work one issue one way take part: small_fix,
 //! triage, and pr_shepherd (per PR set). ci_investigation,
@@ -260,56 +263,6 @@ pub(crate) fn done_identity_holder(
         .find(|row| holds_completed_identity(row, identity)))
 }
 
-/// #16007: whether a completed triage's issue is left uncovered by
-/// its fix follow-ons. Recovery is needed when no follow-on is live
-/// (queued/claimed/parked/handed_off/blocked) and none completed:
-/// every follow-on failed or was cancelled, or none ever landed.
-/// A live follow-on still covers the issue (the completed triage
-/// absorbs the re-filing), and a completed follow-on is the work
-/// actually done (it absorbs too).
-pub fn triage_recovery_needed(follow_on_statuses: &[&str]) -> bool {
-    !follow_on_statuses
-        .iter()
-        .any(|s| LIVE_STATUSES.contains(s) || *s == "done")
-}
-
-/// The statuses of every fix follow-on of the triage work named by
-/// `identity` (#16007): rows in any queue whose work identity is the
-/// fix-family identity for the same repo and issue — the follow-on
-/// a triage completion files (`small_fix`, #7016). Status strings
-/// only; `triage_recovery_needed` decides what they mean.
-pub(crate) fn triage_follow_on_statuses(
-    t: &TursoBackend,
-    identity: &WorkIdentity,
-) -> Result<Vec<String>, TErr> {
-    let fix_identity = WorkIdentity {
-        repo: identity.repo.clone(),
-        issue: identity.issue,
-        family: "fix".to_string(),
-        prompt_id: None,
-        prs: Vec::new(),
-    };
-    let rows = t.query_objs(
-        &format!(
-            "SELECT {TASK_COLS} FROM tasks \
-             WHERE json_extract(payload, '$.kind') = 'small_fix' \
-               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
-             ORDER BY id ASC"
-        ),
-        &[Arg::Int(identity.issue)],
-        &TASK_JSON_COLS,
-    )?;
-    Ok(rows
-        .iter()
-        .filter(|row| work_identity(row).as_ref() == Some(&fix_identity))
-        .filter_map(|row| {
-            row.get("status")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .collect())
-}
-
 /// The machine-readable report when an enqueue's dedupe key already
 /// names the returned row (#10627, fleet-monitor ask 2026-11-25): the
 /// filing was absorbed and nothing was created, and the reply must
@@ -527,53 +480,30 @@ mod tests {
     }
 
     #[test]
-    fn triage_recovery_only_when_no_follow_on_covers_the_issue_16007() {
-        // #16007 oracle: a completed triage task with an open issue
-        // and a failed or cancelled fix follow-on is re-queueable —
-        // the recovery filing must not be absorbed.
-        assert!(triage_recovery_needed(&["failed"]));
-        assert!(triage_recovery_needed(&["cancelled"]));
-        assert!(triage_recovery_needed(&["failed", "cancelled"]));
-        // No follow-on ever landed: nothing covers the issue either.
-        assert!(triage_recovery_needed(&[]));
-        // A live follow-on covers the issue: no recovery triage.
-        for status in ["queued", "claimed", "parked", "handed_off", "blocked"] {
-            assert!(!triage_recovery_needed(&[status]), "{status}");
-            assert!(!triage_recovery_needed(&["failed", status]), "{status}");
-        }
-        // A completed follow-on is the work done: no recovery triage,
-        // even alongside an earlier failed attempt.
-        assert!(!triage_recovery_needed(&["done"]));
-        assert!(!triage_recovery_needed(&["failed", "done"]));
-        assert!(!triage_recovery_needed(&["cancelled", "done"]));
-    }
-
-    #[test]
-    fn triage_recovery_is_checked_in_both_done_absorption_paths_16007() {
-        // #16007 wiring oracle: BOTH completed-work absorptions in
-        // verb_enqueue — the same-dedupe-key terminal hit and the
-        // done work-identity holder — consult the triage recovery
-        // check before returning the completed triage row, so the
-        // same-key and the same-work-identity re-filings both file a
-        // fresh claimable triage task in the recovery state.
+    fn triage_refiling_is_never_absorbed_by_done_rows_16349() {
+        // #16349 oracle: a triage re-file is a reassessment, never
+        // re-served work, so NEITHER completed-work absorption in
+        // verb_enqueue consults anything before reviving it — no
+        // follow-on status check, no holder lookup. The same-key
+        // terminal hit and the done work-identity holder both skip
+        // kind triage unconditionally; every other kind keeps the
+        // #13091 absorption (both terminal reports remain in the
+        // enqueue body).
         let src = include_str!("claim.rs");
         let start = src.find("fn verb_enqueue(").unwrap();
         let body = &src[start..];
-        let key_branch = body
-            .find("dedupe_match_detail(row, true)")
-            .unwrap_or(usize::MAX);
-        assert_eq!(
-            body.matches("triage_recovery_filing(").count(),
-            2,
-            "both done-absorption paths must check triage recovery"
+        assert!(
+            !body.contains("triage_recovery_filing("),
+            "triage revive is unconditional; the follow-on check is gone"
         );
-        let first_check = body.find("triage_recovery_filing(").unwrap();
-        let done_identity = body.find("done_identity_holder(").unwrap();
-        assert!(first_check < key_branch || first_check < done_identity);
         // Completed non-triage work still absorbs: both terminal
-        // reports remain in the enqueue body.
-        assert!(body.contains("dedupe_match_detail(row, true)"));
-        assert!(body.contains("done_work_identity"));
+        // reports remain in the enqueue body, each behind its own
+        // triage gate.
+        let key_branch = body.find("dedupe_match_detail(row, true)").unwrap();
+        let ident_branch = body.find("done_work_identity").unwrap();
+        assert_eq!(body.matches("kind != \"triage\"").count(), 2);
+        assert!(body[..key_branch].rfind("kind != \"triage\"").is_some());
+        assert!(body[..ident_branch].rfind("kind != \"triage\"").is_some());
     }
 
     #[test]
