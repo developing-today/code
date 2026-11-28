@@ -220,6 +220,143 @@ pub fn cap_status(fetched: usize, cap: usize, reason: &'static str) -> (bool, Op
     }
 }
 
+/// A per-source entity revision: an edit to, deletion of, or
+/// minimization of an already-created record (HYD-06,
+/// developing-today/code#9508).
+///
+/// HYD-05 commits creations keyed by event key; this type tracks what
+/// happens *after* the creation cursor passes: a comment edited
+/// behind the watermark is a new revision of a committed entity, not
+/// a new creation, and a deleted comment surfaces as a tombstone, not
+/// as silence. Pure data and validation only: no I/O, no journal
+/// append — the `journal.rs` seam named by the slice waits for JRN-01,
+/// so persistence of these records is explicitly deferred.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionItem {
+    /// Stable entity identity (e.g. `github://owner/repo/comments/42`).
+    pub entity_key: String,
+    /// Unique revision identity (entity + revision/etag). Repeats
+    /// dedupe on this key, never on the entity key.
+    pub revision_key: String,
+    /// When the change occurred at the source (event time).
+    pub occurred_at: u64,
+    /// When this lane observed the change (observation time).
+    pub observed_at: u64,
+    /// What changed.
+    pub change: ChangeKind,
+}
+
+/// The kind of post-creation change a revision records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeKind {
+    /// Entity content changed; the revision carries the new state.
+    Edited,
+    /// Entity deleted at the source; the revision is a tombstone.
+    Deleted,
+    /// Entity minimized/hidden; retained as an observation, not content.
+    Minimized,
+}
+
+impl RevisionItem {
+    /// Build a revision; empty identity keys are a contract error.
+    /// `observed_at < occurred_at` is rejected: observation cannot
+    /// precede occurrence.
+    pub fn new(
+        entity_key: impl Into<String>,
+        revision_key: impl Into<String>,
+        occurred_at: u64,
+        observed_at: u64,
+        change: ChangeKind,
+    ) -> Result<Self, ContractError> {
+        let entity_key = entity_key.into();
+        let revision_key = revision_key.into();
+        if entity_key.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "revision has empty entity_key".to_string(),
+            });
+        }
+        if revision_key.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "revision has empty revision_key".to_string(),
+            });
+        }
+        if observed_at < occurred_at {
+            return Err(ContractError::InvalidSchema {
+                detail: "revision observed before it occurred".to_string(),
+            });
+        }
+        Ok(RevisionItem {
+            entity_key,
+            revision_key,
+            occurred_at,
+            observed_at,
+            change,
+        })
+    }
+}
+
+/// Outcome of refreshing revisions against the committed state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshOutcome {
+    /// Revisions newly committed by this refresh (repeats excluded).
+    pub durable_revisions: Vec<RevisionItem>,
+    /// Entities whose refresh carried a `Deleted` tombstone: the
+    /// reported deletion gap. An entity merely absent from the fetch
+    /// with no tombstone is never listed here — absent deletion is
+    /// not evidence of deletion.
+    pub deletion_gaps: Vec<String>,
+}
+
+/// Refresh per-source revisions: observe edits behind the creation
+/// cursor, retain tombstones, deduplicate replays.
+///
+/// * `durable_store_ok = false` models a crash between fetch and
+///   commit: the outcome is empty and refetching replays everything.
+/// * A fetched item whose `revision_key` is already in
+///   `seen_revision_keys` is an idempotent repeat and excluded —
+///   dedup is by revision, not by creation: two revisions of one
+///   entity never collapse to one, and a redelivered revision is
+///   never counted as a new creation.
+/// * A fetched item whose entity is not in `committed_entity_keys`
+///   is a creation, not a revision, and belongs to HYD-05 ingest:
+///   it is excluded here, never silently promoted.
+/// * Equal `occurred_at` values prove nothing: a new revision key
+///   with an unchanged timestamp is still durable. Keys are the
+///   authority; timestamps only order what keys already identify.
+/// * Overlapping (shifting-page) redelivery is excluded by key, and
+///   overlap is never treated as proof of completeness.
+pub fn refresh_revisions(
+    seen_revision_keys: &[String],
+    committed_entity_keys: &[String],
+    fetched: &[RevisionItem],
+    durable_store_ok: bool,
+) -> RefreshOutcome {
+    if !durable_store_ok {
+        return RefreshOutcome {
+            durable_revisions: Vec::new(),
+            deletion_gaps: Vec::new(),
+        };
+    }
+    let mut durable_revisions = Vec::new();
+    let mut deletion_gaps = Vec::new();
+    for item in fetched {
+        if seen_revision_keys.contains(&item.revision_key) {
+            continue;
+        }
+        if !committed_entity_keys.contains(&item.entity_key) {
+            continue;
+        }
+        if item.change == ChangeKind::Deleted {
+            deletion_gaps.push(item.entity_key.clone());
+        }
+        durable_revisions.push(item.clone());
+    }
+    RefreshOutcome {
+        durable_revisions,
+        deletion_gaps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +478,200 @@ mod tests {
         assert!(!snapshot_needed(Some(&c2), "qfp1", "v3"));
         assert!(snapshot_needed(Some(&c2), "qfp2", "v3"));
         assert!(snapshot_needed(Some(&c2), "qfp1", "v4"));
+    }
+
+    fn rev(
+        entity: &str,
+        revision: &str,
+        occurred: u64,
+        observed: u64,
+        change: ChangeKind,
+    ) -> RevisionItem {
+        RevisionItem::new(
+            format!("github://alpha/repo/comments/{entity}"),
+            format!("github://alpha/repo/comments/{entity}#{revision}"),
+            occurred,
+            observed,
+            change,
+        )
+        .unwrap()
+    }
+
+    fn entities(keys: &[&str]) -> Vec<String> {
+        keys.iter()
+            .map(|k| format!("github://alpha/repo/comments/{k}"))
+            .collect()
+    }
+
+    /// HYD-06 oracle 1: refresh observes an edit behind the creation
+    /// cursor. Comments c1/c2 were created long ago (their creation
+    /// keys are committed via HYD-05 ingest); a later refresh must
+    /// surface c1's edit as a durable *revision* — occurrence,
+    /// observation and update times distinguished — and c2's deletion
+    /// as a reported tombstone gap, while an entity with no tombstone
+    /// is never reported deleted.
+    #[test]
+    fn pmo_hyd_refresh_observes_edit_behind_creation_cursor() {
+        let committed = entities(&["c1", "c2"]);
+
+        // First refresh after creation: both entities' initial
+        // revisions commit with occurred < observed preserved.
+        let first = refresh_revisions(
+            &[],
+            &committed,
+            &[
+                rev("c1", "r1", 100, 200, ChangeKind::Edited),
+                rev("c2", "r1", 110, 210, ChangeKind::Edited),
+            ],
+            true,
+        );
+        assert_eq!(first.durable_revisions.len(), 2);
+        assert!(first.deletion_gaps.is_empty());
+        assert!(first.durable_revisions[0].occurred_at < first.durable_revisions[0].observed_at);
+
+        // The creation cursor has long passed (no new creations), yet
+        // a later refresh observes c1 edited behind it: new revision
+        // key, later occurrence — durable as a revision.
+        let seen = [
+            "github://alpha/repo/comments/c1#r1".to_string(),
+            "github://alpha/repo/comments/c2#r1".to_string(),
+        ];
+        let edit = refresh_revisions(
+            &seen,
+            &committed,
+            &[rev("c1", "r2", 300, 400, ChangeKind::Edited)],
+            true,
+        );
+        assert_eq!(
+            edit.durable_revisions
+                .iter()
+                .map(|i| i.revision_key.as_str())
+                .collect::<Vec<_>>(),
+            ["github://alpha/repo/comments/c1#r2"]
+        );
+        assert!(edit.deletion_gaps.is_empty());
+
+        // c2 deleted at the source: the tombstone revision commits
+        // and the deletion gap is reported by entity key.
+        let seen2 = [
+            "github://alpha/repo/comments/c1#r1".to_string(),
+            "github://alpha/repo/comments/c1#r2".to_string(),
+            "github://alpha/repo/comments/c2#r1".to_string(),
+        ];
+        let tombstone = refresh_revisions(
+            &seen2,
+            &committed,
+            &[rev("c2", "r2", 350, 450, ChangeKind::Deleted)],
+            true,
+        );
+        assert_eq!(tombstone.durable_revisions.len(), 1);
+        assert_eq!(
+            tombstone.deletion_gaps,
+            ["github://alpha/repo/comments/c2".to_string()]
+        );
+
+        // Absent deletion is not evidence: c3 was never fetched and
+        // carries no tombstone, so no gap is reported for it.
+        assert!(!tombstone.deletion_gaps.iter().any(|e| e.ends_with("/c3")));
+
+        // Constructor guards: empty keys and observation-before-
+        // occurrence are contract errors, not silent records.
+        assert!(RevisionItem::new("", "k#r1", 1, 2, ChangeKind::Edited).is_err());
+        assert!(RevisionItem::new("k", "", 1, 2, ChangeKind::Edited).is_err());
+        assert!(RevisionItem::new("k", "k#r1", 5, 4, ChangeKind::Edited).is_err());
+    }
+
+    /// HYD-06 oracle 2: replay deduplicates by revision, not by
+    /// creation. Redelivering an already-seen revision commits
+    /// nothing and — critically — never counts the redelivery as a
+    /// new creation; a genuinely new revision of the same entity
+    /// still commits even when its timestamp is unchanged (keys are
+    /// the authority, timestamps only order).
+    #[test]
+    fn pmo_hyd_replay_deduplicates_revision_not_creation() {
+        let committed = entities(&["c1"]);
+        let seen = ["github://alpha/repo/comments/c1#r1".to_string()];
+
+        // Shifting-page overlap: r1 redelivered alongside new r2.
+        // r1 is an idempotent repeat; r2 commits as a revision of the
+        // committed entity — exactly one durable record, and it is a
+        // revision, not a creation.
+        let overlap = refresh_revisions(
+            &seen,
+            &committed,
+            &[
+                rev("c1", "r1", 100, 200, ChangeKind::Edited),
+                rev("c1", "r2", 300, 400, ChangeKind::Edited),
+            ],
+            true,
+        );
+        assert_eq!(
+            overlap
+                .durable_revisions
+                .iter()
+                .map(|i| i.revision_key.as_str())
+                .collect::<Vec<_>>(),
+            ["github://alpha/repo/comments/c1#r2"]
+        );
+
+        // Full replay of the same page: everything seen, nothing
+        // durable — the revision is not re-counted as a creation.
+        let seen2 = [
+            "github://alpha/repo/comments/c1#r1".to_string(),
+            "github://alpha/repo/comments/c1#r2".to_string(),
+        ];
+        let replay = refresh_revisions(
+            &seen2,
+            &committed,
+            &[
+                rev("c1", "r1", 100, 200, ChangeKind::Edited),
+                rev("c1", "r2", 300, 400, ChangeKind::Edited),
+            ],
+            true,
+        );
+        assert!(replay.durable_revisions.is_empty());
+        assert!(replay.deletion_gaps.is_empty());
+
+        // Crash between fetch and commit: the outcome is empty and a
+        // refetch replays r2 to a full commit.
+        let crashed = refresh_revisions(
+            &seen,
+            &committed,
+            &[rev("c1", "r2", 300, 400, ChangeKind::Edited)],
+            false,
+        );
+        assert!(crashed.durable_revisions.is_empty());
+        let refetch = refresh_revisions(
+            &seen,
+            &committed,
+            &[rev("c1", "r2", 300, 400, ChangeKind::Edited)],
+            true,
+        );
+        assert_eq!(refetch.durable_revisions.len(), 1);
+
+        // Equal timestamps prove nothing: r3 carries the same
+        // occurred_at as r2 but a new revision key — it commits.
+        let refetch_seen = [
+            "github://alpha/repo/comments/c1#r1".to_string(),
+            "github://alpha/repo/comments/c1#r2".to_string(),
+        ];
+        let equal_ts = refresh_revisions(
+            &refetch_seen,
+            &committed,
+            &[rev("c1", "r3", 300, 500, ChangeKind::Edited)],
+            true,
+        );
+        assert_eq!(equal_ts.durable_revisions.len(), 1);
+
+        // Creations belong to HYD-05 ingest: an entity never
+        // committed as a creation is excluded here, never silently
+        // promoted to a revision.
+        let unknown = refresh_revisions(
+            &[],
+            &committed,
+            &[rev("c9", "r1", 100, 200, ChangeKind::Edited)],
+            true,
+        );
+        assert!(unknown.durable_revisions.is_empty());
     }
 }
