@@ -1,0 +1,157 @@
+{
+  "family": "cursor",
+  "contract_owner": "HYD-06 (#9508)",
+  "refresh": {
+    "committed": [
+      {
+        "content_digest": "dig-old",
+        "native_id": "c5",
+        "observed_at": "o0",
+        "occurred_at": "t0",
+        "revision": "r1",
+        "source_updated_at": "u1",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-9",
+        "native_id": "c9",
+        "observed_at": "o9",
+        "occurred_at": "t9",
+        "revision": "r1",
+        "source_updated_at": "u9",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-8",
+        "native_id": "c8",
+        "observed_at": "o8",
+        "occurred_at": "t8",
+        "revision": "r1",
+        "source_updated_at": "u8",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-6",
+        "native_id": "c6",
+        "observed_at": "o6",
+        "occurred_at": "t6",
+        "revision": "r1",
+        "source_updated_at": "u6",
+        "state": "Present"
+      }
+    ],
+    "refetch": [
+      {
+        "content_digest": "dig-new",
+        "native_id": "c5",
+        "observed_at": "o1",
+        "occurred_at": "t0",
+        "revision": "r2",
+        "source_updated_at": "u2",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-9",
+        "native_id": "c9",
+        "observed_at": "o10",
+        "occurred_at": "t9",
+        "revision": "r1",
+        "source_updated_at": "u9",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-10",
+        "native_id": "c10",
+        "observed_at": "o10",
+        "occurred_at": "t10",
+        "revision": "r1",
+        "source_updated_at": "u10",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-10",
+        "native_id": "c10",
+        "observed_at": "o10",
+        "occurred_at": "t10",
+        "revision": "r1",
+        "source_updated_at": "u10",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-6",
+        "native_id": "c6",
+        "observed_at": "o11",
+        "occurred_at": "t6",
+        "revision": "r2",
+        "source_updated_at": "u7",
+        "state": "Deleted"
+      },
+      {
+        "content_digest": "dig-7",
+        "native_id": "c7",
+        "observed_at": "o10",
+        "occurred_at": "t7",
+        "revision": "r1",
+        "source_updated_at": "u7",
+        "state": "Minimized"
+      }
+    ],
+    "expected": {
+      "edits": ["c5"],
+      "edit_record": {
+        "content_digest": "dig-new",
+        "native_id": "c5",
+        "observed_at": "o1",
+        "occurred_at": "t0",
+        "revision": "r2",
+        "source_updated_at": "u2",
+        "state": "Present"
+      },
+      "creations": ["c10"],
+      "tombstones": ["c6", "c7"],
+      "unchanged": ["c9"],
+      "visibility_gaps": ["c8"]
+    }
+  },
+  "replay": {
+    "seen": [["c5", "r1"], ["c5", "r2"]],
+    "delivery": [
+      {
+        "content_digest": "dig-new",
+        "native_id": "c5",
+        "observed_at": "o2",
+        "occurred_at": "t0",
+        "revision": "r2",
+        "source_updated_at": "u2",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-old",
+        "native_id": "c5",
+        "observed_at": "o2",
+        "occurred_at": "t0",
+        "revision": "r1",
+        "source_updated_at": "u1",
+        "state": "Present"
+      },
+      {
+        "content_digest": "dig-v3",
+        "native_id": "c5",
+        "observed_at": "o3",
+        "occurred_at": "t0",
+        "revision": "r3",
+        "source_updated_at": "u3",
+        "state": "Present"
+      }
+    ],
+    "expected_fresh": {
+      "content_digest": "dig-v3",
+      "native_id": "c5",
+      "observed_at": "o3",
+      "occurred_at": "t0",
+      "revision": "r3",
+      "source_updated_at": "u3",
+      "state": "Present"
+    }
+  }
+}

@@ -4,7 +4,8 @@
 //! Golden fixtures under `tests/fixtures/pmo-conformance/` are fed to
 //! the code that serves each PM orchestration contract on main: the
 //! `fleet.command/v1` envelope (`work::contracts`), command acceptance
-//! (`work::operations`), the priority selector (`work::priority`) and
+//! (`work::operations`), the per-source activity cursor (`work::activity`),
+//! the priority selector (`work::priority`) and
 //! the managed body section policy (`work::authority`). Nothing here
 //! is faked except the network edge, which these pure models do not
 //! touch. `manifest.json` names the tests that cover each landed
@@ -20,6 +21,7 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+use fleet_queue::work::activity::{ActivityRecord, ActivityState, dedupe_replay, refresh_activity};
 use fleet_queue::work::authority::{
     BestEffortOptIn, ConditionalWriteCapability, Guarantee, MalformedMarkers, Refusal,
     TimeoutResolution, plan_update, reconcile_after_patch_timeout,
@@ -784,6 +786,118 @@ fn test_adapter_conformance_authority_managed_section_golden() {
             assert_eq!(case["current_body"].as_str(), Some(planned));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// cursor
+// ---------------------------------------------------------------------------
+
+/// Build one HYD-06 observation from fixture wire JSON.
+fn activity_record(value: &Value) -> ActivityRecord {
+    serde_json::from_value(value.clone()).expect("fixture record is an ActivityRecord")
+}
+
+fn record_ids(records: &[ActivityRecord]) -> Vec<&str> {
+    records.iter().map(|r| r.native_id.as_str()).collect()
+}
+
+fn expected_ids(value: &Value) -> Vec<&str> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().expect("expected id is a string"))
+        .collect()
+}
+
+#[test]
+fn test_adapter_conformance_cursor_refresh_distinguishes_edit_from_creation() {
+    let cases = load("cursor/cases.json");
+    let refresh = &cases["refresh"];
+    let committed: Vec<ActivityRecord> = refresh["committed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(activity_record)
+        .collect();
+    let refetch: Vec<ActivityRecord> = refresh["refetch"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(activity_record)
+        .collect();
+    let outcome = refresh_activity(&committed, &refetch);
+    let expected = &refresh["expected"];
+
+    // An edit behind the creation watermark is exactly one edit,
+    // never a second creation of the same native ID.
+    assert_eq!(record_ids(&outcome.edits), expected_ids(&expected["edits"]));
+    assert_eq!(
+        outcome.edits,
+        vec![activity_record(&expected["edit_record"])],
+        "the edit carries the new revision, digest and clocks"
+    );
+
+    // Only genuinely new native IDs are creations; the duplicate
+    // refetch row reports once.
+    assert_eq!(
+        record_ids(&outcome.creations),
+        expected_ids(&expected["creations"])
+    );
+
+    // Minimized-first-observation and Present-to-Deleted are
+    // retained tombstones, not drops and not creations.
+    assert_eq!(
+        record_ids(&outcome.tombstones),
+        expected_ids(&expected["tombstones"])
+    );
+
+    // Re-observation with equal revision, digest and state changes
+    // nothing; absence with no tombstone is a reported gap, never
+    // an inferred delete.
+    assert_eq!(outcome.unchanged_ids, expected_ids(&expected["unchanged"]));
+    assert_eq!(
+        outcome.visibility_gaps,
+        expected_ids(&expected["visibility_gaps"])
+    );
+    assert!(!outcome.creations.iter().any(|r| r.native_id == "c8"));
+    assert!(!outcome.edits.iter().any(|r| r.native_id == "c8"));
+    assert!(!outcome.tombstones.iter().any(|r| r.native_id == "c8"));
+}
+
+#[test]
+fn test_adapter_conformance_cursor_replay_dedupes_revision_not_creation() {
+    let cases = load("cursor/cases.json");
+    let replay = &cases["replay"];
+    let seen: Vec<(String, String)> = replay["seen"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| {
+            (
+                pair[0].as_str().expect("seen key is a string").to_string(),
+                pair[1].as_str().expect("seen key is a string").to_string(),
+            )
+        })
+        .collect();
+    let delivery: Vec<ActivityRecord> = replay["delivery"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(activity_record)
+        .collect();
+    let fresh = dedupe_replay(&seen, &delivery);
+
+    // Reordered redelivery of committed (native ID, revision) pairs
+    // commits nothing; the same ID under a new revision passes
+    // through exactly once as a change, never a second creation.
+    assert_eq!(fresh, vec![activity_record(&replay["expected_fresh"])]);
+}
+
+#[test]
+fn test_adapter_conformance_cursor_rejects_empty_identity() {
+    assert!(ActivityRecord::new("", "r1", "d", "t", "o", "u", ActivityState::Present).is_err());
+    assert!(ActivityRecord::new("c1", "", "d", "t", "o", "u", ActivityState::Present).is_err());
 }
 
 // ---------------------------------------------------------------------------
