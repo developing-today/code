@@ -329,3 +329,30 @@ describe("github-ci worker", () => {
     expect(all).toContain("INSERT INTO github_mirror_meta");
   });
 });
+
+describe("GET /version (#15793)", () => {
+  // Oracle: the edge probe (pm-stack/console/edge/src/worker-checks.ts
+  // commitOf) reads the `version` field, and #15793 criterion 1 requires
+  // each in-service Worker to name its deployed commit there,
+  // unauthenticated.
+  async function getVersion(extraEnv: Record<string, unknown> = {}): Promise<Response> {
+    const req = new Request("https://github-ci.test/version", { method: "GET" });
+    const ctx = createExecutionContext();
+    const workerEnv = { ...env, ...extraEnv } as unknown as Parameters<typeof worker.fetch>[1];
+    const res = await worker.fetch(req, workerEnv);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  it("answers unauthenticated with the deployed commit", async () => {
+    const res = await getVersion({ VERSION: "abc123def456" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, service: "github-ci", version: "abc123def456" });
+  });
+
+  it("names no commit when the deploy did not stamp one", async () => {
+    const res = await getVersion();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, service: "github-ci", version: "unknown" });
+  });
+});

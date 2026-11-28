@@ -46,6 +46,9 @@ export interface Env extends SinkEnv {
   GITHUB_WEBHOOK_SECRET: string;
   TURSO_PLATFORM_URL: string;
   TURSO_PLATFORM_TOKEN: string;
+  /** Deployed commit, stamped per deploy (`--var VERSION:$SHA`); the
+   * edge worker-checks probe (#15793) reads it from GET /version. */
+  VERSION?: string;
   /** d1-gateway Gateway entrypoint; d1gw:// URLs go through it. */
   D1GW?: D1Gateway;
 }
@@ -79,6 +82,12 @@ function json(body: unknown, status = 200): Response {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     configureTursoGateway(env.D1GW);
+    // #15793: unauthenticated deployed-commit answer for the edge
+    // worker-checks probe (pm-stack/console/edge/src/worker-checks.ts
+    // reads the `version` field). Only the commit SHA is exposed.
+    if (req.method === "GET" && new URL(req.url).pathname === "/version") {
+      return json({ ok: true, service: "github-ci", version: env.VERSION ?? "unknown" });
+    }
     if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
