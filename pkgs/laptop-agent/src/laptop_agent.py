@@ -411,6 +411,24 @@ def _files_sha_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _files_sha_prefix(path, count: int) -> str:
+    """SHA-256 of the first `count` bytes of a file.
+
+    Used by /files/copy to prove an existing transfer temp really is
+    a prefix of the source before resuming from it (#14219).
+    """
+    h = hashlib.sha256()
+    remaining = count
+    with open(path, "rb") as f:
+        while remaining > 0:
+            block = f.read(min(1 << 20, remaining))
+            if not block:
+                break
+            h.update(block)
+            remaining -= len(block)
+    return h.hexdigest()
+
+
 def _fsync_dir(path: Path):
     """Durably record a rename by fsyncing the containing directory.
 
@@ -2012,6 +2030,7 @@ class Handler(BaseHTTPRequestHandler):
             "/files/commit": self._files_commit,
             "/files/abort": self._files_abort,
             "/files/read": self._files_read,
+            "/files/copy": self._files_copy,
         }.get(path)
         if handler is None:
             return self._send(404, {"error": "no such route"})
@@ -2182,6 +2201,102 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return {"error": f"abort {temp}: {e}"}
         return {"ok": True}
+
+    def _files_copy(self, body):
+        # Server side of the delegated direct-path copy (#14219). The
+        # shipped client (fleet-proxy `copy_file_direct`) states the
+        # source's size and whole-file SHA-256 from its /files/stat;
+        # this daemon streams the source into the destination's
+        # deterministic temp -- resuming from a temp prefix a killed
+        # earlier attempt left, once the prefix is proven -- verifies
+        # the temp's hash, and only then atomically renames it over
+        # the destination, applying `mode` when given. The file bytes
+        # never transit the caller, and a copy killed at any point
+        # leaves the destination untouched (at most the temp remains,
+        # exactly like an interrupted put).
+        source = body.get("source")
+        err = _files_validate(source)
+        if err:
+            return {"error": err if err != "path required" else "source required"}
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        size = body.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            return {"error": "size must be a non-negative integer"}
+        mode = body.get("mode")
+        if not _files_mode_ok(mode):
+            return {"error": "mode must be an integer in 0..0o7777"}
+        try:
+            st = os.stat(source)
+        except FileNotFoundError:
+            return {"error": f"no such file: {source}"}
+        except OSError as e:
+            return {"error": f"stat {source}: {e}"}
+        if not os.path.isfile(source):
+            return {"error": f"not a regular file: {source}"}
+        if st.st_size != size:
+            return {
+                "error": f"size mismatch for {source}: "
+                f"daemon has {st.st_size}, client stated {size}"
+            }
+        temp = Path(files_temp_path(path, sha))
+        parent = temp.parent
+        if not parent.exists():
+            return {"error": f"no such directory: {parent}"}
+        if not parent.is_dir():
+            return {"error": f"not a directory: {parent}"}
+        try:
+            # Resume only from a proven prefix: hash the temp and the
+            # source's first temp-size bytes and compare. Anything
+            # else (oversized, divergent) is discarded and the copy
+            # starts fresh -- a retry always converges.
+            offset = 0
+            if temp.exists() and os.path.isfile(temp):
+                have = temp.stat().st_size
+                if have == size and size > 0:
+                    offset = have if _files_sha_file(temp) == sha else 0
+                    if offset == 0:
+                        temp.unlink()
+                elif 0 < have < size:
+                    if _files_sha_prefix(source, have) == _files_sha_file(temp):
+                        offset = have
+                    else:
+                        temp.unlink()
+                elif have > size:
+                    temp.unlink()
+            with open(source, "rb") as f, open(
+                temp, "ab" if offset else "wb"
+            ) as out:
+                f.seek(offset)
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    out.write(block)
+                out.flush()
+                os.fsync(out.fileno())
+        except OSError as e:
+            return {"error": f"copy {source} -> {temp}: {e}"}
+        try:
+            actual = _files_sha_file(temp)
+        except OSError as e:
+            return {"error": f"hash {temp}: {e}"}
+        if actual != sha:
+            # Keep the temp, mirroring commit: a later attempt can
+            # resume or abort it; the destination was never touched.
+            return {"error": "sha256 mismatch", "actual": actual}
+        try:
+            if mode is not None:
+                os.chmod(temp, mode)
+            # Atomic publish: the rename is what makes partial content
+            # at the destination impossible.
+            os.replace(temp, path)
+            _fsync_dir(Path(path).parent)
+        except OSError as e:
+            return {"error": f"commit {temp} -> {path}: {e}"}
+        return {"size": size, "sha256": actual}
 
     def _files_read(self, body):
         path = body.get("path")

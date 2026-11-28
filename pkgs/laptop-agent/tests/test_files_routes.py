@@ -177,6 +177,73 @@ class FilesRoutesTest(unittest.TestCase):
             offset = len(out)
         return bytes(out), st["sha256"]
 
+    # -- /files/copy: delegated direct-path copy (#14219) --------------
+    #
+    # The oracle is the shipped client's `copy_file_direct` contract:
+    # the client states {source, path, sha256, size, mode?} from its
+    # stat of the source; the daemon must publish exactly those bytes
+    # at `path`, hash-verified, by atomic rename, resuming from a
+    # proven temp prefix and never exposing a partial destination.
+
+    def copy_body(self, source, dest, data, **extra):
+        body = {
+            "source": str(source),
+            "path": str(dest),
+            "sha256": sha_hex(data),
+            "size": len(data),
+        }
+        body.update(extra)
+        return body
+
+    def test_copy_publishes_exact_bytes_and_clears_temp(self):
+        source = self.work / "copy-source.bin"
+        dest = self.work / "copy-dest.bin"
+        data = os.urandom(5 * 1024 * 1024)
+        source.write_bytes(data)
+        dest.write_bytes(b"old destination")
+        report = self.ok("/files/copy", self.copy_body(source, dest, data))
+        self.assertEqual(
+            {key: report[key] for key in ("size", "sha256")},
+            {"size": len(data), "sha256": sha_hex(data)},
+        )
+        self.assertEqual(dest.read_bytes(), data)
+        self.assertEqual(list(self.work.glob(".copy-dest.bin.fleet-part-*")), [])
+
+    def test_copy_missing_source_never_touches_destination(self):
+        dest = self.work / "copy-failed.bin"
+        dest.write_bytes(b"keep original")
+        reply = self.err(
+            "/files/copy",
+            self.copy_body(self.work / "missing-source", dest, b"whatever"),
+        )
+        self.assertIn("no such file", reply["error"])
+        self.assertEqual(dest.read_bytes(), b"keep original")
+        self.assertEqual(list(self.work.glob(".copy-failed.bin.fleet-part-*")), [])
+
+    def test_copy_resumes_from_proven_temp_prefix(self):
+        source = self.work / "copy-resume-source.bin"
+        dest = self.work / "copy-resume-dest.bin"
+        data = os.urandom(4 * 1024 * 1024)
+        source.write_bytes(data)
+        # A killed earlier attempt left the first MiB in the temp.
+        Path(temp_for(str(dest), sha_hex(data))).write_bytes(data[: 1 << 20])
+        report = self.ok("/files/copy", self.copy_body(source, dest, data))
+        self.assertEqual(report["sha256"], sha_hex(data))
+        self.assertEqual(dest.read_bytes(), data)
+        self.assertEqual(list(self.work.glob(".copy-resume-dest.bin.fleet-part-*")), [])
+
+    def test_copy_wrong_stated_hash_refuses_and_keeps_destination(self):
+        source = self.work / "copy-hash-source.bin"
+        dest = self.work / "copy-hash-dest.bin"
+        data = os.urandom(1 * 1024 * 1024)
+        source.write_bytes(data)
+        dest.write_bytes(b"keep original")
+        body = self.copy_body(source, dest, data)
+        body["sha256"] = sha_hex(b"not the source")
+        reply = self.err("/files/copy", body)
+        self.assertIn("sha256 mismatch", reply["error"])
+        self.assertEqual(dest.read_bytes(), b"keep original")
+
     # -- AC1: whole-file round trips are sha256-identical ---------------
     #
     # The packet's acceptance is a 100 MiB transfer both ways. 100 MiB
