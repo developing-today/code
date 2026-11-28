@@ -19,6 +19,7 @@ import {
   parseCrawlResult,
   parseAiSummaryResult,
   fileResponseForKey,
+  versionAnswer,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,12 @@ interface Env {
   // the type only so a misconfigured deploy compiles — at runtime the
   // gate fails CLOSED (503) when the secret is unset.
   API_TOKEN?: string;
+  // Deployed commit stamped as a plain var by the deploy paths
+  // (deploy.mjs --var, the lab-ops-hub row of
+  // cf-worker-versions-release.yml); read by the unauthenticated
+  // GET /version route (#15793). Optional: unstamped deploys
+  // answer "unknown", which the edge probe records honestly.
+  VERSION?: string;
 }
 
 type Job = { type: "index-file"; r2Key: string } | { type: "crawl"; crawlId: number; url: string };
@@ -224,6 +231,17 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
+
+    // Version (#15793): the edge Worker checks ask each in-service
+    // Worker which commit it was deployed from. Unauthenticated and
+    // ahead of the #441 gate and the usage ledger — it touches no
+    // binding and exposes only the commit the deploy stamped.
+    if (p === "/version") {
+      if (req.method !== "GET") {
+        return json({ error: "method not allowed" }, 405);
+      }
+      return json(versionAnswer(env.VERSION));
+    }
 
     // Auth gate (#441): everything under /api/ except /api/health needs
     // the API token. Fail closed when the secret is not configured, so a
