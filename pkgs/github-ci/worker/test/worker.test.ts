@@ -1,15 +1,16 @@
 import { createExecutionContext, env, fetchMock, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import worker from "../src/index";
 
 const SECRET = "test-webhook-secret";
 const PLATFORM = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 const QUEUE = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
+type WorkerEnv = Parameters<typeof worker.fetch>[1];
 
-async function sign(body: string): Promise<string> {
+async function sign(body: string, secret = SECRET): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(SECRET),
+    new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -24,7 +25,19 @@ function tursoOk() {
   });
 }
 
-async function post(body: string, event: string, sig?: string): Promise<Response> {
+function envWithSecret(secret: string | undefined): WorkerEnv {
+  const copy = { ...(env as unknown as Record<string, unknown>) };
+  delete copy.GITHUB_WEBHOOK_SECRET;
+  if (secret !== undefined) copy.GITHUB_WEBHOOK_SECRET = secret;
+  return copy as unknown as WorkerEnv;
+}
+
+async function post(
+  body: string,
+  event: string,
+  sig?: string,
+  requestEnv: WorkerEnv = env as unknown as WorkerEnv,
+): Promise<Response> {
   const req = new Request("https://github-ci.test/", {
     method: "POST",
     headers: {
@@ -34,7 +47,7 @@ async function post(body: string, event: string, sig?: string): Promise<Response
     body,
   });
   const ctx = createExecutionContext();
-  const res = await worker.fetch(req, env as unknown as Parameters<typeof worker.fetch>[1]);
+  const res = await worker.fetch(req, requestEnv);
   await waitOnExecutionContext(ctx);
   return res;
 }
@@ -62,11 +75,27 @@ beforeAll(() => {
   fetchMock.activate();
   fetchMock.disableNetConnect();
 });
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => {
+  vi.restoreAllMocks();
+  fetchMock.assertNoPendingInterceptors();
+});
 
 describe("github-ci worker", () => {
-  it("rejects a bad signature with 401", async () => {
-    const res = await post(runPayload, "workflow_run", "sha256=00");
+  it.each([
+    ["unset", undefined],
+    ["empty", ""],
+  ])("rejects an unsigned webhook when the secret is %s and logs the configuration error", async (_state, secret) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await post(runPayload, "workflow_run", undefined, envWithSecret(secret));
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("webhook verification unavailable");
+    expect(log).toHaveBeenCalledWith(
+      "github-ci worker rejected webhook: GITHUB_WEBHOOK_SECRET is not configured",
+    );
+  });
+
+  it("rejects a webhook signed with the wrong secret with 401", async () => {
+    const res = await post(runPayload, "workflow_run", await sign(runPayload, "wrong-secret"));
     expect(res.status).toBe(401);
   });
 
