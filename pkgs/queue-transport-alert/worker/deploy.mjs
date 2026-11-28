@@ -170,6 +170,10 @@ if (gha && deployVersion === null) {
   }
   const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (sha !== process.env.QTA_SOURCE_SHA) throw new Error("checkout does not match dispatch SHA");
+  // #15793: cloudflare.config.ts stamps the VERSION var from GITHUB_SHA
+  // at build time; hand the cf build the verified sha, so /version
+  // names the commit this uploaded version was built from.
+  env.GITHUB_SHA = sha;
   if (!process.env.QTA_HANDOFF_FILE) throw new Error("GHA upload requires a handoff path");
   const identity = ghaUploadIdentity({ sha, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT });
   const outputFile = join(stage, "cf-versions-upload-result.json");
@@ -229,6 +233,10 @@ if (deployVersion !== null) {
 const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
 const message = `deploy ${sha} via nix run .#queue-transport-alert-deploy`;
+// #15793: cloudflare.config.ts stamps the VERSION var from GITHUB_SHA
+// at build time; hand the cf build the same sha this deploy tags, so
+// /version names the commit each uploaded version was built from.
+env.GITHUB_SHA = sha;
 
 if (dryRun) {
   runCf(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message, "--dry-run"]);
