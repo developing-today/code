@@ -1031,9 +1031,12 @@ mod tests {
         let fleet_actors = ["fleet-bot"];
         // One durable mapping: op-A in session-A produced remote r1.
         let mappings = vec![
-            OperationMapping::new("op-A", "session-A", Some("out-1".to_string()), vec![
-                "r1".to_string(),
-            ])
+            OperationMapping::new(
+                "op-A",
+                "session-A",
+                Some("out-1".to_string()),
+                vec!["r1".to_string()],
+            )
             .expect("valid mapping"),
         ];
 
@@ -1148,9 +1151,7 @@ mod tests {
         // Empty identity is rejected, never silently accepted.
         assert!(OperationMapping::new("", "session-A", None, vec![]).is_err());
         assert!(OperationMapping::new("op-A", "", None, vec![]).is_err());
-        assert!(
-            ObservedActivity::new("", None::<String>, None, None, None, None).is_err()
-        );
+        assert!(ObservedActivity::new("", None::<String>, None, None, None, None).is_err());
     }
 
     fn refresh_state(
@@ -1439,8 +1440,10 @@ pub fn classify_origin(
     fleet_actor_logins: &[&str],
     observed: &ObservedActivity,
 ) -> ActivityOrigin {
-    if let (Some(op), Some(remote)) = (observed.operation_id.as_deref(), observed.remote_id.as_deref())
-    {
+    if let (Some(op), Some(remote)) = (
+        observed.operation_id.as_deref(),
+        observed.remote_id.as_deref(),
+    ) {
         for mapping in mappings {
             if mapping.operation_id == op && mapping.remote_ids.iter().any(|id| id == remote) {
                 match observed.session_id.as_deref() {

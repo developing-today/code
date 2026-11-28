@@ -657,15 +657,17 @@ mod tests {
         // POST with no endpoint to file against.
         assert!(classify(&args(&["api", "repos/o/r/issues"])).is_none());
         assert!(classify(&args(&["api", "repos/o/r/issues", "--method", "GET"])).is_none());
-        assert!(classify(&args(&[
-            "api",
-            "repos/o/r/issues/1",
-            "--method",
-            "PUT",
-            "-f",
-            "title=x"
-        ]))
-        .is_none());
+        assert!(
+            classify(&args(&[
+                "api",
+                "repos/o/r/issues/1",
+                "--method",
+                "PUT",
+                "-f",
+                "title=x"
+            ]))
+            .is_none()
+        );
         assert!(classify(&args(&["api", "--method", "POST", "-f", "title=x"])).is_none());
         // Deferred shapes stay unledgered in this slice.
         assert!(classify(&args(&["gist", "view", "abc123"])).is_none());

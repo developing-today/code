@@ -52,7 +52,11 @@ def arguments():
         if moment is None:
             parser.error("%s must be an ISO-8601 timestamp with a timezone" % flag)
         window[flag] = moment
-    if not window["--outage-start"] <= window["--outage-end"] <= window["--restored-at"]:
+    if (
+        not window["--outage-start"]
+        <= window["--outage-end"]
+        <= window["--restored-at"]
+    ):
         parser.error("--outage-start <= --outage-end <= --restored-at is required")
     args.window = window
     return args
@@ -71,9 +75,7 @@ def record_bounds(name, record, gaps):
     started = parse_timestamp(record.get("startedAt"))
     finished = parse_timestamp(record.get("finishedAt"))
     if started is None or finished is None or not started <= finished:
-        gaps.append(
-            "%s: startedAt/finishedAt are not an ordered timestamp pair" % name
-        )
+        gaps.append("%s: startedAt/finishedAt are not an ordered timestamp pair" % name)
         return None, None
     return started, finished
 

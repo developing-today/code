@@ -124,9 +124,13 @@ class EvaluateTests(unittest.TestCase):
     def package(self, directory, before=None, during=None, after=None, **window):
         args = [
             "--before",
-            self.write(directory, "before.json", before if before is not None else BEFORE),
+            self.write(
+                directory, "before.json", before if before is not None else BEFORE
+            ),
             "--during",
-            self.write(directory, "during.json", during if during is not None else DURING),
+            self.write(
+                directory, "during.json", during if during is not None else DURING
+            ),
             "--after",
             self.write(directory, "after.json", after if after is not None else AFTER),
         ]

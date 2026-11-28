@@ -282,17 +282,16 @@ export class HranaQueueStore implements QueueStore {
     return rows.map((r) => readTask(r as Record<string, unknown>));
   }
 
-  async healthSnapshot(
-    queueFilter: string | null,
-    since24Iso: string,
-    since7Iso: string,
-  ): Promise<HealthSnapshot> {
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
     const qf = queueFilter !== null ? " AND queue = ?" : "";
     const qArgs: SqlParam[] = queueFilter !== null ? [queueFilter] : [];
     const num = (v: unknown): number => (typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : 0);
     const str = (v: unknown): string => (typeof v === "string" ? v : "");
     const counts = (
-      await this.exec(`SELECT queue, status, COUNT(*) AS n FROM tasks WHERE 1 = 1${qf} GROUP BY queue, status`, ...qArgs)
+      await this.exec(
+        `SELECT queue, status, COUNT(*) AS n FROM tasks WHERE 1 = 1${qf} GROUP BY queue, status`,
+        ...qArgs,
+      )
     ).rows;
     const atCap = (
       await this.exec(
@@ -301,7 +300,10 @@ export class HranaQueueStore implements QueueStore {
       )
     ).rows;
     const oldest = (
-      await this.exec(`SELECT queue, MIN(created_at) AS oldest FROM tasks WHERE status = 'queued'${qf} GROUP BY queue`, ...qArgs)
+      await this.exec(
+        `SELECT queue, MIN(created_at) AS oldest FROM tasks WHERE status = 'queued'${qf} GROUP BY queue`,
+        ...qArgs,
+      )
     ).rows;
     const dep = (
       await this.exec(

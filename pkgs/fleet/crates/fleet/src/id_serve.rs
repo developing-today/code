@@ -139,7 +139,11 @@ impl WireFormat {
 /// §4.4 conversion conditions: any one trigger converts. The
 /// threshold is a per-call input so callers can tune it (§4.4:
 /// "default threshold 1 MiB per value — tunable per call").
-pub fn conversion_triggered(consumer_is_browser: bool, payload_len: usize, streaming: bool) -> bool {
+pub fn conversion_triggered(
+    consumer_is_browser: bool,
+    payload_len: usize,
+    streaming: bool,
+) -> bool {
     consumer_is_browser || streaming || payload_len > CONVERSION_THRESHOLD
 }
 
@@ -241,14 +245,11 @@ fn codec_to_json(value: &CodecValue) -> Result<serde_json::Value, ConvertError> 
         CodecValue::Bytes(_) => {
             return Err(ConvertError::Codec(
                 "byte string has no value-layer form (envelope fields only)".to_string(),
-            ))
+            ));
         }
-        CodecValue::Seq(items) => serde_json::Value::Array(
-            items
-                .iter()
-                .map(codec_to_json)
-                .collect::<Result<_, _>>()?,
-        ),
+        CodecValue::Seq(items) => {
+            serde_json::Value::Array(items.iter().map(codec_to_json).collect::<Result<_, _>>()?)
+        }
         CodecValue::Map(entries) => serde_json::Value::Object(
             entries
                 .iter()
@@ -280,12 +281,14 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], ConvertError> {
-        let end = self.pos.checked_add(n).ok_or_else(|| {
-            ConvertError::Codec("length overflows the input".to_string())
-        })?;
-        let slice = self.buf.get(self.pos..end).ok_or_else(|| {
-            ConvertError::Codec("declared length exceeds the input".to_string())
-        })?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| ConvertError::Codec("length overflows the input".to_string()))?;
+        let slice = self
+            .buf
+            .get(self.pos..end)
+            .ok_or_else(|| ConvertError::Codec("declared length exceeds the input".to_string()))?;
         self.pos = end;
         Ok(slice)
     }
@@ -418,9 +421,11 @@ fn cbor_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, ConvertEr
         1 => {
             let arg = cbor_read_arg(r, info)?;
             let value = -1i128 - i128::from(arg);
-            CodecValue::I64(i64::try_from(value).map_err(|_| {
-                ConvertError::Codec("negative integer underflows i64".to_string())
-            })?)
+            CodecValue::I64(
+                i64::try_from(value).map_err(|_| {
+                    ConvertError::Codec("negative integer underflows i64".to_string())
+                })?,
+            )
         }
         2 => {
             let len = usize::try_from(cbor_read_arg(r, info)?)
@@ -455,7 +460,7 @@ fn cbor_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, ConvertEr
                     _ => {
                         return Err(ConvertError::Codec(
                             "map key is not a text string".to_string(),
-                        ))
+                        ));
                     }
                 };
                 entries.push((key, cbor_decode(r, depth + 1)?));
@@ -472,7 +477,7 @@ fn cbor_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, ConvertEr
             _ => {
                 return Err(ConvertError::Codec(format!(
                     "unsupported CBOR simple/float info {info}"
-                )))
+                )));
             }
         },
         _ => unreachable!("major type is 3 bits"),
@@ -611,7 +616,7 @@ fn msgpack_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, Conver
                     _ => {
                         return Err(ConvertError::Codec(
                             "msgpack map key is not a str".to_string(),
-                        ))
+                        ));
                     }
                 };
                 entries.push((key, msgpack_decode(r, depth + 1)?));
@@ -688,7 +693,7 @@ fn msgpack_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, Conver
                     _ => {
                         return Err(ConvertError::Codec(
                             "msgpack map key is not a str".to_string(),
-                        ))
+                        ));
                     }
                 };
                 entries.push((key, msgpack_decode(r, depth + 1)?));
@@ -704,7 +709,7 @@ fn msgpack_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, Conver
                     _ => {
                         return Err(ConvertError::Codec(
                             "msgpack map key is not a str".to_string(),
-                        ))
+                        ));
                     }
                 };
                 entries.push((key, msgpack_decode(r, depth + 1)?));
@@ -714,7 +719,7 @@ fn msgpack_decode(r: &mut Reader<'_>, depth: usize) -> Result<CodecValue, Conver
         _ => {
             return Err(ConvertError::Codec(format!(
                 "unsupported msgpack marker {head:#04x}"
-            )))
+            )));
         }
     })
 }
@@ -761,8 +766,7 @@ where
     T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let json = codec_to_json(&decode_value(cbor_bytes, WireFormat::Cbor)?)?;
-    let value: T =
-        serde_json::from_value(json).map_err(|e| ConvertError::Json(e.to_string()))?;
+    let value: T = serde_json::from_value(json).map_err(|e| ConvertError::Json(e.to_string()))?;
     postcard::to_allocvec(&value).map_err(|e| ConvertError::Postcard(e.to_string()))
 }
 
@@ -783,8 +787,7 @@ where
     T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let json = codec_to_json(&decode_value(msgpack_bytes, WireFormat::Msgpack)?)?;
-    let value: T =
-        serde_json::from_value(json).map_err(|e| ConvertError::Json(e.to_string()))?;
+    let value: T = serde_json::from_value(json).map_err(|e| ConvertError::Json(e.to_string()))?;
     postcard::to_allocvec(&value).map_err(|e| ConvertError::Postcard(e.to_string()))
 }
 
@@ -872,7 +875,10 @@ impl Envelope {
                 CodecValue::Str(self.kind.as_str().to_string()),
             ),
             ("alpn".to_string(), CodecValue::Str(self.alpn.clone())),
-            ("payload".to_string(), CodecValue::Bytes(self.payload.clone())),
+            (
+                "payload".to_string(),
+                CodecValue::Bytes(self.payload.clone()),
+            ),
         ];
         if let Some(digest) = &self.digest {
             entries.push(("digest".to_string(), CodecValue::Bytes(digest.to_vec())));
@@ -885,11 +891,7 @@ impl Envelope {
     pub fn decode(bytes: &[u8], format: WireFormat) -> Result<Self, ConvertError> {
         let entries = match decode_value(bytes, format)? {
             CodecValue::Map(entries) => entries,
-            _ => {
-                return Err(ConvertError::Envelope(
-                    "envelope is not a map".to_string(),
-                ))
-            }
+            _ => return Err(ConvertError::Envelope("envelope is not a map".to_string())),
         };
         let fields: BTreeMap<String, CodecValue> = entries.into_iter().collect();
         let version = match fields.get("v") {
@@ -906,9 +908,8 @@ impl Envelope {
             _ => return Err(ConvertError::Envelope("missing/invalid seq".to_string())),
         };
         let kind = match fields.get("kind") {
-            Some(CodecValue::Str(s)) => EnvelopeKind::from_wire(s).ok_or_else(|| {
-                ConvertError::Envelope(format!("unknown envelope kind {s:?}"))
-            })?,
+            Some(CodecValue::Str(s)) => EnvelopeKind::from_wire(s)
+                .ok_or_else(|| ConvertError::Envelope(format!("unknown envelope kind {s:?}")))?,
             _ => return Err(ConvertError::Envelope("missing/invalid kind".to_string())),
         };
         let alpn = match fields.get("alpn") {
@@ -920,7 +921,7 @@ impl Envelope {
             _ => {
                 return Err(ConvertError::Envelope(
                     "missing/invalid payload".to_string(),
-                ))
+                ));
             }
         };
         let digest = match fields.get("digest") {
@@ -933,7 +934,7 @@ impl Envelope {
             Some(_) => {
                 return Err(ConvertError::Envelope(
                     "digest is not a 32-byte string".to_string(),
-                ))
+                ));
             }
         };
         Ok(Envelope {
@@ -1039,9 +1040,9 @@ impl ChunkReassembler {
                 env.alpn, self.alpn
             )));
         }
-        let digest = env.digest.ok_or_else(|| {
-            ConvertError::Chunk("chunk envelope carries no digest".to_string())
-        })?;
+        let digest = env
+            .digest
+            .ok_or_else(|| ConvertError::Chunk("chunk envelope carries no digest".to_string()))?;
         match self.base_seq {
             None => {
                 self.base_seq = Some(env.seq);
@@ -1253,8 +1254,7 @@ async fn ws_handshake(
         if headers.get("authorization").map(|s| s.as_str()) != Some(expected.as_str()) {
             write_http_response(stream, "401 Unauthorized", "").await?;
             return Err(ServeError::Transport(
-                "serve-ws handshake refused: missing or wrong session credential"
-                    .to_string(),
+                "serve-ws handshake refused: missing or wrong session credential".to_string(),
             ));
         }
     }
@@ -1400,7 +1400,7 @@ async fn ws_read_message(stream: &mut TcpStream) -> Result<Option<Vec<u8>>, Serv
             other => {
                 return Err(ServeError::Transport(format!(
                     "unsupported websocket opcode {other} (binary only)"
-                )))
+                )));
             }
         }
     }
@@ -1425,22 +1425,21 @@ async fn handle_connection(
         let envelope = match Envelope::decode(&message, format) {
             Ok(envelope) => envelope,
             Err(e) => {
-                let error = Envelope::single(
-                    EnvelopeKind::Error,
-                    0,
-                    "",
-                    format!("{e}").into_bytes(),
-                );
+                let error =
+                    Envelope::single(EnvelopeKind::Error, 0, "", format!("{e}").into_bytes());
                 ws_write_frame(&mut stream, 0x2, &error.encode(format)).await?;
                 continue;
             }
         };
         let (alpn, seq, payload) = match envelope.kind {
-            EnvelopeKind::Req => (envelope.alpn.clone(), envelope.seq, envelope.payload.clone()),
+            EnvelopeKind::Req => (
+                envelope.alpn.clone(),
+                envelope.seq,
+                envelope.payload.clone(),
+            ),
             EnvelopeKind::Chunk => {
-                let active = reassembler.get_or_insert_with(|| {
-                    ChunkReassembler::new(&envelope.alpn)
-                });
+                let active =
+                    reassembler.get_or_insert_with(|| ChunkReassembler::new(&envelope.alpn));
                 match active.push(&envelope) {
                     Ok(Some(payload)) => {
                         let base = active.base_seq().unwrap_or(envelope.seq);
@@ -1484,8 +1483,7 @@ async fn handle_connection(
                 }
             }
             Err(msg) => {
-                let error =
-                    Envelope::single(EnvelopeKind::Error, seq, &alpn, msg.into_bytes());
+                let error = Envelope::single(EnvelopeKind::Error, seq, &alpn, msg.into_bytes());
                 ws_write_frame(&mut stream, 0x2, &error.encode(format)).await?;
             }
         }
@@ -1707,12 +1705,7 @@ mod tests {
     #[test]
     fn envelope_round_trips_both_formats() {
         for format in [WireFormat::Cbor, WireFormat::Msgpack] {
-            let plain = Envelope::single(
-                EnvelopeKind::Req,
-                7,
-                "/iroh-meta/3",
-                b"payload".to_vec(),
-            );
+            let plain = Envelope::single(EnvelopeKind::Req, 7, "/iroh-meta/3", b"payload".to_vec());
             let back = Envelope::decode(&plain.encode(format), format).unwrap();
             assert_eq!(back, plain);
             let digested = Envelope {
@@ -1733,7 +1726,10 @@ mod tests {
             ("v".to_string(), CodecValue::U64(2)),
             ("seq".to_string(), CodecValue::U64(0)),
             ("kind".to_string(), CodecValue::Str("req".to_string())),
-            ("alpn".to_string(), CodecValue::Str("/iroh-meta/3".to_string())),
+            (
+                "alpn".to_string(),
+                CodecValue::Str("/iroh-meta/3".to_string()),
+            ),
             ("payload".to_string(), CodecValue::Bytes(vec![])),
         ];
         let bytes = encode_value(&CodecValue::Map(entries.clone()), WireFormat::Cbor);
@@ -1779,7 +1775,10 @@ mod tests {
         // assigns none.
         const GOLDEN_ALPN: &str = "/id-session/1";
         let golden_events: [(u64, &str); 4] = [
-            (1, r#"{"id":1,"event":"app","data":{"session":"ses_16326_golden"}}"#),
+            (
+                1,
+                r#"{"id":1,"event":"app","data":{"session":"ses_16326_golden"}}"#,
+            ),
             (
                 2,
                 r#"{"id":2,"event":"out","data":{"encoding":"utf8","data":"hello\n"}}"#,
@@ -1804,7 +1803,8 @@ mod tests {
                 let CodecValue::Map(entries) = decode_value(&wire, format).unwrap() else {
                     panic!("envelope wire form is not a map");
                 };
-                let field_names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+                let field_names: Vec<&str> =
+                    entries.iter().map(|(name, _)| name.as_str()).collect();
                 assert_eq!(field_names, ["v", "seq", "kind", "alpn", "payload"]);
                 let fields: BTreeMap<String, CodecValue> = entries.into_iter().collect();
                 assert_eq!(fields["v"], CodecValue::U64(ENVELOPE_VERSION));
@@ -1835,9 +1835,8 @@ mod tests {
         // the exact REST-side event bytes, digests verified by the
         // reassembler.
         let big_data = "x".repeat(CONVERSION_THRESHOLD + 4096);
-        let event_json = format!(
-            r#"{{"id":2,"event":"out","data":{{"encoding":"utf8","data":"{big_data}"}}}}"#
-        );
+        let event_json =
+            format!(r#"{{"id":2,"event":"out","data":{{"encoding":"utf8","data":"{big_data}"}}}}"#);
         let payload = event_json.into_bytes();
         assert!(needs_chunking(payload.len()));
         let envelopes = envelopes_for_payload(SESSION_EVENT_KIND, "/id-session/1", 2, &payload);
@@ -1971,8 +1970,14 @@ mod tests {
         assert!(credentialed.validate().is_ok());
         // The token construction is deterministic per NodeId and
         // differs across NodeIds.
-        assert_eq!(session_token("ab".repeat(32).as_str()), session_token("ab".repeat(32).as_str()));
-        assert_ne!(session_token("ab".repeat(32).as_str()), session_token("cd".repeat(32).as_str()));
+        assert_eq!(
+            session_token("ab".repeat(32).as_str()),
+            session_token("ab".repeat(32).as_str())
+        );
+        assert_ne!(
+            session_token("ab".repeat(32).as_str()),
+            session_token("cd".repeat(32).as_str())
+        );
     }
 
     #[test]
@@ -1989,8 +1994,8 @@ mod tests {
     /// The postcard-side fixture responder: strict-decodes a
     /// Probe and answers as the test ID node would.
     fn probe_responder(postcard_req: &[u8]) -> Result<Vec<u8>, String> {
-        let req: Probe = crate::id_postcard::decode_strict(postcard_req)
-            .map_err(|e| e.to_string())?;
+        let req: Probe =
+            crate::id_postcard::decode_strict(postcard_req).map_err(|e| e.to_string())?;
         let resp = match req {
             Probe::List => ProbeResp::Entries(vec!["alpha".to_string(), "beta".to_string()]),
             Probe::Find { query, .. } => ProbeResp::Entries(vec![query]),
@@ -2031,10 +2036,9 @@ mod tests {
                     WireFormat::Msgpack => msgpack_to_postcard::<Blob>(&payload),
                 }
                 .map_err(|e| e.to_string())?;
-                let blob: Blob = crate::id_postcard::decode_strict(&postcard_req)
-                    .map_err(|e| e.to_string())?;
-                let postcard_resp =
-                    postcard::to_allocvec(&blob).map_err(|e| e.to_string())?;
+                let blob: Blob =
+                    crate::id_postcard::decode_strict(&postcard_req).map_err(|e| e.to_string())?;
+                let postcard_resp = postcard::to_allocvec(&blob).map_err(|e| e.to_string())?;
                 match format {
                     WireFormat::Cbor => postcard_to_cbor::<Blob>(&postcard_resp),
                     WireFormat::Msgpack => postcard_to_msgpack::<Blob>(&postcard_resp),
@@ -2156,8 +2160,7 @@ mod tests {
                 match env.kind {
                     EnvelopeKind::Resp => return env.payload,
                     EnvelopeKind::Chunk => {
-                        let active = reassembler
-                            .get_or_insert_with(|| ChunkReassembler::new(alpn));
+                        let active = reassembler.get_or_insert_with(|| ChunkReassembler::new(alpn));
                         if let Some(done) = active.push(&env).unwrap() {
                             return done;
                         }
@@ -2180,20 +2183,17 @@ mod tests {
             let request_value = serde_json::json!({
                 "Find": { "query": "config", "prefer_name": true }
             });
-            let request_bytes =
-                encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
+            let request_bytes = encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
             let response_bytes = client.exchange("/iroh-meta/3", &request_bytes).await;
             let response_value =
-                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap())
-                    .unwrap();
+                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap()).unwrap();
             assert_eq!(response_value, serde_json::json!({ "Entries": ["config"] }));
 
             // MessagePack negotiates and exchanges the same way.
             let mut client = TestClient::connect(addr, MSGPACK_PROTOCOL, None)
                 .await
                 .expect("handshake negotiates msgpack");
-            let request_bytes =
-                encode_value(&json_to_codec(&request_value), WireFormat::Msgpack);
+            let request_bytes = encode_value(&json_to_codec(&request_value), WireFormat::Msgpack);
             let response_bytes = client.exchange("/iroh-meta/3", &request_bytes).await;
             let response_value =
                 codec_to_json(&decode_value(&response_bytes, WireFormat::Msgpack).unwrap())
@@ -2213,15 +2213,13 @@ mod tests {
                 .expect("handshake");
             let data = "x".repeat(CONVERSION_THRESHOLD + 4096);
             let request_value = serde_json::json!({ "data": data });
-            let request_bytes =
-                encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
+            let request_bytes = encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
             assert!(needs_chunking(request_bytes.len()));
             // exchange() chunks the request, and reassembles the
             // chunked response verifying every digest.
             let response_bytes = client.exchange("/iroh-meta/3", &request_bytes).await;
             let response_value =
-                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap())
-                    .unwrap();
+                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap()).unwrap();
             assert_eq!(response_value, request_value);
         })
         .await
@@ -2264,12 +2262,10 @@ mod tests {
                 .await
                 .expect("the session credential is accepted");
             let request_value = serde_json::json!("List");
-            let request_bytes =
-                encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
+            let request_bytes = encode_value(&json_to_codec(&request_value), WireFormat::Cbor);
             let response_bytes = client.exchange("/iroh-meta/3", &request_bytes).await;
             let response_value =
-                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap())
-                    .unwrap();
+                codec_to_json(&decode_value(&response_bytes, WireFormat::Cbor).unwrap()).unwrap();
             assert_eq!(
                 response_value,
                 serde_json::json!({ "Entries": ["alpha", "beta"] })

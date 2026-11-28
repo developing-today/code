@@ -14,11 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { executeQueueVerb, LIVE_STATUSES, type QueueEnv } from "../src/queue.ts";
-import {
-  FixtureQueueStore,
-  NO_DEP_PROBE,
-  type QueueStore,
-} from "../src/queue-store.ts";
+import { FixtureQueueStore, NO_DEP_PROBE, type QueueStore } from "../src/queue-store.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "../src/libsql-queue-store.ts";
 import { openD1QueueStore } from "../src/d1-queue-store.ts";
 import { FakeD1Database } from "./d1-double.ts";
@@ -97,23 +93,33 @@ async function scenario(store: QueueStore, label: string): Promise<void> {
   // Two live rows of different kinds.
   const enq1 = await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet: fixPacket(101) }, env);
   assert.equal(enq1["ok"], true, `${label}: first enqueue ok`);
-  const id1 = ((enq1["row"] as JsonObject)["id"] as number);
+  const id1 = (enq1["row"] as JsonObject)["id"] as number;
   const enq2 = await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet: triagePacket(202) }, env);
   assert.equal(enq2["ok"], true, `${label}: triage enqueue ok`);
 
   // Bounded identity scan: same issue, different dedupe_key, no
   // override — must collide with the live small_fix row (the path
   // that used to scan allTasks and blow the D1 cap).
-  const dup = fixPacket(101, {}, { dedupe_key: "repo-health:v1:fix:developing-today/code:issue:101:dispatch:abcdef12" });
+  const dup = fixPacket(
+    101,
+    {},
+    { dedupe_key: "repo-health:v1:fix:developing-today/code:issue:101:dispatch:abcdef12" },
+  );
   const enqDup = await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet: dup }, env);
   assert.equal(enqDup["ok"], true, `${label}: duplicate enqueue ok`);
-  assert.equal(((enqDup["row"] as JsonObject)["id"] as number), id1, `${label}: duplicate collides`);
+  assert.equal((enqDup["row"] as JsonObject)["id"] as number, id1, `${label}: duplicate collides`);
   assert.ok((enqDup as JsonObject)["work_identity_collision"], `${label}: collision reported`);
 
   // liveIdentityCandidates: kind-filtered, live-status only.
   const smallFix = await store.liveIdentityCandidates("small_fix", [...LIVE_STATUSES]);
-  assert.ok(smallFix.some((t) => t.id === id1), `${label}: small_fix candidate present`);
-  assert.ok(smallFix.every((t) => (t.payload as JsonObject)["kind"] === "small_fix"), `${label}: kind filter`);
+  assert.ok(
+    smallFix.some((t) => t.id === id1),
+    `${label}: small_fix candidate present`,
+  );
+  assert.ok(
+    smallFix.every((t) => (t.payload as JsonObject)["kind"] === "small_fix"),
+    `${label}: kind filter`,
+  );
   const triage = await store.liveIdentityCandidates("triage", [...LIVE_STATUSES]);
   assert.equal(triage.length, 1, `${label}: one triage candidate`);
   const none = await store.liveIdentityCandidates("prompt", [...LIVE_STATUSES]);
@@ -124,12 +130,15 @@ async function scenario(store: QueueStore, label: string): Promise<void> {
   // Lease expiry: claim, lapse the lease, bounded scan finds it.
   const claimed = await executeQueueVerb(store, "claim", { worker: "worker-a", queue: "repo-health" }, env);
   assert.equal(claimed["ok"], true, `${label}: claim ok`);
-  const claimedId = ((claimed["row"] as JsonObject)["id"] as number);
+  const claimedId = (claimed["row"] as JsonObject)["id"] as number;
   const fresh = await store.claimedExpired(iso(clock));
   assert.equal(fresh.length, 0, `${label}: nothing expired yet`);
   clock += 7200; // +2h past the default lease
   const expired = await store.claimedExpired(iso(clock));
-  assert.ok(expired.some((t) => t.id === claimedId), `${label}: expired lease found bounded`);
+  assert.ok(
+    expired.some((t) => t.id === claimedId),
+    `${label}: expired lease found bounded`,
+  );
 
   // Health aggregates: bounded snapshot matches the verb response.
   await store.appendEvent("worker-a", claimedId, "completed", {}, iso(clock));
@@ -145,8 +154,16 @@ async function scenario(store: QueueStore, label: string): Promise<void> {
   const snap = await store.healthSnapshot("repo-health", iso(clock - 24 * 3600), iso(clock - 7 * 86400));
   const queued = snap.statusCounts.find((r) => r.status === "queued");
   assert.ok(queued && queued.count >= 1, `${label}: snapshot has queued count`);
-  assert.equal(snap.terminal7.reduce((n, r) => n + r.count, 0), 1, `${label}: snapshot terminal7`);
-  assert.equal(snap.terminal24.reduce((n, r) => n + r.count, 0), 1, `${label}: snapshot terminal24`);
+  assert.equal(
+    snap.terminal7.reduce((n, r) => n + r.count, 0),
+    1,
+    `${label}: snapshot terminal7`,
+  );
+  assert.equal(
+    snap.terminal24.reduce((n, r) => n + r.count, 0),
+    1,
+    `${label}: snapshot terminal24`,
+  );
 }
 
 test("bounded hot paths match over the fixture store", async () => {

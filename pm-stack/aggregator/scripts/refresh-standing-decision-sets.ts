@@ -84,9 +84,7 @@ async function main(): Promise<void> {
   try {
     result = await refreshStandingDecisionSets(store, ledger, source);
   } catch (err) {
-    console.error(
-      `refresh-standing-decision-sets: refresh failed: ${err instanceof Error ? err.message : err}`,
-    );
+    console.error(`refresh-standing-decision-sets: refresh failed: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
   const questions = result.set.items.reduce((n, item) => n + item.questions.length, 0);

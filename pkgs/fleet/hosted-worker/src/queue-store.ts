@@ -174,11 +174,7 @@ export interface QueueStore {
   /** Bounded health aggregates (#14987 CF-2b): GROUP BY counts and
    *  joins only — never full task/event loads, never per-task
    *  getTask. queueFilter null means all queues. */
-  healthSnapshot(
-    queueFilter: string | null,
-    since24Iso: string,
-    since7Iso: string,
-  ): Promise<HealthSnapshot>;
+  healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot>;
   /**
    * THE conditional update: apply `set` to task `id` only if every
    * `guard` field still equals its expected value; returns whether
@@ -306,11 +302,7 @@ export class FixtureQueueStore implements QueueStore {
       .map((t) => clone(t));
   }
 
-  async healthSnapshot(
-    queueFilter: string | null,
-    since24Iso: string,
-    since7Iso: string,
-  ): Promise<HealthSnapshot> {
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
     const tasks = [...this.tasks.values()].filter((t) => queueFilter === null || t.queue === queueFilter);
     const statusKey = (t: TaskRow) => `${t.queue}\0${t.status}`;
     const statusMap = new Map<string, { queue: string; status: string; count: number }>();
@@ -347,8 +339,7 @@ export class FixtureQueueStore implements QueueStore {
       t7.set(q, (t7.get(q) ?? 0) + 1);
       if (e.created_at > since24Iso) t24.set(q, (t24.get(q) ?? 0) + 1);
     }
-    const byQueue = (m: Map<string, number>) =>
-      [...m.entries()].map(([queue, count]) => ({ queue, count }));
+    const byQueue = (m: Map<string, number>) => [...m.entries()].map(([queue, count]) => ({ queue, count }));
     return {
       statusCounts: [...statusMap.values()],
       atCapQueued: byQueue(atCap),

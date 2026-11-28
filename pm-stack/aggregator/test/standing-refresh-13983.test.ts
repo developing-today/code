@@ -43,7 +43,15 @@ function ledgerFixture(): Record<string, unknown> {
         title: "Beta question",
         status: "pending",
         links: [],
-        questions: [{ q: "Beta?", options: [{ id: "yes", label: "Yes" }, { key: "no", label: "No" }] }],
+        questions: [
+          {
+            q: "Beta?",
+            options: [
+              { id: "yes", label: "Yes" },
+              { key: "no", label: "No" },
+            ],
+          },
+        ],
       },
       {
         id: "gamma",
@@ -88,9 +96,9 @@ describe("ledger mapping (#13983 slice 2)", () => {
   test("malformed ledger and no-open-items ledger are refused — oracle: the thrown error", () => {
     expect(() => standingInputFromLedger(null)).toThrow("items array");
     expect(() => standingInputFromLedger({ items: "nope" })).toThrow("items array");
-    expect(() => standingInputFromLedger({ items: [{ id: "x", title: "X", status: "answered", questions: [{ q: "?" }] }] })).toThrow(
-      "no open items",
-    );
+    expect(() =>
+      standingInputFromLedger({ items: [{ id: "x", title: "X", status: "answered", questions: [{ q: "?" }] }] }),
+    ).toThrow("no open items");
   });
 });
 
@@ -124,7 +132,9 @@ describe("refresh through the #9360 path (#13983 slice 2)", () => {
   test("a no-open-items refresh leaves the store untouched — oracle: the stored set before/after", async () => {
     const first = await refreshStandingDecisionSets(file, ledgerFixture());
     await expect(
-      refreshStandingDecisionSets(file, { items: [{ id: "x", title: "X", status: "answered", questions: [{ q: "?" }] }] }),
+      refreshStandingDecisionSets(file, {
+        items: [{ id: "x", title: "X", status: "answered", questions: [{ q: "?" }] }],
+      }),
     ).rejects.toThrow("no open items");
     const stored = await getDecisionSet(file, STANDING_OPEN_QUESTIONS_SET_ID);
     expect(stored?.token).toBe(first.set.token);

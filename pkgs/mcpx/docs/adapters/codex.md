@@ -32,13 +32,13 @@ alone.
 
 ## Capability map
 
-| Capability needed by an adapter | Codex surface | mcpx implication |
-| ------------------------------- | ------------- | ---------------- |
-| Tool access | MCP client supports local STDIO and remote Streamable HTTP servers, configured in the shared `config.toml` or added with `codex mcp add`. | The existing stdio server is sufficient; no harness-specific tool wrapper is needed. |
-| Plugin packaging | No Codex-specific mcpx plugin layer is added (decided). | Packaging, if ever wanted, is a later decision; it is not a prerequisite for tool access and does not require a new mcpx daemon plugin API. |
-| Working directory | The stdio server is a child process of the host. The decision record does not establish a per-request cwd field. | `mcpx serve` scopes from its process cwd. Treat cwd inheritance from a Codex session as an integration assumption; verify it before relying on `cwd`, `repo`, or `worktree` scopes. |
-| Session identity | Public MCP docs/config do not specify a stable Codex thread/session ID forwarded in request `_meta`. | Stdio is isolated by mcpx's process identity, not Codex's session ID. On a shared HTTP daemon, unnamed requests get no session continuity. |
-| Environment / call wrapping | MCP server configuration can set the server process environment. | Startup environment is available; there is no documented per-call environment injection into an MCP server. |
+| Capability needed by an adapter | Codex surface                                                                                                                             | mcpx implication                                                                                                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool access                     | MCP client supports local STDIO and remote Streamable HTTP servers, configured in the shared `config.toml` or added with `codex mcp add`. | The existing stdio server is sufficient; no harness-specific tool wrapper is needed.                                                                                                |
+| Plugin packaging                | No Codex-specific mcpx plugin layer is added (decided).                                                                                   | Packaging, if ever wanted, is a later decision; it is not a prerequisite for tool access and does not require a new mcpx daemon plugin API.                                         |
+| Working directory               | The stdio server is a child process of the host. The decision record does not establish a per-request cwd field.                          | `mcpx serve` scopes from its process cwd. Treat cwd inheritance from a Codex session as an integration assumption; verify it before relying on `cwd`, `repo`, or `worktree` scopes. |
+| Session identity                | Public MCP docs/config do not specify a stable Codex thread/session ID forwarded in request `_meta`.                                      | Stdio is isolated by mcpx's process identity, not Codex's session ID. On a shared HTTP daemon, unnamed requests get no session continuity.                                          |
+| Environment / call wrapping     | MCP server configuration can set the server process environment.                                                                          | Startup environment is available; there is no documented per-call environment injection into an MCP server.                                                                         |
 
 ## Minimal configuration
 

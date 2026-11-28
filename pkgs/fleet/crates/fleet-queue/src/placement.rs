@@ -4082,9 +4082,7 @@ mod tests {
         use super::adapters::{embedded_proxy_credential, reject_proxy_credential_in_command};
         let url = "http://seat:p%40ssword-0123456789@proxy.example:3130";
         assert!(embedded_proxy_credential("echo p@ssword-0123456789", url));
-        assert!(
-            reject_proxy_credential_in_command("echo p@ssword-0123456789", Some(url)).is_err()
-        );
+        assert!(reject_proxy_credential_in_command("echo p@ssword-0123456789", Some(url)).is_err());
     }
 
     #[test]

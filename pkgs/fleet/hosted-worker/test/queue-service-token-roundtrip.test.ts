@@ -54,10 +54,18 @@ function fixPacket(issue: number): JsonObject {
 
 function post(path: string, token: string, body: unknown): Request {
   const req = bearerReq(path, token, { method: "POST" });
-  return new Request(req, { body: JSON.stringify(body ?? {}), headers: { ...Object.fromEntries(req.headers), "content-type": "application/json" } });
+  return new Request(req, {
+    body: JSON.stringify(body ?? {}),
+    headers: { ...Object.fromEntries(req.headers), "content-type": "application/json" },
+  });
 }
 
-async function call(deps: Parameters<typeof dispatch>[1], path: string, token: string, body: unknown): Promise<{ status: number; body: JsonObject }> {
+async function call(
+  deps: Parameters<typeof dispatch>[1],
+  path: string,
+  token: string,
+  body: unknown,
+): Promise<{ status: number; body: JsonObject }> {
   const res = await dispatch(post(path, token, body), deps);
   return { status: res.status, body: (await res.json()) as JsonObject };
 }
@@ -118,7 +126,11 @@ test("the queue-scoped service token runs the full lifecycle through the HTTP do
   assert.equal(parked.body["ok"], true);
   assert.equal((parked.body["row"] as JsonObject)["status"], "parked");
 
-  const woken = await call(deps, "/v1/queue/wake", QUEUE_SERVICE_TOKEN, { task_id: id, worker: WORKER, reason: "probe wake" });
+  const woken = await call(deps, "/v1/queue/wake", QUEUE_SERVICE_TOKEN, {
+    task_id: id,
+    worker: WORKER,
+    reason: "probe wake",
+  });
   assert.equal(woken.status, 200);
   assert.equal((woken.body["row"] as JsonObject)["status"], "queued");
 
@@ -203,7 +215,7 @@ test("live door: the queue-scoped token round-trips enqueue/claim/park/complete"
 
     const claimed = await liveCall(cfg, "/v1/queue/claim", { queue: QUEUE, worker: WORKER });
     assert.equal(claimed["ok"], true);
-    assert.equal(((claimed["row"] as JsonObject)["id"] as number), id);
+    assert.equal((claimed["row"] as JsonObject)["id"] as number, id);
 
     const parked = await liveCall(cfg, "/v1/queue/park", {
       task_id: id,
@@ -212,10 +224,10 @@ test("live door: the queue-scoped token round-trips enqueue/claim/park/complete"
       reason: "live probe park",
     });
     assert.equal(parked["ok"], true);
-    assert.equal(((parked["row"] as JsonObject)["status"] as string), "parked");
+    assert.equal((parked["row"] as JsonObject)["status"] as string, "parked");
 
     const woken = await liveCall(cfg, "/v1/queue/wake", { task_id: id, worker: WORKER, reason: "live probe wake" });
-    assert.equal((((woken["row"] as JsonObject)["status"] as string)), "queued");
+    assert.equal((woken["row"] as JsonObject)["status"] as string, "queued");
 
     const reclaimed = await liveCall(cfg, "/v1/queue/claim", { queue: QUEUE, worker: WORKER });
     assert.equal(reclaimed["ok"], true);
@@ -230,7 +242,10 @@ test("live door: the queue-scoped token round-trips enqueue/claim/park/complete"
 
     const timeline = await liveCall(cfg, "/v1/queue/timeline", { task_id: id });
     const rows = ((timeline["row"] as JsonObject)["rows"] as JsonObject[]).map((r) => r["kind"]);
-    assert.ok(rows.includes("claimed") && rows.includes("completed"), `live timeline is shared, got ${JSON.stringify(rows)}`);
+    assert.ok(
+      rows.includes("claimed") && rows.includes("completed"),
+      `live timeline is shared, got ${JSON.stringify(rows)}`,
+    );
   } finally {
     // A run is a record, not residue: never leave the probe task
     // hanging in a live queue.

@@ -28,8 +28,7 @@ BASH = shutil.which("bash")
 REAL_PYTHON = shutil.which("python3")
 
 
-def write_record(path, *, result="complete", age_minutes=5, r2="ok",
-                 digest=("a" * 64)):
+def write_record(path, *, result="complete", age_minutes=5, r2="ok", digest=("a" * 64)):
     finished = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         minutes=age_minutes
     )
@@ -101,11 +100,8 @@ class ArgumentContract(unittest.TestCase):
             timeout=30,
         )
 
-    def check_argv(self, args, accepted, day=None, fragment=None,
-                   date_given=True):
-        result = self.run_argv(
-            ["--backup-record-file", str(self.fresh), *args]
-        )
+    def check_argv(self, args, accepted, day=None, fragment=None, date_given=True):
+        result = self.run_argv(["--backup-record-file", str(self.fresh), *args])
         if accepted:
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertEqual(
@@ -186,9 +182,7 @@ class ArgumentContract(unittest.TestCase):
                 self.check_argv(args, False, fragment=fragment)
 
     def test_flag_after_date_is_accepted(self):
-        result = self.run_argv(
-            ["2026-11-24", "--backup-record-file", str(self.fresh)]
-        )
+        result = self.run_argv(["2026-11-24", "--backup-record-file", str(self.fresh)])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("pm-stack-2026-11-24.tar.zst", result.stdout)
 
@@ -199,9 +193,7 @@ class ArgumentContract(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
     def test_stale_record_is_refused_before_any_work(self):
-        result = self.run_argv(
-            ["--backup-record-file", str(self.stale), "2026-11-24"]
-        )
+        result = self.run_argv(["--backup-record-file", str(self.stale), "2026-11-24"])
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertIn("REFUSED", result.stderr)
         self.assertEqual(self.calls.read_text(), "")
@@ -262,9 +254,7 @@ class ArgumentContract(unittest.TestCase):
         for args, fragment in cases:
             with self.subTest(arguments=args):
                 result = self.run_argv(args)
-                self.assertEqual(
-                    result.returncode, 2, result.stdout + result.stderr
-                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn(
                     "usage: restore-rehearsal.sh --backup-record-file FILE",
                     result.stderr,

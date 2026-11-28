@@ -17,11 +17,11 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 ## Next
 
-| Title                                      | Status  | Intent                                                                                                                       | Links                  |
-| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| Memory slice 3: the query surface over MCP | planned | Agents query the one index through the mcpx namespace.                                                                       | #8625                  |
-| Provenance registry                        | planned | Where each chunk occurs, extracts addressed by their content, and vectors resolved across databases.                         | #3125                  |
-| The Atlas book                             | planned | Replay, scope and release protocols written up by workstream, with the module inventory checked as the book is built.        | #13592                 |
+| Title                                      | Status  | Intent                                                                                                                | Links  |
+| ------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------- | ------ |
+| Memory slice 3: the query surface over MCP | planned | Agents query the one index through the mcpx namespace.                                                                | #8625  |
+| Provenance registry                        | planned | Where each chunk occurs, extracts addressed by their content, and vectors resolved across databases.                  | #3125  |
+| The Atlas book                             | planned | Replay, scope and release protocols written up by workstream, with the module inventory checked as the book is built. | #13592 |
 
 ## Later
 

@@ -370,11 +370,7 @@ export class LibSQLQueueStore implements QueueStore {
       .map((r) => readTask(r as Record<string, unknown>));
   }
 
-  async healthSnapshot(
-    queueFilter: string | null,
-    since24Iso: string,
-    since7Iso: string,
-  ): Promise<HealthSnapshot> {
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
     const qf = queueFilter !== null ? " AND queue = ?" : "";
     const qArgs = queueFilter !== null ? [queueFilter] : [];
     const counts = this.db
@@ -396,10 +392,7 @@ export class LibSQLQueueStore implements QueueStore {
       )
       .toArray();
     const parked = this.db
-      .exec(
-        `SELECT queue, not_before FROM tasks WHERE status = 'parked' AND not_before IS NOT NULL${qf}`,
-        ...qArgs,
-      )
+      .exec(`SELECT queue, not_before FROM tasks WHERE status = 'parked' AND not_before IS NOT NULL${qf}`, ...qArgs)
       .toArray();
     const termArgs = queueFilter !== null ? [since7Iso, queueFilter] : [since7Iso];
     const t7 = this.db
@@ -429,9 +422,10 @@ export class LibSQLQueueStore implements QueueStore {
       })),
       oldestQueuedAt: oldest.map((r) => ({
         queue: str((r as Record<string, unknown>)["queue"]),
-        oldest: typeof (r as Record<string, unknown>)["oldest"] === "string"
-          ? ((r as Record<string, unknown>)["oldest"] as string)
-          : null,
+        oldest:
+          typeof (r as Record<string, unknown>)["oldest"] === "string"
+            ? ((r as Record<string, unknown>)["oldest"] as string)
+            : null,
       })),
       depBlocked: dep.map((r) => ({
         queue: str((r as Record<string, unknown>)["queue"]),

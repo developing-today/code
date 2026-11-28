@@ -1103,8 +1103,9 @@ mod tests {
     /// enrichment — and its backend call — is skipped).
     fn packet_16349(issue: i64) -> Value {
         let mut p = packet_13091(issue);
-        p["dedupe_key"] =
-            json!(format!("repo-health:v1:triage:developing-today/code:issue:{issue}"));
+        p["dedupe_key"] = json!(format!(
+            "repo-health:v1:triage:developing-today/code:issue:{issue}"
+        ));
         p["payload"]["kind"] = json!("triage");
         p["payload"]["timebox_minutes"] = json!(20);
         p
@@ -1253,10 +1254,7 @@ mod tests {
                 task_select_reply_13091(vec![done_fix.clone()]),
             ),
             ("= 'small_fix'", task_select_reply_13091(vec![done_fix])),
-            (
-                "dedupe_key = ?",
-                task_select_reply_13091(vec![done_triage]),
-            ),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done_triage])),
             ("status IN (", task_select_reply_13091(vec![])),
             ("status = 'done'", task_select_reply_13091(vec![])),
             ("INSERT INTO tasks", insert_ok_13091(4243)),

@@ -44,8 +44,7 @@ use std::path::{Path, PathBuf};
 
 use atlas_core::filters::{Filters, Sensitivity, turso_vector_scan_stmt};
 use atlas_core::memory::{
-    AGENT_MEMORY_UNIT, parse_memory_export, register_memory_corpora,
-    stage_memory_export_in_db,
+    AGENT_MEMORY_UNIT, parse_memory_export, register_memory_corpora, stage_memory_export_in_db,
 };
 use atlas_core::shards::{Tier, TierCeiling};
 use atlas_core::stage::{Registry, StagedItem, list_staged_items_in_db};
@@ -54,8 +53,7 @@ use atlas_core::types::{DEFAULT_VEC_TABLE, Value};
 const NOW: &str = "2026-11-23T00:00:00Z";
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let d =
-        std::env::temp_dir().join(format!("atlas-derived-fed-{}-{tag}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("atlas-derived-fed-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");
     d
@@ -187,8 +185,14 @@ fn cached_derivative_serves_only_the_visible_cut() {
         .map(|e| e.text.as_str())
         .collect::<Vec<_>>()
         .join(" | ");
-    assert!(broad.contains("gamma notes"), "broad cache holds hidden text");
-    assert!(broad.contains("delta notes"), "broad cache holds hidden text");
+    assert!(
+        broad.contains("gamma notes"),
+        "broad cache holds hidden text"
+    );
+    assert!(
+        broad.contains("delta notes"),
+        "broad cache holds hidden text"
+    );
     let served: String = entries_b
         .iter()
         .filter(|e| e.sensitivity == Tier::Public)

@@ -16,9 +16,7 @@ import type { SourceCoverageSpan } from "../src/spend-rollups.ts";
 // data certifies nothing and the detector stays silent. Totals are
 // the charges pipeline's matched rows summed exactly, in cents.
 const FULL_OCT: SourceCoverageSpan[] = [{ from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z", status: "ok" }];
-const PARTIAL_OCT: SourceCoverageSpan[] = [
-  { from: "2026-10-01T00:00:00Z", to: "2026-10-15T00:00:00Z", status: "ok" },
-];
+const PARTIAL_OCT: SourceCoverageSpan[] = [{ from: "2026-10-01T00:00:00Z", to: "2026-10-15T00:00:00Z", status: "ok" }];
 const FAILED_OCT: SourceCoverageSpan[] = [
   { from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z", status: "failed" },
 ];
@@ -121,7 +119,7 @@ test("end to end: certified charges sources fire exactly the constructed charge 
   expect(fired[0]!.title).toContain("Modal");
   // With the census withdrawn, nothing fires: absence is not zero.
   const uncertified = await loadCostAnomalyEvidence({ ...deps, serviceActivity: certifiedServiceActivity([]) });
-  expect(
-    uncertified.filter((e) => e.kind === "charge-without-activity").map((e) => detectCostAnomaly(e, now)),
-  ).toEqual([null, null, null]);
+  expect(uncertified.filter((e) => e.kind === "charge-without-activity").map((e) => detectCostAnomaly(e, now))).toEqual(
+    [null, null, null],
+  );
 });

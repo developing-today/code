@@ -350,7 +350,8 @@ reveal_right_of() {
       sleep 2
       continue
     fi
-    ax="${axy% *}"; ay="${axy#* }"
+    ax="${axy% *}"
+    ay="${axy#* }"
     adb shell input swipe "$((ax + 250))" "$ay" "$((ax - 250))" "$ay" 300 >/dev/null 2>&1 || true
     sleep 2
   done

@@ -4546,7 +4546,11 @@ mod claim_resume_event_tests {
             json!("ses_requested"),
             "{detail}"
         );
-        assert_eq!(detail["resume_actual_session_id"], json!("ses_actual"), "{detail}");
+        assert_eq!(
+            detail["resume_actual_session_id"],
+            json!("ses_actual"),
+            "{detail}"
+        );
         assert_eq!(
             detail["resume_fallback"],
             json!("missing_session"),
@@ -4576,7 +4580,10 @@ mod claim_resume_event_tests {
         );
         assert_eq!(out["ok"], true, "{out}");
         let detail = claimed_detail(&t, id);
-        assert!(detail.get("resume_requested_session_id").is_none(), "{detail}");
+        assert!(
+            detail.get("resume_requested_session_id").is_none(),
+            "{detail}"
+        );
         assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
         assert!(detail.get("resume_fallback").is_none(), "{detail}");
     }
