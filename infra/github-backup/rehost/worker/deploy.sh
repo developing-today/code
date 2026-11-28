@@ -16,6 +16,9 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 repo_root=$(git rev-parse --show-toplevel)
 args=(deploy)
+# #15793: stamp the deployed commit as the VERSION var; GET /version
+# answers it to the edge worker-checks probe.
+args+=(--var "VERSION:$(git -C "$repo_root" rev-parse HEAD)")
 if [[ ${1:-} == "--dry-run" ]]; then
   args+=(--dry-run)
 fi

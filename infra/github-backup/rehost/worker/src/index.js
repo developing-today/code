@@ -8,6 +8,8 @@
 //
 //   GET  /<owner>/<repo>/info/refs?service=git-upload-pack
 //   POST /<owner>/<repo>/git-upload-pack
+//   GET  /version — the deployed commit, for the edge worker-checks
+//        probe (#15793); reads the VERSION var stamped at deploy time.
 //
 // There is no receive-pack: the rehost is a backup copy, read-only by
 // construction. Protocol decisions live in protocol.js (unit-tested);
@@ -135,6 +137,21 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length === 1 && parts[0] === "version") {
+      // #15793 criterion 1: unauthenticated deployed-commit answer.
+      // The edge probe (pm-stack/console/edge/src/worker-checks.ts,
+      // commitOf) reads the `version` field. Only the commit SHA is
+      // exposed; an unstamped deploy answers "unknown" honestly.
+      if (request.method !== "GET") return text("method not allowed\n", 405);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          service: "fleet-git-rehost",
+          version: env.VERSION ?? "unknown",
+        }),
+        { headers: { "content-type": "application/json", ...NO_STORE } },
+      );
+    }
     if (parts.length === 0) {
       const lines = [
         "fleet-git-rehost: read-only Cloudflare rehost of the fleet repos (#8584).",
