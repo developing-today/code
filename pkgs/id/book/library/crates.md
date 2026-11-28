@@ -20,7 +20,7 @@ Production `[dependencies]` edges only; dev-dependencies are named where they ma
 - `id-currency-registry` depends on nothing and its only production dependent is the facade.
 - `id-render` and `id-import-notion` depend on nothing and have no dependents, but both are default members and both carry maintained integration test suites. ARCHITECTURE.md calls them candidates for removal or for documenting as unused; no code, manifest, or test marks either crate deprecated or slated for removal (disagreement LIB-11).
 
-## The twenty-one members
+## The twenty-four members
 
 **`id` (root, the facade).** Purpose: the published library surface and the `id` binary; the root `Cargo.toml` description, "A peer-to-peer file sharing CLI built with Iroh", predates the worlds, directory, and currency surface (disagreement LIB-13). Public modules: 26 modules of its own code in `pkgs/id/src/`, plus about 90 modules re-exported from sub-crates at `id::` paths. Key types and functions: `Cli`, `Command`, the `cmd_*` command functions, `open_store`, `StoreType`, `load_or_create_keypair`, and the constants `KEY_FILE`, `CLIENT_KEY_FILE`, `SERVE_LOCK`, `STORE_PATH`, and `META_ALPN`. Features: `default = ["sandbox", "world"]`, plus `sandbox`, `world`, `ssh`, `web`, `dht`, and `currency-poc-tb`. Dependents: `id-native-shell` and `id-hw-shell` in production; `id-store` dev-depends on it for tests. Full treatment: [The id facade crate](facade.md).
 
