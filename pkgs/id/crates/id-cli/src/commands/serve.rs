@@ -1050,7 +1050,7 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
         std::fs::metadata(
             Path::new(WORLDS_DIR)
                 .join(name)
-                .join(id_worlds::world_store::JOURNAL_FILE),
+                .join(id_worlds::world_storage::JOURNAL_FILE),
         )
         .ok()
         .map(|meta| meta.len())
