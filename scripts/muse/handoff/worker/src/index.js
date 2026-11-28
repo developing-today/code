@@ -74,9 +74,17 @@ function adminAuthorized(request, env) {
   return equal(given.slice(prefix.length), env.ADMIN_TOKEN);
 }
 
+import { versionAnswer } from "./version.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/version") {
+      // #15793 criterion 1: unauthenticated, ahead of the POST-only gate
+      // below — it reads no state and no secret.
+      if (request.method !== "GET") return reply(405, { error: "method not allowed" });
+      return reply(200, versionAnswer(env));
+    }
     if (request.method === "GET" && url.pathname === "/") {
       return new Response("Muse Fleet handoff service. Use the local handoff generator; never submit credentials in a browser form.", {
         headers: { ...HEADERS, "Content-Type": "text/plain; charset=utf-8" }
