@@ -1879,8 +1879,38 @@ pub fn native_link_edge_spec(
     link: &NativeLink,
     mode: NativeImportMode,
 ) -> Result<Option<NativeEdgeSpec>, RelationError> {
-    let _ = (task, link, mode);
-    Ok(None)
+    if mode == NativeImportMode::Off {
+        return Ok(None);
+    }
+    let (canonical, hardness) = match link {
+        NativeLink::BlockedBy(blocker) => {
+            let canonical = normalize(task, RelationSpelling::BlockedBy, blocker)?;
+            let hardness = match mode {
+                NativeImportMode::Shadow => Hardness::Soft,
+                NativeImportMode::Enforce => Hardness::Hard,
+                NativeImportMode::Off => unreachable!("off returned above"),
+            };
+            (canonical, hardness)
+        }
+        NativeLink::Parent(parent) => {
+            let canonical = normalize(task, RelationSpelling::ChildOf, parent)?;
+            (canonical, Hardness::Soft)
+        }
+        NativeLink::DuplicateOf(original) => {
+            let canonical = normalize(task, RelationSpelling::Duplicates, original)?;
+            (canonical, Hardness::Soft)
+        }
+        NativeLink::Blocks(_)
+        | NativeLink::SubIssue(_)
+        | NativeLink::DuplicateUnnamed
+        | NativeLink::ProseOnly => return Ok(None),
+    };
+    Ok(Some(NativeEdgeSpec {
+        canonical,
+        hardness,
+        origin: EdgeOrigin::Imported,
+        certainty: Certainty::Verified,
+    }))
 }
 
 /// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
