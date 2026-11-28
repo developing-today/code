@@ -38,6 +38,7 @@
   lib,
   rustPlatform,
   pkgsStatic,
+  openssl,
   binutils,
   python3,
   bash,
@@ -72,11 +73,14 @@ let
 
   # The search serve role (#5604) consumes atlas-core / atlas-embed /
   # atlas-proto by relative path (../atlas-search/crates/*, untouched),
-  # so the build source is the pkgs/ tree holding both workspaces and
+  # so the build source holds the pkgs/ tree with both workspaces and
   # cargo runs from pkgs/fleet inside it. The fleet Cargo.lock covers
-  # the atlas crates' external dependencies.
+  # the atlas crates' external dependencies. The root is the repo root
+  # (not pkgs/) because fleet-transport's contract test include_str!s
+  # the language-neutral registry at config/transport-adapters/
+  # (code#16152: the check phase compiles lib tests workspace-wide).
   fleetSrc = lib.fileset.toSource {
-    root = ./..;
+    root = ../..;
     fileset = lib.fileset.unions [
       ./.
       ../atlas-search/Cargo.toml
@@ -84,11 +88,33 @@ let
       # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
       # without it the fleet build fails on the missing .sql files.
       ../atlas-search/schema
+      # fleet-transport's registry test include_str!s the shared
+      # language-neutral adapter contract (see above).
+      ../../config/transport-adapters
     ];
   };
 
   # D7 hard gate for the runs-anywhere connect binary.
   connectMaxBytes = 2 * 1024 * 1024; # 2097152
+
+  # OpenSSL the openssl-sys build script can link (code#16152):
+  # fleet-cert's PKCS#12 boundary made `openssl` a mandatory
+  # workspace dependency, so every leg that compiles the workspace
+  # (build and check phases alike) needs one. Explicit
+  # DIR/LIB_DIR/INCLUDE_DIR so no pkg-config program is required in
+  # any build env; the musl legs take the static-only archives with
+  # OPENSSL_STATIC selecting them.
+  nativeOpensslEnv = {
+    OPENSSL_DIR = "${openssl.dev}";
+    OPENSSL_LIB_DIR = "${openssl.out}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl.dev}/include";
+  };
+  staticOpensslEnv = {
+    OPENSSL_STATIC = "1";
+    OPENSSL_DIR = "${pkgsStatic.openssl.dev}";
+    OPENSSL_LIB_DIR = "${pkgsStatic.openssl.out}/lib";
+    OPENSSL_INCLUDE_DIR = "${pkgsStatic.openssl.dev}/include";
+  };
 
   mkFleet =
     {
@@ -185,7 +211,7 @@ let
           inherit pname;
           version = "0.1.0";
           src = fleetSrc;
-          sourceRoot = "${fleetSrc.name}/fleet";
+          sourceRoot = "${fleetSrc.name}/pkgs/fleet";
           # The workspace root is the fleet/ subdir of the source,
           # and so is its lockfile; crane vendors from the lockfile
           # path it is given, not from the source root.
@@ -195,7 +221,11 @@ let
           # buildDepsOnly also builds test targets unless this is forwarded.
           # Runtime NixOS packages skip those; checked package outputs keep them.
           inherit doCheck;
-          env = envAttrs;
+          # The native OpenSSL for openssl-sys (code#16152); the
+          # crane legs compile the workspace's dependency closure for
+          # glibc, which includes fleet-cert's mandatory `openssl`.
+          buildInputs = [ openssl ];
+          env = envAttrs // nativeOpensslEnv;
         };
 
         # The dependency layer for this variant's feature set.
@@ -247,12 +277,23 @@ let
         inherit pname;
         version = "0.1.0";
         src = fleetSrc;
-        sourceRoot = "${fleetSrc.name}/fleet";
+        sourceRoot = "${fleetSrc.name}/pkgs/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
         nativeCheckInputs = checkTools;
         cargoBuildFlags = cargoFlags;
         inherit doCheck;
+
+        # Static (musl) builds need an OpenSSL the openssl-sys build
+        # script can link: fleet-cert's PKCS#12 boundary made
+        # `openssl` a mandatory workspace dependency, and the static
+        # variants' workspace-wide check phase compiles it for
+        # x86_64-unknown-linux-musl (code#16152). The same holds for
+        # the native monolithic path (used when no craneLib is
+        # passed), against the glibc OpenSSL.
+        nativeBuildInputs = lib.optionals static [ pkgsStatic.openssl ];
+        buildInputs = lib.optionals static [ pkgsStatic.openssl ]
+          ++ lib.optionals (!static) [ openssl ];
 
         # Same check-phase HOME fix as the crane path above (#6400).
         preCheck = ''
@@ -260,7 +301,7 @@ let
           mkdir -p "$HOME"
         '';
 
-        env = envAttrs;
+        env = envAttrs // (if static then staticOpensslEnv else nativeOpensslEnv);
 
         inherit postInstall postFixup;
 
@@ -300,7 +341,7 @@ in
     nativeCheckInputs = checkTools;
     version = "0.1.0";
     src = fleetSrc;
-    sourceRoot = "${fleetSrc.name}/fleet";
+    sourceRoot = "${fleetSrc.name}/pkgs/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
@@ -316,6 +357,11 @@ in
       "--features"
       "client,queue-broker,secrets-broker"
     ];
+
+    # Native OpenSSL for openssl-sys (code#16152): fleet-queue links
+    # fleet-cert, whose PKCS#12 boundary made `openssl` mandatory.
+    buildInputs = [ openssl ];
+    env = nativeOpensslEnv;
 
     # Same explicit full strip as mkFleet (nixpkgs fixup leaves the
     # symbol table in).
