@@ -7,7 +7,7 @@
    records the covering leg per database; check the covering script
    itself, not just the inventory — coverage claims go stale).
 2. Create the home in the fleet's Turso group:
-   `turso db create laptop-backup-<name> --group great-star-lord -w`
+   `turso db create laptop-backup-<name> --group great-star-lord --tursodb -w`
 3. Mint the home's token and file it in Bitwarden Secrets by name:
    `turso db tokens create laptop-backup-<name>`, stored as
    `turso.laptop-backup-<name>-rw-token` with a `[sync-metadata v1]`
