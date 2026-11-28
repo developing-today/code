@@ -11,11 +11,9 @@
 // only through the jurisdiction-restricted namespace (routing.ts).
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
-import { FailClosed, parseBindingId, parseJurisdiction, userStub, type BlobsEnv, type ObjectNamespaceLike } from "./routing.ts";
+import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
 import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
-import { handleMigrationOperatorRequest, migrationOperatorEnabled } from "./migration-operator.ts";
-import { workerMigrationPorts } from "./migration-coordinator.ts";
 import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
 
@@ -26,10 +24,8 @@ export { UserDO } from "./user-do.ts";
 // drives it over internal calls.
 export { TenantOpsDO } from "./tenant-ops.ts";
 
-interface Env extends BlobsEnv {
+interface Env {
   USERS: ObjectNamespaceLike;
-  /** Dedicated operator credential; unset keeps migration control disabled. */
-  MIGRATION_OPERATOR_TOKEN?: string;
   /** The central account/binding registry. Missing configuration fails closed. */
   TENANCY_DB?: TenancyDatabase;
   /** Transitional route projection; consulted only for migration state. */
@@ -47,18 +43,6 @@ function json(body: unknown, status = 200, extra: Record<string, string> = {}): 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     try {
-      const url = new URL(req.url);
-      if (url.pathname.startsWith("/v1/internal/migrations/")) {
-        if (!migrationOperatorEnabled(env)) {
-          throw new FailClosed(503, "migration_operator_disabled", "migration operator route is disabled");
-        }
-        if (!env.HOSTED_DIRECTORY) {
-          throw new FailClosed(503, "directory_unavailable", "migration operator directory is not configured");
-        }
-        const directory = new PersistentHostedAccountDirectory(env.HOSTED_DIRECTORY);
-        const ports = workerMigrationPorts(env.USERS, env, directory);
-        return await handleMigrationOperatorRequest(req, env, ports);
-      }
       const bindingId = parseBindingId(req.headers.get("x-binding-id"));
       const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
       const binding = await new TenancyRegistry(env.TENANCY_DB).binding(bindingId);
