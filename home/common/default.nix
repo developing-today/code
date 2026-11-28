@@ -922,6 +922,11 @@ in
     # 2026-11-03; code#5027). The former pin to this repo's own
     # pkgs/mcpx build made two mcpx builds coexist and collided
     # with the fork package's bin/mcpx in the home profile.
+    #
+    # And the mcpx package itself stays out of the profile: the
+    # opencode package's bin/mcpx already links this build, and
+    # buildEnv counts the package and the link as two providers.
+    addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
     environment = mcpxEnvironment;
