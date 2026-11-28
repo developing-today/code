@@ -56,6 +56,7 @@ mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod lifecycle_limits;
+mod lifecycle_park;
 mod links;
 mod notes;
 mod placement_coord;
@@ -75,6 +76,7 @@ pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
 pub use lifecycle_limits::*;
+pub use lifecycle_park::*;
 pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
@@ -102,6 +104,7 @@ mod tests {
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/lifecycle_limits.rs"),
+            include_str!("turso_queue/lifecycle_park.rs"),
             include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
