@@ -1,0 +1,1 @@
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: /home/user/git/fleet/queue-20651-10533-verify3/run-checks3.sh

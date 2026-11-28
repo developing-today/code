@@ -1,0 +1,143 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+this derivation will be built:
+  /nix/store/sagy4ndy5smly7cafbshf93x09acy45p-id-test-shard-0.drv
+building '/nix/store/sagy4ndy5smly7cafbshf93x09acy45p-id-test-shard-0.drv'...
+error: Cannot build '/nix/store/sagy4ndy5smly7cafbshf93x09acy45p-id-test-shard-0.drv'.
+       Reason: builder failed with exit code 100.
+       Output paths:
+         /nix/store/d4hwbxcirvx1xnqk0cg83ww0qgzy7z52-id-test-shard-0
+       Last 128 log lines:
+       > warning: missing documentation for a method
+       >    --> src/grants.rs:387:5
+       >     |
+       > 387 |     pub fn is_empty(&self) -> bool {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a method
+       >    --> src/hosted_binding.rs:885:5
+       >     |
+       > 885 |     pub fn service_public_key(&self) -> [u8; 32] {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:145:5
+       >     |
+       > 145 |     UdpBlocked,
+       >     |     ^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:146:5
+       >     |
+       > 146 |     PeerOffline,
+       >     |     ^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:147:5
+       >     |
+       > 147 |     ProxyAuthRequired,
+       >     |     ^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:148:5
+       >     |
+       > 148 |     BrokerRefused,
+       >     |     ^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:149:5
+       >     |
+       > 149 |     CreditOverrun,
+       >     |     ^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:150:5
+       >     |
+       > 150 |     ProtocolViolation,
+       >     |     ^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a variant
+       >    --> src/serve_proxy.rs:151:5
+       >     |
+       > 151 |     Internal,
+       >     |     ^^^^^^^^
+       >
+       > warning: missing documentation for a struct field
+       >    --> src/serve_proxy.rs:184:5
+       >     |
+       > 184 |     pub ty: FrameType,
+       >     |     ^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a struct field
+       >    --> src/serve_proxy.rs:190:5
+       >     |
+       > 190 |     pub payload: Vec<u8>,
+       >     |     ^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> src/serve_proxy.rs:194:5
+       >     |
+       > 194 |     pub fn new(ty: FrameType, stream_id: u32, seq: u64, payload: Vec<u8>) -> Result<Self> {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> src/serve_proxy.rs:378:5
+       >     |
+       > 378 |     pub fn new() -> Self {
+       >     |     ^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> src/serve_proxy.rs:435:5
+       >     |
+       > 435 |     pub fn per_stream() -> Self {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> src/serve_proxy.rs:439:5
+       >     |
+       > 439 |     pub fn per_connection() -> Self {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a method
+       >    --> src/serve_proxy.rs:443:5
+       >     |
+       > 443 |     pub fn available(&self) -> u64 {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: `id` (lib) generated 210 warnings (run `cargo fix --lib -p id` to apply 8 suggestions)
+       > warning: unnecessary qualification
+       >   --> tests/probe_policy_reply.rs:49:74
+       >    |
+       > 49 | async fn client_for(reply: serde_json::Value) -> (WorldClient, Endpoint, iroh::protocol::Router) {
+       >    |                                                                          ^^^^^^^^^^^^^^^^^^^^^^
+       >    |
+       >    = note: requested on the command line with `-W unused-qualifications`
+       > help: remove the unnecessary path segments
+       >    |
+       > 49 - async fn client_for(reply: serde_json::Value) -> (WorldClient, Endpoint, iroh::protocol::Router) {
+       > 49 + async fn client_for(reply: serde_json::Value) -> (WorldClient, Endpoint, Router) {
+       >    |
+       >
+       > warning: missing documentation for the crate
+       >    --> tests/probe_policy_reply.rs:7:1
+       >     |
+       >   7 | / use id::frames::{read_frame, write_frame};
+       >   8 | | use id::world_net::{WORLD_ALPN, WorldClient};
+       >   9 | | use iroh::{
+       >  10 | |     Endpoint, EndpointAddr,
+       > ...   |
+       > 176 | |     r.shutdown().await.unwrap();
+       > 177 | | }
+       >     | |_^
+       >     |
+       >     = note: requested on the command line with `-W missing-docs`
+       >
+       > warning: `id` (test "probe_policy_reply") generated 2 warnings (run `cargo fix --test "probe_policy_reply" -p id` to apply 1 suggestion)
+       >     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 46s
+       > error: test run failed
+       > error: recipe `test-shard-sandbox` failed on line 330 with exit code 100
+       For full logs, run:
+         nix log /nix/store/sagy4ndy5smly7cafbshf93x09acy45p-id-test-shard-0.drv

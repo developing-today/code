@@ -1,0 +1,144 @@
+warning: Git tree '/home/user/git/fleet/queue-20651-10533-verify3' is dirty
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+this derivation will be built:
+  /nix/store/p1rv862k3c6s0dlcbipigpffjc4aj8jj-id-web-fmt-check.drv
+building '/nix/store/p1rv862k3c6s0dlcbipigpffjc4aj8jj-id-web-fmt-check.drv'...
+error: Cannot build '/nix/store/p1rv862k3c6s0dlcbipigpffjc4aj8jj-id-web-fmt-check.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/7r4mi7zhj8mbfb0j19680wqp7hbc0zgn-id-web-fmt-check
+       Last 128 log lines:
+       > Finished cargoSetupPostPatchHook
+       > Running phase: bunSetInstallCacheDirPhase
+       > Using bun root: "web"
+       > Running phase: bunPatchPhase
+       > patching script interpreter paths in .
+       > ./check-all: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-chat/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-counter/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-world/build-native.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-world/build-host.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-screen/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/territory/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-grid/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-cap-demo/roc-cap-demo-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-import-policy/roc-import-policy-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/lounge/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./examples/roc-text-counter/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./crates/id-currency-registry/scripts/test-migration.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./opencode.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./web/scripts/build-manifest.test.sh: interpreter directive changed from "#!/bin/sh" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/sh"
+       > ./opencode: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/roc-test-args-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/prod-lines-check-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/update-nixpkgs-inputs.py: interpreter directive changed from "#!/usr/bin/env -S uv run --script" to "/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin/env -S /nix/store/3d7jqda0wk5iiw42wsv51ihxvg6z3w8y-uv-0.12.22/bin/uv run --script"
+       > ./scripts/build-sh-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/prod-lines-check.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/update-nixpkgs-inputs.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/roc-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/rebuild-roc-examples-args-test.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./scripts/test-shard-sandbox.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./tests/planted-bug-check.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > ./apps/tic-tac-toe/program/build.sh: interpreter directive changed from "#!/usr/bin/env bash" to "/nix/store/1mv3qz005gkbalxfghk4y3s8ayv4d2dl-bash-interactive-5.3p15/bin/bash"
+       > Running phase: updateAutotoolsGnuConfigScriptsPhase
+       > Running phase: configurePhase
+       > Running phase: bunNodeModulesInstallPhase
+       > /build/id/web /build/id
+       > bun install flags: --linker=hoisted --ignore-scripts
+       > bun install v1.4.2 (744846f84)
+       >
+       > + @tailwindcss/cli@4.3.3
+       > + @types/node@20.19.43
+       > + daisyui@5.7.47
+       > + happy-dom@21.0.4
+       > + typescript@5.9.3
+       > + vitest@5.0.5
+       > + @chenglou/pretext@0.0.9
+       > + @starfederation/datastar@1.0.0-beta.11
+       > + msgpackr@1.12.1
+       > + prosemirror-collab@1.3.1
+       > + prosemirror-commands@1.7.2
+       > + prosemirror-example-setup@1.2.3
+       > + prosemirror-highlight@0.15.3
+       > + prosemirror-history@1.5.1
+       > + prosemirror-keymap@1.2.3
+       > + prosemirror-model@1.25.12
+       > + prosemirror-schema-basic@1.2.5
+       > + prosemirror-schema-list@1.5.1
+       > + prosemirror-search@1.1.1
+       > + prosemirror-state@1.4.4
+       > + prosemirror-view@1.42.6
+       > + shiki@4.5.0
+       >
+       > 148 packages installed [217.00ms]
+       > /build/id
+       > Running phase: bunLifecycleScriptsPhase
+       > /build/id/web /build/id
+       > bun lifecycle install flags: --linker=hoisted
+       > bun install v1.4.2 (744846f84)
+       >
+       > Checked 149 installs across 239 packages (no changes) [4.00ms]
+       > /build/id
+       > Running phase: buildPhase
+       > $ bun run build:js && bun run build:css && bun run build:manifest
+       > $ bun build src/main.ts --outdir=dist --minify --sourcemap=external --entry-naming=[name].[hash].js
+       > Bundled 213 modules in 27ms
+       >
+       >   main.jd8ymtea.js      3.54 MB  (entry point)
+       >   main.jd8ymtea.js.map  6.32 MB  (source map)
+       >
+       > $ node_modules/.bin/tailwindcss -i src/input.css -o dist/styles.css --minify
+       > ≈ tailwindcss v4.3.3
+       >
+       > /*! 🌼 daisyUI 5.7.47 */
+       > Done in 350ms
+       > $ bun run scripts/build-manifest.ts
+       >   manifest.json: {
+       >   "main.js": "main.jd8ymtea.js",
+       >   "styles.css": "styles.0e00ca98.css",
+       > }
+       > Built targets/wasm32/host.wasm
+       > biome format web/src/ web/scripts/  e2e/
+       > web/src/world-surface.parity.test.ts format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+       >
+       >   ✖ Formatter would have printed the following content:
+       >   
+       >      51  51 │     if (index === 0) return null;
+       >      52  52 │     const basic = [
+       >      53     │ - ····"#000000",·"#800000",·"#008000",·"#808000",·"#000080",·"#800080",·"#008080",·"#c0c0c0",
+       >      54     │ - ····"#808080",·"#ff0000",·"#00ff00",·"#ffff00",·"#0000ff",·"#ff00ff",·"#00ffff",·"#ffffff",
+       >          53 │ + ····"#000000",
+       >          54 │ + ····"#800000",
+       >          55 │ + ····"#008000",
+       >          56 │ + ····"#808000",
+       >          57 │ + ····"#000080",
+       >          58 │ + ····"#800080",
+       >          59 │ + ····"#008080",
+       >          60 │ + ····"#c0c0c0",
+       >          61 │ + ····"#808080",
+       >          62 │ + ····"#ff0000",
+       >          63 │ + ····"#00ff00",
+       >          64 │ + ····"#ffff00",
+       >          65 │ + ····"#0000ff",
+       >          66 │ + ····"#ff00ff",
+       >          67 │ + ····"#00ffff",
+       >          68 │ + ····"#ffffff",
+       >      55  69 │     ];
+       >      56  70 │     if (index < 16) return basic[index] ?? null;
+       >   
+       > 
+       > Checked 88 files in 26ms. No fixes applied.
+       > Found 1 error.
+       > format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+       >
+       >   ✖ Some errors were emitted while running checks.
+       >   
+       > 
+       > error: recipe `web-fmt-check` failed on line 142 with exit code 1
+       For full logs, run:
+         nix log /nix/store/p1rv862k3c6s0dlcbipigpffjc4aj8jj-id-web-fmt-check.drv

@@ -1,0 +1,143 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+this derivation will be built:
+  /nix/store/2s3109rsa6s53ky5z3fj0nxv9vkp442r-id-cargo-fmt-check.drv
+building '/nix/store/2s3109rsa6s53ky5z3fj0nxv9vkp442r-id-cargo-fmt-check.drv'...
+error: Cannot build '/nix/store/2s3109rsa6s53ky5z3fj0nxv9vkp442r-id-cargo-fmt-check.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/kf2l3sqgn36gv7vwq4kqd1gsyjmy9ah6-id-cargo-fmt-check
+       Last 128 log lines:
+       > ≈ tailwindcss v4.3.3
+       >
+       > /*! 🌼 daisyUI 5.7.47 */
+       > Done in 375ms
+       > $ bun run scripts/build-manifest.ts
+       >   manifest.json: {
+       >   "main.js": "main.jd8ymtea.js",
+       >   "styles.css": "styles.0e00ca98.css",
+       > }
+       > Built targets/wasm32/host.wasm
+       > cargo fmt -- --check
+       > Diff in /build/id/crates/id-cli/src/commands/serve.rs:1386:
+       >              Ok(Some(id)) => info!("serve: published identity event {id}"),
+       >              Ok(None) => info!("serve: identity event already in the log"),
+       >              Err(err) => {
+       > -                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+       > +                warn!(
+       > +                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+       > +                );
+       >              }
+       >          }
+       >          Some(Arc::new(tokio::sync::Mutex::new(events)))
+       > Diff in /build/id/crates/id-core/tests/screen_parity.rs:16:
+       >  use std::path::PathBuf;
+       >
+       >  use id_core::world_presentation::{ScreenCell, ScreenSurface, StyleToken};
+       > -use serde_json::{json, Value};
+       > +use serde_json::{Value, json};
+       > 
+       >  fn cell(symbol: &str, fg: u8, bg: u8, bold: bool, columns: u8) -> ScreenCell {
+       >      ScreenCell {
+       > Diff in /build/id/crates/id-core/tests/screen_parity.rs:139:
+       >      cases()
+       >          .into_iter()
+       >          .map(|(name, width, height, cells)| {
+       > -            let surface = ScreenSurface::from_cells(width, height, cells)
+       > -                .expect("corpus case must build");
+       > +            let surface =
+       > +                ScreenSurface::from_cells(width, height, cells).expect("corpus case must build");
+       >              json!({
+       >                  "name": name,
+       >                  "width": width,
+       > Diff in /build/id/crates/id-core/tests/screen_parity.rs:171:
+       >          .expect("screen-parity corpus must be checked in at pkgs/id/test-data/");
+       >      let corpus: Value = serde_json::from_str(&raw).unwrap();
+       >      assert_eq!(
+       > -        corpus["cases"], json!(built),
+       > +        corpus["cases"],
+       > +        json!(built),
+       >          "Rust presenter verdicts drifted from the checked-in parity corpus; \
+       >           if the change is intentional, regenerate with SCREEN_PARITY_GENERATE=1 \
+       >           and record the divergence on #8340"
+       > Diff in /build/id/crates/id-events/src/local_events.rs:313:
+       >                  }
+       >              }
+       >          }
+       > -        let id = self.record(
+       > -            IDENTITY_KIND,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            &[],
+       > -        )?;
+       > +        let id = self.record(IDENTITY_KIND, None, None, None, None, None, None, None, &[])?;
+       >          Ok(Some(id))
+       >      }
+       >
+       > Diff in /build/id/crates/id-web/src/home.rs:80:
+       >          .map(|identity| {
+       >              let plain = plain_tag_label(identity);
+       >              let label = if plain_counts.get(&plain).copied().unwrap_or(0) > 1 {
+       > -                serde_json::to_string(&serde_json::json!([identity.0, identity.1]))
+       > -                    .unwrap_or(plain)
+       > +                serde_json::to_string(&serde_json::json!([identity.0, identity.1])).unwrap_or(plain)
+       >              } else {
+       >                  plain
+       >              };
+       > Diff in /build/id/crates/id-web/src/home.rs:190:
+       >      }
+       >      let tag_occurrences: std::collections::BTreeMap<String, (usize, u64)> = tag_occurrences
+       >          .into_iter()
+       > -        .map(|(identity, counts)| {
+       > -            (
+       > -                labels.get(&identity).cloned().unwrap_or_default(),
+       > -                counts,
+       > -            )
+       > -        })
+       > +        .map(|(identity, counts)| (labels.get(&identity).cloned().unwrap_or_default(), counts))
+       >          .collect();
+       >
+       >      let mut recent = documents.clone();
+       > Diff in /build/id/crates/id-web/src/home.rs:601:
+       >          // two.md and three.md carry only (a, b:c): its occurrence
+       >          // count is the number of documents carrying that exact tag.
+       >          for name in ["two.md", "three.md"] {
+       > -            let blob = store.blobs().add_bytes(name.as_bytes().to_vec()).await.unwrap();
+       > +            let blob = store
+       > +                .blobs()
+       > +                .add_bytes(name.as_bytes().to_vec())
+       > +                .await
+       > +                .unwrap();
+       >              store.tags().set(name, blob.hash).await.unwrap();
+       >              tags.set_tag(&tags.global, name.as_bytes(), b"a", Some(b"b:c"), b"")
+       >                  .await
+       > Diff in /build/id/crates/id-web/src/home.rs:627:
+       >              .find(|doc| doc.name == "one.md")
+       >              .expect("one.md in feed");
+       >          assert_eq!(one.tag_count, 2);
+       > -        assert!(one.tags.contains(&"[\"a:b\",\"c\"]".to_string()), "{:?}", one.tags);
+       > -        assert!(one.tags.contains(&"[\"a\",\"b:c\"]".to_string()), "{:?}", one.tags);
+       > +        assert!(
+       > +            one.tags.contains(&"[\"a:b\",\"c\"]".to_string()),
+       > +            "{:?}",
+       > +            one.tags
+       > +        );
+       > +        assert!(
+       > +            one.tags.contains(&"[\"a\",\"b:c\"]".to_string()),
+       > +            "{:?}",
+       > +            one.tags
+       > +        );
+       >          // Across documents: exact-tag occurrence counts drive the
+       >          // ranking — (a, b:c) on 3 documents outranks (a:b, c) on 1.
+       >          assert_eq!(feed.popular_tags[0].label, "[\"a\",\"b:c\"]");
+       > error: recipe `cargo-fmt-check` failed on line 132 with exit code 1
+       For full logs, run:
+         nix log /nix/store/2s3109rsa6s53ky5z3fj0nxv9vkp442r-id-cargo-fmt-check.drv

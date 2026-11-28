@@ -1,0 +1,139 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+this derivation will be built:
+  /nix/store/p0d06pdwpybg2vzj6216006ciqd6njhp-id-rustfmt-check.drv
+building '/nix/store/p0d06pdwpybg2vzj6216006ciqd6njhp-id-rustfmt-check.drv'...
+error: Cannot build '/nix/store/p0d06pdwpybg2vzj6216006ciqd6njhp-id-rustfmt-check.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/c4yh2h03prn0c8fc5i9pbn1q50v1m89r-id-rustfmt-check
+       Last 128 log lines:
+       >          assert_eq!(feed.popular_tags[0].label, "[\"a\",\"b:c\"]");
+       > Diff in /build/id/crates/id-web/src/home.rs:80:
+       >          .map(|identity| {
+       >              let plain = plain_tag_label(identity);
+       >              let label = if plain_counts.get(&plain).copied().unwrap_or(0) > 1 {
+       > -                serde_json::to_string(&serde_json::json!([identity.0, identity.1]))
+       > -                    .unwrap_or(plain)
+       > +                serde_json::to_string(&serde_json::json!([identity.0, identity.1])).unwrap_or(plain)
+       >              } else {
+       >                  plain
+       >              };
+       > Diff in /build/id/crates/id-web/src/home.rs:190:
+       >      }
+       >      let tag_occurrences: std::collections::BTreeMap<String, (usize, u64)> = tag_occurrences
+       >          .into_iter()
+       > -        .map(|(identity, counts)| {
+       > -            (
+       > -                labels.get(&identity).cloned().unwrap_or_default(),
+       > -                counts,
+       > -            )
+       > -        })
+       > +        .map(|(identity, counts)| (labels.get(&identity).cloned().unwrap_or_default(), counts))
+       >          .collect();
+       >
+       >      let mut recent = documents.clone();
+       > Diff in /build/id/crates/id-web/src/home.rs:601:
+       >          // two.md and three.md carry only (a, b:c): its occurrence
+       >          // count is the number of documents carrying that exact tag.
+       >          for name in ["two.md", "three.md"] {
+       > -            let blob = store.blobs().add_bytes(name.as_bytes().to_vec()).await.unwrap();
+       > +            let blob = store
+       > +                .blobs()
+       > +                .add_bytes(name.as_bytes().to_vec())
+       > +                .await
+       > +                .unwrap();
+       >              store.tags().set(name, blob.hash).await.unwrap();
+       >              tags.set_tag(&tags.global, name.as_bytes(), b"a", Some(b"b:c"), b"")
+       >                  .await
+       > Diff in /build/id/crates/id-web/src/home.rs:627:
+       >              .find(|doc| doc.name == "one.md")
+       >              .expect("one.md in feed");
+       >          assert_eq!(one.tag_count, 2);
+       > -        assert!(one.tags.contains(&"[\"a:b\",\"c\"]".to_string()), "{:?}", one.tags);
+       > -        assert!(one.tags.contains(&"[\"a\",\"b:c\"]".to_string()), "{:?}", one.tags);
+       > +        assert!(
+       > +            one.tags.contains(&"[\"a:b\",\"c\"]".to_string()),
+       > +            "{:?}",
+       > +            one.tags
+       > +        );
+       > +        assert!(
+       > +            one.tags.contains(&"[\"a\",\"b:c\"]".to_string()),
+       > +            "{:?}",
+       > +            one.tags
+       > +        );
+       >          // Across documents: exact-tag occurrence counts drive the
+       >          // ranking — (a, b:c) on 3 documents outranks (a:b, c) on 1.
+       >          assert_eq!(feed.popular_tags[0].label, "[\"a\",\"b:c\"]");
+       > Diff in /build/id/crates/id-events/src/local_events.rs:313:
+       >                  }
+       >              }
+       >          }
+       > -        let id = self.record(
+       > -            IDENTITY_KIND,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            &[],
+       > -        )?;
+       > +        let id = self.record(IDENTITY_KIND, None, None, None, None, None, None, None, &[])?;
+       >          Ok(Some(id))
+       >      }
+       >
+       > Diff in /build/id/crates/id-events/src/local_events.rs:313:
+       >                  }
+       >              }
+       >          }
+       > -        let id = self.record(
+       > -            IDENTITY_KIND,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            None,
+       > -            &[],
+       > -        )?;
+       > +        let id = self.record(IDENTITY_KIND, None, None, None, None, None, None, None, &[])?;
+       >          Ok(Some(id))
+       >      }
+       >
+       > Diff in /build/id/crates/id-cli/src/commands/serve.rs:1386:
+       >              Ok(Some(id)) => info!("serve: published identity event {id}"),
+       >              Ok(None) => info!("serve: identity event already in the log"),
+       >              Err(err) => {
+       > -                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+       > +                warn!(
+       > +                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+       > +                );
+       >              }
+       >          }
+       >          Some(Arc::new(tokio::sync::Mutex::new(events)))
+       > Diff in /build/id/crates/id-cli/src/commands/serve.rs:1386:
+       >              Ok(Some(id)) => info!("serve: published identity event {id}"),
+       >              Ok(None) => info!("serve: identity event already in the log"),
+       >              Err(err) => {
+       > -                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+       > +                warn!(
+       > +                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+       > +                );
+       >              }
+       >          }
+       >          Some(Arc::new(tokio::sync::Mutex::new(events)))
+       > Diff in /build/id/crates/id-cli/src/commands/serve.rs:1386:
+       >              Ok(Some(id)) => info!("serve: published identity event {id}"),
+       >              Ok(None) => info!("serve: identity event already in the log"),
+       >              Err(err) => {
+       > -                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+       > +                warn!(
+       > +                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+       > +                );
+       >              }
+       >          }
+       >          Some(Arc::new(tokio::sync::Mutex::new(events)))
+       For full logs, run:
+         nix log /nix/store/p0d06pdwpybg2vzj6216006ciqd6njhp-id-rustfmt-check.drv

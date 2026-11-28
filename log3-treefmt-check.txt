@@ -1,0 +1,25 @@
+warning: Git tree '/home/user/git/fleet/queue-20651-10533-verify3' is dirty
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+this derivation will be built:
+  /nix/store/1c5nd2f2g301l8y54mf2lbd81hj51aay-id-treefmt-check.drv
+building '/nix/store/1c5nd2f2g301l8y54mf2lbd81hj51aay-id-treefmt-check.drv'...
+error: Cannot build '/nix/store/1c5nd2f2g301l8y54mf2lbd81hj51aay-id-treefmt-check.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/vqy7vzywpyl3zzqixa7v7hv4i7305rx2-id-treefmt-check
+       Last 13 log lines:
+       > Running phase: unpackPhase
+       > unpacking source archive /nix/store/f0fhc535qzczqww8dkf55ghjvws5my8f-id
+       > source root is id
+       > Running phase: patchPhase
+       > Running phase: updateAutotoolsGnuConfigScriptsPhase
+       > Running phase: configurePhase
+       > no configure script, doing nothing
+       > Running phase: buildPhase
+       > ERRO file has changed path=web/src/world-surface.parity.test.ts prev_size=5196 prev_mod_time="1970-01-01 00:00:01 +0000 UTC" current_size=5252 current_mod_time="2026-11-17 14:52:24 +0000 UTC"
+       > traversed 906 files
+       > emitted 728 files for processing
+       > formatted 728 files (1 changed) in 4.281s
+       > Error: unexpected changes detected, --fail-on-change is enabled
+       For full logs, run:
+         nix log /nix/store/1c5nd2f2g301l8y54mf2lbd81hj51aay-id-treefmt-check.drv

@@ -1,0 +1,143 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+this derivation will be built:
+  /nix/store/rnf9a6c0sbffxqqdrf9pmid1rifg9bzp-id-clippy-lint.drv
+building '/nix/store/rnf9a6c0sbffxqqdrf9pmid1rifg9bzp-id-clippy-lint.drv'...
+error: Cannot build '/nix/store/rnf9a6c0sbffxqqdrf9pmid1rifg9bzp-id-clippy-lint.drv'.
+       Reason: builder failed with exit code 101.
+       Output paths:
+         /nix/store/964m8b2rgdf3ghskcq6aa2w2nzbp85vw-id-clippy-lint
+       Last 128 log lines:
+       >     |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^
+       >     |
+       >     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#implicit_hasher
+       > help: add a type parameter for `BuildHasher`
+       >     |
+       > 308 | pub fn live_claims<S: ::std::hash::BuildHasher>(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>, S>) -> Vec<Claim> {
+       >     |                   +++++++++++++++++++++++++++++                                                       +++
+       >
+       > warning: parameter of type `HashMap` should be generalized over different hashers
+       >    --> crates/id-store/src/tag_claims.rs:419:56
+       >     |
+       > 419 | pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+       >     |                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+       >     |
+       >     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#implicit_hasher
+       > help: add a type parameter for `BuildHasher`
+       >     |
+       > 419 | pub fn compacted_claims<S: ::std::hash::BuildHasher>(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>, S>) -> Vec<Claim> {
+       >     |                        +++++++++++++++++++++++++++++                                                       +++
+       >
+       > warning: missing documentation for a function
+       >   --> crates/id-store/src/event_types.rs:80:1
+       >    |
+       > 80 | pub fn corrupt(message: impl Into<String>) -> StoreError {
+       >    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >    |
+       >    = note: requested on the command line with `-W missing-docs`
+       >
+       > warning: missing documentation for a method
+       >   --> crates/id-store/src/event_types.rs:98:5
+       >    |
+       > 98 |     pub fn encode(self) -> [u8; CHAIN_LEN] {
+       >    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> crates/id-store/src/event_types.rs:108:5
+       >     |
+       > 108 |     pub fn decode(row: &[u8]) -> Result<Self, StoreError> {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a method
+       >    --> crates/id-store/src/event_types.rs:158:5
+       >     |
+       > 158 |     pub fn key(&self) -> Vec<u8> {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a method
+       >    --> crates/id-store/src/event_types.rs:165:5
+       >     |
+       > 165 |     pub fn encode(&self) -> Vec<u8> {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for an associated function
+       >    --> crates/id-store/src/event_types.rs:183:5
+       >     |
+       > 183 |     pub fn decode(key: &[u8], value: &[u8]) -> Result<Self, StoreError> {
+       >     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a function
+       >    --> crates/id-store/src/event_types.rs:312:1
+       >     |
+       > 312 | pub fn be_u64(bytes: &[u8]) -> Result<u64, StoreError> {
+       >     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a function
+       >    --> crates/id-store/src/event_types.rs:324:1
+       >     |
+       > 324 | pub fn hash_of(bytes: &[u8]) -> Result<Hash, StoreError> {
+       >     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a constant
+       >   --> crates/id-store/src/issuer_rotation.rs:88:1
+       >    |
+       > 88 | pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
+       >    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a method
+       >    --> crates/id-store/src/note_checkpoints.rs:535:5
+       >     |
+       > 535 | /     pub fn checkpoint(
+       > 536 | |         &mut self,
+       > 537 | |         note: Hash,
+       > 538 | |         event_id: Hash,
+       > ...   |
+       > 541 | |         parents: Vec<Hash>,
+       > 542 | |     ) -> Result<NoteRecord, CheckpointError> {
+       >     | |____________________________________________^
+       >
+       > warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+       >    --> crates/id-store/src/store_traits.rs:449:1
+       >     |
+       > 449 | / pub struct LogEntries<S> {
+       > 450 | |     store: SharedEventStore<S>,
+       > 451 | |     author: AuthorKey,
+       > 452 | |     /// Entries at or below this sequence number have been read. `None` means none have.
+       > ...   |
+       > 459 | |     done: bool,
+       > 460 | | }
+       >     | |_^
+       >     |
+       >     = note: requested on the command line with `-W missing-debug-implementations`
+       >
+       > warning: missing documentation for an associated function
+       >    --> crates/id-store/src/store_traits.rs:463:5
+       >     |
+       > 463 | /     pub const fn new(
+       > 464 | |         store: SharedEventStore<S>,
+       > 465 | |         author: AuthorKey,
+       > 466 | |         after: Option<SeqNum>,
+       > 467 | |         until: Option<SeqNum>,
+       > 468 | |         page_size: usize,
+       > 469 | |     ) -> Self {
+       >     | |_____________^
+       >
+       > warning: missing documentation for a struct field
+       >     --> crates/id-store/src/tags.rs:1547:28
+       >      |
+       > 1547 |     EmptyQuotedComponent { term: String },
+       >      |                            ^^^^^^^^^^^^
+       >
+       > warning: missing documentation for a struct field
+       >     --> crates/id-store/src/tags.rs:1549:25
+       >      |
+       > 1549 |     UnterminatedQuote { term: String },
+       >      |                         ^^^^^^^^^^^^
+       >
+       > warning: `id-store` (lib) generated 96 warnings (run `cargo clippy --fix --lib -p id-store -- ` to apply 37 suggestions)
+       > error: recipe `clippy-lint` failed on line 164 with exit code 101
+       For full logs, run:
+         nix log /nix/store/rnf9a6c0sbffxqqdrf9pmid1rifg9bzp-id-clippy-lint.drv

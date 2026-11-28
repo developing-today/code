@@ -1,0 +1,54 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+this derivation will be built:
+  /nix/store/xx5lrldgkfxqqdibn0vblafa6n79bfpk-id-biome-check.drv
+building '/nix/store/xx5lrldgkfxqqdibn0vblafa6n79bfpk-id-biome-check.drv'...
+error: Cannot build '/nix/store/xx5lrldgkfxqqdibn0vblafa6n79bfpk-id-biome-check.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/xfbfqyx9n7fanpvrj6bzxi8v4rq17b17-id-biome-check
+       Last 43 log lines:
+       > Running phase: unpackPhase
+       > unpacking source archive /nix/store/zhw7nlipd7b4cxyszbc2j3dkfzk7czq3-id
+       > source root is id
+       > Running phase: patchPhase
+       > Running phase: updateAutotoolsGnuConfigScriptsPhase
+       > Running phase: configurePhase
+       > no configure script, doing nothing
+       > Running phase: buildPhase
+       > web/src/world-surface.parity.test.ts format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+       >
+       >   ✖ Formatter would have printed the following content:
+       >   
+       >      51  51 │     if (index === 0) return null;
+       >      52  52 │     const basic = [
+       >      53     │ - ····"#000000",·"#800000",·"#008000",·"#808000",·"#000080",·"#800080",·"#008080",·"#c0c0c0",
+       >      54     │ - ····"#808080",·"#ff0000",·"#00ff00",·"#ffff00",·"#0000ff",·"#ff00ff",·"#00ffff",·"#ffffff",
+       >          53 │ + ····"#000000",
+       >          54 │ + ····"#800000",
+       >          55 │ + ····"#008000",
+       >          56 │ + ····"#808000",
+       >          57 │ + ····"#000080",
+       >          58 │ + ····"#800080",
+       >          59 │ + ····"#008080",
+       >          60 │ + ····"#c0c0c0",
+       >          61 │ + ····"#808080",
+       >          62 │ + ····"#ff0000",
+       >          63 │ + ····"#00ff00",
+       >          64 │ + ····"#ffff00",
+       >          65 │ + ····"#0000ff",
+       >          66 │ + ····"#ff00ff",
+       >          67 │ + ····"#00ffff",
+       >          68 │ + ····"#ffffff",
+       >      55  69 │     ];
+       >      56  70 │     if (index < 16) return basic[index] ?? null;
+       >   
+       > 
+       > Checked 122 files in 35ms. No fixes applied.
+       > Found 1 error.
+       > format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+       >
+       >   ✖ Some errors were emitted while running checks.
+       >   
+       > 
+       For full logs, run:
+         nix log /nix/store/xx5lrldgkfxqqdibn0vblafa6n79bfpk-id-biome-check.drv

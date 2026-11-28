@@ -1,0 +1,4 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+this derivation will be built:
+  /nix/store/mh24varq5npdshq95fw2say8sgkd9c30-id-nix-fmt-check.drv
+building '/nix/store/mh24varq5npdshq95fw2say8sgkd9c30-id-nix-fmt-check.drv'...

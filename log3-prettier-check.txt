@@ -1,0 +1,4 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+this derivation will be built:
+  /nix/store/ichvkfj62vdjvf3h28266wd4pjjys048-id-prettier-check.drv
+building '/nix/store/ichvkfj62vdjvf3h28266wd4pjjys048-id-prettier-check.drv'...

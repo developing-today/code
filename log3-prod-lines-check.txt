@@ -1,0 +1,19 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+warning: unable to download 'https://yazi.cachix.org/a6lh2iv8gnarmjh2mfklsv2zgbgiwzf6.narinfo': HTTP error 500
+
+response body:
+
+<html>
+<head><title>500 Internal Server Error</title></head>
+<body>
+<center><h1>500 Internal Server Error</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>; retrying in 26 ms (attempt 1/5)
+this derivation will be built:
+  /nix/store/4yw78dbbgqdj5rgf2bx0dqh1hyyjxpms-id-prod-lines-check.drv
+building '/nix/store/4yw78dbbgqdj5rgf2bx0dqh1hyyjxpms-id-prod-lines-check.drv'...

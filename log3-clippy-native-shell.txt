@@ -1,0 +1,8 @@
+warning: input 'bun2nix' has an override for a non-existent input 'import-tree'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+this derivation will be built:
+  /nix/store/gv4gk9g0lvb54fnqm7flh2424dz6948h-id-clippy-native-shell.drv
+building '/nix/store/gv4gk9g0lvb54fnqm7flh2424dz6948h-id-clippy-native-shell.drv'...
