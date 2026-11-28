@@ -32,6 +32,7 @@
 //! [`ReqwestHttp`]; tests speak to anything that answers.
 
 use std::future::Future;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -94,21 +95,82 @@ pub trait BridgeHttp {
     ) -> impl Future<Output = Result<HttpResponse>> + Send;
 }
 
+/// The per-request deadline a [`ReqwestHttp`] leg gets by
+/// default (#16423): a wedged or hostile endpoint fails closed
+/// instead of hanging the CLI forever.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The connect deadline a [`ReqwestHttp`] leg gets by default
+/// (#16423).
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The largest bridge response body [`ReqwestHttp`] will buffer,
+/// by default (#16423): the default [`BridgeLimits::max_batch_bytes`]
+/// — the pull leg's answer is one encoded batch under that bound —
+/// plus a framing allowance for the JSON legs (challenge, heads,
+/// push outcomes) and response headers echoed in the body. A larger
+/// answer is refused before it is buffered whole.
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024 + 64 * 1024;
+
 /// The production [`BridgeHttp`]: reqwest over rustls, the same
 /// stack the workspace's other HTTPS client (id-worlds) uses.
+/// Every request carries a deadline and every response body is
+/// read under a byte cap (#16423), so a stalled or hostile
+/// endpoint fails closed instead of hanging or OOMing the caller.
 #[derive(Debug)]
 pub struct ReqwestHttp {
     client: reqwest::Client,
+    request_timeout: Duration,
+    max_response_bytes: usize,
 }
 
 impl ReqwestHttp {
-    /// A transport on a default reqwest client.
+    /// A transport on a default reqwest client, with the default
+    /// deadline and response cap.
     pub fn new() -> Result<Self> {
+        Self::with_bounds(DEFAULT_REQUEST_TIMEOUT, DEFAULT_MAX_RESPONSE_BYTES)
+    }
+
+    /// A transport with an explicit per-request deadline and
+    /// response byte cap (tests use this to exercise both bounds
+    /// without waiting out the defaults).
+    pub fn with_bounds(request_timeout: Duration, max_response_bytes: usize) -> Result<Self> {
         let client = reqwest::Client::builder()
+            .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
             .build()
             .context("bridge http client")?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            request_timeout,
+            max_response_bytes,
+        })
     }
+}
+
+/// Reads one response body under a byte cap: a declared
+/// `Content-Length` over the cap is refused up front, and the
+/// streamed read bails the moment the accumulated bytes pass the
+/// cap, so an unbounded body is never buffered whole (#16423).
+async fn read_body_capped(response: &mut reqwest::Response, cap: usize) -> Result<Vec<u8>> {
+    if let Some(declared) = response.content_length() {
+        ensure!(
+            declared <= cap as u64,
+            "bridge http response declares {declared} bytes, over the {cap}-byte cap"
+        );
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("bridge http response body")?
+    {
+        ensure!(
+            body.len() + chunk.len() <= cap,
+            "bridge http response body is over the {cap}-byte cap"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 impl BridgeHttp for ReqwestHttp {
@@ -123,7 +185,8 @@ impl BridgeHttp for ReqwestHttp {
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
         }
-        let response = builder
+        let mut response = builder
+            .timeout(self.request_timeout)
             .body(request.body)
             .send()
             .await
@@ -139,11 +202,7 @@ impl BridgeHttp for ReqwestHttp {
                 )
             })
             .collect();
-        let body = response
-            .bytes()
-            .await
-            .context("bridge http response body")?
-            .to_vec();
+        let body = read_body_capped(&mut response, self.max_response_bytes).await?;
         Ok(HttpResponse {
             status,
             headers,
@@ -1400,5 +1459,86 @@ mod tests {
         )
         .unwrap();
         assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2, 1]);
+    }
+
+    // ----- ReqwestHttp bounds (#16423) ---------------------------
+
+    /// Serves one canned raw HTTP response on a loopback socket
+    /// and returns the address to dial.
+    async fn serve_once(response: Vec<u8>) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncReadExt as _;
+            let mut sink = [0u8; 1024];
+            let _ = socket.read(&mut sink).await;
+            use tokio::io::AsyncWriteExt as _;
+            let _ = socket.write_all(&response).await;
+        });
+        address
+    }
+
+    fn get(url: String) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_owned(),
+            url,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reqwest_http_refuses_an_oversized_body_without_buffering_it() {
+        // The declared length alone is over the cap: refused
+        // before any body byte is read.
+        let address = serve_once(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n".to_vec()).await;
+        let mut http = ReqwestHttp::with_bounds(Duration::from_secs(5), 1024).unwrap();
+        let err = http
+            .request(get(format!("http://{address}/v1/bridge/heads")))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("over the 1024-byte cap"),
+            "{err:#}"
+        );
+
+        // No declared length: the streamed read bails as soon as
+        // the accumulated body passes the cap.
+        let mut raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+        raw.extend_from_slice(b"800\r\n");
+        raw.extend_from_slice(&[7u8; 2048]);
+        raw.extend_from_slice(b"\r\n0\r\n\r\n");
+        let address = serve_once(raw).await;
+        let mut http = ReqwestHttp::with_bounds(Duration::from_secs(5), 1024).unwrap();
+        let err = http
+            .request(get(format!("http://{address}/v1/bridge/heads")))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("over the 1024-byte cap"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_http_fails_a_stalled_endpoint_at_its_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Accept and never answer; the client's deadline is
+            // the only way the request can end.
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let mut http = ReqwestHttp::with_bounds(Duration::from_millis(200), 1024).unwrap();
+        let err = http
+            .request(get(format!("http://{address}/v1/bridge/challenge")))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("bridge http request"),
+            "{err:#}"
+        );
     }
 }
