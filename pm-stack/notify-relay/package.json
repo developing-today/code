@@ -8,7 +8,7 @@
   "name": "pm-notify-relay",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --var VERSION:$(git rev-parse HEAD)",
     "dev": "wrangler dev",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
