@@ -40,6 +40,8 @@ function startStubServe(script) {
   let promptAsyncResponseDelay = 0;
   let hangSessionCreate = false;
   let hangEventConnect = false;
+  let giantSessionCreateBody = 0;
+  let giantSessionCreateError = 0;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -62,6 +64,15 @@ function startStubServe(script) {
     },
     hangEventConnect: () => {
       hangEventConnect = true;
+    },
+    // #16391: answer POST /api/session with an over-budget body, on
+    // the success path or the error path, so serveJson's byte cap —
+    // not res.text() buffering — decides what the adapter does.
+    serveGiantSessionCreateBody: (bytes) => {
+      giantSessionCreateBody = bytes;
+    },
+    serveGiantSessionCreateError: (bytes) => {
+      giantSessionCreateError = bytes;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -127,6 +138,16 @@ function startStubServe(script) {
       if (req.method === 'POST' && url.pathname === '/api/session') {
         // #15982: a hung serve accepts the request and never answers.
         if (hangSessionCreate) return;
+        if (giantSessionCreateError) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end('x'.repeat(giantSessionCreateError));
+          return;
+        }
+        if (giantSessionCreateBody) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('x'.repeat(giantSessionCreateBody));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
@@ -311,6 +332,37 @@ test('a hung serve call times out instead of wedging session/new (#15982)', asyn
     /serve POST \/api\/session -> timed out after 300ms/,
   );
   assert.ok(Date.now() - started < 5000, 'session/new rejected within the timeout budget, not never');
+});
+
+test('an over-budget serve response body rejects with a byte-budget error instead of buffering whole (#16391)', async (t) => {
+  // Oracle: with a small env-set cap (4096), a 64 KiB success-path
+  // body for POST /api/session must reject session/new with the
+  // byte-budget error in the serve error shape — before JSON.parse
+  // ever sees the body — and the adapter stays alive.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_SERVE_RESPONSE_MAX_BYTES: '4096',
+  });
+  stub.controls.serveGiantSessionCreateBody(64 * 1024);
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> response body exceeded 4096 bytes/,
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the over-budget body');
+});
+
+test('an over-budget serve error body is capped too (#16391)', async (t) => {
+  // Oracle: the error path used to res.text() the whole body before
+  // slicing 200 chars for the message. A 64 KiB 500 body under a
+  // 4096 cap must surface the byte-budget error, not the status.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_SERVE_RESPONSE_MAX_BYTES: '4096',
+  });
+  stub.controls.serveGiantSessionCreateError(64 * 1024);
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> response body exceeded 4096 bytes/,
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the over-budget error body');
 });
 
 test('a silent /api/event stream is treated as stalled and reconnects (#16009)', async (t) => {
