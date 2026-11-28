@@ -82,6 +82,30 @@
 //! the request may have landed, and repeating it could double-post.
 //! Reads repeat on any failure class.
 //!
+//! `fleet git-credential` (a root built-in routed to this module,
+//! code#16577) gives plain git the same failover: it implements the
+//! git credential protocol (`get`/`store`/`erase`) over this
+//! rotation. Upstream `gh auth git-credential` offers the single
+//! credential gh resolves as active, with no rotation and no repo
+//! check — on the laptop that was an App installation token that
+//! cannot see Drew's personal repos, and every plain `git fetch`
+//! died with "Repository not found" while `fleet gh` worked. The
+//! fleet helper instead walks the rotation in order and, when the
+//! credential query names the target repo (the `path` attribute,
+//! sent when git is configured with `credential.useHttpPath`),
+//! skips a candidate whose token provably cannot see that repo
+//! (the repos API answers 404 for it) and offers the next one.
+//! A candidate is skipped only on that proof: an inconclusive
+//! check (transport error, rate limit, 5xx) never skips — the
+//! candidate is offered, as before this helper existed. When no
+//! candidate can be proven to see the repo, the first resolvable
+//! credential is offered anyway, so git surfaces its own truthful
+//! error rather than a fleet invention. `store` and `erase` are
+//! no-ops: fleet keeps no credential store of its own — every
+//! `get` resolves fresh from the rotation. Non-github.com hosts
+//! are declined silently (empty answer), so the helper can sit in
+//! a global git config without disturbing other hosts.
+//!
 //! Tokens are never printed, logged, or written to a file: provider
 //! errors name the source and stage only, never values. Attempts
 //! are silent by default — the final attempt's stdout, stderr and
@@ -935,6 +959,47 @@ fn add_dynamic_hint_sources(
             })
             .unwrap_or(sources.len());
         sources.insert(insert_at, source);
+    }
+    sources
+}
+
+/// The effective rotation for one call: the configured order for
+/// the owners `hint_args` name, expanded — when no explicit order
+/// is configured — with live installations for a hinted owner
+/// outside an App's configured set. Shared by the passthrough
+/// runner and `fleet git-credential`, so plain git and `fleet gh`
+/// walk the same sources in the same order.
+fn rotation_sources(
+    config: &Config,
+    provider: &mut FleetTokenProvider,
+    hint_args: &[String],
+) -> Vec<TokenSource> {
+    let mut sources = rotation(hint_args, config);
+    // An explicit rotation is authoritative. Otherwise, when a call
+    // names an owner outside an App's configured set, consult that
+    // App's cached live installations and add its leg if present.
+    if config.gh_rotation_order().is_none() {
+        if let Some(hint) = owner_hint(hint_args) {
+            let owners_env = Owners::from_config(config);
+            let mut discovered = Vec::new();
+            for app in all_apps(config) {
+                if owners_env
+                    .for_app(&app, config)
+                    .iter()
+                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
+                {
+                    continue;
+                }
+                match provider.installation_owners(&app) {
+                    Ok(owners) => discovered.push((app, owners)),
+                    Err(error) => eprintln!(
+                        "fleet gh: could not check {} installations for owner hint: {error}",
+                        app.slug()
+                    ),
+                }
+            }
+            sources = add_dynamic_hint_sources(sources, hint_args, &discovered);
+        }
     }
     sources
 }
@@ -1919,6 +1984,351 @@ fn closure_binding(
     gh_closure::Binding::from_resolved_session_id(resolved_session_id)
 }
 
+// ---------------------------------------------------------------------------
+// `fleet git-credential` — the git credential helper (code#16577).
+// ---------------------------------------------------------------------------
+
+const GIT_CREDENTIAL_USAGE: &str = "\
+Usage: fleet git-credential [--cache-addr <addr>...] [--no-cache] <get|store|erase>
+
+Git credential helper over the fleet gh token rotation: `get` answers
+git's credential query for github.com with the first rotation
+credential that can see the target repo, skipping any that provably
+cannot. `store` and `erase` are no-ops — fleet keeps no credential
+store; every `get` resolves fresh from the rotation.
+
+Configure it in git (the canonical seat gitconfig does this):
+
+  [credential \"https://github.com\"]
+      helper = !fleet git-credential
+      useHttpPath = true
+
+`useHttpPath` is what lets git tell the helper which repo a query is
+for; without it the helper cannot check visibility and offers the
+first resolvable credential, as `gh auth git-credential` does.";
+
+/// One parsed git credential query (the `get` input): `key=value`
+/// lines ended by a blank line or EOF. Only the fields the helper
+/// acts on are kept; the answer echoes protocol and host back.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct CredQuery {
+    protocol: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+}
+
+/// Parse a credential query. A `url` attribute stands in for the
+/// components when they are absent (git sends one form or the
+/// other). Unknown attributes are ignored, per the protocol.
+fn parse_cred_query(bytes: &[u8]) -> CredQuery {
+    let text = String::from_utf8_lossy(bytes);
+    let mut query = CredQuery::default();
+    let mut url: Option<String> = None;
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "protocol" => query.protocol = Some(value.to_string()),
+            "host" => query.host = Some(value.to_string()),
+            "path" => query.path = Some(value.to_string()),
+            "url" => url = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if (query.host.is_none() || query.path.is_none())
+        && let Some(url) = &url
+        && let Some((scheme, rest)) = url.split_once("://")
+    {
+        let (host, path) = match rest.split_once('/') {
+            Some((host, path)) => (host, Some(path.to_string())),
+            None => (rest, None),
+        };
+        // A userinfo part is not the host.
+        let host = host.rsplit('@').next().unwrap_or(host);
+        if query.protocol.is_none() {
+            query.protocol = Some(scheme.to_string());
+        }
+        if query.host.is_none() {
+            query.host = Some(host.to_string());
+        }
+        if query.path.is_none() {
+            query.path = path;
+        }
+    }
+    query
+}
+
+impl CredQuery {
+    /// Fleet credentials exist only for github.com over HTTPS.
+    fn is_github(&self) -> bool {
+        self.protocol
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+            && self
+                .host
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case("github.com"))
+    }
+}
+
+/// The (owner, repo) a query targets, from its path — the first
+/// two path segments, a trailing `.git` on the repo dropped. Both
+/// segments must be plain GitHub names; anything else is not a
+/// repo this helper can check, and the query is treated as
+/// repo-less (first resolvable credential wins).
+fn cred_repo(query: &CredQuery) -> Option<(String, String)> {
+    let path = query.path.as_deref()?;
+    let mut segments = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty());
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !plain(owner) || !plain(repo) {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// Whether one token can see one repo. `Unknown` is every outcome
+/// that proves nothing either way — the check must never skip a
+/// credential on a guess (code#16577).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoVisibility {
+    Visible,
+    NotVisible,
+    Unknown,
+}
+
+/// The repo-visibility seam, so tests drive the selection with
+/// fakes and no network.
+trait RepoVisibilityCheck {
+    fn visibility(&mut self, token: &str, owner: &str, repo: &str) -> RepoVisibility;
+}
+
+/// The live check: `GET /repos/{owner}/{repo}` under the candidate
+/// token. GitHub answers 404 both for a missing repo and for one
+/// the token cannot see — either way the credential is useless for
+/// this target, which is exactly the skip condition. 200 proves
+/// sight; anything else (rate limit, 5xx, transport) proves
+/// nothing.
+struct HttpRepoVisibility {
+    agent: ureq::Agent,
+}
+
+impl HttpRepoVisibility {
+    fn new() -> Self {
+        // Same agent shape as the minter's: platform root store,
+        // so a TLS-intercepting egress proxy does not fail the
+        // check into `Unknown` on every call.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .into();
+        HttpRepoVisibility { agent }
+    }
+}
+
+impl RepoVisibilityCheck for HttpRepoVisibility {
+    fn visibility(&mut self, token: &str, owner: &str, repo: &str) -> RepoVisibility {
+        let url = format!("{GITHUB_API}/repos/{owner}/{repo}");
+        match api_call(&self.agent, "GET", &url, token, None) {
+            Ok((200, _)) => RepoVisibility::Visible,
+            Ok((404, _)) => RepoVisibility::NotVisible,
+            _ => RepoVisibility::Unknown,
+        }
+    }
+}
+
+/// The outcome of walking the rotation for one credential query.
+enum CredSelection {
+    /// A candidate offered on positive or inconclusive evidence —
+    /// the normal answer.
+    Chosen { label: String, token: String },
+    /// Every resolvable candidate provably cannot see the repo;
+    /// the first of them is offered anyway (see the module
+    /// header), so git reports the refusal itself.
+    Fallback { label: String, token: String },
+    /// No source resolved at all; the errors are value-free.
+    Unresolved { errors: Vec<String> },
+}
+
+/// Walk the rotation for one `get` query. Oracle: code#16577 —
+/// a credential that cannot see the target repo is never the one
+/// offered while a later candidate can see it.
+fn select_credential<P: TokenProvider, V: RepoVisibilityCheck>(
+    provider: &mut P,
+    visibility: &mut V,
+    sources: &[TokenSource],
+    target: Option<&(String, String)>,
+    trace: bool,
+) -> CredSelection {
+    let mut errors: Vec<String> = Vec::new();
+    let mut first_resolved: Option<(String, String)> = None;
+    for source in sources {
+        let token = match provider.token_for(source) {
+            Ok(t) => t,
+            Err(e) => {
+                if trace {
+                    eprintln!("fleet git-credential: skipping {} ({e})", source.label());
+                }
+                errors.push(e);
+                continue;
+            }
+        };
+        if first_resolved.is_none() {
+            first_resolved = Some((source.label(), token.clone()));
+        }
+        let Some((owner, repo)) = target else {
+            // The query names no repo: nothing can be checked, so
+            // the first resolvable credential is the answer — the
+            // pre-helper behavior, kept for path-less queries.
+            return CredSelection::Chosen {
+                label: source.label(),
+                token,
+            };
+        };
+        match visibility.visibility(&token, owner, repo) {
+            RepoVisibility::Visible | RepoVisibility::Unknown => {
+                return CredSelection::Chosen {
+                    label: source.label(),
+                    token,
+                };
+            }
+            RepoVisibility::NotVisible => {
+                if trace {
+                    eprintln!(
+                        "fleet git-credential: skipping {} (cannot see {owner}/{repo})",
+                        source.label()
+                    );
+                }
+            }
+        }
+    }
+    match first_resolved {
+        Some((label, token)) => CredSelection::Fallback { label, token },
+        None => CredSelection::Unresolved { errors },
+    }
+}
+
+/// The credential answer for one chosen token: the token travels
+/// as the password under the `x-access-token` username — the shape
+/// GitHub accepts for OAuth and installation tokens alike, and the
+/// one upstream gh's helper uses for environment tokens.
+fn cred_answer(query: &CredQuery, token: &str) -> String {
+    format!(
+        "protocol={}\nhost={}\nusername=x-access-token\npassword={token}\n\n",
+        query.protocol.as_deref().unwrap_or("https"),
+        query.host.as_deref().unwrap_or("github.com"),
+    )
+}
+
+/// `fleet git-credential`: the git credential helper over the gh
+/// rotation (code#16577). Git invokes it as
+/// `fleet git-credential <get|store|erase>` with the query on
+/// stdin; seats configure it as the credential helper for
+/// github.com in place of `gh auth git-credential`.
+pub fn run_git_credential(config: &Config, args: &[String]) -> i32 {
+    let flags = match split_cache_flags(args) {
+        Ok(f) => f,
+        Err(e) => return usage_error(&e),
+    };
+    let rest = &flags.rest;
+    match rest.first().map(|s| s.as_str()) {
+        Some("--help" | "-h") if rest.len() == 1 => {
+            println!("{GIT_CREDENTIAL_USAGE}");
+            EXIT_OK
+        }
+        // Stateless: fleet stores no credentials of its own, so
+        // there is nothing to store and nothing to erase. The
+        // query on stdin is drained so git never writes into a
+        // closed pipe; exit 0 tells git the operation is handled.
+        Some("store" | "erase") if rest.len() == 1 => {
+            use std::io::Read;
+            let mut sink = Vec::new();
+            let _ = std::io::stdin().lock().read_to_end(&mut sink);
+            EXIT_OK
+        }
+        Some("get") if rest.len() == 1 => run_git_credential_get(config, &flags),
+        _ => usage_error(
+            "expected exactly one operation for 'fleet git-credential': get, store or erase",
+        ),
+    }
+}
+
+fn run_git_credential_get(config: &Config, flags: &CacheFlags) -> i32 {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Err(e) = std::io::stdin().lock().read_to_end(&mut buf) {
+        eprintln!("fleet git-credential: reading the credential query failed: {e}");
+        return EXIT_UNRESOLVED;
+    }
+    let query = parse_cred_query(&buf);
+    if !query.is_github() {
+        // Not a target fleet holds credentials for: answer with
+        // nothing, so git asks the next helper (or prompts).
+        return EXIT_OK;
+    }
+    let target = cred_repo(&query);
+    let hint_args: Vec<String> = match &target {
+        Some((owner, repo)) => vec!["--repo".to_string(), format!("{owner}/{repo}")],
+        None => Vec::new(),
+    };
+    let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
+    let mut provider = FleetTokenProvider::new(config, cache_addrs(config, flags));
+    let sources = rotation_sources(config, &mut provider, &hint_args);
+    let mut visibility = HttpRepoVisibility::new();
+    let token = match select_credential(
+        &mut provider,
+        &mut visibility,
+        &sources,
+        target.as_ref(),
+        trace,
+    ) {
+        CredSelection::Chosen { token, .. } => token,
+        CredSelection::Fallback { label, token } => {
+            if trace {
+                eprintln!(
+                    "fleet git-credential: no candidate can see the target repo; \
+                     offering {label} (first resolvable)"
+                );
+            }
+            token
+        }
+        CredSelection::Unresolved { errors } => {
+            for e in distinct_errors(&errors) {
+                eprintln!("fleet git-credential: {e}");
+            }
+            eprintln!("fleet git-credential: no token source could be resolved");
+            return EXIT_UNRESOLVED;
+        }
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(cred_answer(&query, &token).as_bytes());
+    let _ = out.flush();
+    EXIT_OK
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     // Cache flags come first: leading `--cache-addr` (repeatable)
     // and `--no-cache` are fleet's own, stripped before anything
@@ -2072,33 +2482,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
-    let mut sources = rotation(&call_args, config);
-    // An explicit rotation is authoritative. Otherwise, when a call
-    // names an owner outside an App's configured set, consult that
-    // App's cached live installations and add its leg if present.
-    if config.gh_rotation_order().is_none() {
-        if let Some(hint) = owner_hint(&call_args) {
-            let owners_env = Owners::from_config(config);
-            let mut discovered = Vec::new();
-            for app in all_apps(config) {
-                if owners_env
-                    .for_app(&app, config)
-                    .iter()
-                    .any(|owner| owner.eq_ignore_ascii_case(&hint))
-                {
-                    continue;
-                }
-                match provider.installation_owners(&app) {
-                    Ok(owners) => discovered.push((app, owners)),
-                    Err(error) => eprintln!(
-                        "fleet gh: could not check {} installations for owner hint: {error}",
-                        app.slug()
-                    ),
-                }
-            }
-            sources = add_dynamic_hint_sources(sources, &call_args, &discovered);
-        }
-    }
+    let sources = rotation_sources(config, &mut provider, &call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let (code, final_stdout) = run_with_provider_capturing(
         &mut provider,
@@ -3690,6 +4074,233 @@ mod tests {
         assert_eq!(code, 0);
         let calls = std::fs::read_to_string(&log2).unwrap();
         assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
+    }
+
+    /// Fake repo-visibility for the credential-helper tests:
+    /// keyed on the fake token strings FakeProvider mints
+    /// (`tok-<label>`), so a test names exactly which identities
+    /// cannot see the target repo. Unlisted tokens are Visible;
+    /// `unknown` tokens answer Unknown (an inconclusive check).
+    struct FakeVisibility {
+        not_visible: Vec<String>,
+        unknown: Vec<String>,
+        calls: usize,
+    }
+
+    impl FakeVisibility {
+        fn new(not_visible: &[&str]) -> Self {
+            FakeVisibility {
+                not_visible: not_visible.iter().map(|s| s.to_string()).collect(),
+                unknown: Vec::new(),
+                calls: 0,
+            }
+        }
+    }
+
+    impl RepoVisibilityCheck for FakeVisibility {
+        fn visibility(&mut self, token: &str, _owner: &str, _repo: &str) -> RepoVisibility {
+            self.calls += 1;
+            if self.unknown.iter().any(|t| t == token) {
+                RepoVisibility::Unknown
+            } else if self.not_visible.iter().any(|t| t == token) {
+                RepoVisibility::NotVisible
+            } else {
+                RepoVisibility::Visible
+            }
+        }
+    }
+
+    // oracle: the git credential protocol as git sends it
+    // (gitcredentials(7)): key=value lines, a blank-line
+    // terminator, `path` present only with useHttpPath, and a
+    // `url` attribute standing in for the components.
+    #[test]
+    fn cred_query_parse_and_repo() {
+        let q = parse_cred_query(
+            b"protocol=https\nhost=github.com\npath=dezren39/hatch-personal.git\n\n",
+        );
+        assert!(q.is_github());
+        assert_eq!(
+            cred_repo(&q),
+            Some(("dezren39".to_string(), "hatch-personal".to_string()))
+        );
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\n\n");
+        assert!(q.is_github());
+        assert_eq!(cred_repo(&q), None);
+        let q = parse_cred_query(b"url=https://github.com/developing-today/code.git\n\n");
+        assert!(q.is_github());
+        assert_eq!(
+            cred_repo(&q),
+            Some(("developing-today".to_string(), "code".to_string()))
+        );
+        let q = parse_cred_query(b"protocol=https\nhost=example.com\npath=o/r\n\n");
+        assert!(!q.is_github());
+        // CRLF line endings and a missing blank-line terminator.
+        let q = parse_cred_query(b"protocol=https\r\nhost=github.com\r\npath=o/r");
+        assert_eq!(cred_repo(&q), Some(("o".to_string(), "r".to_string())));
+        // A path that is not a plain owner/repo is not checkable.
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\npath=ow ner/re po\n\n");
+        assert_eq!(cred_repo(&q), None);
+    }
+
+    // oracle: code#16577's invariant — a credential that cannot
+    // see the target repo is never the one offered while a later
+    // candidate can see it. The rotation order is the fleet's
+    // standing one (App installations first, personal last).
+    #[test]
+    fn git_credential_skips_credential_that_cannot_see_the_repo() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        // The developing-today installation token cannot see
+        // dezren39/hatch-personal (the laptop failure); the
+        // dezren39 installation token can.
+        let mut visibility = FakeVisibility::new(&["tok-app:developing-today"]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::app(GhApp::Fleet, "dezren39"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Chosen { label, token } => {
+                assert_eq!(label, "app:dezren39");
+                assert_eq!(token, "tok-app:dezren39");
+            }
+            _ => panic!("expected the dezren39 installation to be chosen"),
+        }
+        assert_eq!(
+            visibility.calls, 2,
+            "checked until the first that can see it"
+        );
+    }
+
+    // oracle: code#16577 — without a repo in the query there is
+    // nothing to check: the first resolvable credential is
+    // offered and the visibility check never runs.
+    #[test]
+    fn git_credential_without_repo_offers_first_resolvable() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        match select_credential(&mut provider, &mut visibility, &sources, None, false) {
+            CredSelection::Chosen { label, .. } => {
+                assert_eq!(label, "app:developing-today")
+            }
+            _ => panic!("expected the first source to be chosen"),
+        }
+        assert_eq!(visibility.calls, 0);
+    }
+
+    // oracle: code#16577 — an inconclusive visibility check
+    // (transport error, rate limit) never skips a credential:
+    // the candidate is offered on the evidence available.
+    #[test]
+    fn git_credential_inconclusive_check_never_skips() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        visibility.unknown = vec!["tok-app:developing-today".to_string()];
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Chosen { label, .. } => {
+                assert_eq!(label, "app:developing-today")
+            }
+            _ => panic!("expected the first source to be offered despite the inconclusive check"),
+        }
+    }
+
+    // oracle: code#16577 — when every candidate provably cannot
+    // see the repo, the first resolvable credential is the
+    // fallback answer, so git surfaces the refusal itself
+    // instead of the helper inventing an error.
+    #[test]
+    fn git_credential_all_invisible_falls_back_to_first_resolvable() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let mut visibility = FakeVisibility::new(&["tok-app:developing-today", "tok-personal"]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Fallback { label, token } => {
+                assert_eq!(label, "app:developing-today");
+                assert_eq!(token, "tok-app:developing-today");
+            }
+            _ => panic!("expected the fallback answer"),
+        }
+    }
+
+    // oracle: code#16577 — a source that cannot even resolve is
+    // skipped like the passthrough runner skips it; when none
+    // resolve, the selection is Unresolved with the provider
+    // errors, never an invented credential.
+    #[test]
+    fn git_credential_unresolved_when_no_source_resolves() {
+        let mut provider = FakeProvider {
+            fail_sources: vec!["app:developing-today".to_string(), "personal".to_string()],
+        };
+        let mut visibility = FakeVisibility::new(&[]);
+        let sources = vec![
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+            TokenSource::Personal,
+        ];
+        let target = ("dezren39".to_string(), "hatch-personal".to_string());
+        match select_credential(
+            &mut provider,
+            &mut visibility,
+            &sources,
+            Some(&target),
+            false,
+        ) {
+            CredSelection::Unresolved { errors } => assert_eq!(errors.len(), 2),
+            _ => panic!("expected Unresolved"),
+        }
+    }
+
+    // oracle: the credential answer's shape — the chosen token
+    // travels as the password under `x-access-token`, with the
+    // query's protocol and host echoed, blank-line terminated
+    // (gitcredentials(7); the username shape is upstream gh's
+    // environment-token answer).
+    #[test]
+    fn cred_answer_shape() {
+        let q = parse_cred_query(b"protocol=https\nhost=github.com\npath=o/r\n\n");
+        assert_eq!(
+            cred_answer(&q, "tok-fake"),
+            "protocol=https\nhost=github.com\nusername=x-access-token\npassword=tok-fake\n\n"
+        );
     }
 
     // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING

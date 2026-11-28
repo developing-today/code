@@ -1756,6 +1756,12 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
         }
         Some("init") => cmd_init(surface, &args[1..], invoked_as),
         Some("session") => session_state::run(&args[1..]),
+        // code#16577: the git credential helper over the gh
+        // rotation — a root built-in like `session`, not a domain:
+        // git invokes it directly as the credential helper, and the
+        // rotation it walks is the gh domain's own.
+        #[cfg(feature = "gh")]
+        Some("git-credential") => gh::run_git_credential(&surface.config, &args[1..]),
         Some(name) => match resolve_domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),
