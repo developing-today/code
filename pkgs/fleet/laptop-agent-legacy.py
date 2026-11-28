@@ -1724,10 +1724,15 @@ def main():
         resumed_from = off
         trips = 0
         total = None
-        mode = "ab" if off else "wb"
-        with open(out_path, mode) as fh:
+        fh = None
+        try:
             while total is None or off < total:
-                data, total = _fetch_chunk(remote_path, off, chunk)
+                try:
+                    data, total = _fetch_chunk(remote_path, off, chunk)
+                except RuntimeError as exc:
+                    # Loud failure (code#5343): a dead transport exits
+                    # 1 with a named one-liner, never a traceback.
+                    sys.exit(f"laptop-agent: fetch failed: {exc}")
                 trips += 1
                 if off > total:
                     sys.exit(
@@ -1738,10 +1743,18 @@ def main():
                     )
                 if not data and off < total:
                     sys.exit("laptop-agent: empty chunk before EOF; fetch incomplete")
+                if fh is None:
+                    # Create OUT only after the first byte is in hand:
+                    # a fetch that fails first leaves no file behind
+                    # (binary parity) and never truncates a resume.
+                    fh = open(out_path, "ab" if off else "wb")
                 fh.write(data)
                 off += len(data)
                 if len(data) < chunk and off < total:
                     continue
+        finally:
+            if fh is not None:
+                fh.close()
         print(
             f"fetched {total} bytes from {remote_path} -> {out_path} "
             f"in {trips} round trip(s)"

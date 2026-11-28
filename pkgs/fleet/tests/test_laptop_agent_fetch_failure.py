@@ -54,11 +54,13 @@ class FetchFailureTest(unittest.TestCase):
             failing = RuntimeError("transport error: Connection refused")
             with patch.object(la, "_fetch_chunk", side_effect=failing):
                 code, stderr = _run_fetch(["fetch", "/remote/path", out])
-            self.assertEqual(code, 1)
+            # sys.exit(str) exits the process with status 1 and prints
+            # the line on stderr: the module's loud-failure contract.
+            self.assertEqual(
+                code, "laptop-agent: fetch failed: transport error: Connection refused"
+            )
             self.assertNotIn("Traceback", stderr)
-            lines = [ln for ln in stderr.splitlines() if ln.strip()]
-            self.assertEqual(len(lines), 1)
-            self.assertTrue(lines[0].startswith("laptop-agent:"))
+            self.assertEqual(stderr, "")
             self.assertFalse(os.path.exists(out))
 
     def test_transport_failure_leaves_pre_existing_out_untouched(self):
@@ -68,7 +70,9 @@ class FetchFailureTest(unittest.TestCase):
             failing = RuntimeError("transport error: Connection refused")
             with patch.object(la, "_fetch_chunk", side_effect=failing):
                 code, stderr = _run_fetch(["fetch", "/remote/path", out])
-            self.assertEqual(code, 1)
+            self.assertEqual(
+                code, "laptop-agent: fetch failed: transport error: Connection refused"
+            )
             self.assertNotIn("Traceback", stderr)
             self.assertEqual(Path(out).read_bytes(), b"partial-bytes")
 
