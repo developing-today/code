@@ -19,3 +19,7 @@ new_sqlite_classes = ["VoiceSession"]
 # secrets (wrangler secret put), never vars in this file.
 [vars]
 TURSO_URL = "https://voice-line-ledger-dezren39.aws-us-east-1.turso.io"
+# Deployed commit named by /version (#15793); the release build stamps
+# the real commit through cloudflare.config.ts, this default keeps an
+# unstamped deploy honest.
+VERSION = "unknown"
