@@ -2592,7 +2592,7 @@ mod tests {
             };
             stream
                 .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 33\r\nconnection: close\r\n\r\n{\"ok\":true,\"row\":{\"id\":1}}",
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 26\r\nconnection: close\r\n\r\n{\"ok\":true,\"row\":{\"id\":1}}",
                 )
                 .unwrap();
             String::from_utf8(request[..body_end].to_vec()).unwrap()
