@@ -60,6 +60,18 @@ HTTP 401 code 10000. So deployment wiring is confirmed, but there is
 still **no live row readback**: no exact complete-Metadata JSON has been
 read back from the production D1 database.
 
+On 2026-11-28 ~04:55 UTC lane oc-code-08 re-read public `/health` (no
+credentials, no deploys): `storage` now reports `d1_bound: true` and
+`metadata_durable: true`, and `tenancy_configured` flipped to `true`;
+`rp_configured` remains `false`. The extended live-identity probe
+(`node smoke/live-identity.mjs` from `pkgs/fleet/hosted-worker`, no RP
+token) reports the new `metadata durable` check `passed` while overall
+proof stays `incomplete` on RP grounds (`health identity` incomplete over
+`rp_configured: false`, `invalid RP rejected` 503 `auth_not_configured`,
+`valid RP accepted` incomplete `missing_rp_token`). Deployment of the
+#16206 health signal is therefore confirmed live. Exact row readback
+(steps 2–4) is still pending and still gates authenticated create traffic.
+
 Release verification (use the deploy identity that can access this D1 database):
 
 1. Keep authenticated create traffic disabled. Confirm `QUEUE_D1` resolves to
