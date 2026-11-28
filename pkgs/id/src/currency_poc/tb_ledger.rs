@@ -57,7 +57,8 @@ use anyhow::{Context, Result};
 use tigerbeetle as tb;
 
 use super::ledger::{
-    Account, AccountBalance, AccountError, AccountFlags, LedgerBackend, Transfer, TransferError,
+    Account, AccountBalance, AccountError, AccountFlags, LedgerBackend, PendingTransfer,
+    PendingTransferState, Transfer, TransferError,
 };
 
 /// Encode a PoC `code` for the wire. TigerBeetle rejects code `0`,
@@ -146,6 +147,115 @@ impl TigerBeetleLedger {
             None => poc_code(wire),
         }
     }
+
+    fn transfers_for_pending_id(&self, pending_id: u128) -> Result<Vec<tb::Transfer>> {
+        // QueryFilter cannot index pending_id. The grant adapter stamps
+        // the pending transfer and its explicit resolution with the
+        // unique pending ID in user_data_128, so this is a bounded exact
+        // index query (pending + at most one resolution). A full result
+        // page is ambiguous and fails closed instead of truncating.
+        const LIMIT: u32 = 8;
+        let filter = tb::QueryFilter {
+            user_data_128: pending_id,
+            limit: LIMIT,
+            ..Default::default()
+        };
+        let found = self
+            .block_on(self.client.query_transfers(filter))
+            .context("tigerbeetle pending-resolution query failed")?;
+        if found.len() == LIMIT as usize {
+            anyhow::bail!("pending transfer {pending_id} has an ambiguous resolution query")
+        }
+        Ok(found
+            .into_iter()
+            .filter(|transfer| transfer.id == pending_id || transfer.pending_id == pending_id)
+            .collect())
+    }
+
+    fn resolve_pending(
+        &mut self,
+        pending_id: u128,
+        resolution_id: u128,
+        post: bool,
+    ) -> Result<(), TransferError> {
+        if let Some(state) = self
+            .try_pending_transfer_state(pending_id)
+            .map_err(|error| {
+                tracing::error!(%error, "pending state read failed");
+                TransferError::BackendFailure
+            })?
+        {
+            match state {
+                PendingTransferState::Posted { resolution_id: id }
+                    if post && id == resolution_id =>
+                {
+                    return Err(TransferError::Exists);
+                }
+                PendingTransferState::Voided { resolution_id: id }
+                    if !post && id == resolution_id =>
+                {
+                    return Err(TransferError::Exists);
+                }
+                PendingTransferState::Posted { .. } => {
+                    return Err(TransferError::PendingTransferAlreadyPosted);
+                }
+                PendingTransferState::Voided { .. } if post => {
+                    // Let TB distinguish timeout expiry from an explicit
+                    // void. The resulting post status is authoritative.
+                }
+                PendingTransferState::Voided { .. } | PendingTransferState::Expired => {
+                    return Err(TransferError::PendingTransferAlreadyVoided);
+                }
+                PendingTransferState::Pending => {}
+            }
+        } else {
+            return Err(TransferError::PendingTransferNotFound);
+        }
+        let pending = self
+            .block_on(self.client.lookup_transfers(&[pending_id]))
+            .map_err(|error| {
+                tracing::error!(%error, "pending transfer lookup failed");
+                TransferError::BackendFailure
+            })?
+            .into_iter()
+            .next()
+            .ok_or(TransferError::PendingTransferNotFound)?;
+        let code = self
+            .transfer_code(pending_id, pending.code)
+            .map_err(|_| TransferError::BackendFailure)?;
+        let resolution = tb::Transfer {
+            id: resolution_id,
+            debit_account_id: pending.debit_account_id,
+            credit_account_id: pending.credit_account_id,
+            amount: if post { pending.amount } else { 0 },
+            pending_id,
+            user_data_128: pending_id,
+            ledger: pending.ledger,
+            code: wire_code(code).ok_or(TransferError::CodeOutOfRange)?,
+            flags: if post {
+                tb::TransferFlags::PostPendingTransfer
+            } else {
+                tb::TransferFlags::VoidPendingTransfer
+            },
+            ..Default::default()
+        };
+        let results = self
+            .block_on(self.client.create_transfers(&[resolution]))
+            .map_err(|error| {
+                tracing::error!(%error, "pending resolution request failed");
+                TransferError::BackendFailure
+            })?;
+        let status = results.first().ok_or(TransferError::BackendFailure)?.status;
+        let mapped = map_pending_status(status);
+        if matches!(mapped, Ok(()) | Err(TransferError::Exists)) {
+            if let Some(mut codes) = lock_registry(&self.transfer_codes, "transfer") {
+                codes.insert(resolution_id, code);
+            }
+            Ok(())
+        } else {
+            mapped
+        }
+    }
 }
 
 fn to_tb_account(account: &Account) -> std::result::Result<tb::Account, AccountError> {
@@ -215,6 +325,47 @@ fn from_tb_transfer(transfer: &tb::Transfer, code: u16) -> Transfer {
         user_data_128: transfer.user_data_128,
         code,
         linked: transfer.flags.0 & tb::TransferFlags::Linked.0 != 0,
+    }
+}
+
+fn to_tb_pending(transfer: &PendingTransfer) -> std::result::Result<tb::Transfer, TransferError> {
+    let code = wire_code(transfer.code).ok_or(TransferError::CodeOutOfRange)?;
+    Ok(tb::Transfer {
+        id: transfer.id,
+        debit_account_id: transfer.debit_account_id,
+        credit_account_id: transfer.credit_account_id,
+        amount: transfer.amount,
+        user_data_128: transfer.user_data_128,
+        timeout: transfer.timeout_secs,
+        ledger: transfer.ledger,
+        code,
+        flags: tb::TransferFlags::Pending,
+        ..Default::default()
+    })
+}
+
+fn map_pending_status(status: tb::CreateTransferStatus) -> Result<(), TransferError> {
+    use tb::CreateTransferStatus as S;
+    match status {
+        S::Created => Ok(()),
+        S::Exists => Err(TransferError::Exists),
+        S::ExistsWithDifferentFlags
+        | S::ExistsWithDifferentPendingId
+        | S::ExistsWithDifferentTimeout
+        | S::ExistsWithDifferentDebitAccountId
+        | S::ExistsWithDifferentCreditAccountId
+        | S::ExistsWithDifferentAmount
+        | S::ExistsWithDifferentUserData128
+        | S::ExistsWithDifferentUserData64
+        | S::ExistsWithDifferentUserData32
+        | S::ExistsWithDifferentLedger
+        | S::ExistsWithDifferentCode => Err(TransferError::ExistsWithDifferentFields),
+        S::OverflowsTimeout => Err(TransferError::OverflowsTimeout),
+        S::PendingTransferNotFound => Err(TransferError::PendingTransferNotFound),
+        S::PendingTransferAlreadyPosted => Err(TransferError::PendingTransferAlreadyPosted),
+        S::PendingTransferAlreadyVoided => Err(TransferError::PendingTransferAlreadyVoided),
+        S::PendingTransferExpired => Err(TransferError::PendingTransferExpired),
+        _ => map_transfer_status(status),
     }
 }
 
@@ -338,10 +489,8 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         | Status::OverflowsCreditsPosted
         | Status::OverflowsCredits => Err(TransferError::CreditsMustNotExceedDebits),
         Status::OverflowsTimeout => Err(TransferError::OverflowsTimeout),
-        // Pending transfers: the PoC `Transfer` type has no
-        // `pending_id` and the binding never sets the pending,
-        // post-pending, or void-pending flags, so it cannot emit a
-        // transfer these statuses describe.
+        // Native pending operations map their resolution outcomes below;
+        // legacy transfers still cannot emit statuses with no domain error.
         Status::PendingIdMustBeZero
         | Status::PendingIdMustNotBeZero
         | Status::PendingIdMustNotBeIntMax
@@ -522,6 +671,69 @@ impl LedgerBackend for TigerBeetleLedger {
         mapped
     }
 
+    fn create_pending_transfer(&mut self, transfer: &PendingTransfer) -> Result<(), TransferError> {
+        let wire = to_tb_pending(transfer)?;
+        let statuses = self
+            .block_on(self.client.create_transfers(&[wire]))
+            .map_err(|error| {
+                tracing::error!(%error, "TigerBeetle pending-transfer create failed");
+                TransferError::BackendFailure
+            })?;
+        let Some(status) = statuses.first() else {
+            return Err(TransferError::BackendFailure);
+        };
+        let mapped = map_pending_status(status.status);
+        if matches!(mapped, Ok(()) | Err(TransferError::Exists)) {
+            if let Some(mut codes) = lock_registry(&self.transfer_codes, "transfer") {
+                codes.insert(transfer.id, transfer.code);
+            }
+        }
+        mapped
+    }
+
+    fn post_pending_transfer(
+        &mut self,
+        pending_id: u128,
+        resolution_id: u128,
+    ) -> Result<(), TransferError> {
+        self.resolve_pending(pending_id, resolution_id, true)
+    }
+
+    fn void_pending_transfer(
+        &mut self,
+        pending_id: u128,
+        resolution_id: u128,
+    ) -> Result<(), TransferError> {
+        self.resolve_pending(pending_id, resolution_id, false)
+    }
+
+    fn try_pending_transfer_state(&self, pending_id: u128) -> Result<Option<PendingTransferState>> {
+        let Some(pending) = self
+            .block_on(self.client.lookup_transfers(&[pending_id]))
+            .context("tigerbeetle pending transfer lookup failed")?
+            .first()
+            .copied()
+        else {
+            return Ok(None);
+        };
+        if pending.flags.0 & tb::TransferFlags::Pending.0 == 0 {
+            anyhow::bail!("transfer {pending_id} is not a native pending transfer")
+        }
+        for transfer in self.transfers_for_pending_id(pending_id)? {
+            if transfer.flags.0 & tb::TransferFlags::PostPendingTransfer.0 != 0 {
+                return Ok(Some(PendingTransferState::Posted {
+                    resolution_id: transfer.id,
+                }));
+            }
+            if transfer.flags.0 & tb::TransferFlags::VoidPendingTransfer.0 != 0 {
+                return Ok(Some(PendingTransferState::Voided {
+                    resolution_id: transfer.id,
+                }));
+            }
+        }
+        Ok(Some(PendingTransferState::Pending))
+    }
+
     fn try_lookup_transfer(&self, id: u128) -> Result<Option<Transfer>> {
         let found = self
             .block_on(self.client.lookup_transfers(&[id]))
@@ -637,8 +849,11 @@ impl LedgerBackend for TigerBeetleLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_account_status, map_transfer_status, poc_code, wire_code};
-    use crate::currency_poc::ledger::{AccountError, TransferError};
+    use super::{
+        map_account_status, map_pending_status, map_transfer_status, poc_code, to_tb_pending,
+        wire_code,
+    };
+    use crate::currency_poc::ledger::{AccountError, PendingTransfer, TransferError};
     use tigerbeetle as tb;
 
     #[test]
@@ -650,6 +865,34 @@ mod tests {
     #[test]
     fn zero_wire_code_is_reported_as_an_error() {
         assert!(poc_code(0).is_err());
+    }
+
+    #[test]
+    fn pending_transfer_wire_shape_preserves_id_amount_timeout_and_pending_flag() {
+        let input = PendingTransfer {
+            id: 17,
+            debit_account_id: 21,
+            credit_account_id: 22,
+            amount: 700,
+            ledger: 3,
+            user_data_128: 17,
+            code: 5,
+            timeout_secs: 900,
+        };
+        let wire = to_tb_pending(&input).expect("valid pending transfer encodes");
+        assert_eq!(wire.id, input.id);
+        assert_eq!(wire.amount, input.amount);
+        assert_eq!(wire.timeout, input.timeout_secs);
+        assert_eq!(wire.code, 6);
+        assert_eq!(wire.flags, tb::TransferFlags::Pending);
+        assert_eq!(
+            map_pending_status(tb::CreateTransferStatus::Created),
+            Ok(())
+        );
+        assert_eq!(
+            map_pending_status(tb::CreateTransferStatus::PendingTransferExpired),
+            Err(TransferError::PendingTransferExpired)
+        );
     }
 
     /// Oracle (#6108 acceptance): every `CreateAccountStatus`

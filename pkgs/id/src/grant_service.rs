@@ -1,4 +1,4 @@
-//! Grant service — phase 2 (#2723, spec #2254): `grant_keys` storage,
+//! Grant service — phases 2–3 (#2723, spec #2254): `grant_keys` storage,
 //! the §2.3 registration flow, and the §2.5 intent-first creation
 //! protocol over the currency PoC [`LedgerBackend`] seam.
 //!
@@ -40,38 +40,28 @@
 //!   `Presented` to the confirm step (transfer found) or a clean
 //!   retry (transfer absent, attestation check re-run first).
 //!
-//! **The hold model.** §1.1 implements PendingHold as a ledger
-//! two-phase pending transfer, but the currency PoC seam's
-//! `Transfer` type has no pending flag or timeout — a transfer
-//! created through it posts immediately. Crediting the grantee at
-//! registration would therefore make the grant spendable while its
-//! record says PendingHold, violating §0 (this was Codex P1 on
-//! PR #8614). So the registration transfer credits a **service-owned
-//! hold account** for the currency (`hold_account_for`), never the
-//! grantee: during PendingHold the value sits in the service's
-//! custody, the grantee's spendable balance is untouched, and an
-//! adverse event at confirm leaves the money in the hold account,
-//! not with the grantee. The §1.3 post flow (a later phase) moves
-//! hold → grantee under its own deterministic transfer id; the
-//! §1.4 void flow moves hold → issuer. When the seam grows native
-//! two-phase transfers, the hold account is where the pending
-//! transfer's credit leg lands instead — the grant-facing
-//! guarantees (nothing spendable during the hold; resolution moves
-//! the value exactly once) do not change.
+//! **The hold model.** Registration creates a native ledger pending
+//! transfer whose credit leg targets the service-owned hold account,
+//! never the grantee. Thus the grant is not spendable during
+//! `PendingHold`. The phase-3 sweep posts it after the refund window or
+//! voids it for a purchase-scoped adverse event / configured expiry;
+//! timeout recovery uses a deterministic, audited replacement transfer.
+//! A posted grant remains in `PendingHold` and in custody until phase 4
+//! implements spendable activation. Deterministic resolution IDs and
+//! authoritative ledger reads let retries recover a ledger-success / DB-
+//! update crash without creating a second economic effect.
 //!
-//! Scope limits, per the phase packet: the pending hold's two-phase
-//! post/void resolution (§1.3/§1.4, scheduler sweep) is a later
-//! phase — this phase creates the hold transfer and records the
-//! §1.2 window snapshot + timeout on the grant record; it does not
-//! post, void, or activate anything, and no path here enables
-//! Active-state grants (spec §10: not before §4 exists).
+//! Phase 3 adds deterministic adverse-event voiding and the non-spendable
+//! pending-hold post/recovery sweep. No path here enables Active-state
+//! grants (spec §10: not before §4 exists).
 
 use std::collections::HashMap;
 
 use sha2::{Digest, Sha256};
 
 use crate::currency_poc::ledger::{
-    Account, AccountError, AccountId, LedgerBackend, Transfer, TransferError, TransferId,
+    Account, AccountError, AccountId, LedgerBackend, PendingTransfer, Transfer, TransferError,
+    TransferId,
 };
 use crate::grants::{
     GrantState, KeyRegistry, KeyState, RegisterRejection, RegistryEntry, WindowSnapshot,
@@ -128,6 +118,9 @@ pub struct ProductTerms {
 #[derive(Debug, Clone)]
 pub struct StorefrontConfig {
     pub window: WindowSnapshot,
+    /// Optional source-configured grant lifetime, snapshotted as an
+    /// absolute deadline at registration. `None` means no expiry.
+    pub expiry_secs: Option<u64>,
     pub revocation_policy: RevocationPolicy,
     /// The issuer's grant-issuance account for this source's ledger.
     pub issuer_account: AccountId,
@@ -163,9 +156,29 @@ pub struct GrantRecord {
     /// Deterministic ledger transfer id (§2.5 step 1), derived from
     /// `grant_id` — the intent IS this id, so retries are identities.
     pub transfer_id: TransferId,
+    /// Transfer moving the held value to the issuer if an adverse event
+    /// arrives while PendingHold. Its deterministic id makes retries safe.
+    pub void_transfer_id: TransferId,
+    /// Attestation that caused a successful pending-hold void.
+    pub voided_by_attestation: Option<String>,
+    /// Applicable attestation observed after the pending transfer had
+    /// already posted. Phase 4 must process this through clawback; it is
+    /// not evidence that a void succeeded.
+    #[serde(default)]
+    pub post_then_clawback_attestation: Option<String>,
     pub registered_at: u64,
     /// When the grant entered PendingHold (confirm step), if it has.
     pub pending_since: Option<u64>,
+    /// Configured expiry deadline, fixed at registration.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    /// Pending transfer resolution observed by the scheduler. A posted
+    /// transfer remains in the non-spendable hold account until phase 4.
+    #[serde(default)]
+    pub posted_transfer_id: Option<TransferId>,
+    /// Deterministic direct-to-hold replacement after a ledger timeout.
+    #[serde(default)]
+    pub reissued_transfer_id: Option<TransferId>,
 }
 
 /// The `grant_keys` storage layer plus grant records (§2.2).
@@ -347,6 +360,11 @@ impl GrantStore {
     pub fn restore(snapshot: StoreSnapshot) -> Result<Self, RestoreError> {
         let mut seen = std::collections::HashSet::with_capacity(snapshot.grants.len());
         for grant in &snapshot.grants {
+            if grant.state == GrantState::Active {
+                return Err(RestoreError::ActiveStateUnsupported {
+                    grant_id: grant.grant_id.clone(),
+                });
+            }
             if !seen.insert(grant.grant_id.as_str()) {
                 return Err(RestoreError::DuplicateGrantId {
                     grant_id: grant.grant_id.clone(),
@@ -374,6 +392,9 @@ impl GrantStore {
 pub enum RestoreError {
     /// The snapshot contains multiple records with the same grant ID.
     DuplicateGrantId { grant_id: String },
+    /// Phase 3 has no clawback engine, so it cannot restore an
+    /// Active-state grant that may be spendable.
+    ActiveStateUnsupported { grant_id: String },
 }
 
 /// Why an intent write did not happen.
@@ -403,6 +424,41 @@ pub enum TransitionError {
 /// call, and every retry name the same transfer.
 pub fn transfer_id_for_grant(grant_id: &str) -> TransferId {
     derive_id(b"id-grant-transfer-v1", grant_id)
+}
+
+/// Deterministic resolution-transfer ids, separated from the initial hold.
+pub fn void_transfer_id_for_grant(grant_id: &str) -> TransferId {
+    derive_id(b"id-grant-void-transfer-v1", grant_id)
+}
+
+/// Deterministic id of the scheduler's native post resolution.
+pub fn post_transfer_id_for_grant(grant_id: &str) -> TransferId {
+    derive_id(b"id-grant-post-transfer-v1", grant_id)
+}
+
+/// Deterministic id of a posted replacement after ledger timeout.
+pub fn reissue_transfer_id_for_grant(grant_id: &str) -> TransferId {
+    derive_id(b"id-grant-reissue-transfer-v1", grant_id)
+}
+
+/// Deterministic, distinguishable void resolution for an expired grant.
+pub fn expiry_void_transfer_id_for_grant(grant_id: &str) -> TransferId {
+    derive_id(b"id-grant-expiry-void-v1", grant_id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleOutcome {
+    Voided,
+    AlreadyVoided,
+    NoAdverseEvent,
+    BlockedByAdverseEvent(AdverseEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleError {
+    UnknownGrant { grant_id: String },
+    WrongState { state: GrantState },
+    Ledger(TransferError),
 }
 
 /// The service-owned hold account for a currency (see the
@@ -445,10 +501,26 @@ pub struct AdverseEvent {
     pub kind: String,
     /// The §3 record's id, carried onto the outcome for audit.
     pub attestation_id: String,
+    /// Purchase-specific grant IDs and/or fingerprints named by the
+    /// §3 attestation scope. Empty scope never authorizes a transition.
+    pub grant_ids: Vec<String>,
+    pub fingerprints: Vec<String>,
+}
+
+impl AdverseEvent {
+    fn applies_to(&self, grant: &GrantRecord) -> bool {
+        self.grant_ids.iter().any(|id| id == &grant.grant_id)
+            || self
+                .fingerprints
+                .iter()
+                .any(|fingerprint| fingerprint == &grant.fingerprint)
+    }
 }
 
 /// Query for adverse events applicable to one grant at confirm time.
 pub trait AdverseEventQuery {
+    /// Return only a purchase-scoped event; the service independently
+    /// validates the returned scope against the grant record.
     fn adverse_event_for(&self, grant: &GrantRecord) -> Option<AdverseEvent>;
 }
 
@@ -541,6 +613,8 @@ pub enum RegistrationError {
         storefront_id: String,
         product_id: String,
     },
+    /// The configured grant expiry cannot be represented as an absolute time.
+    ExpiryOverflow,
 }
 
 /// The registration service (§2.3 + §2.5) over a [`LedgerBackend`].
@@ -553,6 +627,11 @@ pub struct RegistrationService<'a, L: LedgerBackend> {
 }
 
 impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
+    fn applicable_adverse_event(&self, grant: &GrantRecord) -> Option<AdverseEvent> {
+        self.adverse
+            .adverse_event_for(grant)
+            .filter(|event| event.applies_to(grant))
+    }
     /// Build the service. Storefront-family membership (§2.1) is
     /// declared on the store before any registration, via
     /// [`GrantStore::add_to_family`] — a fingerprint set computed
@@ -588,6 +667,139 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
 
     pub fn ledger(&self) -> &L {
         &self.ledger
+    }
+
+    /// Void a PendingHold on an applicable adverse attestation using the
+    /// native pending-transfer resolution.
+    pub fn void_pending(&mut self, grant_id: &str) -> Result<LifecycleOutcome, LifecycleError> {
+        let grant =
+            self.store
+                .grant(grant_id)
+                .cloned()
+                .ok_or_else(|| LifecycleError::UnknownGrant {
+                    grant_id: grant_id.to_string(),
+                })?;
+        match grant.state {
+            GrantState::Revoked if grant.voided_by_attestation.is_some() => {
+                return Ok(LifecycleOutcome::AlreadyVoided);
+            }
+            GrantState::Revoked => {
+                return Err(LifecycleError::WrongState { state: grant.state });
+            }
+            GrantState::PendingHold => {}
+            state => return Err(LifecycleError::WrongState { state }),
+        }
+        if let Some(outcome) = self.recover_existing_resolution(&grant)? {
+            return Ok(outcome);
+        }
+        let Some(event) = self.applicable_adverse_event(&grant) else {
+            return Ok(LifecycleOutcome::NoAdverseEvent);
+        };
+        match self
+            .ledger
+            .void_pending_transfer(grant.transfer_id, grant.void_transfer_id)
+        {
+            Ok(()) | Err(TransferError::Exists) => {}
+            // The ledger's timeout is authoritative: no value was posted,
+            // and a matching adverse event means this grant must not be
+            // re-issued by the timeout-recovery path.
+            Err(TransferError::PendingTransferExpired) => {
+                self.store
+                    .transition(grant_id, GrantState::Revoked)
+                    .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+                if let Some(record) = self.store.grants.get_mut(grant_id) {
+                    record.voided_by_attestation = Some(event.attestation_id);
+                }
+                return Ok(LifecycleOutcome::Voided);
+            }
+            Err(error) => return Err(LifecycleError::Ledger(error)),
+        }
+        self.store
+            .transition(grant_id, GrantState::Revoked)
+            .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+        if let Some(record) = self.store.grants.get_mut(grant_id) {
+            record.voided_by_attestation = Some(event.attestation_id);
+        }
+        Ok(LifecycleOutcome::Voided)
+    }
+
+    /// Heal a crash after a void transfer posted but before its
+    /// grant-state update.
+    fn recover_existing_resolution(
+        &mut self,
+        grant: &GrantRecord,
+    ) -> Result<Option<LifecycleOutcome>, LifecycleError> {
+        let state = self
+            .ledger
+            .try_pending_transfer_state(grant.transfer_id)
+            .map_err(|_| LifecycleError::Ledger(TransferError::BackendFailure))?;
+        match state {
+            Some(crate::currency_poc::ledger::PendingTransferState::Voided { .. }) => {
+                self.store
+                    .transition(&grant.grant_id, GrantState::Revoked)
+                    .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+                if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                    record.voided_by_attestation = self
+                        .adverse
+                        .adverse_event_for(grant)
+                        .filter(|event| event.applies_to(grant))
+                        .map(|event| event.attestation_id);
+                }
+                Ok(Some(LifecycleOutcome::AlreadyVoided))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn ensure_resolution_accounts(
+        &mut self,
+        hold: AccountId,
+        destination: AccountId,
+        ledger: u32,
+    ) -> Result<(), TransferError> {
+        let hold_account = Account {
+            id: hold,
+            ledger,
+            code: 3,
+            flags: crate::currency_poc::ledger::AccountFlags {
+                debits_must_not_exceed_credits: true,
+                credits_must_not_exceed_debits: false,
+            },
+        };
+        match self
+            .ledger
+            .create_accounts(&[hold_account])
+            .into_iter()
+            .next()
+        {
+            Some(Ok(())) | Some(Err(AccountError::Exists)) => {}
+            _ => return Err(TransferError::BackendFailure),
+        }
+        match self.ledger.try_lookup_account(destination) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let account = Account {
+                    id: destination,
+                    ledger,
+                    code: 4,
+                    flags: Default::default(),
+                };
+                match self.ledger.create_accounts(&[account]).into_iter().next() {
+                    Some(Ok(())) | Some(Err(AccountError::Exists)) => {}
+                    _ => return Err(TransferError::BackendFailure),
+                }
+            }
+            Err(_) => return Err(TransferError::BackendFailure),
+        }
+        Ok(())
+    }
+
+    fn submit_resolution_transfer(&mut self, transfer: Transfer) -> Result<(), LifecycleError> {
+        match self.ledger.create_transfers(&[transfer]).into_iter().next() {
+            Some(Ok(())) | Some(Err(TransferError::Exists)) => Ok(()),
+            Some(Err(error)) => Err(LifecycleError::Ledger(error)),
+            None => Err(LifecycleError::Ledger(TransferError::BackendFailure)),
+        }
     }
 
     /// Run one §2.3 registration. Steps in order: verify (before
@@ -647,9 +859,20 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             state: GrantState::Presented,
             hold_account: hold_account_for(terms.currency_ledger),
             transfer_id: transfer_id_for_grant(&request.grant_id),
+            void_transfer_id: void_transfer_id_for_grant(&request.grant_id),
+            voided_by_attestation: None,
+            post_then_clawback_attestation: None,
             registered_at: request.now,
             pending_since: None,
+            expires_at: cfg
+                .expiry_secs
+                .and_then(|duration| request.now.checked_add(duration)),
+            posted_transfer_id: None,
+            reissued_transfer_id: None,
         };
+        if cfg.expiry_secs.is_some() && grant.expires_at.is_none() {
+            return Err(RegistrationError::ExpiryOverflow);
+        }
         match self.store.insert_presented(&fingerprints, grant.clone()) {
             Ok(_) => {}
             Err(InsertPresentedError::Rejection(rejection)) => {
@@ -687,7 +910,7 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
     // listed in the state table, and the grant was read from this store.
     #[allow(clippy::expect_used)]
     fn confirm(&mut self, grant: GrantRecord, now: u64) -> RegistrationOutcome {
-        if let Some(event) = self.adverse.adverse_event_for(&grant) {
+        if let Some(event) = self.applicable_adverse_event(&grant) {
             return RegistrationOutcome::IntentPending {
                 grant,
                 reason: IntentPendingReason::AdverseEventAtConfirm { event },
@@ -705,13 +928,10 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         )
     }
 
-    /// Create the grant's hold transfer (§1.1, via the module's
-    /// hold model) under its deterministic id, ensuring both
-    /// ledger accounts exist first
-    /// (account creation with identical fields is idempotent —
-    /// `Exists` is success). A transfer that already exists with
-    /// identical fields (`Exists`) is the lost-response retry case:
-    /// success, not an error (§2.5 step 2).
+    /// Create the grant's native pending transfer (§1.1) under its
+    /// deterministic id, ensuring both ledger accounts exist first.
+    /// An identical existing pending transfer (`Exists`) is the
+    /// lost-response retry case: success, not an error (§2.5 step 2).
     fn create_pending_transfer(
         &mut self,
         cfg: &StorefrontConfig,
@@ -732,7 +952,10 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                 id: grant.hold_account,
                 ledger: grant.currency_ledger,
                 code: 3,
-                flags: Default::default(),
+                flags: crate::currency_poc::ledger::AccountFlags {
+                    debits_must_not_exceed_credits: true,
+                    credits_must_not_exceed_debits: false,
+                },
             },
         ];
         for result in self.ledger.create_accounts(&accounts) {
@@ -741,7 +964,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                 Err(_) => return Err(TransferError::BackendFailure),
             }
         }
-        let transfer = Transfer {
+        let timeout_secs = u32::try_from(grant.window.pending_timeout_secs())
+            .map_err(|_| TransferError::OverflowsTimeout)?;
+        let transfer = PendingTransfer {
             id: grant.transfer_id,
             debit_account_id: cfg.issuer_account,
             credit_account_id: grant.hold_account,
@@ -749,13 +974,12 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             ledger: grant.currency_ledger,
             user_data_128: grant.transfer_id,
             code: 1,
-            linked: false,
+            timeout_secs,
         };
-        let results = self.ledger.create_transfers(&[transfer]);
-        match results.into_iter().next() {
-            Some(Ok(())) | Some(Err(TransferError::Exists)) => Ok(()),
-            Some(Err(error)) => Err(error),
-            None => Err(TransferError::BackendFailure),
+        match self.ledger.create_pending_transfer(&transfer) {
+            Ok(()) => Ok(()),
+            Err(TransferError::Exists) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
@@ -770,19 +994,27 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         let mut report = ReconcileReport::default();
         for grant in self.store.stranded_presented(now, freshness_bound_secs) {
             report.scanned += 1;
-            match self.ledger.try_lookup_transfer(grant.transfer_id) {
-                Ok(Some(_)) => match self.confirm(grant, now) {
-                    RegistrationOutcome::PendingHold(_) => report.confirmed += 1,
-                    RegistrationOutcome::IntentPending { .. } => report.blocked_by_event += 1,
-                    RegistrationOutcome::Rejected { .. } => {
-                        unreachable!("confirm never rejects")
+            match self.ledger.try_pending_transfer_state(grant.transfer_id) {
+                Ok(Some(crate::currency_poc::ledger::PendingTransferState::Pending)) => {
+                    match self.confirm(grant, now) {
+                        RegistrationOutcome::PendingHold(_) => report.confirmed += 1,
+                        RegistrationOutcome::IntentPending { .. } => report.blocked_by_event += 1,
+                        RegistrationOutcome::Rejected { .. } => {
+                            unreachable!("confirm never rejects")
+                        }
                     }
-                },
+                }
+                Ok(Some(_)) => {
+                    // A transfer resolved before the Presented intent
+                    // was confirmed. Keep it visible for lifecycle
+                    // reconciliation rather than re-issuing value.
+                    report.still_pending += 1;
+                }
                 Ok(None) => {
                     // Absent: attestation check re-runs BEFORE the
                     // retry (§2.5 step 4), inside `confirm`'s call
                     // order — so check here before re-issuing.
-                    if let Some(_event) = self.adverse.adverse_event_for(&grant) {
+                    if self.applicable_adverse_event(&grant).is_some() {
                         report.blocked_by_event += 1;
                         continue;
                     }
@@ -812,6 +1044,283 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         }
         report
     }
+
+    /// Resolve eligible pending holds from authoritative ledger state.
+    /// A successful post remains in `PendingHold` and the service-owned
+    /// hold account; only phase 4 may make it spendable / `Active`.
+    pub fn sweep_pending_holds(&mut self, now: u64) -> SweepReport {
+        let grants: Vec<_> = self
+            .store
+            .order
+            .iter()
+            .filter_map(|id| self.store.grants.get(id))
+            .filter(|grant| grant.state == GrantState::PendingHold)
+            .cloned()
+            .collect();
+        let mut report = SweepReport::default();
+        for grant in grants {
+            report.scanned += 1;
+            // Adverse attestations are actionable immediately, not just
+            // after the refund window. The scope match is mandatory.
+            if let Some(event) = self.applicable_adverse_event(&grant) {
+                match self.void_pending(&grant.grant_id) {
+                    Ok(LifecycleOutcome::Voided | LifecycleOutcome::AlreadyVoided) => {
+                        report.voided += 1
+                    }
+                    Ok(_) => report.retry_later += 1,
+                    Err(_) => match self.ledger.try_pending_transfer_state(grant.transfer_id) {
+                        Ok(Some(crate::currency_poc::ledger::PendingTransferState::Posted {
+                            resolution_id,
+                        })) => {
+                            if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                                record.posted_transfer_id = Some(resolution_id);
+                                record.post_then_clawback_attestation =
+                                    Some(event.attestation_id.clone());
+                            }
+                            report.posted_with_adverse_for_phase4 += 1;
+                        }
+                        Ok(Some(
+                            crate::currency_poc::ledger::PendingTransferState::Voided { .. }
+                            | crate::currency_poc::ledger::PendingTransferState::Expired,
+                        )) => {
+                            if self
+                                .store
+                                .transition(&grant.grant_id, GrantState::Revoked)
+                                .is_ok()
+                            {
+                                if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                                    record.voided_by_attestation =
+                                        Some(event.attestation_id.clone());
+                                }
+                                report.voided += 1;
+                            } else {
+                                report.retry_later += 1;
+                            }
+                        }
+                        _ => report.retry_later += 1,
+                    },
+                }
+                continue;
+            }
+            let state = match self.ledger.try_pending_transfer_state(grant.transfer_id) {
+                Ok(Some(state)) => state,
+                Ok(None) => {
+                    report.retry_later += 1;
+                    continue;
+                }
+                Err(_) => {
+                    report.ledger_errors += 1;
+                    continue;
+                }
+            };
+            match state {
+                crate::currency_poc::ledger::PendingTransferState::Posted { resolution_id } => {
+                    if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                        record.posted_transfer_id = Some(resolution_id);
+                    }
+                    report.posted_or_recovered += 1;
+                }
+                crate::currency_poc::ledger::PendingTransferState::Voided { resolution_id } => {
+                    if resolution_id == expiry_void_transfer_id_for_grant(&grant.grant_id)
+                        && grant.expires_at.is_some_and(|deadline| now >= deadline)
+                    {
+                        if self
+                            .store
+                            .transition(&grant.grant_id, GrantState::Expired)
+                            .is_ok()
+                        {
+                            report.expired += 1;
+                        } else {
+                            report.retry_later += 1;
+                        }
+                        continue;
+                    }
+                    // Do not interpret a void as timeout. At the configured
+                    // deadline ask the ledger to post it: only TB's explicit
+                    // PendingTransferExpired response authorizes recovery.
+                    let window_end = grant
+                        .pending_since
+                        .unwrap_or(grant.registered_at)
+                        .saturating_add(grant.window.refund_window_secs);
+                    let timeout_at = window_end.saturating_add(grant.window.posting_grace_secs);
+                    if now < timeout_at {
+                        report.retry_later += 1;
+                        continue;
+                    }
+                    match self.ledger.post_pending_transfer(
+                        grant.transfer_id,
+                        post_transfer_id_for_grant(&grant.grant_id),
+                    ) {
+                        Err(TransferError::PendingTransferExpired) => {
+                            self.recover_timed_out(&grant, now, window_end, &mut report);
+                        }
+                        _ => report.retry_later += 1,
+                    }
+                }
+                crate::currency_poc::ledger::PendingTransferState::Expired => {
+                    let window_end = grant
+                        .pending_since
+                        .unwrap_or(grant.registered_at)
+                        .saturating_add(grant.window.refund_window_secs);
+                    self.recover_timed_out(&grant, now, window_end, &mut report);
+                }
+                crate::currency_poc::ledger::PendingTransferState::Pending => {
+                    let began = grant.pending_since.unwrap_or(grant.registered_at);
+                    if grant.expires_at.is_some_and(|deadline| now >= deadline) {
+                        match self.ledger.void_pending_transfer(
+                            grant.transfer_id,
+                            expiry_void_transfer_id_for_grant(&grant.grant_id),
+                        ) {
+                            Ok(()) | Err(TransferError::Exists) => {
+                                if self
+                                    .store
+                                    .transition(&grant.grant_id, GrantState::Expired)
+                                    .is_ok()
+                                {
+                                    report.expired += 1;
+                                } else {
+                                    report.retry_later += 1;
+                                }
+                            }
+                            // A pending transfer whose ledger timeout has
+                            // already fired cannot be explicitly voided.
+                            // The ledger's authoritative expired response
+                            // still means the unspendable grant expires; it
+                            // must not be re-issued after its own deadline.
+                            Err(TransferError::PendingTransferExpired) => {
+                                if self
+                                    .store
+                                    .transition(&grant.grant_id, GrantState::Expired)
+                                    .is_ok()
+                                {
+                                    report.expired += 1;
+                                } else {
+                                    report.retry_later += 1;
+                                }
+                            }
+                            Err(_) => report.retry_later += 1,
+                        }
+                        continue;
+                    }
+                    // Start posting halfway through the grace interval, as
+                    // §1.3 requires: the refund window must have ended by at
+                    // least posting_grace / 2. The remainder is the ledger
+                    // timeout cushion.
+                    let window_end = began.saturating_add(grant.window.refund_window_secs);
+                    let eligible_at =
+                        window_end.saturating_add(grant.window.posting_grace_secs / 2);
+                    if now < eligible_at || grant.reissued_transfer_id.is_some() {
+                        report.not_eligible += 1;
+                        continue;
+                    }
+                    match self.ledger.post_pending_transfer(
+                        grant.transfer_id,
+                        post_transfer_id_for_grant(&grant.grant_id),
+                    ) {
+                        Ok(()) | Err(TransferError::Exists) => {
+                            if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                                record.posted_transfer_id =
+                                    Some(post_transfer_id_for_grant(&grant.grant_id));
+                            }
+                            report.posted_or_recovered += 1;
+                        }
+                        Err(TransferError::PendingTransferExpired) => {
+                            self.recover_timed_out(&grant, now, window_end, &mut report);
+                        }
+                        Err(_) => report.retry_later += 1,
+                    }
+                }
+            }
+        }
+        report
+    }
+
+    fn reissue_timed_out(&mut self, grant: &GrantRecord) -> Result<(), TransferError> {
+        let Some(cfg) = self.config.get(&grant.storefront_id).cloned() else {
+            return Err(TransferError::BackendFailure);
+        };
+        let debit = cfg.issuer_account;
+        let credit = grant.hold_account;
+        self.ensure_resolution_accounts(credit, debit, grant.currency_ledger)?;
+        let transfer = Transfer {
+            id: reissue_transfer_id_for_grant(&grant.grant_id),
+            debit_account_id: debit,
+            credit_account_id: credit,
+            amount: grant.amount,
+            ledger: grant.currency_ledger,
+            user_data_128: grant.transfer_id,
+            code: 6,
+            linked: false,
+        };
+        match self
+            .ledger
+            .create_transfers(std::slice::from_ref(&transfer))
+            .into_iter()
+            .next()
+        {
+            Some(Ok(())) => Ok(()),
+            Some(Err(TransferError::Exists)) => {
+                match self.ledger.try_lookup_transfer(transfer.id) {
+                    Ok(Some(existing)) if existing == transfer => Ok(()),
+                    Ok(Some(_)) => Err(TransferError::ExistsWithDifferentFields),
+                    Ok(None) | Err(_) => Err(TransferError::BackendFailure),
+                }
+            }
+            Some(Err(error)) => Err(error),
+            None => Err(TransferError::BackendFailure),
+        }
+    }
+
+    fn recover_timed_out(
+        &mut self,
+        grant: &GrantRecord,
+        now: u64,
+        window_end: u64,
+        report: &mut SweepReport,
+    ) {
+        let timeout_at = window_end.saturating_add(grant.window.posting_grace_secs);
+        if now < timeout_at {
+            report.retry_later += 1;
+            return;
+        }
+        if let Some(event) = self.applicable_adverse_event(grant) {
+            if self
+                .store
+                .transition(&grant.grant_id, GrantState::Revoked)
+                .is_ok()
+            {
+                if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                    record.voided_by_attestation = Some(event.attestation_id);
+                }
+                report.voided += 1;
+            } else {
+                report.retry_later += 1;
+            }
+            return;
+        }
+        if grant.expires_at.is_some_and(|deadline| now >= deadline) {
+            if self
+                .store
+                .transition(&grant.grant_id, GrantState::Expired)
+                .is_ok()
+            {
+                report.expired += 1;
+            } else {
+                report.retry_later += 1;
+            }
+            return;
+        }
+        match self.reissue_timed_out(grant) {
+            Ok(()) => {
+                if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                    record.reissued_transfer_id =
+                        Some(reissue_transfer_id_for_grant(&grant.grant_id));
+                }
+                report.reissued += 1;
+            }
+            Err(_) => report.retry_later += 1,
+        }
+    }
 }
 
 /// One reconciler scan's outcome (§2.5 step 4: the backlog is an
@@ -823,6 +1332,21 @@ pub struct ReconcileReport {
     pub blocked_by_event: u32,
     pub still_pending: u32,
     pub lookup_failed: u32,
+}
+
+/// Deterministic accounting for one scheduler sweep. `posted_or_recovered`
+/// is deliberately not an Active-state transition; phase 4 owns activation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepReport {
+    pub scanned: u32,
+    pub not_eligible: u32,
+    pub posted_or_recovered: u32,
+    pub posted_with_adverse_for_phase4: u32,
+    pub voided: u32,
+    pub expired: u32,
+    pub reissued: u32,
+    pub retry_later: u32,
+    pub ledger_errors: u32,
 }
 
 #[cfg(test)]
@@ -892,6 +1416,7 @@ mod tests {
                     refund_window_secs: 14 * 24 * 3600,
                     posting_grace_secs: 24 * 3600,
                 },
+                expiry_secs: None,
                 revocation_policy: RevocationPolicy::ForCause,
                 issuer_account: account_id_for("issuer", LEDGER_ID),
                 products,
@@ -938,6 +1463,234 @@ mod tests {
     }
 
     #[test]
+    fn adverse_pending_hold_is_voided_to_issuer_idempotently() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-void", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-1".to_string(),
+            grant_ids: vec!["grant-void".to_string()],
+            fingerprints: Vec::new(),
+        });
+
+        let result = svc.void_pending("grant-void").unwrap();
+        assert_eq!(result, LifecycleOutcome::Voided);
+        let grant = svc.store().grant("grant-void").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-1")
+        );
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-void"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Voided {
+                resolution_id: void_transfer_id_for_grant("grant-void")
+            })
+        );
+
+        assert_eq!(
+            svc.void_pending("grant-void").unwrap(),
+            LifecycleOutcome::AlreadyVoided
+        );
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-void"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Voided {
+                resolution_id: void_transfer_id_for_grant("grant-void")
+            })
+        );
+    }
+
+    #[test]
+    fn adverse_event_after_ledger_timeout_revokes_without_reissuing_value() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-expired-refund", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-expired".to_string(),
+            grant_ids: vec!["grant-expired-refund".to_string()],
+            fingerprints: Vec::new(),
+        });
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-expired-refund"))
+        );
+
+        let report = svc.sweep_pending_holds(u64::MAX);
+
+        assert_eq!(report.voided, 1);
+        assert_eq!(report.retry_later, 0);
+        let grant = svc.store().grant("grant-expired-refund").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-expired")
+        );
+        assert_eq!(grant.reissued_transfer_id, None);
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-expired-refund"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Expired)
+        );
+    }
+
+    #[test]
+    fn pending_hold_without_adverse_event_is_not_resolved() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-no-event", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+
+        assert_eq!(
+            svc.void_pending("grant-no-event").unwrap(),
+            LifecycleOutcome::NoAdverseEvent
+        );
+        let grant = svc.store().grant("grant-no-event").unwrap();
+        assert_eq!(grant.state, GrantState::PendingHold);
+        assert_eq!(grant.voided_by_attestation, None);
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-no-event"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
+        );
+        assert_eq!(
+            svc.ledger()
+                .account_balance(account_id_for("grantee-grant-no-event", LEDGER_ID))
+                .map_or(0, |balance| balance.credits_posted),
+            0,
+            "a pending hold must not credit a spendable grantee balance"
+        );
+    }
+
+    /// Ledger wrapper: a void transfer is applied but its response is
+    /// lost, exercising the resolution retry/recovery crash window.
+    struct LoseVoidResponse {
+        inner: InMemoryLedger,
+        lost: bool,
+    }
+
+    impl LedgerBackend for LoseVoidResponse {
+        fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+            self.inner.create_accounts(accounts)
+        }
+
+        fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+            self.inner.create_transfers(batch)
+        }
+
+        fn create_pending_transfer(
+            &mut self,
+            transfer: &PendingTransfer,
+        ) -> Result<(), TransferError> {
+            self.inner.create_pending_transfer(transfer)
+        }
+
+        fn post_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            self.inner.post_pending_transfer(id, resolution)
+        }
+        fn void_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            let result = self.inner.void_pending_transfer(id, resolution);
+            if !self.lost {
+                self.lost = true;
+                return Err(TransferError::BackendFailure);
+            }
+            result
+        }
+        fn try_pending_transfer_state(
+            &self,
+            id: TransferId,
+        ) -> anyhow::Result<Option<crate::currency_poc::ledger::PendingTransferState>> {
+            self.inner.try_pending_transfer_state(id)
+        }
+
+        fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+            self.inner.try_lookup_transfer(id)
+        }
+
+        fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+            self.inner.try_lookup_account(id)
+        }
+
+        fn try_account_balance(
+            &self,
+            id: AccountId,
+        ) -> anyhow::Result<Option<crate::currency_poc::ledger::AccountBalance>> {
+            self.inner.try_account_balance(id)
+        }
+
+        fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+            self.inner.try_transfers_with_user_data_128(value)
+        }
+    }
+
+    #[test]
+    fn lost_void_response_recovers_without_a_second_transfer() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let ledger = LoseVoidResponse {
+            inner: InMemoryLedger::new(),
+            lost: false,
+        };
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
+        svc.register(&request("grant-lost-void", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-lost-response".to_string(),
+            grant_ids: vec!["grant-lost-void".to_string()],
+            fingerprints: Vec::new(),
+        });
+
+        assert_eq!(
+            svc.void_pending("grant-lost-void"),
+            Err(LifecycleError::Ledger(TransferError::BackendFailure))
+        );
+        assert_eq!(
+            svc.store().grant("grant-lost-void").unwrap().state,
+            GrantState::PendingHold
+        );
+        assert_eq!(
+            svc.void_pending("grant-lost-void").unwrap(),
+            LifecycleOutcome::AlreadyVoided
+        );
+        let grant = svc.store().grant("grant-lost-void").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-lost-response")
+        );
+        assert_eq!(
+            svc.ledger()
+                .inner
+                .try_pending_transfer_state(transfer_id_for_grant("grant-lost-void"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Voided {
+                resolution_id: void_transfer_id_for_grant("grant-lost-void")
+            })
+        );
+    }
+
+    #[test]
     fn happy_path_registers_pending_hold_with_config_terms() {
         let v = verifier();
         let adverse = no_adverse();
@@ -956,25 +1709,23 @@ mod tests {
         assert_eq!(grant.pending_since, Some(1_000));
         assert_eq!(grant.window.pending_timeout_secs(), 15 * 24 * 3600);
         assert_eq!(grant.revocation_policy, RevocationPolicy::ForCause);
-        // The hold transfer exists under the deterministic id and
-        // credits the service-owned HOLD account exactly once; the
-        // grantee has no account and no spendable balance while
-        // the grant says PendingHold (§0, §1.1).
-        let transfer = svc
-            .ledger()
-            .lookup_transfer(transfer_id_for_grant("grant-1"))
-            .expect("transfer exists");
-        assert_eq!(transfer.amount, AMOUNT);
-        assert_eq!(transfer.credit_account_id, hold_account_for(LEDGER_ID));
-        let hold_balance = svc
-            .ledger()
-            .account_balance(hold_account_for(LEDGER_ID))
-            .expect("hold account exists");
-        assert_eq!(hold_balance.credits_posted, AMOUNT);
+        // TigerBeetle's pending transfer exists by ID but has not
+        // posted value to either account while PendingHold (§1.1).
+        assert!(
+            svc.ledger()
+                .lookup_transfer(transfer_id_for_grant("grant-1"))
+                .is_none()
+        );
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-1"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
+        );
         assert!(
             svc.ledger()
                 .account_balance(account_id_for("grantee-1", LEDGER_ID))
-                .is_none()
+                .map_or(true, |balance| balance.credits_posted == 0)
         );
     }
 
@@ -1109,15 +1860,38 @@ mod tests {
             self.inner.create_accounts(accounts)
         }
         fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
-            let results = self.inner.create_transfers(batch);
+            self.inner.create_transfers(batch)
+        }
+        fn create_pending_transfer(
+            &mut self,
+            transfer: &PendingTransfer,
+        ) -> Result<(), TransferError> {
+            let result = self.inner.create_pending_transfer(transfer);
             if !self.lost {
                 self.lost = true;
-                return results
-                    .into_iter()
-                    .map(|_| Err(TransferError::BackendFailure))
-                    .collect();
+                return Err(TransferError::BackendFailure);
             }
-            results
+            result
+        }
+        fn post_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            self.inner.post_pending_transfer(id, resolution)
+        }
+        fn void_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            self.inner.void_pending_transfer(id, resolution)
+        }
+        fn try_pending_transfer_state(
+            &self,
+            id: TransferId,
+        ) -> anyhow::Result<Option<crate::currency_poc::ledger::PendingTransferState>> {
+            self.inner.try_pending_transfer_state(id)
         }
         fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
             self.inner.try_lookup_transfer(id)
@@ -1168,12 +1942,13 @@ mod tests {
             svc.store().grant("grant-1").unwrap().state,
             GrantState::PendingHold
         );
-        let balance = svc
-            .ledger()
-            .inner
-            .account_balance(hold_account_for(LEDGER_ID))
-            .unwrap();
-        assert_eq!(balance.credits_posted, AMOUNT);
+        assert_eq!(
+            svc.ledger()
+                .inner
+                .try_pending_transfer_state(transfer_id_for_grant("grant-1"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
+        );
     }
 
     /// Ledger wrapper: the first `create_transfers` is dropped
@@ -1196,6 +1971,36 @@ mod tests {
                     .collect();
             }
             self.inner.create_transfers(batch)
+        }
+        fn create_pending_transfer(
+            &mut self,
+            transfer: &PendingTransfer,
+        ) -> Result<(), TransferError> {
+            if !self.dropped {
+                self.dropped = true;
+                return Err(TransferError::BackendFailure);
+            }
+            self.inner.create_pending_transfer(transfer)
+        }
+        fn post_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            self.inner.post_pending_transfer(id, resolution)
+        }
+        fn void_pending_transfer(
+            &mut self,
+            id: TransferId,
+            resolution: TransferId,
+        ) -> Result<(), TransferError> {
+            self.inner.void_pending_transfer(id, resolution)
+        }
+        fn try_pending_transfer_state(
+            &self,
+            id: TransferId,
+        ) -> anyhow::Result<Option<crate::currency_poc::ledger::PendingTransferState>> {
+            self.inner.try_pending_transfer_state(id)
         }
         fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
             self.inner.try_lookup_transfer(id)
@@ -1234,18 +2039,13 @@ mod tests {
         // SAME deterministic id, confirm. Exactly one transfer.
         let report = svc.reconcile(1_000 + 3_600, 60);
         assert_eq!(report.confirmed, 1);
-        assert!(
+        assert_eq!(
             svc.ledger()
                 .inner
-                .lookup_transfer(transfer_id_for_grant("grant-1"))
-                .is_some()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-1"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
         );
-        let balance = svc
-            .ledger()
-            .inner
-            .account_balance(hold_account_for(LEDGER_ID))
-            .unwrap();
-        assert_eq!(balance.credits_posted, AMOUNT);
     }
 
     #[test]
@@ -1255,6 +2055,8 @@ mod tests {
             event: RefCell::new(Some(AdverseEvent {
                 kind: "refund_executed".to_string(),
                 attestation_id: "att-1".to_string(),
+                grant_ids: vec!["grant-1".to_string()],
+                fingerprints: Vec::new(),
             })),
         };
         let mut svc = service(&v, &adverse);
@@ -1277,18 +2079,276 @@ mod tests {
         let report = svc.reconcile(9_999, 60);
         assert_eq!(report.blocked_by_event, 1);
         assert_eq!(report.confirmed, 0);
-        // The blocked grant's value sits in the service hold
-        // account — an adverse event at confirm never leaves
-        // spendable money with the grantee (Codex P1 on PR #8614).
-        let hold = svc
-            .ledger()
-            .account_balance(hold_account_for(LEDGER_ID))
-            .unwrap();
-        assert_eq!(hold.credits_posted, AMOUNT);
+        // Pending value is reserved, not posted to the hold account.
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-1"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
+        );
         assert!(
             svc.ledger()
                 .account_balance(account_id_for("grantee-1", LEDGER_ID))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn sweep_posts_only_after_window_and_grace_and_is_idempotent_without_activation() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 10,
+            posting_grace_secs: 4,
+        };
+        svc.register(&request("grant-sweep", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+
+        let early = svc.sweep_pending_holds(1_009);
+        assert_eq!(
+            early.not_eligible, 1,
+            "oracle: posting is not eligible before refund-window end"
+        );
+        assert_eq!(
+            svc.store().grant("grant-sweep").unwrap().state,
+            GrantState::PendingHold
+        );
+
+        let grace_not_elapsed = svc.sweep_pending_holds(1_011);
+        assert_eq!(grace_not_elapsed.not_eligible, 1);
+
+        let posted = svc.sweep_pending_holds(1_012);
+        assert_eq!(posted.posted_or_recovered, 1);
+        assert_eq!(
+            svc.store().grant("grant-sweep").unwrap().state,
+            GrantState::PendingHold,
+            "phase 3 must not activate spendable grants"
+        );
+        let transfer_id = post_transfer_id_for_grant("grant-sweep");
+        assert_eq!(
+            svc.ledger().lookup_transfer(transfer_id).unwrap().amount,
+            AMOUNT
+        );
+
+        let retry = svc.sweep_pending_holds(1_013);
+        assert_eq!(retry.posted_or_recovered, 1);
+        assert_eq!(
+            svc.ledger().lookup_transfer(transfer_id).unwrap().amount,
+            AMOUNT,
+            "oracle: deterministic resolution exists exactly once on retry"
+        );
+    }
+
+    #[test]
+    fn posted_lost_race_records_clawback_attestation_not_successful_void() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 10,
+            posting_grace_secs: 4,
+        };
+        svc.register(&request("grant-post-race", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+
+        // The clean sweep wins the ledger race; a later applicable
+        // attestation cannot void the already-posted transfer.
+        assert_eq!(svc.sweep_pending_holds(1_012).posted_or_recovered, 1);
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-after-post".to_string(),
+            grant_ids: vec!["grant-post-race".to_string()],
+            fingerprints: Vec::new(),
+        });
+
+        let report = svc.sweep_pending_holds(1_013);
+        assert_eq!(report.posted_with_adverse_for_phase4, 1);
+        let grant = svc.store().grant("grant-post-race").unwrap();
+        assert_eq!(grant.state, GrantState::PendingHold);
+        assert_eq!(grant.voided_by_attestation, None);
+        assert_eq!(
+            grant.post_then_clawback_attestation.as_deref(),
+            Some("attestation-after-post")
+        );
+        assert!(grant.posted_transfer_id.is_some());
+    }
+
+    #[test]
+    fn sweep_ignores_adverse_event_scoped_to_another_purchase() {
+        let v = verifier();
+        let adverse = AdverseStub {
+            event: RefCell::new(Some(AdverseEvent {
+                kind: "refund_executed".into(),
+                attestation_id: "other-purchase".into(),
+                grant_ids: vec!["different-grant".into()],
+                fingerprints: Vec::new(),
+            })),
+        };
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 10,
+            posting_grace_secs: 4,
+        };
+        svc.register(&request("grant-scoped", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        let report = svc.sweep_pending_holds(1_012);
+        assert_eq!(
+            report.posted_or_recovered, 1,
+            "oracle: a grantee-level event without this grant/fingerprint in its purchase scope does not block posting"
+        );
+        assert_eq!(
+            svc.store().grant("grant-scoped").unwrap().state,
+            GrantState::PendingHold
+        );
+    }
+
+    #[test]
+    fn sweep_expires_a_pending_grant_at_its_snapshotted_deadline() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().expiry_secs = Some(5);
+        svc.register(&request("grant-expiry", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        // Simulate a crash after the ledger accepted the expiry void but
+        // before the grant-store state update.
+        svc.ledger
+            .void_pending_transfer(
+                transfer_id_for_grant("grant-expiry"),
+                expiry_void_transfer_id_for_grant("grant-expiry"),
+            )
+            .unwrap();
+        let report = svc.sweep_pending_holds(1_005);
+        assert_eq!(
+            report.expired, 1,
+            "oracle: expiry snapshot is registration time + configured lifetime"
+        );
+        assert_eq!(
+            svc.store().grant("grant-expiry").unwrap().state,
+            GrantState::Expired
+        );
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-expiry"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Voided {
+                resolution_id: expiry_void_transfer_id_for_grant("grant-expiry")
+            })
+        );
+    }
+
+    #[test]
+    fn expired_grant_does_not_retry_void_or_reissue_after_ledger_timeout() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 1,
+            posting_grace_secs: 2,
+        };
+        svc.config.get_mut("steam").unwrap().expiry_secs = Some(3);
+        svc.register(&request("grant-expiry-timeout", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-expiry-timeout"))
+        );
+
+        let report = svc.sweep_pending_holds(1_003);
+        assert_eq!(
+            report.expired, 1,
+            "oracle: ledger timeout plus elapsed grant expiry terminates without replacement value"
+        );
+        assert_eq!(report.reissued, 0);
+        assert_eq!(report.retry_later, 0);
+        assert_eq!(
+            svc.store().grant("grant-expiry-timeout").unwrap().state,
+            GrantState::Expired
+        );
+        assert!(
+            svc.ledger
+                .lookup_transfer(reissue_transfer_id_for_grant("grant-expiry-timeout"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sweep_reissues_timeout_only_after_scoped_event_and_expiry_checks() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 1,
+            posting_grace_secs: 2,
+        };
+        svc.register(&request("grant-timeout", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-timeout"))
+        );
+        let report = svc.sweep_pending_holds(1_003);
+        assert_eq!(
+            report.reissued, 1,
+            "oracle: only authoritative Expired state reaches reissue"
+        );
+        assert_eq!(
+            svc.store().grant("grant-timeout").unwrap().state,
+            GrantState::PendingHold
+        );
+        let id = reissue_transfer_id_for_grant("grant-timeout");
+        assert_eq!(svc.ledger.lookup_transfer(id).unwrap().amount, AMOUNT);
+        assert_eq!(svc.sweep_pending_holds(1_004).reissued, 1);
+        assert_eq!(
+            svc.ledger
+                .transfers_with_user_data_128(transfer_id_for_grant("grant-timeout"))
+                .iter()
+                .filter(|transfer| transfer.id == id)
+                .count(),
+            1,
+            "oracle: timeout retries reuse the deterministic replacement transfer id"
+        );
+    }
+
+    #[test]
+    fn timeout_recovery_voids_matching_purchase_and_never_reissues() {
+        let v = verifier();
+        let adverse = AdverseStub {
+            event: RefCell::new(None),
+        };
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 1,
+            posting_grace_secs: 2,
+        };
+        svc.register(&request("grant-timeout-refund", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-timeout-refund"))
+        );
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".into(),
+            attestation_id: "refund-for-this-purchase".into(),
+            grant_ids: vec!["grant-timeout-refund".into()],
+            fingerprints: Vec::new(),
+        });
+        let report = svc.sweep_pending_holds(1_003);
+        assert_eq!(
+            report.voided, 1,
+            "oracle: matching purchase attestation supersedes reissue"
+        );
+        assert_eq!(report.reissued, 0);
+        assert_eq!(
+            svc.store().grant("grant-timeout-refund").unwrap().state,
+            GrantState::Revoked
+        );
+        assert!(
+            svc.ledger
+                .lookup_transfer(reissue_transfer_id_for_grant("grant-timeout-refund"))
+                .is_none(),
+            "oracle: a refunded purchase must not receive a replacement transfer"
         );
     }
 
@@ -1348,14 +2408,22 @@ mod tests {
         );
         assert_eq!(svc.store().snapshot().grants, before);
 
-        // A listed move on the same grant still works.
+        // Phase 3 has no activation/clawback path, even though posting
+        // the underlying ledger transfer is permitted into custody.
+        let err = svc
+            .store
+            .transition("grant-1", GrantState::Active)
+            .unwrap_err();
         assert_eq!(
-            svc.store.transition("grant-1", GrantState::Active),
-            Ok(GrantState::Active)
+            err,
+            TransitionError::Refused {
+                from: GrantState::PendingHold,
+                to: GrantState::Active
+            }
         );
         assert_eq!(
             svc.store().grant("grant-1").unwrap().state,
-            GrantState::Active
+            GrantState::PendingHold
         );
     }
 
@@ -1420,6 +2488,13 @@ mod tests {
             Err(RestoreError::DuplicateGrantId { grant_id }) if grant_id == "grant-1"
         ));
 
+        let mut active_snapshot = snapshot.clone();
+        active_snapshot.grants[0].state = GrantState::Active;
+        assert!(matches!(
+            GrantStore::restore(active_snapshot),
+            Err(RestoreError::ActiveStateUnsupported { grant_id }) if grant_id == "grant-1"
+        ));
+
         let restored = GrantStore::restore(snapshot).unwrap();
         assert_eq!(restored.grant_count(), 1);
         assert_eq!(restored.registry().len(), 1);
@@ -1438,12 +2513,13 @@ mod tests {
             svc2.store().grant("grant-1").unwrap().state,
             GrantState::PendingHold
         );
-        let hold = svc2
-            .ledger()
-            .inner
-            .account_balance(hold_account_for(LEDGER_ID))
-            .unwrap();
-        assert_eq!(hold.credits_posted, AMOUNT);
+        assert_eq!(
+            svc2.ledger()
+                .inner
+                .try_pending_transfer_state(transfer_id_for_grant("grant-1"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Pending)
+        );
         // And after restart the one-grant rule still holds for the
         // restored registry: the same key cannot grant twice.
         let outcome = svc2

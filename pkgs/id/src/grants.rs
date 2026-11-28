@@ -419,7 +419,7 @@ pub enum GrantState {
     Presented,
     /// §1: verified, issued as a ledger pending transfer.
     PendingHold,
-    /// §1.3: window lapsed clean, hold posted.
+    /// §1.3: phase-4 activation state; phase 3 deliberately withholds it.
     Active,
     /// §2.2/§2.3: already granted, or publisher-revoked before grant.
     Rejected,
@@ -452,15 +452,14 @@ impl GrantState {
         )
     }
 
-    /// The §7 transition table — the only legal moves. Anything not
-    /// listed here does not exist.
+    /// The phase-3-safe subset of the §7 transition table. Activation
+    /// is withheld until the phase-4 clawback path exists.
     pub fn can_transition(&self, to: GrantState) -> bool {
         use GrantState::*;
         matches!(
             (self, to),
             (Presented, Rejected)
                 | (Presented, PendingHold)
-                | (PendingHold, Active)
                 | (PendingHold, Revoked)
                 | (PendingHold, Expired)
                 | (Active, Spent)
@@ -664,12 +663,11 @@ mod tests {
     }
 
     #[test]
-    fn state_machine_implements_exactly_the_spec_table() {
+    fn phase3_state_machine_withholds_activation_until_clawback_exists() {
         use GrantState::*;
         let legal = [
             (Presented, Rejected),
             (Presented, PendingHold),
-            (PendingHold, Active),
             (PendingHold, Revoked),
             (PendingHold, Expired),
             (Active, Spent),
@@ -685,6 +683,7 @@ mod tests {
         }
         // The §0 rule: nothing skips PendingHold.
         assert!(!Presented.can_transition(Active));
+        assert!(!PendingHold.can_transition(Active));
         // No resurrection, no skipping the clawback choreography.
         assert!(!Revoked.can_transition(Active));
         assert!(!Active.can_transition(Revoked));

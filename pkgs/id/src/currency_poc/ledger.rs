@@ -66,6 +66,31 @@ pub struct Transfer {
     pub linked: bool,
 }
 
+/// A TigerBeetle pending transfer. Its debit/credit accounts are reserved
+/// when created and its value moves to posted balances only on resolution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingTransfer {
+    pub id: TransferId,
+    pub debit_account_id: AccountId,
+    pub credit_account_id: AccountId,
+    pub amount: u128,
+    pub ledger: u32,
+    pub user_data_128: u128,
+    pub code: u16,
+    /// Ledger timeout, in seconds from creation (TigerBeetle wire `u32`).
+    pub timeout_secs: u32,
+}
+
+/// Observed resolution of a pending transfer. `Expired` is a ledger
+/// timeout-void, distinct from an explicit `Voided` resolution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingTransferState {
+    Pending,
+    Posted { resolution_id: TransferId },
+    Voided { resolution_id: TransferId },
+    Expired,
+}
+
 /// Posted balance totals for one account.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccountBalance {
@@ -196,6 +221,10 @@ pub enum TransferError {
     /// The pending transfer's timeout arithmetic overflowed
     /// (`overflows_timeout`).
     OverflowsTimeout,
+    PendingTransferNotFound,
+    PendingTransferAlreadyPosted,
+    PendingTransferAlreadyVoided,
+    PendingTransferExpired,
     /// The PoC code cannot be represented by the TigerBeetle wire encoding.
     CodeOutOfRange,
     /// The backend request failed before transfer statuses were returned.
@@ -237,6 +266,38 @@ pub trait LedgerBackend {
     /// transfer is a chain of one: `Exists` stays `Exists`, a new
     /// transfer posts as before.
     fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>>;
+    /// Create a native two-phase transfer. Backends that do not implement
+    /// pending transfers fail closed instead of pretending to post it.
+    fn create_pending_transfer(
+        &mut self,
+        _transfer: &PendingTransfer,
+    ) -> Result<(), TransferError> {
+        Err(TransferError::UnmodelledStatus)
+    }
+    /// Resolve a pending transfer by posting its reserved value.
+    fn post_pending_transfer(
+        &mut self,
+        _pending_id: TransferId,
+        _resolution_id: TransferId,
+    ) -> Result<(), TransferError> {
+        Err(TransferError::UnmodelledStatus)
+    }
+    /// Resolve a pending transfer by voiding it.
+    fn void_pending_transfer(
+        &mut self,
+        _pending_id: TransferId,
+        _resolution_id: TransferId,
+    ) -> Result<(), TransferError> {
+        Err(TransferError::UnmodelledStatus)
+    }
+    /// Read the authoritative pending/post/void/timeout outcome. `None`
+    /// means no transfer with this pending id exists.
+    fn try_pending_transfer_state(
+        &self,
+        _pending_id: TransferId,
+    ) -> anyhow::Result<Option<PendingTransferState>> {
+        anyhow::bail!("backend does not support pending transfer state")
+    }
     /// Fallible ID lookup. Recovery must use this form so a backend outage
     /// cannot be mistaken for an absent transfer.
     fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>>;
@@ -338,11 +399,23 @@ pub struct InMemoryLedger {
     transfers: HashMap<TransferId, Transfer>,
     failed_transfers: HashMap<TransferId, TransferError>,
     transfer_order: Vec<TransferId>,
+    pending_transfers: HashMap<TransferId, (PendingTransfer, PendingTransferState)>,
 }
 
 impl InMemoryLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Test oracle for TigerBeetle's server-driven timeout transition.
+    #[cfg(test)]
+    pub(crate) fn mark_pending_expired(&mut self, pending_id: TransferId) -> bool {
+        if let Some((_, state)) = self.pending_transfers.get_mut(&pending_id) {
+            *state = PendingTransferState::Expired;
+            true
+        } else {
+            false
+        }
     }
 
     /// Validate one transfer against a scratch balance map; on success
@@ -663,6 +736,133 @@ impl LedgerBackend for InMemoryLedger {
             chain_start = chain_end + 1;
         }
         results
+    }
+
+    fn create_pending_transfer(&mut self, transfer: &PendingTransfer) -> Result<(), TransferError> {
+        if transfer.id == 0 {
+            return Err(TransferError::IdMustNotBeZero);
+        }
+        if transfer.id == u128::MAX {
+            return Err(TransferError::IdMustNotBeIntMax);
+        }
+        if transfer.timeout_secs == 0 {
+            return Err(TransferError::OverflowsTimeout);
+        }
+        if let Some((existing, _)) = self.pending_transfers.get(&transfer.id) {
+            return if existing == transfer {
+                Err(TransferError::Exists)
+            } else {
+                Err(TransferError::ExistsWithDifferentFields)
+            };
+        }
+        if self.transfers.contains_key(&transfer.id) {
+            return Err(TransferError::ExistsWithDifferentFields);
+        }
+        if transfer.amount == 0 {
+            return Err(TransferError::AmountMustNotBeZero);
+        }
+        if transfer.debit_account_id == transfer.credit_account_id {
+            return Err(TransferError::AccountsMustBeDifferent);
+        }
+        let debit = self
+            .accounts
+            .get(&transfer.debit_account_id)
+            .ok_or(TransferError::DebitAccountNotFound)?;
+        let credit = self
+            .accounts
+            .get(&transfer.credit_account_id)
+            .ok_or(TransferError::CreditAccountNotFound)?;
+        if transfer.ledger == 0
+            || transfer.ledger != debit.ledger
+            || transfer.ledger != credit.ledger
+        {
+            return Err(TransferError::LedgerMismatch);
+        }
+        self.pending_transfers.insert(
+            transfer.id,
+            (transfer.clone(), PendingTransferState::Pending),
+        );
+        Ok(())
+    }
+
+    fn post_pending_transfer(
+        &mut self,
+        pending_id: TransferId,
+        resolution_id: TransferId,
+    ) -> Result<(), TransferError> {
+        let (pending, state) = self
+            .pending_transfers
+            .get(&pending_id)
+            .cloned()
+            .ok_or(TransferError::PendingTransferNotFound)?;
+        match state {
+            PendingTransferState::Posted {
+                resolution_id: existing,
+            } if existing == resolution_id => {
+                return Err(TransferError::Exists);
+            }
+            PendingTransferState::Posted { .. } => {
+                return Err(TransferError::PendingTransferAlreadyPosted);
+            }
+            PendingTransferState::Voided { .. } => {
+                return Err(TransferError::PendingTransferAlreadyVoided);
+            }
+            PendingTransferState::Expired => return Err(TransferError::PendingTransferExpired),
+            PendingTransferState::Pending => {}
+        }
+        let transfer = Transfer {
+            id: resolution_id,
+            debit_account_id: pending.debit_account_id,
+            credit_account_id: pending.credit_account_id,
+            amount: pending.amount,
+            ledger: pending.ledger,
+            user_data_128: pending.user_data_128,
+            code: pending.code,
+            linked: false,
+        };
+        match self.create_transfers(&[transfer]).into_iter().next() {
+            Some(Ok(())) => {
+                if let Some((_, state)) = self.pending_transfers.get_mut(&pending_id) {
+                    *state = PendingTransferState::Posted { resolution_id };
+                }
+                Ok(())
+            }
+            Some(Err(error)) => Err(error),
+            None => Err(TransferError::BackendFailure),
+        }
+    }
+
+    fn void_pending_transfer(
+        &mut self,
+        pending_id: TransferId,
+        resolution_id: TransferId,
+    ) -> Result<(), TransferError> {
+        let (_, state) = self
+            .pending_transfers
+            .get_mut(&pending_id)
+            .ok_or(TransferError::PendingTransferNotFound)?;
+        match *state {
+            PendingTransferState::Pending => {
+                *state = PendingTransferState::Voided { resolution_id };
+                Ok(())
+            }
+            PendingTransferState::Voided {
+                resolution_id: existing,
+            } if existing == resolution_id => Err(TransferError::Exists),
+            PendingTransferState::Voided { .. } => Err(TransferError::PendingTransferAlreadyVoided),
+            PendingTransferState::Posted { .. } => Err(TransferError::PendingTransferAlreadyPosted),
+            PendingTransferState::Expired => Err(TransferError::PendingTransferExpired),
+        }
+    }
+
+    fn try_pending_transfer_state(
+        &self,
+        pending_id: TransferId,
+    ) -> anyhow::Result<Option<PendingTransferState>> {
+        Ok(self
+            .pending_transfers
+            .get(&pending_id)
+            .map(|(_, state)| *state))
     }
 
     fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
