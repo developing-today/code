@@ -659,6 +659,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
       pages: { route: string; lastRenderedAt: unknown }[];
       jobs: { orchestration: { state: string } };
       rfa: { state: string; detail: string; repositories: unknown[]; backends: unknown[] };
+      hostHealth: { opencode: unknown };
     };
     expect(body.status).toBe("ok");
     expect(body.source.board).toBe("fixtures");
@@ -671,6 +672,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
     expect(body.jobs.orchestration.state).toBeDefined();
     // #1203: the harness facet reaches the machine surface, not only
     // the rendered page — fixtures mode says so honestly.
+    expect(body.hostHealth.opencode).toBeNull();
     expect(body.rfa.state).toBe("fixtures");
     expect(Array.isArray(body.rfa.repositories)).toBe(true);
     expect(Array.isArray(body.rfa.backends)).toBe(true);

@@ -55,8 +55,21 @@ export interface HostHealthSnapshot {
    *  watchdog names. Null when the collector could not read the run
    *  record or the snapshot predates the field (never invented). */
   backup: HostBackupRecord | null;
+  /** OpenCode service process revision compared with this checkout's flake pin. */
+  opencode: OpenCodeRuntimeHealth | null;
   units: Record<string, HostUnitHealth>;
   timers: Record<string, { active: boolean | null; activeState?: string }>;
+}
+
+export interface OpenCodeRuntimeHealth {
+  state: "match" | "mismatch" | "unknown" | "down";
+  pid?: number;
+  executable?: string;
+  deleted?: boolean;
+  runtimeRevision?: string | null;
+  expectedRevision?: string;
+  activeState?: string;
+  detail?: string;
 }
 
 /** One pm-dashboard-backup generation, passed through from its JSON
@@ -127,12 +140,28 @@ export function normalizeHostHealthSnapshot(parsed: unknown): HostHealthSnapshot
     generatedAt,
     host: normalizeHostName(root.host),
     backup: normalizeHostBackupRecord(root.backup),
+    opencode: normalizeOpenCodeRuntime(root.opencode),
     claimantMode: {
       state: cm.state as ClaimantModeState,
       ...(typeof cm.detail === "string" ? { detail: cm.detail } : {}),
     },
     units,
     timers,
+  };
+}
+
+function normalizeOpenCodeRuntime(parsed: unknown): OpenCodeRuntimeHealth | null {
+  const value = asRecord(parsed);
+  if (!value || !["match", "mismatch", "unknown", "down"].includes(String(value.state))) return null;
+  return {
+    state: value.state as OpenCodeRuntimeHealth["state"],
+    ...(typeof value.pid === "number" ? { pid: value.pid } : {}),
+    ...(typeof value.executable === "string" ? { executable: value.executable } : {}),
+    ...(typeof value.deleted === "boolean" ? { deleted: value.deleted } : {}),
+    ...(typeof value.runtimeRevision === "string" ? { runtimeRevision: value.runtimeRevision } : {}),
+    ...(typeof value.expectedRevision === "string" ? { expectedRevision: value.expectedRevision } : {}),
+    ...(typeof value.activeState === "string" ? { activeState: value.activeState } : {}),
+    ...(typeof value.detail === "string" ? { detail: value.detail } : {}),
   };
 }
 

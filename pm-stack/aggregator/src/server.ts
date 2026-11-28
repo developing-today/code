@@ -1794,8 +1794,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     // #14062: the top-level status follows the degraded flag below.
     const body: Record<string, unknown> = { status: view.status, source: prov(), version: view.version };
     body.hostHealth = hostHealth
-      ? { host: hostHealth.host, backup: hostHealth.backup }
-      : { host: null, backup: null, state: "unavailable" };
+      ? { host: hostHealth.host, backup: hostHealth.backup, opencode: hostHealth.opencode }
+      : { host: null, backup: null, opencode: null, state: "unavailable" };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({

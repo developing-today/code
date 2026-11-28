@@ -238,6 +238,66 @@ class HostHealthCollectorTests(unittest.TestCase):
         self.assertEqual(unavailable["state"], "unknown")
 
 
+class ReadOpenCodeRuntimeTests(unittest.TestCase):
+    REV = "abcdef1234567890abcdef1234567890abcdef12"
+
+    def write_lock(self, tmp_path):
+        lock = Path(tmp_path) / "flake.lock"
+        lock.write_text(json.dumps({
+            "root": "root",
+            "nodes": {
+                "root": {"inputs": {"opencode": "opencode"}},
+                "opencode": {"locked": {"rev": self.REV}},
+            },
+        }))
+        return lock
+
+    def runtime(self, tmp_path, executable, *, props="ActiveState=active\nMainPID=321\n"):
+        lock = self.write_lock(tmp_path)
+        proc = Path(tmp_path) / "proc"
+        (proc / "321").mkdir(parents=True, exist_ok=True)
+        with (
+            patch.object(COLLECTOR.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, props, "")),
+            patch.object(COLLECTOR.os, "readlink", return_value=executable),
+        ):
+            return COLLECTOR.read_opencode_runtime(proc_root=proc, flake_lock=lock)
+
+    def test_running_executable_revision_matches_or_mismatches_pin(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            match = self.runtime(tmp, f"/nix/store/opencode-1.2.3+{self.REV[:12]}/bin/opencode")
+            self.assertEqual(match["state"], "match")
+            self.assertEqual(match["runtimeRevision"], self.REV[:12])
+            mismatch = self.runtime(tmp, "/nix/store/opencode-1.2.3+1234567/bin/opencode")
+            self.assertEqual(mismatch["state"], "mismatch")
+
+    def test_deleted_or_unrecognizable_executable_is_unknown(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            deleted = self.runtime(tmp, f"/nix/store/opencode-1.2.3+{self.REV[:12]}/bin/opencode (deleted)")
+            self.assertEqual(deleted["state"], "unknown")
+            self.assertTrue(deleted["deleted"])
+            unknown = self.runtime(tmp, "/nix/store/bin/opencode")
+            self.assertEqual(unknown["state"], "unknown")
+            self.assertIsNone(unknown["runtimeRevision"])
+
+    def test_inactive_service_reports_down_without_reading_process(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = self.write_lock(tmp)
+            with patch.object(
+                COLLECTOR.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "ActiveState=inactive\nMainPID=0\n", ""),
+            ), patch.object(COLLECTOR.os, "readlink") as readlink:
+                result = COLLECTOR.read_opencode_runtime(flake_lock=lock)
+            self.assertEqual(result["state"], "down")
+            readlink.assert_not_called()
+
+
 class ReadBackupRecordTests(unittest.TestCase):
     """The run-record half of the snapshot (#3989 criterion 6): the
     collector passes the dashboard backup's newest verified generation
