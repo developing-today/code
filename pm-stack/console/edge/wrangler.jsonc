@@ -31,6 +31,9 @@
   // sends the owner's messages through it with the PM stack's own
   // bridge credential, and reads the agents list and the message log
   // from it, instead of waiting for a machine's fleet binary.
+  // Read-only decision activity comes from the authenticated D1 service;
+  // its shared credential is a Worker secret, never a variable or URL.
+  // The edge also checks PM service deployment version on schedule (#15793).
   "services": [
     { "binding": "BRIDGE", "service": "message-bridge" },
     // The platform's Workers the edge checks on its schedule (#15793):

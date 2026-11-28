@@ -543,6 +543,22 @@ describe("#7193 Codex regression fixes", () => {
     ...over,
   });
 
+  test("decision-set push candidates link to the canonical credential-free page — oracle: candidate URL", () => {
+    const candidates = buildNotificationCandidates(snapshot({
+      decisionSets: [{
+        setId: "set/with space?&",
+        title: "A decision",
+        token: "must-not-appear",
+        createdAt: "2026-11-03T17:00:00Z",
+        source: "test",
+        items: [{ ledgerId: "item-1", title: "Item", group: "G", links: [], questions: [{}] }],
+      } as unknown as NonNullable<NotificationSnapshot["decisionSets"]>[number]],
+    }), TASK_NOW);
+
+    expect(candidates.find((candidate) => candidate.objectRef === "decision-set:set/with space?&")?.url)
+      .toBe("https://pm.security.cab/decisions?set=set%2Fwith%20space%3F%26");
+  });
+
   test("stale and errored quota reads never produce wall candidates", () => {
     for (const state of ["stale", "error"]) {
       const quota = {

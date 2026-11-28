@@ -62,6 +62,7 @@ import { postCostAnomalyTick, type CostEvidence } from "./cost-anomaly.ts";
 import { runPushSentinelTick } from "./push-sentinel.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
+import { hostedDecisionPageUrl } from "./decision-links.ts";
 import {
   notifyRelayIncidentEventCursor,
   requestNotifyRelayCandidatesMirror,
@@ -1421,7 +1422,7 @@ async function runDashboardNotificationTick(
         try {
           const set = await getDecisionSet(cfg.decisionsFile, candidate.decisionSet.setId);
           if (set) {
-            payload.url = `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+            payload.url = hostedDecisionPageUrl(set.setId);
           }
         } catch (err) {
           console.error(

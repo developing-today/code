@@ -171,6 +171,7 @@ import {
 import { timed, unread } from "../../src/timed.ts";
 import { ACT_MS } from "./timings.ts";
 import appFiles from "../../public/files.json";
+import { decisionPage } from "./decision-pages.ts";
 import { createD1LedgerQuery, createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
 import { DNS_PAGE_PATHS, dnsPage } from "./dns-pages.ts";
 
@@ -242,6 +243,7 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
+  private decisionEvents?: EdgeOptions["decisionEvents"];
   private ledgerPages?: EdgeOptions["ledgerPages"];
   private dnsPages?: EdgeOptions["dnsPages"];
   /** The console's own classes, wired for the edge and kept for as long
@@ -409,6 +411,7 @@ export class Edge {
     this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
+    this.decisionEvents = options.decisionEvents;
     this.ledgerPages = options.ledgerPages;
     this.dnsPages = options.dnsPages;
     if (options.quota?.enabled && options.quota.envelope) {
@@ -2730,6 +2733,14 @@ export class Edge {
       return next("relay", { mode: "page" });
     }
     const by = who.email ?? who.certName ?? who.sub ?? who.via;
+    if (this.decisionEvents && (path === "/decisions" || path.startsWith("/decisions/"))) {
+      const response = await decisionPage(req, {
+        secret: this.decisionEvents.secret,
+        read: (upstream) => this.decisionEvents!.fetch(upstream),
+        now: this.now,
+      });
+      if (response) return response;
+    }
     // Hosted ledger surfaces (#14968, CF-5b), when the flag is on: the
     // owner is verified (above), so this side answers from the
     // fleet-platform ledger itself. Off, or for any other path, the

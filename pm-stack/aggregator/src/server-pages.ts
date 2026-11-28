@@ -23,6 +23,7 @@ import { questionsSectionHtml } from "./render.ts";
 import { esc } from "./render.ts";
 import { cfg } from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
+import { hostedDecisionPageUrl } from "./decision-links.ts";
 
 // --- Needs-Drew questions (#8568) ------------------------------------------
 
@@ -161,9 +162,9 @@ export function renderAnswerForbidden(): string {
 
 // --- Decision sets (#8766) -------------------------------------------------
 
-/** The token-carrying decisions-page URL for a raised set. */
+/** The canonical credential-free hosted read URL for a raised set. */
 export function decisionsPageUrl(set: DecisionSet): string {
-  return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+  return hostedDecisionPageUrl(set.setId);
 }
 
 /**
@@ -184,7 +185,7 @@ export async function questionsHtml(): Promise<string> {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return questionsSectionHtml(summaries, (s) => {
       const set = byId.get(s.setId);
-      return set ? decisionsPageUrl(set) : `/decisions/${encodeURIComponent(s.setId)}`;
+      return set ? decisionsPageUrl(set) : hostedDecisionPageUrl(s.setId);
     });
   } catch {
     return questionsSectionHtml(null, () => "/decisions");

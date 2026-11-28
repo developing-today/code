@@ -222,6 +222,8 @@ export interface EdgeOptions {
   now?: () => number;
   /** Reaches the sign-in issuer's keys and the push services. */
   fetchImpl?: typeof fetch;
+  /** Authenticated read-only decision-events Worker binding. */
+  decisionEvents?: { secret?: string; fetch: (request: Request) => Promise<Response> };
   /** What the edge does itself: the switch, the two tokens, and the
    * fetch its own reads and writes use. */
   direct?: {

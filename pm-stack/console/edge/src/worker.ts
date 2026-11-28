@@ -69,7 +69,10 @@ interface Env {
    * (the sets the Worker holds, and each set's state) itself, with no
    * machine; without either, that section stays a machine's. */
   DECISION_EVENTS_URL?: string;
+  /** Server-side credential for authenticated decision page/read routes. */
   DECISION_EVENTS_SECRET?: string;
+  /** Opt-in only after the #14865 cutover gate and credential read probe. */
+  DECISION_PAGES?: string;
   /** The fleet-platform ledger the hosted M4 ledger surfaces read
    * (#14968), and their opt-in flag: off unless it reads `on`, and
    * only after the #14865 gate check recorded on #14968. Which store
@@ -169,6 +172,13 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
+      decisionEvents: env.DECISION_PAGES === "on" ? {
+        secret: env.DECISION_EVENTS_SECRET,
+        fetch: async (request) => {
+          if (!env.DECISION_EVENTS) throw new Error("decision-events binding unavailable");
+          return env.DECISION_EVENTS.fetch(request);
+        },
+      } : undefined,
       ledgerPages:
         env.LEDGER_PAGES === "on"
           ? env.LEDGER_STORE === "d1"

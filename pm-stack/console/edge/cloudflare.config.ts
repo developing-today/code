@@ -31,6 +31,12 @@ export default defineConfig({
       LEDGER_STORE: bindings.text("d1"),
       // The health check verifies the commit currently serving on workers.dev.
       VERSION: bindings.text(processEnv.GITHUB_SHA?.slice(0, 12) ?? "local"),
+      // Service bindings, kept in sync with the services list in
+      // wrangler.jsonc: the message bridge (#14373) and the
+      // authenticated decision-events reader (CF-5a, #14967). A legacy
+      // service environment would need hand resolution; neither uses one.
+      BRIDGE: bindings.worker({ worker: "message-bridge" }),
+      DECISION_EVENTS: bindings.worker({ worker: "decision-events" }),
       PM: bindings.durableObject({ worker: "pm-console-edge", exportName: "PmEdge" }),
       // The fleet-platform ledger's D1 home (#14968): keep in sync
       // with the d1_databases binding in wrangler.jsonc.
