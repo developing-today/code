@@ -34,7 +34,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
+    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood | huge-body | huge-body-chunked
     last: null,
     hits: 0,
     server: null,
@@ -378,6 +378,36 @@ const makeLeaf = (name, expectedKey) => {
         );
         return res.end("data: [DONE]\n\n");
       }
+      if (leaf.mode === "huge-body") {
+        // A valid completion whose body exceeds the leaf-body cap,
+        // with an honest content-length (#16398).
+        const big = JSON.stringify({
+          id: "chatcmpl-x",
+          object: "chat.completion",
+          created: 1,
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: { role: "assistant", content: "x".repeat(8192) },
+            },
+          ],
+        });
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(big),
+        });
+        return res.end(big);
+      }
+      if (leaf.mode === "huge-body-chunked") {
+        // An over-cap body with NO content-length, dribbled in
+        // chunks: only a streaming byte cap can stop it (#16398).
+        res.writeHead(200, { "content-type": "application/json" });
+        const piece = "x".repeat(1024);
+        for (let i = 0; i < 8; i++) res.write(piece);
+        return res.end();
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -423,6 +453,8 @@ const startProxy = async (arg = {}) => {
   const timeout =
     typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
   const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
+  const leafBodyMax =
+    typeof arg === "object" ? arg.leafBodyMaxBytes : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const systemdActivation =
     arg && typeof arg === "object" && arg.systemdActivation === true;
@@ -658,6 +690,9 @@ const startProxy = async (arg = {}) => {
     ...(leafTimeout !== undefined
       ? { OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS: String(leafTimeout) }
       : {}),
+    ...(leafBodyMax !== undefined
+      ? { OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES: String(leafBodyMax) }
+      : {}),
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
@@ -873,6 +908,47 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     assert.equal(rows[0].session_id, null);
     assert.equal(rows[1].outcome, "success");
     assert.equal(rows[1].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("over-cap leaf body with a declared length fails over; both attempts recorded (#16398)", async () => {
+  const p = await startProxy({ leafBodyMaxBytes: "1024" });
+  try {
+    p.leafA.mode = "huge-body";
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "ProviderInternal");
+    assert.match(rows[0].error_message, /exceeds the 1024-byte cap/);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].session_id, null);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("over-cap leaf body streamed without a length fails over (#16398)", async () => {
+  const p = await startProxy({ leafBodyMaxBytes: "1024" });
+  try {
+    p.leafA.mode = "huge-body-chunked";
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "ProviderInternal");
+    assert.match(rows[0].error_message, /exceeds the 1024-byte cap/);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[1].outcome, "success");
   } finally {
     await p.cleanup();
   }

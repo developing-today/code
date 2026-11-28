@@ -39,6 +39,11 @@
 //   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
 //                                         (default 3000 ms; below the client
 //                                         no-output window)
+//   OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES
+//                                         byte cap on non-streaming leaf
+//                                         response bodies (default
+//                                         16777216 = 16 MiB, the streaming
+//                                         hard max) (#16398)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -61,7 +66,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { homePath } from "./home-dir.mjs";
-import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
+import { parseProxyBytes, parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
@@ -81,6 +86,14 @@ const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000
 const LEAF_TIMEOUT_MS = parseProxyMillis(
   "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
   3_000,
+);
+// Byte cap for non-streaming leaf response bodies (#16398): the
+// streaming relay already hard-caps a single event at
+// STREAM_EVENT_HARD_MAX_BYTES (16 MiB, below); the non-streaming
+// reads reuse that ceiling by default.
+const LEAF_BODY_MAX_BYTES = parseProxyBytes(
+  "OPENCODE_ROUTE_PROXY_LEAF_BODY_MAX_BYTES",
+  16 * 1024 * 1024,
 );
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
@@ -1844,6 +1857,54 @@ class LeafError extends Error {
   }
 }
 
+// Bounded leaf-body read (#16398). The non-streaming leaf paths used
+// res.text() / res.arrayBuffer() directly, and the only bounds in
+// force were time-only (LEAF_TIMEOUT_MS / TIMEOUT_MS): once headers
+// arrive, a fast or misbehaving leaf can deliver gigabytes inside
+// the window and every one of those paths buffered it whole, OOMing
+// the proxy. A declared content-length over the cap is refused
+// before a byte is buffered; otherwise the body streams through a
+// reader and the read aborts the moment the running total crosses
+// the cap, so peak memory stays within one chunk of the cap.
+// Over-cap is a retryable LeafError, so the walk fails over like
+// any other leaf failure. Oracle: the #16398 tests in
+// bin/opencode-route-proxy.test.mjs — an over-cap leaf records a
+// failure attempt and the next candidate serves the request.
+const readLeafBody = async (res, maxBytes = LEAF_BODY_MAX_BYTES) => {
+  const tooLarge = (detail) =>
+    new LeafError(
+      `leaf response body exceeds the ${maxBytes}-byte cap (${detail})`,
+      { tag: "ProviderInternal" },
+    );
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try {
+      await res.body?.cancel();
+    } catch {}
+    throw tooLarge(`content-length ${declared}`);
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw tooLarge(`streamed past ${total} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+};
+
+const readLeafBodyText = async (res, maxBytes) =>
+  (await readLeafBody(res, maxBytes)).toString("utf8");
+
 const classifyHttp = (status, headers, bodyText) => {
   let quota = null;
   if (status === 429) {
@@ -2425,7 +2486,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       }
       if (!res.ok) {
         const ended = Date.now();
-        const text = await res.text().catch(() => "");
+        const text = await readLeafBodyText(res).catch(() => "");
         const err = classifyHttp(res.status, res.headers, text);
         recordAttempt({
           started,
@@ -2526,7 +2587,35 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         });
         return { streamed: true };
       }
-      const text = await res.text();
+      let text;
+      try {
+        text = await readLeafBodyText(res);
+      } catch (err) {
+        // Over-cap body (#16398): a retryable leaf failure, so the
+        // walk fails over instead of buffering the body whole.
+        const ended = Date.now();
+        recordAttempt({
+          started,
+          ended,
+          routeId,
+          providerId: leaf.providerId,
+          modelId: leaf.modelKey,
+          variant: leaf.variant,
+          outcome: signal.aborted ? "timeout" : "failure",
+          errorTag: err.tag || "ProviderInternal",
+          errorCode: err.code ?? null,
+          errorStatus: err.status ?? null,
+          errorMessage: String(err.message || err).slice(0, 500),
+          retryable: err.retryable ?? 1,
+          outputStarted: false,
+          failedOverTo,
+          responseMs: ended - started,
+          quota: err.quota ?? null,
+        });
+        lastErr = err;
+        if (signal.aborted) throw err;
+        continue;
+      }
       const ended = Date.now();
       let json = null;
       try {
@@ -2619,7 +2708,7 @@ const runSingleShotJson = async (
       const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
         const res = await postLeaf(built, leafSignal);
-        const text = await res.text();
+        const text = await readLeafBodyText(res);
         const ended = Date.now();
         if (!res.ok) {
           const err = classifyHttp(res.status, res.headers, text);
@@ -2782,7 +2871,35 @@ const runAudioPassthrough = async (
         if (signal.aborted) throw err;
         continue;
       }
-      const buf = Buffer.from(await res.arrayBuffer());
+      let buf;
+      try {
+        buf = await readLeafBody(res);
+      } catch (err) {
+        // Over-cap body (#16398): a retryable leaf failure, so the
+        // walk fails over instead of buffering the body whole.
+        const ended = Date.now();
+        recordAttempt({
+          started,
+          ended,
+          routeId,
+          providerId: leaf.providerId,
+          modelId: leaf.modelKey,
+          variant: leaf.variant,
+          outcome: signal.aborted ? "timeout" : "failure",
+          errorTag: err.tag || "ProviderInternal",
+          errorCode: err.code ?? null,
+          errorStatus: err.status ?? null,
+          errorMessage: String(err.message || err).slice(0, 500),
+          retryable: err.retryable ?? 1,
+          outputStarted: false,
+          failedOverTo,
+          responseMs: ended - started,
+          quota: err.quota ?? null,
+        });
+        lastErr = err;
+        if (signal.aborted) throw err;
+        continue;
+      }
       const ended = Date.now();
       if (!res.ok) {
         const text = buf.toString("utf8");
@@ -2969,7 +3086,7 @@ const runEmbeddingsA2Direct = async (
         const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
         try {
           const res = await postLeaf(built, leafSignal);
-          const text = await res.text();
+          const text = await readLeafBodyText(res);
           const ended = Date.now();
           if (!res.ok) {
             const err = classifyHttp(res.status, res.headers, text);
