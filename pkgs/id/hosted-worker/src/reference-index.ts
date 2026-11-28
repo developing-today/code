@@ -421,7 +421,10 @@ export class ReferenceIndex {
     const indexed = new Map<string, { dbId: string; referenceId: string; contentId: string; class: ReferenceClass }>();
     for (const store of scanned) {
       for (const r of this.sql
-        .exec("SELECT reference_id, content_id, class FROM reference_index_entry WHERE db_id = ? AND live = 1", store.dbId)
+        .exec(
+          "SELECT reference_id, content_id, class FROM reference_index_entry WHERE db_id = ? AND live = 1",
+          store.dbId,
+        )
         .toArray()) {
         const referenceId = String(r.reference_id);
         indexed.set(key(store.dbId, referenceId), {
@@ -445,7 +448,8 @@ export class ReferenceIndex {
       }
     }
     for (const [k, ix] of indexed) {
-      if (!auth.has(k)) stale.push({ dbId: ix.dbId, referenceId: ix.referenceId, contentId: ix.contentId, class: ix.class });
+      if (!auth.has(k))
+        stale.push({ dbId: ix.dbId, referenceId: ix.referenceId, contentId: ix.contentId, class: ix.class });
     }
     const byKey = (a: DriftEntry, b: DriftEntry) =>
       a.dbId === b.dbId ? (a.referenceId < b.referenceId ? -1 : 1) : a.dbId < b.dbId ? -1 : 1;

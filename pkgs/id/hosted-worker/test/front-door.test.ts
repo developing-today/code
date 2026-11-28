@@ -117,7 +117,10 @@ function directoryFixture() {
     prepare(query) {
       let values: Array<string | number | null> = [];
       return {
-        bind(...bound) { values = bound; return this; },
+        bind(...bound) {
+          values = bound;
+          return this;
+        },
         async first<T extends Record<string, unknown>>() {
           return (db.prepare(query).get(...values) as T | undefined) ?? null;
         },
@@ -127,9 +130,10 @@ function directoryFixture() {
       };
     },
   };
-  const snapshot = () => ["hosted_accounts", "legacy_hosted_accounts"].map(
-    (table) => db.prepare(`SELECT * FROM ${table} ORDER BY subject_key`).all(),
-  );
+  const snapshot = () =>
+    ["hosted_accounts", "legacy_hosted_accounts"].map((table) =>
+      db.prepare(`SELECT * FROM ${table} ORDER BY subject_key`).all(),
+    );
   return { db, adapter, directory: new PersistentHostedAccountDirectory(adapter), snapshot };
 }
 
@@ -242,7 +246,13 @@ test("with no ceiling, normal writes pass and the hard body bound still applies 
 
 test("the front door consults the central registry and refuses a missing binding", async () => {
   let lookups = 0;
-  const { env, calls } = makeEnv({}, registryDb(() => { lookups++; return null; }));
+  const { env, calls } = makeEnv(
+    {},
+    registryDb(() => {
+      lookups++;
+      return null;
+    }),
+  );
   const response = await worker.fetch(front("/v1/state"), env);
 
   assert.equal(response.status, 403);
@@ -276,7 +286,10 @@ test("the front door refuses inactive central accounts and bindings before names
     { binding_status: "active", account_state: "suspended", error: "registry_account_inactive" },
     { binding_status: "superseded", account_state: "active", error: "registry_binding_inactive" },
   ]) {
-    const { env, calls } = makeEnv({}, registryDb((bindingId) => ({ binding_id: bindingId, ...scenario })));
+    const { env, calls } = makeEnv(
+      {},
+      registryDb((bindingId) => ({ binding_id: bindingId, ...scenario })),
+    );
     const response = await worker.fetch(front("/v1/state"), env);
     assert.equal(response.status, 403);
     assert.equal(((await response.json()) as { error: string }).error, scenario.error);
@@ -293,7 +306,12 @@ test("the front door fails closed when the central registry binding is absent", 
 });
 
 test("the front door fails closed when the central registry query fails", async () => {
-  const { env, calls } = makeEnv({}, registryDb(() => { throw new Error("database offline"); }));
+  const { env, calls } = makeEnv(
+    {},
+    registryDb(() => {
+      throw new Error("database offline");
+    }),
+  );
   const response = await worker.fetch(front("/v1/state"), env);
   assert.equal(response.status, 503);
   assert.equal(((await response.json()) as { error: string }).error, "tenancy_registry_unavailable");
@@ -334,17 +352,19 @@ for (const scenario of [
       if (scenario.name === "legacy-only binding") {
         await directory.inventoryLegacy({ subjectKey: "legacy", bindingId: A });
       } else if (scenario.name !== "database failure") {
-        await directory.signup({ subjectKey: "subject", bindingId: A, jurisdiction: scenario.name === "jurisdiction mismatch" ? "eu" : "us" });
+        await directory.signup({
+          subjectKey: "subject",
+          bindingId: A,
+          jurisdiction: scenario.name === "jurisdiction mismatch" ? "eu" : "us",
+        });
         if ("column" in scenario) {
           db.exec("PRAGMA ignore_check_constraints = ON");
           db.prepare(`UPDATE hosted_accounts SET ${scenario.column} = ?`).run(scenario.value as string | number);
         }
         if (scenario.name === "legacy subject conflict" || scenario.name === "legacy binding conflict") {
-          db.prepare("INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)").run(
-            scenario.name === "legacy subject conflict" ? "subject" : "other-subject",
-            A,
-            "legacy-unrestricted",
-          );
+          db.prepare(
+            "INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)",
+          ).run(scenario.name === "legacy subject conflict" ? "subject" : "other-subject", A, "legacy-unrestricted");
         }
       }
       const before = scenario.name === "database failure" ? null : snapshot();
@@ -362,7 +382,10 @@ for (const scenario of [
 }
 
 test("the migration projection cannot authorize a binding missing from the central registry", async () => {
-  const { env, calls } = makeEnv({}, registryDb(() => null));
+  const { env, calls } = makeEnv(
+    {},
+    registryDb(() => null),
+  );
   const response = await worker.fetch(front("/v1/state"), {
     ...env,
     HOSTED_DIRECTORY: migrationProjection({
@@ -403,16 +426,26 @@ test("the central registry stays authoritative while the migration projection co
   const { db, adapter, directory } = directoryFixture();
   try {
     let record = await directory.signup({ subjectKey: "subject-1", bindingId: A, jurisdiction: "us" });
-    record = await directory.transition(record, { type: "begin", migrationId: "migration-1", targetJurisdiction: "eu" });
+    record = await directory.transition(record, {
+      type: "begin",
+      migrationId: "migration-1",
+      targetJurisdiction: "eu",
+    });
     record = await directory.transition(record, { type: "freeze-acknowledged", migrationId: "migration-1" });
     record = await directory.transition(record, { type: "snapshot-verified", migrationId: "migration-1" });
 
-    let app = makeEnv({}, registryDb(() => ({ binding_id: A, binding_status: "active", account_state: "active" })));
+    let app = makeEnv(
+      {},
+      registryDb(() => ({ binding_id: A, binding_status: "active", account_state: "active" })),
+    );
     const source = await worker.fetch(front("/v1/state"), { ...app.env, HOSTED_DIRECTORY: adapter } as never);
     assert.equal(source.status, 200, "a verified migration continues to route to the source");
 
     record = await directory.transition(record, { type: "switch", migrationId: "migration-1" });
-    app = makeEnv({}, registryDb(() => ({ binding_id: A, binding_status: "active", account_state: "active" })));
+    app = makeEnv(
+      {},
+      registryDb(() => ({ binding_id: A, binding_status: "active", account_state: "active" })),
+    );
     const switching = await worker.fetch(front("/v1/state"), { ...app.env, HOSTED_DIRECTORY: adapter } as never);
     assert.equal(switching.status, 503);
     assert.equal(switching.headers.get("retry-after"), "30");

@@ -34,11 +34,7 @@ test("target stays non-serving until switch and activation follows switch", () =
     { activeJurisdiction: "us", routingEpoch: 0 },
     { migrationId: "m-2", targetJurisdiction: "eu" },
   );
-  const events: MigrationEvent[] = [
-    { type: "freeze-acknowledged" },
-    { type: "snapshot-verified" },
-    { type: "switch" },
-  ];
+  const events: MigrationEvent[] = [{ type: "freeze-acknowledged" }, { type: "snapshot-verified" }, { type: "switch" }];
 
   for (const event of events) {
     state = transitionMigration(state, event);
@@ -56,18 +52,11 @@ test("a switched migration cannot roll back; recovery can only continue forward"
     { activeJurisdiction: "us", routingEpoch: 4 },
     { migrationId: "m-3", targetJurisdiction: "eu" },
   );
-  for (const event of [
-    { type: "freeze-acknowledged" },
-    { type: "snapshot-verified" },
-    { type: "switch" },
-  ] as const) {
+  for (const event of [{ type: "freeze-acknowledged" }, { type: "snapshot-verified" }, { type: "switch" }] as const) {
     state = transitionMigration(state, event);
   }
 
-  assert.throws(
-    () => transitionMigration(state, { type: "abort" }),
-    /cannot abort after switch/,
-  );
+  assert.throws(() => transitionMigration(state, { type: "abort" }), /cannot abort after switch/);
   assert.equal(state.activeJurisdiction, "eu");
   assert.equal(state.sourceFrozen, true);
   assert.equal(state.targetServing, false);
@@ -89,13 +78,7 @@ test("pre-switch abort returns to source with a fresh epoch and never serves tar
 });
 
 test("generated phase/event combinations preserve routing and serving invariants", () => {
-  const eventTypes = [
-    "freeze-acknowledged",
-    "snapshot-verified",
-    "switch",
-    "activate-target",
-    "abort",
-  ] as const;
+  const eventTypes = ["freeze-acknowledged", "snapshot-verified", "switch", "activate-target", "abort"] as const;
   const phases = ["pending", "frozen", "verified", "switched", "active", "aborted"] as const;
 
   for (const phase of phases) {
@@ -104,7 +87,7 @@ test("generated phase/event combinations preserve routing and serving invariants
         migrationId: "generated",
         sourceJurisdiction: "us" as const,
         targetJurisdiction: "eu" as const,
-        activeJurisdiction: phase === "switched" || phase === "active" ? "eu" as const : "us" as const,
+        activeJurisdiction: phase === "switched" || phase === "active" ? ("eu" as const) : ("us" as const),
         routingEpoch: 9,
         phase,
         sourceFrozen: phase === "frozen" || phase === "verified" || phase === "switched" || phase === "active",
@@ -113,7 +96,10 @@ test("generated phase/event combinations preserve routing and serving invariants
       try {
         const after = transitionMigration(before, { type: eventType });
         assert.ok(after.routingEpoch >= before.routingEpoch, `${phase} + ${eventType} decreased epoch`);
-        assert.ok(after.targetServing === false || after.phase === "active", `${phase} + ${eventType} served target early`);
+        assert.ok(
+          after.targetServing === false || after.phase === "active",
+          `${phase} + ${eventType} served target early`,
+        );
         assert.ok(after.activeJurisdiction === "us" || after.sourceFrozen, `${phase} + ${eventType} unfenced source`);
       } catch (error) {
         // Illegal transitions are valid outcomes; the oracle applies to accepted transitions.
@@ -139,8 +125,16 @@ test("seeded event sequences preserve migration invariants across generated hist
   const assertInvariant = (state: ReturnType<typeof beginMigration>) => {
     assert.ok(state.routingEpoch >= 1);
     assert.equal(state.targetServing, state.phase === "active");
-    assert.equal(state.sourceFrozen, state.phase === "frozen" || state.phase === "verified" || state.phase === "switched" || state.phase === "active");
-    if (state.phase === "pending" || state.phase === "frozen" || state.phase === "verified" || state.phase === "aborted") {
+    assert.equal(
+      state.sourceFrozen,
+      state.phase === "frozen" || state.phase === "verified" || state.phase === "switched" || state.phase === "active",
+    );
+    if (
+      state.phase === "pending" ||
+      state.phase === "frozen" ||
+      state.phase === "verified" ||
+      state.phase === "aborted"
+    ) {
       assert.equal(state.activeJurisdiction, state.sourceJurisdiction);
     }
   };

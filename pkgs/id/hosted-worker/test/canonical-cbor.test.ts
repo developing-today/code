@@ -69,11 +69,9 @@ function fromFixture(value: FixtureValue): CborValue {
   }
 }
 
-const GOLDEN = SHARED_VECTORS.canonical_cbor.map(({ name, value, encoded_hex }) => [
-  fromFixture(value),
-  encoded_hex,
-  name,
-] as const);
+const GOLDEN = SHARED_VECTORS.canonical_cbor.map(
+  ({ name, value, encoded_hex }) => [fromFixture(value), encoded_hex, name] as const,
+);
 
 test("golden vectors encode and decode byte-exactly", () => {
   assert.equal(GOLDEN.length, 27, "shared canonical CBOR fixture retains every vector");
