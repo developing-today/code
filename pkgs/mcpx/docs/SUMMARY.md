@@ -64,6 +64,7 @@
 - [Record and replay tool calls](record-and-replay.md)
 - [MCP tool reference](tool-reference.md)
 - [Scripts](scripts.md)
+- [Session lifecycle: identity, release, and termination](session-lifecycle.md)
 - [Script-side generate: the API contract](script-generate.md)
 - [mcpx](story.md)
 - [mcpx Development Strategies & Lessons Learned](work-strategies.md)
