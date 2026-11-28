@@ -8,6 +8,21 @@
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 import { HOSTED_DOORS } from "./capabilities.ts";
 
+/** The /version answer (#15793 criterion 1): the shape the edge
+ * probe reads (`version` field, `commitOf` in
+ * pm-stack/console/edge/src/worker-checks.ts). Pure: names only the
+ * deployed commit stamped as the VERSION var at deploy time, or
+ * "unknown" when unstamped — the probe records that honestly.
+ * Deliberately separate from /health, whose `version` is the
+ * package version, not a commit. */
+export function versionAnswer(config: Pick<HostedConfig, "deployedCommit">): Record<string, unknown> {
+  return {
+    ok: true,
+    service: SERVICE_NAME,
+    version: config.deployedCommit ?? "unknown",
+  };
+}
+
 export function buildHealthDocument(config: HostedConfig): Record<string, unknown> {
   return {
     status: "ok",
