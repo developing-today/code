@@ -772,8 +772,15 @@ async fn send_json<T: BridgeTransport, V: Serialize>(
     send_frame(transport, tag, &payload).await
 }
 
+/// Decodes one peer bridge frame through the duplicate-key refusal
+/// contract (#6520, #16360): a frame is frontier evidence, so a
+/// duplicated object key at any depth is refused by name rather than
+/// collapsed last-wins. The lossless form the contract prescribes —
+/// validate the raw bytes, discard, typed-decode the original bytes —
+/// is `crate::checked_json::from_slice_unique`.
 fn parse_json<V: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<V> {
-    serde_json::from_slice(payload).context("a bridge frame is not the expected JSON")
+    crate::checked_json::from_slice_unique(payload)
+        .context("a bridge frame is not the expected JSON")
 }
 
 /// Sends events as bounded batches, the hosted sender's flush
@@ -1211,6 +1218,22 @@ mod tests {
             ..BridgeLimits::default()
         };
         assert!(decode_batch(&encoded, &small).is_err());
+    }
+
+    #[test]
+    fn parse_json_refuses_a_duplicated_head_key_by_name() {
+        // #16360: a HELLO head frame with `next_seq` written twice
+        // must be refused by name, not collapsed to the last value.
+        let frame = br#"[{"author":"abc","next_seq":5,"next_seq":9000,"head":null}]"#;
+        let err = parse_json::<Vec<Head>>(frame).unwrap_err();
+        assert!(format!("{err:#}").contains(r#""next_seq""#), "{err:#}");
+
+        // The same frame with each key written once parses as before.
+        let heads: Vec<Head> =
+            parse_json(br#"[{"author":"abc","next_seq":5,"head":null}]"#).unwrap();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].next_seq, 5);
+        assert_eq!(heads[0].head, None);
     }
 
     #[tokio::test]

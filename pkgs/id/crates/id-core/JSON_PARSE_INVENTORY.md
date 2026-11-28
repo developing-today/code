@@ -223,6 +223,14 @@ at receipt: a `Value` cannot hold a duplicate, the receipt parses
 refuse one, and the artifact signature covers the re-serialized body
 `Value`, so no reader of the signed object sees a different document.
 
+Two more peer-input gates added after the baseline — the signed-object
+bridge dialer (#3818, landed 2026-11-23) — were routed by #16360: the
+native leg's `parse_json` (`crates/id-sync/src/bridge.rs`), now decoded
+through `crate::checked_json::from_slice_unique`, and the hosted leg's
+`parseJson` (`pkgs/id/hosted-worker/src/bridge-session.ts`), which
+refuses a duplicated key at any depth before any typed cast. They are
+not in the table, so the counts above are unchanged by them.
+
 Two peer-input gates added after the baseline were routed with the
 id-worlds family: `validate_payload_entry_versions`
 (`crates/id-worlds/src/world/replication.rs`), which decodes a signed
