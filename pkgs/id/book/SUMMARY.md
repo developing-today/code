@@ -62,6 +62,7 @@
 - [Design: agents in worlds and the MCP bridge](design/agents-mcp.md)
 - [Design: currency, tokens and metering](design/currency-metering.md)
 - [Design: the knowledge layer](design/knowledge-layer.md)
+- [Design: open discovery — curation and abuse resistance](design/discovery-curation.md)
 - [Design: first apps and the ecosystem](design/first-apps.md)
 - [Design: scale, performance and adversarial hardening](design/scale-hardening.md)
 - [Roadmap, issue map and the design-record index](design/roadmap-and-issue-map.md)
