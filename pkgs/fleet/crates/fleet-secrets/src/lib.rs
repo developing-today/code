@@ -822,10 +822,21 @@ impl BrokerSource {
 
     /// One framed request/response over a fresh session-broker
     /// connection — the exchange [`BrokerSource::resolve`] and
-    /// [`BrokerSource::list_names`] share.
+    /// [`BrokerSource::list_names`] share. `GET` is the historical
+    /// shape; S5's `refresh` verb posts `POST /refresh` through the
+    /// same frame and polls health through it.
     fn request(&self, path: &str, name: &str) -> Result<Response, SecretError> {
+        self.request_with_method("GET", path, name)
+    }
+
+    fn request_with_method(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<Response, SecretError> {
         let request = Request {
-            method: "GET".to_string(),
+            method: method.to_string(),
             path: path.to_string(),
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
@@ -875,6 +886,22 @@ impl BrokerSource {
     ) -> Result<Vec<String>, SecretError> {
         let response = self.request(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(response.status, &response.body, scope)
+    }
+
+    /// Trigger a broker refresh now (#13948 S5 §5.4): `POST
+    /// /refresh` answers 202 with the refresh running on a broker
+    /// thread; the caller polls [`BrokerSource::health`] until it
+    /// settles. Name-free: a refresh names no secret, so the
+    /// pseudo-name is the verb.
+    pub fn post_refresh(&self) -> Result<Response, SecretError> {
+        self.request_with_method("POST", "/refresh", "refresh")
+    }
+
+    /// The broker's health record (`GET /health`), unauthenticated
+    /// by broker design. The S5 `refresh` verb polls this until
+    /// `refreshing` clears, then reports the serving leg.
+    pub fn health(&self) -> Result<Response, SecretError> {
+        self.request_with_method("GET", "/health", "health")
     }
 
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
@@ -1017,8 +1044,16 @@ impl DirectBrokerSource {
         }
     }
 
-    /// One GET exchange over the broker socket: status + JSON body.
-    fn get(&self, path: &str, name: &str) -> Result<(u16, serde_json::Value), SecretError> {
+    /// One raw exchange over the broker socket (#13948 S5): the
+    /// HTTP method and path with the token header, answered as
+    /// status + JSON body. `GET` is the historical shape; `POST
+    /// /refresh` is the S5 manual-refresh trigger.
+    fn exchange(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<(u16, serde_json::Value), SecretError> {
         use std::io::{Read, Write};
         let unavailable = |detail: String| SecretError::Unavailable {
             source: "secrets-broker",
@@ -1050,7 +1085,7 @@ impl DirectBrokerSource {
         // headers (empty when there is no context).
         let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
         let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
             token.trim()
         );
         stream
@@ -1093,8 +1128,26 @@ impl DirectBrokerSource {
         scope: &Scope,
         selection: &StoreSelection,
     ) -> Result<Vec<String>, SecretError> {
-        let (status, body) = self.get(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
+        let (status, body) =
+            self.exchange("GET", &list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(status, &body, scope)
+    }
+
+    /// Trigger a broker refresh now (#13948 S5 §5.4): `POST
+    /// /refresh` answers 202 with the refresh running on a broker
+    /// thread; the caller polls [`DirectBrokerSource::health`]
+    /// until it settles. Name-free: a refresh names no secret, so
+    /// the pseudo-name is the verb.
+    pub fn post_refresh(&self) -> Result<(u16, serde_json::Value), SecretError> {
+        self.exchange("POST", "/refresh", "refresh")
+    }
+
+    /// The broker's health record (`GET /health`), unauthenticated
+    /// by broker design: `{ok, serving, secrets, last_refresh_unix,
+    /// last_refresh_leg, refreshing, ...}`. The S5 `refresh` verb
+    /// polls this until `refreshing` clears, then reports the leg.
+    pub fn health(&self) -> Result<(u16, serde_json::Value), SecretError> {
+        self.exchange("GET", "/health", "health")
     }
 }
 
@@ -1114,7 +1167,7 @@ impl DirectBrokerSource {
     /// mapping — the same shapes as [`BrokerSource::resolve_once`]
     /// (404 definitive, everything else retryable `Unavailable`).
     fn resolve_once(&self, name: &str) -> Result<SecretValue, SecretError> {
-        let (status, body) = self.get(&format!("/secret/{name}"), name)?;
+        let (status, body) = self.exchange("GET", &format!("/secret/{name}"), name)?;
         match status {
             200 => {
                 let value = body.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -2688,16 +2741,7 @@ mod tests {
                     self.entries.borrow_mut().retain(|(i, _, _)| i != id);
                     Ok("{}".to_string())
                 }
-                [
-                    "secret",
-                    "create",
-                    "-o",
-                    "json",
-                    "--",
-                    name,
-                    value,
-                    _project,
-                ] => {
+                ["secret", "create", "-o", "json", "--", name, value, _project] => {
                     if self.fail_create {
                         return Err("exit status 1".to_string());
                     }

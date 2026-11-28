@@ -16,10 +16,15 @@
 //! therefore never carries a 1Password-only name.
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
-//!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
+//!   GET /health        -> {ok, serving, secrets, last_refresh_unix,
+//!                          last_refresh_leg, refreshing,
 //!                          refresh_progress, oldest_secret_age_seconds}
 //!                          | 503 while `serving` is false (no successful
-//!                          refresh yet, #10868). While a refresh is in
+//!                          refresh yet, #10868). `last_refresh_leg` is
+//!                          the leg that served the last successful
+//!                          refresh (`peer` | `upstream-delta` |
+//!                          `upstream-full`, #13948 S5), null before
+//!                          the first success. While a refresh is in
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
@@ -133,6 +138,12 @@ struct State {
     /// retry-looping a bare "not loaded yet". Status-only text by
     /// construction (BwsRunner discipline): never vault material.
     last_refresh_error: RwLock<Option<String>>,
+    /// Which leg served the last successful refresh (#13948 S5
+    /// §5.4): `peer`, `upstream-delta`, or `upstream-full`. `None`
+    /// before the first success. Survives failures (a failed refresh
+    /// keeps the previous leg) and is published on /health and
+    /// /peer/status so `fleet secrets refresh` can report it.
+    last_refresh_leg: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
     /// The in-flight refresh's progress (#13081): when it started,
     /// how many of the vault's fetches it has completed, and how
@@ -436,19 +447,33 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         }
         *r = true;
     }
-    let result = match peer_sync(state) {
-        Ok(Some(count)) => Ok(count),
-        Ok(None) => do_refresh(state),
-        Err(e) => Err(e),
+    let (leg, result) = match peer_sync(state) {
+        Ok(Some(count)) => (Some("peer"), Ok(count)),
+        Ok(None) => {
+            // The upstream leg the delta loop is about to take
+            // (#13948 §5.1): a broker with no watermark yet does a
+            // full apply, otherwise a delta apply. Read before the
+            // refresh advances the watermark.
+            let full = state.last_refresh.read().unwrap().is_none();
+            let leg = if full { "upstream-full" } else { "upstream-delta" };
+            (Some(leg), do_refresh(state))
+        }
+        Err(e) => (None, Err(e)),
     };
     // The refresh-error bookkeeping lives here, in the one shared
     // operation, so every caller records it — the background loop
     // AND the manual POST /refresh path, whose caller discards the
     // result (CodeRabbit review, #10757). The guard rejection
     // above returns before this point and never overwrites the
-    // recorded error: a rejected overlap is not an attempt.
+    // recorded error: a rejected overlap is not an attempt. The
+    // serving leg advances only on success: a failed refresh keeps
+    // the previous leg, so `refresh` never reports a leg that did
+    // not serve.
     match &result {
-        Ok(_) => *state.last_refresh_error.write().unwrap() = None,
+        Ok(_) => {
+            *state.last_refresh_error.write().unwrap() = None;
+            *state.last_refresh_leg.write().unwrap() = leg.map(str::to_string);
+        }
         Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
     }
     end_refresh_progress(state);
@@ -1100,6 +1125,7 @@ fn handle_request(
                 "serving": serving,
                 "secrets": state.secrets.read().unwrap().len(),
                 "last_refresh_unix": last_refresh_unix,
+                "last_refresh_leg": *state.last_refresh_leg.read().unwrap(),
                 "refreshing": *state.refreshing.read().unwrap(),
                 "refresh_progress": refresh_progress,
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
@@ -1163,6 +1189,7 @@ fn handle_request(
             json!({
                 "set_hash": set_hash,
                 "last_upstream_refresh_at": *state.last_refresh.read().unwrap(),
+                "last_refresh_leg": *state.last_refresh_leg.read().unwrap(),
                 "count": count,
             }),
         )
@@ -1344,6 +1371,7 @@ pub fn run() -> i32 {
         peer_url,
         peer_token: token.clone(),
         last_refresh_error: RwLock::new(None),
+        last_refresh_leg: RwLock::new(None),
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
@@ -1590,6 +1618,7 @@ mod tests {
             peer_url: None,
             peer_token: "tok".into(),
             last_refresh_error: RwLock::new(None),
+            last_refresh_leg: RwLock::new(None),
             refreshing: RwLock::new(false),
             refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
@@ -1616,6 +1645,26 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["serving"], true);
         assert_eq!(body["ok"], true);
+    }
+
+    #[test]
+    fn refresh_leg_is_published_on_health_and_peer_status() {
+        // oracle (#13948 S5 §5.4): before the first successful
+        // refresh both surfaces carry a null leg; a recorded leg is
+        // published verbatim. `fleet secrets refresh` reports this
+        // field, so a leg that never served must never appear.
+        let state = empty_state();
+        let (_, health) = handle_request(&state, "tok", "GET", "/health", None);
+        assert!(health.get("last_refresh_leg").is_some());
+        assert!(health["last_refresh_leg"].is_null());
+        let (_, status) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+        assert!(status["last_refresh_leg"].is_null());
+
+        *state.last_refresh_leg.write().unwrap() = Some("peer".to_string());
+        let (_, health) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(health["last_refresh_leg"], "peer");
+        let (_, status) = handle_request(&state, "tok", "GET", "/peer/status", Some("tok"));
+        assert_eq!(status["last_refresh_leg"], "peer");
     }
 
     #[test]
