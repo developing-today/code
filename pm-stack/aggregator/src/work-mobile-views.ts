@@ -19,9 +19,10 @@
 //   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
 // - `needs_triage` needs issue labels, which `WorkView` does not carry:
 //   `unavailable` until MOB-01 carries them (follow-up F2).
-// - `triage` needs Area/Horizon beside Project Status; `WorkView`
-//   carries neither, so a decidable-status row is still `undecided`
-//   with `policy_undefined` (follow-up F3).
+// - `triage` uses Project Status, Area and Horizon (F3). An explicit
+//   null Area/Horizon is a read empty value; an omitted field is an
+//   unread/absent fact (D3). Explicit null Project Status is not yet
+//   representable, so that D2 arm remains a follow-up.
 // - `blocking` / `critical_path` wait on MOB-08 relations (record gate
 //   4): every row is `undecided` with `policy_undefined` (F4).
 // - D5 orders by column, then `updated_at` descending; `updated_at` is
@@ -43,9 +44,10 @@
 //   `fact_not_sourced` until MOB-01 carries it (follow-up F1).
 // - `needs_triage` needs issue labels, which `WorkView` does not carry:
 //   `unavailable` until MOB-01 carries them (follow-up F2).
-// - `triage` needs Area/Horizon beside Project Status; `WorkView`
-//   carries neither, so a decidable-status row is still `undecided`
-//   with `policy_undefined` (follow-up F3).
+// - `triage` uses Project Status, Area and Horizon (F3). An explicit
+//   null Area/Horizon is a read empty value; an omitted field is an
+//   unread/absent fact (D3). Explicit null Project Status is not yet
+//   representable, so that D2 arm remains a follow-up.
 // - `blocking` / `critical_path` wait on MOB-08 relations (record gate
 //   4): every row is `undecided` with `policy_undefined` (F4).
 // - D5 orders by column, then `updated_at` descending; `updated_at` is
@@ -92,6 +94,8 @@ export interface WorkKey {
 
 export type MobileFactKey =
   | "project"
+  | "project.area"
+  | "project.horizon"
   | "github"
   | "github.labels"
   | "github.updated_at"
@@ -241,13 +245,42 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
         break;
       case "triage": {
         const st = factState(view.facts.project);
-        if (st !== "present") {
-          hold("project", st);
+        if (st !== "present" || !("value" in view.facts.project)) {
+          // No confirmed status reading: the record's "null or Todo"
+          // arm cannot be checked, so the row waits on `project` (D3).
+          // A present-but-valueless project state is not a status
+          // reading either. Explicit status-null stays a follow-up:
+          // `project_status` cannot express it yet.
+          hold("project", (st === "present" ? "policy_undefined" : st) as UndecidedState);
+        } else if (view.facts.project.value !== "Todo") {
+          // A decided status other than Todo fails the D2 predicate:
+          // out, not undecided.
         } else {
-          // Project Status is decidable here, but Area/Horizon are not
-          // carried by pm_work_view/v1, so V1 cannot confirm the D2
-          // predicate (follow-up F3).
-          hold("project", "policy_undefined");
+          // Status Todo (decidable). The predicate also needs Area or
+          // Horizon explicitly null: a known null on either side
+          // places the row; both present and set excludes it; an
+          // unread or unusable side holds the row on that fact (D3 —
+          // a stale fact never matches on its last value).
+          const areaNull =
+            factState(view.facts.project_area) === "present" &&
+            "value" in view.facts.project_area &&
+            view.facts.project_area.value === null;
+          const horizonNull =
+            factState(view.facts.project_horizon) === "present" &&
+            "value" in view.facts.project_horizon &&
+            view.facts.project_horizon.value === null;
+          if (areaNull || horizonNull) {
+            refs.push(ref);
+          } else {
+            const ast = factState(view.facts.project_area);
+            const hst = factState(view.facts.project_horizon);
+            if (ast !== "present" || !("value" in view.facts.project_area)) {
+              hold("project.area", (ast === "present" ? "policy_undefined" : ast) as UndecidedState);
+            } else if (hst !== "present" || !("value" in view.facts.project_horizon)) {
+              hold("project.horizon", (hst === "present" ? "policy_undefined" : hst) as UndecidedState);
+            }
+            // else: both present and set — predicate false, row out.
+          }
         }
         break;
       }
@@ -334,10 +367,11 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
 //   author fact, and the saved-view `owner` dimension means the GitHub
 //   author on main (follow-up F5). A later slice lifts this once
 //   MOB-01 carries the author; the bucket shape stays the same.
-// - `area` / `horizon` / `epic` / `kind` are likewise absent from
-//   `WorkView`: `workViewLike` maps them to `null`, so a saved filter
-//   on one of those dimensions excludes the row (D6), never matches
-//   it on a guessed value.
+// - `area` / `horizon` ride `WorkView` since F3 and `workViewLike`
+//   maps carried values through; absent dimensions stay `null`, so a
+//   saved filter on one of those dimensions excludes the row (D6),
+//   never matches it on a guessed value. `epic` / `kind` are still
+//   absent and map to `null`.
 
 export type GroupBy = "repo" | "project" | "owner";
 
@@ -422,11 +456,16 @@ export function workViewLike(view: WorkView): ViewItemLike {
     : view.work.authority_id + "/" + view.work.work_id;
   const github = view.facts.github_state;
   const project = view.facts.project;
+  const area = view.facts.project_area;
+  const horizon = view.facts.project_horizon;
   return {
     ref,
     repo: primary?.repository_id ?? null,
-    area: null,
-    horizon: null,
+    // F3: carried Area/Horizon map through with the same meanings as
+    // the #1276 item fields; absent dimensions stay null so a filter
+    // on them excludes the row, never matches on a guess (D6).
+    area: "value" in area && typeof area.value === "string" ? area.value : null,
+    horizon: "value" in horizon && typeof horizon.value === "string" ? horizon.value : null,
     // F5: no author fact on `WorkView` yet; never guess.
     owner: null,
     state: "value" in github ? github.value : null,
