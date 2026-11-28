@@ -29,6 +29,7 @@
 import type { AuthDeps, CallerContext } from "./auth.ts";
 import { Blake3Hasher } from "../../../hosted-primitives/src/blake3.ts";
 import { bytesToHex } from "../../../hosted-primitives/src/encoding.ts";
+import { readBodyText } from "./body.ts";
 import { FailClosed } from "./errors.ts";
 import {
   checkKvScopes,
@@ -599,10 +600,11 @@ export async function handleKvBlobCapability(req: Request, ctx: CallerContext, d
   }
   let body: Record<string, unknown>;
   try {
-    const parsed: unknown = await req.json();
+    const parsed: unknown = JSON.parse(await readBodyText(req));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
     body = parsed as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    if (err instanceof FailClosed) throw err;
     refused("kv_blob_malformed", "the body is not a JSON object");
   }
   const field = (name: string): string => {

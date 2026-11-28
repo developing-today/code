@@ -38,6 +38,7 @@
 // Unconfigured (no KV_LIBSQL_URL) → 503, like every missing dependency.
 
 import type { AuthDeps, CallerContext } from "./auth.ts";
+import { readBodyText } from "./body.ts";
 import { FailClosed } from "./errors.ts";
 import catalogDocument from "./kv-catalog.json" with { type: "json" };
 
@@ -464,8 +465,9 @@ export async function handleKvPipeline(req: Request, ctx: CallerContext, deps: A
   }
   let body: unknown;
   try {
-    body = await req.json();
-  } catch {
+    body = JSON.parse(await readBodyText(req));
+  } catch (err) {
+    if (err instanceof FailClosed) throw err;
     malformed("the body is not JSON");
   }
   const statements = parseKvPipeline(body);

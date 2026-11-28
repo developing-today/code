@@ -24,6 +24,7 @@
 // like every door's missing dependency.
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
+import { readJsonBody } from "../body.ts";
 import { FailClosed } from "../errors.ts";
 import type { RouteDef } from "../router.ts";
 import {
@@ -50,11 +51,7 @@ function caller(ctx: CallerContext | null): CallerContext {
 }
 
 async function jsonBody(req: Request): Promise<unknown> {
-  try {
-    return await req.json();
-  } catch {
-    throw new FailClosed(400, "invalid_body", "request body is not valid JSON");
-  }
+  return readJsonBody(req);
 }
 
 async function projectSync(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
