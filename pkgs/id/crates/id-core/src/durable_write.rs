@@ -79,7 +79,7 @@ fn before_rename(source: io::Error) -> DurableWriteError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{write_durable, write_durable_with_parent_sync, WriteStage};
+    use super::{WriteStage, write_durable, write_durable_with_parent_sync};
 
     #[test]
     fn replaces_file_and_leaves_no_temp() {

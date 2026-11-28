@@ -1545,11 +1545,7 @@ impl MetaProtocol {
     /// Rank blob names and hashes against `query`.
     async fn find(&self, query: &str, prefer_name: bool) -> Result<Vec<FindMatch>> {
         Self::find_in_tag_list(
-            self.store
-                .tags()
-                .list()
-                .await
-                .map_err(anyhow::Error::from),
+            self.store.tags().list().await.map_err(anyhow::Error::from),
             query,
             prefer_name,
         )
@@ -2850,18 +2846,18 @@ mod find_storage_error_tests {
     #[tokio::test]
     async fn find_accepts_empty_and_successful_tag_listings() {
         let empty = futures_lite::stream::empty();
-        let matches = MetaProtocol::find_in_tag_list::<_, anyhow::Error>(Ok(empty), "needle", false)
-            .await
-            .unwrap();
+        let matches =
+            MetaProtocol::find_in_tag_list::<_, anyhow::Error>(Ok(empty), "needle", false)
+                .await
+                .unwrap();
         assert!(matches.is_empty());
 
-        let list = futures_lite::stream::iter([Ok::<_, anyhow::Error>(
-            iroh_blobs::api::tags::TagInfo {
+        let list =
+            futures_lite::stream::iter([Ok::<_, anyhow::Error>(iroh_blobs::api::tags::TagInfo {
                 name: "needle.txt".into(),
                 format: iroh_blobs::BlobFormat::Raw,
                 hash: iroh_blobs::Hash::from_bytes([123; 32]),
-            },
-        )]);
+            })]);
         let matches = MetaProtocol::find_in_tag_list(Ok(list), "needle", false)
             .await
             .unwrap();

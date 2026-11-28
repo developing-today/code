@@ -16,7 +16,7 @@ mod id_shape;
 #[path = "../src/content_id.rs"]
 mod content_id;
 
-use content_id::{parse_content_text, to_iroh_hash, ContentIdError, ContentTextForm};
+use content_id::{ContentIdError, ContentTextForm, parse_content_text, to_iroh_hash};
 use id_shape::{HashProfile, IdShapeError, ParsePolicy};
 use serde_json::Value;
 
@@ -35,10 +35,12 @@ fn unavailable_producer_keeps_atlas_chunk_identity_opaque() {
     assert!(chunk["input_bytes"].is_null());
     assert!(chunk["profile"].is_null());
     assert_eq!(chunk["vectors"].as_array().unwrap().len(), 0);
-    assert!(chunk["interop_claim"]
-        .as_str()
-        .unwrap()
-        .contains("forbidden"));
+    assert!(
+        chunk["interop_claim"]
+            .as_str()
+            .unwrap()
+            .contains("forbidden")
+    );
 
     // A typed Atlas identifier is never an Iroh identifier. This checks the
     // seam only; no Atlas chunk hash is recomputed or inferred from the absent
