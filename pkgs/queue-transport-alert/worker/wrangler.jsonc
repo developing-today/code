@@ -17,7 +17,11 @@
     "TELEGRAM_CHAT_ID": "8290042325",
     "PUBLIC_URL": "https://queue-transport-alert.developing-today.workers.dev",
     // "true" files/comments on incidents, pushes and enqueues; anything else only logs.
-    "APPLY": "true"
+    "APPLY": "true",
+    // Deployed commit named by GET /version (#15793); real deploys stamp
+    // it at build time (cloudflare.config.ts), this keeps local dev and
+    // unstamped builds honest.
+    "VERSION": "unknown"
   },
   // Secrets (uploaded with each version by deploy.mjs from Bitwarden, never in this file):
   //   ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET  Access service token for the broker route
