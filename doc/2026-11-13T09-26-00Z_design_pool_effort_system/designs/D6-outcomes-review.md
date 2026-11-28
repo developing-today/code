@@ -405,8 +405,8 @@ A row may carry both, one, or the other; it must carry at least one.
 `(decision_id, role, rater_ref)`, using `rated_at` with `id` as tie-break. Earlier rows
 stay. Reports show current ratings and can show the history.
 
-**Rules.** A rater may not rate its own decision as `callee` unless `perspective =
-self`. A rating with no `reason` is allowed but counted separately in D3 exports.
+**Rules.** Self-ratings (`perspective = self`) are accepted and reported separately, never
+weighted differently. A rating with no `reason` is allowed but counted separately in D3 exports.
 
 ### 4.4 Outcomes — `outcome_observation` and `outcome_link` (fleet-platform Turso, V2)
 
@@ -458,7 +458,7 @@ a `reviewed` row. This is a display rule, not a block on writing.
 
 The registry is `pm-stack/outcome-labels.json` (D6-S7). It is the source; this table
 is its V2 content. Every label in supplement §5 is present. Detection kinds:
-**auto-gh** and **auto-git** come from mechanical sweeps (D6-S8); **auto-queue** from
+**auto-gh** and **auto-git** come from mechanical sweeps (D6-S9); **auto-queue** from
 queue state; **reported** from `fleet outcome report` by any session or human;
 **reviewed** from the PM review surface or a reviewer subsession.
 
@@ -499,8 +499,7 @@ queue state; **reported** from `fleet outcome report` by any session or human;
 | `overtested` | negative | judgement | Test effort exceeded the risk | reviewed | — |
 | `undertested` | negative | judgement | Test effort below the risk; a bug escaped | reviewed | — |
 
-Thirty-three labels in four lifecycle rows plus impact and judgement groups. Labels
-that are not in the registry cannot be written. New labels arrive by PR that changes
+Thirty-four labels: 12 lifecycle, 7 impact, 15 judgement. Labels that are not in the registry cannot be written. New labels arrive by PR that changes
 the registry file, and the registry carries a `version` that every observation records
 (`label_registry_version`).
 
@@ -558,14 +557,14 @@ CREATE TABLE fact_link (
 
 | Link | Written by | Where it lives | Survives |
 | --- | --- | --- | --- |
-| task → session | queue claim (`claim_session_id`) | `tasks` row | rows persist (#3424 notes the row is the record) |
+| task → session | queue claim (`claim_session_id`) | `tasks` row | rows persist; #3424's event history adds change records |
 | task → item | queue enqueue (`payload` carries the item ref) and the PR body `Task-Id` | `tasks.payload`, `fact_link` | payload immutable; link appended |
 | session → parent session | OpenCode core | `session_v2.parent_id` | always |
 | session → attempt | route proxy | `route_attempt.session_id` | always |
-| session → task (reverse) | session metadata written at claim by the launcher (D6-S10) | `session_v2.metadata.task` | with the session |
+| session → task (reverse) | session metadata `task` inherited by sub-sessions (D6-S5) | `session_v2.metadata.task` | with the session |
 | decision → session | executor | `decision_record.caller_session_id`, `subject_session_id` | always |
 | decision → legs → attempt | executor | `decision_leg.route_attempt_id` | always |
-| commit → task / session / decision | git trailers (§4.8) | git history | merge commits keep them; rebase is forbidden by policy |
+| commit → task / session / decision | git trailers (§4.8, D6-S10) | git history | merge commits keep them; rebase is forbidden by policy |
 | PR → issue | `Closes #n` and `issue_pr_links.json` (projection) | GitHub, pm-aggregator | GitHub |
 | decision → item | `Decision-Id` trailer on the PR's commits; `fact_link` `decision-item` written by the sweep | git + Turso | yes |
 
@@ -634,7 +633,7 @@ Assisted-by: opencode (opencode-route/workhorse)
 - `Task-Id` and `Session-Id` are optional; `Decision-Id` repeats for each decision that
   shaped the commit. `Assisted-by` names the route head, not the serving leaf
   (route refs are identity; leaves vary per step, `subagents.md`).
-- The fleet worktree hook (D6-S9) stamps them from the environment (`FLEET_TASK_ID`,
+- The fleet worktree hook (D6-S10) stamps them from the environment (`FLEET_TASK_ID`,
   the session id, decision ids recorded in the session's metadata). Other checkouts
   degrade gracefully: the PR-body block and the claim stamp still join.
 - **PR Trace block** (added to the PR body by the `pr` skill and the PR template,
@@ -663,7 +662,8 @@ fleet outcome report --item developing-today/code#3424 --label misunderstood \
 fleet outcome rate --decision dec_… --role caller --perspective parent \
     --correct 4 --wrong 0 --reason "routed to the right pool; the leg order was fine"
 fleet outcome list --item developing-today/code#3424 [--current] [--json]
-fleet outcome sweep [--since 14d] [--dry-run]          # D6-S8; registered in fleet-schedule-registry
+fleet outcome labels [--json]                          # prints the registry and its version
+fleet outcome sweep [--since 14d] [--dry-run]          # D6-S9; registered in fleet-schedule-registry
 fleet outcome link --from out_… --to out_… --kind caused --note "…"
 ```
 
@@ -726,25 +726,25 @@ records per decision type (`../main.md` §0 gate).
 Entry gate: V2 records exist for ≥ 14 days per decision type being tuned, and the
 30-day storage measurement is in.
 
-- **Nightly export** of `decision_record`, `decision_leg`, `decision_feedback`,
+- **Nightly export** (D6-S19) of `decision_record`, `decision_leg`, `decision_feedback`,
   `outcome_observation`, `outcome_link`, `fact_link` to Parquet partitioned by day
   (D3's export manifest; D6 supplies the table definitions and the `schema_version`
   of each file).
-- **Current-view exports** and the Langfuse projection: gauges as two numeric scores,
+- **Current-view exports** and the Langfuse projection (D6-S19): gauges as two numeric scores,
   each label as a boolean score (projection only, R2 §5.3).
-- **Calibration of severity and of labels** against the first 14 days of `reviewed`
+- **Calibration of severity and of labels** (research, D6-S18) against the first 14 days of `reviewed`
   rows: base rates per label and per severity, with `n` and an interval. Base rates
   feed D4 trials as priors, never as proof.
-- **Suggest-only labels.** An LLM reviewer subsession proposes labels for an item with
+- **Suggest-only labels** (D6-S20). An LLM reviewer subsession proposes labels for an item with
   evidence. Suggestions are stored as `reported` with `observer_role = other` and a
   `provenance.source = "suggestion"`. They never write `reviewed`.
-- **Snapshot at session close** (option 3.9 C): an append-only `session_fact` row for
+- **Snapshot at session close** (option 3.9 C, D6-S25): an append-only `session_fact` row for
   point-in-time facts that D3 needs.
-- **Churn and undone detection** upgraded from the file-overlap test to hunk survival
+- **Churn and undone detection** (research, D6-S21) upgraded from the file-overlap test to hunk survival
   (`git blame` on the item's added lines) for `work-undone`.
 - **Measured `slow` and `cheaper-than-expectation`** from TTFT and quota change markers
-  around a change (D3 change markers).
-- **Causal-chain report**: chains longer than two steps, with the share of chains
+  around a change (D3 change markers; design in D6-S21).
+- **Causal-chain report** (D6-S26): chains longer than two steps, with the share of chains
   asserted by a reviewer versus reported.
 - **Registry drift guard** (D6-S23): the registry file, the DDL and the writer's label
   list must agree; CI on main reports drift.
@@ -756,16 +756,16 @@ per-decision-type priors for D4 trials and a dashboard for the review surface.
 
 Entry gate: V3 metrics show the hand-tuned decision baseline is the limiting factor.
 
-- **Counterfactual evaluation** of other decision policies using stored probability
+- **Counterfactual evaluation** (research, D6-S22) of other decision policies using stored probability
   vectors and the logged `request_sha256` (only if D6 retains request bodies for the
   replayed decision types; this needs an explicit privacy decision by the owner, §7.2).
   Inverse-propensity scoring is useless while the pool choice is deterministic (R2
   §5.1); deliberate exploration within a trial's safe set (AD9) is the way to get
   propensities.
 - **Outcome-weighted decision priors** feeding D5's default answers, inside the safe
-  set only.
+  set only (design seed, D6-S22).
 - **Labelling assistant** that proposes the review set order (the model-selected set
-  ranked by expected information), human-confirmed.
+  ranked by expected information), human-confirmed (research, D6-S27).
 - **Hosted editions** of the review surface, with the same schema.
 
 ---
@@ -877,7 +877,7 @@ commits, so the link is already there. Its parent can add a `fact_link` if neede
 | --- | --- | --- | --- | --- |
 | Q1 | Put feedback, outcomes and links in fleet-platform Turso, or in the decision-events-worker D1 instead? | fleet-platform Turso | Same token-by-name pattern as `decision_set_events`; the worker is a fan-out for the decision sets | §4.4, §4.6 |
 | Q2 | Who owns the opencode.db migration? | the fork (`developing-today-forks/opencode`), core package | The `route_attempt` migration lives there | D6-S1 |
-| Q3 | Enforce commit trailers? | fleet worktree hook stamps them; no enforcement on other checkouts | Standing rules: CI on main only, so enforcement could only report | D6-S9 |
+| Q3 | Enforce commit trailers? | fleet worktree hook stamps them; no enforcement on other checkouts | Standing rules: CI on main only, so enforcement could only report | D6-S10 |
 | Q4 | Severity and size thresholds (quota band, PR size norm) | provisional; set from first 14 days (V3) | No labelled data yet | §4.5 |
 | Q5 | Rework window and overlap | 14 days, 50 % file overlap, same linked issue | GitClear-style prior, not a standard (R3 §5.1) | §4.5 `rework` |
 | Q6 | Which repo ships the opencode-cockpit `trail_add` tool, where `outcome_report` belongs | the repo that ships `trail_add`; confirm before D6-S12 | Location not verified in this run | D6-S12 |
@@ -931,17 +931,17 @@ commits, so the link is already there. Its parent can add a `fact_link` if neede
 | brief §5 — per-session and per-task data (attempts, triages, days to complete, success, time and quota per session/task/PR/attempt) | §4.6 per-session table; §4.2 quota snapshot | D6-S11, D6-S1, D6-S3 |
 | brief §5 — stats list (min…IQR) | §4.6 last paragraph (D3 owns; D6 keeps `n`) | D6-S11 (n carried) |
 | brief §6 — group by any tag or label; per-sample review | §4.2 keys, §4.4 current views, §4.5 registry | D6-S1, D6-S7 |
-| brief §6 — mark record for time-since-inject etc. | §4.2 `prompt_version` and `record_version` | D6-S2 |
+| brief §6 — mark records for later rollups (time since inject, capture, AA version) | §4.2 `prompt_version`, `record_version`, `prompt_date` | D6-S2 |
 | brief §9 — extend the stats pipeline, do not replace it | §2.1, §4.6 (D6 extends the ledger; D3 exports) | D6-S19 |
 | supp §2 — Cloudflare included allowance burned first, disengage at cap | §4.2 `neurons`, `budget-skipped` | D6-S1, D6-S3 |
-| supp §3 — every decision gets an ID; caller and callee gauges, separate | §4.1, §4.2, §4.3 | D6-S1, D6-S5, D6-S6 |
+| supp §3 — every decision gets an ID; caller and callee gauges, separate | §4.1, §4.2, §4.3 | D6-S1, D6-S3, D6-S6 |
 | supp §3 — effort default has no impact and is not used | §4.2 `effort_lean_*` (recorded, default off) | D6-S1 |
 | supp §4 — invalid-JSON path, two tries, then next leg, then default | §4.2 `attempt_no`, `json_status`, `invalid_sample_sha256`, invariant 4 | D6-S1, D6-S4 |
-| supp §5 — outcome vocabulary (every label) | §4.5 table, `outcome-labels.json` | D6-S7, D6-S8 |
+| supp §5 — outcome vocabulary (every label) | §4.5 table, `outcome-labels.json` | D6-S7, D6-S9 |
 | supp §5 — every session can report, on any issue or PR | §4.9, Appendix A | D6-S12, D6-S13 |
-| supp §5 — linkage: item → task → sessions/attempts/subsessions → tool calls, tokens, pools, models → decision | §4.1, §4.6 | D6-S9, D6-S10 |
+| supp §5 — linkage: item → task → sessions/attempts/subsessions → tool calls, tokens, pools, models → decision | §4.1, §4.6, §4.8 | D6-S5, D6-S10 |
 | supp §5 — per-session metrics (TTFT, first TTFT, step time/count, questions, time to submit, reroutes) | §4.6 table | D6-S11 |
-| supp §5 — feedback from PRs, issues, parents, subsessions | §4.3, §4.4 | D6-S6, D6-S8 |
+| supp §5 — feedback from PRs, issues, parents, subsessions | §4.3, §4.4 | D6-S6, D6-S9 |
 | supp §6 — tie-break lean vs fallback pool choice, kept distinct | §4.2 `effort_lean_*`, `fallback_pool_used` | D6-S1 |
 | supp §7 — clause ids applied | §4.2 `clauses_applied_json` | D6-S1 (column), D5 owns clauses |
 | supp §8 — review one item, model-selected set, marked set, custom selection, multiple sets, standalone | §4.10 | D6-S14, D6-S15 |
@@ -954,9 +954,9 @@ commits, so the link is already there. Its parent can add a `fact_link` if neede
 | prompt-surface brief §2 — "not confident" answers, prompt-surface reference | §4.2 `not_confident_count`, `prompt_surface_ref` | D6-S1 |
 | AD7 — every decision and attempt is an addressable event; append-only | §3.1, §4.2 triggers, §7.4 challenge 1 | D6-S1, D6-S4 |
 | AD10 — self-switch recorded as a decision | §4.2 `decision_type = self-switch` | D6-S3 (type registry from D5) |
-| Standing rule — CI on main only; merge commits only; gh only | §4.8, §4.9, §7.1 | D6-S8, D6-S9, D6-S23 |
+| Standing rule — CI on main only; merge commits only; gh only | §4.8, §4.9, §7.1 | D6-S9, D6-S10, D6-S23 |
 | AGENTS.md budget (8,000 bytes) | §2.3 | D6-S13 |
-| Privacy and size (inferred from supp §9 and AD7; no direct statement) | §4.7 | D6-S5, D6-S24 |
+| Privacy and size (inferred from supp §9 and AD7; no direct statement) | §4.7 | D6-S3, D6-S24 |
 
 ---
 

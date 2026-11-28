@@ -854,10 +854,10 @@ HAVING n >= 30
 ORDER BY n DESC;
 ```
 
-Live result (since 2026-11-06, top rows): `workhorse · _openai.main · gpt-6-luna · high` n = 71,371,
-median 9,997 ms (exact nearest-rank), p90 19,508 ms, p99 60,249 ms; `workhorse · _openai · gpt-6.1-terra · low`
-n = 17,221, median 9,092 ms. The exact sqlite value at p99 is shown as an oracle; the sketch in V2 must agree
-within α. **Note:** this is `response_ms` only (the call's own time, not queue time); it is a success-only
+Live result (since 2026-11-06, `response_ms`, success rows only, exact nearest rank): `workhorse · _openai.main ·
+gpt-6-luna · high` n = 71,371, mean 9,996.8 ms, p50 6,460.4 ms, Q3 10,780.3 ms, p90 19,508.6 ms, p99 60,248.5 ms,
+max 2,306,864 ms (a stalled call; the max is kept, not clipped). `workhorse · _openai · gpt-6.1-terra · low`
+n = 17,221, mean 9,092.2 ms, p50 8,140.6 ms. The SQL output is the exact oracle; the V2 sketch must agree within α. **Note:** this is `response_ms` only (the call's own time, not queue time); it is a success-only
 distribution, and the failure rate is in Q01.
 
 **Q02 — pool offered vs chosen (T).**
@@ -908,6 +908,25 @@ WHERE time_started >= :since
 GROUP BY route_id, provider_id, model_id, variant
 ORDER BY attempts DESC;
 ```
+
+Live result since 2026-11-06 (top rows): `workhorse · openai.main · gpt-6-luna · xhigh` 74,944 attempts, 73.5 %
+success; `workhorse · _openai.main · gpt-6-luna · high` 71,476 attempts, 99.9 %; `workhorse · _vibe ·
+deepseek-v4-1-flash-1017 · high` 22,425 attempts, 48.4 %. The door-level success spread is the reason D1/D4 need
+per-door rows, not per-model rows.
+
+**Q02 — live (T):** `workhorse-weighted` offered 277,604 times and chosen 185,244; `workhorse-ordered` 161,999 /
+83,233 (since 2026-11-06). Q02 SQL runs as written.
+
+**Q03 — live (T):** 10,373 sessions since 2026-11-06, mean output/input token ratio 0.023.
+
+**Q09 (T, sparse):** `summary_*` is populated on 468 sessions in all time (live: additions 22,247,223, deletions
+2,333,205, files 22,548); the query returns zero rows since 2026-11-06, so the diff figures are all-time only
+and must be labelled that way.
+
+**Q10 — live (T):** 30.8 attempts per session on average since 2026-11-06, maximum 965.
+
+**Q11 — live (T):** 711 root sessions with at least one child since 2026-11-06; mean created → updated 0.022 days
+(about 32 minutes). This is a session proxy; task-level days come from queue links (§4.8.3).
 
 **Q07 / Q08 (D)** — DuckDB over `v_tool_call`:
 

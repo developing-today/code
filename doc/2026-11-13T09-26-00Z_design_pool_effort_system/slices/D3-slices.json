@@ -1,0 +1,350 @@
+[
+  {
+    "id": "D3-S1",
+    "repo": "developing-today/code",
+    "title": "Stats store: fact table DDL and DuckDB views for route ledger facts",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nCreate the schema for the granular stats store: `fact_attempt`, `fact_route_decision`, `fact_session`,\n`fact_turn`, `fact_tool_call`, `fact_decision` (projection shape), `fact_outcome`, `fact_feedback` (shape),\n`fact_link`, and the `v_*` DuckDB views over the Parquet tree.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nRead design §4.2 (schemas, column types), §4.2.5 (contract for code#9373/9374), §4.9 (views used by queries).\nV1 facts that constrain types: `quota` JSON has four shapes (design §2 fact 1); `cost_usd` is NULL on 205,231\nrows; `provider_id` is not normalised (fact 3); `variant` values include `xhigh`, `max`, `none`, NULL (fact 5).\n\n## Files\n- `pm-stack/route-ledger-export/schema/facts.sql` (new): DDL in DuckDB dialect, one `CREATE TABLE` per fact,\n  with `schema_version` on every table.\n- `pm-stack/route-ledger-export/schema/views.sql` (new): `read_parquet('…/*/*.parquet', hive_partitioning = true)`\n  views `v_attempt`, `v_decision`, `v_session`, `v_turn`, `v_tool_call`, `v_decision_record`,\n  `v_outcome_current` (latest `outcome_code` per subject), `v_dim_model_current`, `v_rollup_latest`.\n- `pm-stack/route-ledger-export/schema/README.md` (new): grain statement per table (one sentence each).\n\n## Approach\nFollow design §4.2 exactly; enums are closed (`CHECK` in DDL). Outcome codes come from design §4.2.2 and are\nloaded from one list (`schema/outcome_codes.json`), never typed twice. No table is updated in place; the\n`v_outcome_current` view is the only \"current\" reader.\n\n## Acceptance (runnable)\n1. `duckdb -c \".read pm-stack/route-ledger-export/schema/facts.sql\"` on an empty DB exits 0.\n2. `duckdb -c \".read pm-stack/route-ledger-export/schema/views.sql\"` on an empty Parquet tree (no files) exits 0\n   and each view returns zero rows.\n3. Every fact table has `schema_version` and `ingested_at_ms` columns (checked by a test that parses the DDL).\n4. Test oracle: the DDL column list equals the column table in design §4.2 (test reads the markdown table and\n   compares names; a mismatch fails). Invariant test (PBT, `fast-check` or equivalent): for any generated outcome\n   code outside the enum, the insert fails.\n\n## Not in this slice\nNo data is written. The exporter is D3-S6.\n",
+    "blocked_by": [],
+    "statements": [
+      "brief §6",
+      "AD7",
+      "AD8",
+      "supp §5",
+      "supp §9"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S2",
+    "repo": "developing-today/code",
+    "title": "Stats store: measure storage growth per table per day",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nMeasure, every night, the bytes and rows per table per day, so the retention decision (design §4.6.3) is made on\n30 days of data, not on an estimate. Brief §6: \"keep full granularity and measure storage growth\".\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nMeasured baseline (design §4.6.1, 2026-11-13): `route_decision` ≈1,350 B/row, 131 k–224 k rows/day → ≈120–300 MB/day\nof text; `route_attempt` ≈230 B/row, ≈45 k rows/day → ≈10 MB/day. The baseline estimate understated `route_decision`\nby about 10× (design §2 fact 8).\n\n## Files\n- `pm-stack/route-ledger-export/schema/facts.sql`: add `storage_growth` table (D3-S1 DDL file, one new statement).\n- `pm-stack/route-ledger-export/route-ledger-export.mjs`: after each run, write one `storage_growth` row per table\n  per UTC day (`rows`, `sqlite_dbstat_bytes` from `dbstat` when available, `parquet_bytes`, `bytes_per_row_raw`,\n  `bytes_per_row_parquet`, `export_version`).\n- `pm-stack/route-ledger-export/route-ledger-export.test.mjs`: test for the growth row.\n\n## Approach\nUse `SELECT COUNT(*) FROM <t> WHERE time_… >= ? AND time_… < ?` for rows; `dbstat` may be unavailable in a\nread-only connection, so it is nullable and the Parquet byte count is the primary measure. Backfill the days\nalready in the DB (from 2026-10-24 for route tables, 2026-01-18 for session tables) in one pass.\n\n## Acceptance (runnable)\n1. `bun test pm-stack/route-ledger-export` passes the growth-row test.\n2. After one run on the live DB, `SELECT COUNT(DISTINCT day) FROM storage_growth WHERE table_name='route_decision'`\n   is at least 10 (backfill covered).\n3. Test oracle (exact): for a fixture DB with known row counts per day, `rows` equals `COUNT(*)` per day computed\n   by a separate `sqlite3` query in the test. Mismatch fails.\n4. Report written to the design's §4.6.1 by a follow-up docs edit with the measured bytes/row (not in this slice).\n",
+    "blocked_by": [
+      "D3-S6"
+    ],
+    "statements": [
+      "brief §6",
+      "AD8"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D3-S3",
+    "repo": "developing-today/code",
+    "title": "Stats store: dimensions, variant rules, crosswalk, rung table, change markers",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nBuild the dimension tables the facts join to: `dim_model` (Type 2, lineage, AA version and test date, variant\nsplits), `dim_model_lineage`, `dim_model_alias` (ledger id → family and variant; the AA name crosswalk),\n`dim_model_match` (price / ability / speed targets with provenance), `dim_door` (Type 2), `dim_provider`,\n`dim_pool` (Type 2), `dim_effort` (rung table as data, AD1), `dim_time`, `change_marker`, `change_marker_measure`.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nRead: design §4.2.4 (dimension columns), §4.2.3 (tag namespaces), §4.3 (change markers), §6 (variant rules\n\"Luna 6 and 6.1 fully separate\"; DeepSeek variants by the variant each provider serves), §7 Q-D3-1, Q-D3-12, Q-D3-13.\nLedger facts: `provider_id` spellings (baseline/design §2 fact 3); DeepSeek ids (design §2 fact 4);\nAA prices: `~/.local/state/pm-aggregator/aa-last-good.json` `section.prices` (13 rows, OpenRouter-style names).\n\n## Files\n- `pm-stack/route-ledger-export/dims/*.json` (new, git-tracked, reviewed): `models.json`, `model_alias.json`,\n  `lineage.json`, `doors.json`, `providers.json`, `pools.json`, `effort_rungs.json`, `change_markers.json`.\n- `pm-stack/route-ledger-export/schema/dims.sql` (new): DDL.\n- `pm-stack/route-ledger-export/dims.mjs` (new): loads and validates the JSON (every `model_sk` referenced exists;\n  every raw provider id maps; no two `is_current` rows for one model key).\n\n## Approach\n- Variant rows: DeepSeek `classic` and `snapshot-1017` (ledger ids) are separate `dim_model` rows under one family;\n  `snapshot-1107` is **not** created until the variant is observed (Q-D3-1). Luna 6 (`gpt-6-luna`) and Luna 6.1\n  (`gpt-6.1-terra`) are separate families.\n- Rung table: `xhigh|max|ultra|fast → high (alias)`, `default → medium (alias, declared)`,\n  `none|minimal → low (alias, declared)`; DeepSeek `medium → high` on Go and ClinePass and `low → high` on Pro are\n  `declared = true` rows citing their PRs (brief §9).\n- The validator fails the build on an unmapped `provider_id` seen in the last 30 days (the exporter reports it\n  as `UNMAPPED`; the validator is the gate).\n\n## Acceptance (runnable)\n1. `python3 -I -m json.tool` (or `bun run dims.mjs --check`) validates all JSON files; exit 0.\n2. Test oracle (exact): every distinct `provider_id` in `route_attempt` for the last 30 days (live query, run in\n   the test against a copy of the DB, read-only) maps to a `provider_norm`; zero `UNMAPPED`.\n3. Test: `dim_model` has exactly one `is_current` row per `(family, variant_key)`; `dim_model_lineage` `seq` is\n   contiguous per family (property test over the loaded JSON).\n4. Test: no fact of Luna 6 joins to a `model_sk` in the 6.1 family (a fixed pair of ids; exact).\n",
+    "blocked_by": [
+      "D3-S1"
+    ],
+    "statements": [
+      "brief §6",
+      "AD1",
+      "AD3",
+      "AD8",
+      "AD9"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S4",
+    "repo": "developing-today/code",
+    "title": "Stats store: tool-call facts with mcpx and fleet subcommand parsing",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nBuild `fact_tool_call` from `session_message` tool parts, with `mcpx` per namespace/tool (parsed from `mcpx_exec`\nTypeScript) and `fleet` per subcommand/action (parsed from `shell` commands). Brief §5: \"mcpx and fleet tool usage,\neach per subcommand / action\".\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.2.1 (`fact_tool_call` columns), §4.6.4 (regexes), §4.7 (dependence on code#9373/code#9374).\nMeasured: tool parts since 2026-11-06 — `shell` 146,683, `execute` 34,143, `read` 19,911, `mcpx_exec` ~600\n(baseline S2b); tool part `state.status` ∈ {completed, error, running, streaming}.\n\n## Files\n- `pm-stack/route-ledger-export/tools.mjs` (new): pure functions `parseMcpxCalls(source)` and `parseFleetCommand(cmd)`.\n- `pm-stack/route-ledger-export/tools.test.mjs` (new): golden corpus.\n- `pm-stack/route-ledger-export/schema/facts.sql`: no change (D3-S1 defines the table).\n\n## Approach\n- `parseMcpxCalls`: match `tools\\.([A-Za-z0-9_-]+)\\.([A-Za-z0-9_]+)\\s*\\(` and the bracket form\n  `tools\\[\\s*\"([^\"]+)\"\\s*\\]\\[\\s*\"([^\"]+)\"\\s*\\]\\(`; one row per occurrence, `source = script-parse`.\n- `parseFleetCommand`: `\\bfleet\\s+([a-z][a-z-]*)(?:\\s+([a-z][a-z-]*))?` on `state.input.command`; `source` =\n  `session-message` with the regex version in the row (`parser_version`).\n- Never store tool input or output content, only lengths.\n\n## Acceptance (runnable)\n1. `bun test pm-stack/route-ledger-export/tools.test.mjs` passes.\n2. Golden corpus (checked-in, ≥ 40 real snippets, copied from the live DB with secrets removed): each snippet's\n   expected parse is in the corpus file. Exact oracle: parse output equals the golden list.\n3. Property test: for any generated script containing `k` calls of the dotted form, the parser returns `k` rows\n   (generator emits random namespaces/tools and random whitespace).\n4. Guard: a snippet containing `tools.` inside a string literal is documented as a known false positive; the test\n   asserts the count so a change is visible.\n",
+    "blocked_by": [
+      "D3-S1"
+    ],
+    "statements": [
+      "brief §5",
+      "supp §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S5",
+    "repo": "developing-today/code",
+    "title": "Stats store: move the rollup oracle into the repo and gate it",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "## Goal\nMake `research/prototypes/stats_rollup_oracle.py` the reference oracle for every rollup: copy it into the repo\nand run its invariants in CI-on-main style tests. Brief §5 statistics and AD8 \"mergeable rollups; quantiles\nwithin α; every quantile with n\".\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §3.3 (quantile choice), §4.4 (statistics set and merge classes), §4.10 (oracle as test oracle).\nRe-run 2026-11-13 with 20 seeds: PASS; max quantile relative error 0.009997 (bound 0.01); 1,440 of 1,440 day cells\nbelow n = 1,000 (p99.9 unresolved).\n\n## Files\n- `scripts/stats/stats_rollup_oracle.py` (new; copied from the prototype, unchanged logic; header states the contract).\n- `scripts/stats/test_stats_rollup_oracle.py` (new): runs the oracle for ≥ 200 seeds and asserts exit 0.\n- Run as `python3 -I scripts/stats/test_stats_rollup_oracle.py`.\n\n## Approach\nDo not change the oracle's maths. The test asserts the four invariants (conservation, exact merge for\ncount/sum/min/max/mode, float merge within 1e-9 for mean/stddev, sketch quantiles within α) and the mutation check\n(removing the Chan cross term must fail). Add a `--mutation` flag that runs the mutation and expects failure.\n\n## Acceptance (runnable)\n1. `python3 -I scripts/stats/test_stats_rollup_oracle.py --seeds 200` exits 0 and prints PASS.\n2. `python3 -I scripts/stats/test_stats_rollup_oracle.py --mutation` exits 0 only if the mutation test fails\n   (proves the oracle can detect a broken merge).\n3. Test oracle is the oracle itself (it is the reference); the production rollup (D3-S9) must pass the same\n   invariants on the same generated events.\n",
+    "blocked_by": [],
+    "statements": [
+      "brief §5",
+      "AD8"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D3-S6",
+    "repo": "developing-today/code",
+    "title": "Stats store: nightly read-only exporter from opencode.db to Parquet by day",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nA laptop systemd timer that reads `~/.local/share/opencode/opencode.db` read-only and writes the fact tables as\nParquet, partitioned by UTC day, with high-water marks, idempotent per day, and a storage_growth row per run.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.6.4 (pipeline steps, paths, partitioning, timer), §3.9 (location choice), §2 (live facts). Precedent:\n`pm-stack/cloudflare-export/` (same shape: `.mjs`, `.sh`, `.service`, `.timer`, `install-laptop.sh`, `README.md`).\nReads use `bun:sqlite` with `{ readonly: true }`, as `pm-stack/aggregator/src/analytics-store.ts` does.\n\n## Files (new)\n- `pm-stack/route-ledger-export/route-ledger-export.mjs`\n- `pm-stack/route-ledger-export/route-ledger-export.sh`, `.service`, `.timer` (03:20 CT nightly), `install-laptop.sh`\n- `pm-stack/route-ledger-export/README.md`\n- state: `~/.local/state/route-ledger/export-state.json` (not in repo); outputs under `~/.local/state/route-ledger/`.\n\n## Approach\n1. Open the DB read-only; never copy the whole file.\n2. High-water marks per table (route_attempt.id; route_decision.id; route_health.id; session_v2.time_updated;\n   session_message.time_created for assistant/user/idle/compaction types).\n3. Batch 50,000 rows; parse quota JSON (four shapes), normalise provider via `dims`, map effort via rung table,\n   explode tool parts via D3-S4 `tools.mjs`.\n4. Write NDJSON staging per day; convert to Parquet with the DuckDB CLI (`COPY … (FORMAT PARQUET)`); one file per\n   table per day, re-running a day replaces its file atomically.\n5. Advance the marks only after the Parquet write succeeds (atomic rename of `export-state.json`).\n6. DuckDB CLI missing → keep NDJSON, exit non-zero with a clear message (Q-D3-8).\n\n## Acceptance (runnable)\n1. `bash pm-stack/route-ledger-export/route-ledger-export.sh --dry-run` on the live DB: reports row counts per table\n   that equal `sqlite3 -readonly` `COUNT(*)` for the same windows (exact oracle, checked in the test).\n2. Idempotence: two consecutive runs produce byte-identical per-day Parquet row counts and an unchanged\n   `export-state.json` on the second run.\n3. Read-only guard: the test opens the DB with `readonly: true` and asserts that an INSERT throws.\n4. `bun test pm-stack/route-ledger-export` passes.\n5. Operator script contract (AGENTS.md \"Operator script argument contract\"): the `.mjs` declares its full\n   argument list (`--dry-run`, `--since`, `--tables`) and rejects any unknown flag with a non-zero exit before\n   any file write.\n",
+    "blocked_by": [
+      "D3-S1",
+      "D3-S3"
+    ],
+    "statements": [
+      "brief §6",
+      "AD8"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D3-S7",
+    "repo": "developing-today/code",
+    "title": "Stats store: derived cost with provenance and calibration against recorded cost_usd",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "research",
+    "body": "## Goal\nDerive `cost_list_usd` and `cost_paid_usd` per attempt from tokens × AA price table, with `cost_basis`,\n`price_version`, and a calibration against the 50,367 recorded `cost_usd > 0` rows. Answers design Q-D3-3\n(is `tokens_output` inclusive of reasoning?) with data. Brief §7 \"real cost per %-dollar\" and \"extrapolate\nwhere we differ from AA\".\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.8.1 (formula and cost_basis rules), §3.6 (cost-basis options), §7 Q-D3-3, Q-D3-13.\nMeasured: `cost_usd > 0` on 50,367 rows; all have token counts. Price table: 13 rows, OpenRouter-style names.\n\n## Files\n- `pm-stack/route-ledger-export/cost.mjs` (new): `deriveCost(attempt, price, door)` pure function.\n- `pm-stack/route-ledger-export/cost.test.mjs` (new).\n- `docs/…`: none. Findings go into design §4.8.1 by a docs edit in the same PR.\n\n## Approach\nCompute both reasoning conventions (included in output; separate) on the recorded rows; report the match rate\n(±1 %) and median absolute error per door for each convention. Pick the convention with the higher match rate,\nrecord it in `dims/` as `reasoning_in_output` with the evidence file path. Report unmatched models (no AA price row)\nas a list: that list is the crosswalk backlog (D3-S3).\n\n## Acceptance (runnable)\n1. `bun test pm-stack/route-ledger-export/cost.test.mjs` passes.\n2. Calibration report `pm-stack/route-ledger-export/calibration/cost-2026-11-13.json` contains, per door, `n`,\n   `match_rate_1pct`, `median_abs_error` and the convention chosen; the test reads it and asserts `n ≥ 100` per\n   reported door.\n3. Test oracle: the recorded `cost_usd` (where present) is the reference; a derived value that matches within ±1 %\n   counts as a match; no other oracle is used.\n4. `cost_basis` is never `derived-aa` for a plan door (exact test over fixture rows).\n",
+    "blocked_by": [
+      "D3-S3"
+    ],
+    "statements": [
+      "brief §7",
+      "AD8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S8",
+    "repo": "developing-today/code",
+    "title": "Stats store: time-window join of quota percent onto attempts (inferred)",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nAttach the nearest S4 quota percent reading before and after each attempt for its door's window, flagged\n`inferred = true`, with the reading lag recorded. Brief §5 \"existing time and quota % per session, task, PR, or\nattempt\".\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.8.2 (join rule, 30-minute window, reset detection), §3.7 (options), §2 fact 10 (S4 keys by\n`serviceId`/`metricId`; examples `opencode-go` 5h/weekly/monthly; `openai:codex` weekly; `antigravity` per model).\nSource: `~/.local/state/pm-aggregator/snapshots/usage-YYYY-MM.jsonl` (fields: `ts`, `serviceId`, `metricId`,\n`value`, `unit`, `limit`, `resetsAt`, `source`, `observedBy`).\n\n## Files\n- `pm-stack/route-ledger-export/quota-join.mjs` (new): `joinQuota(attempts, readings, doorMap, {windowMin: 30})`.\n- `pm-stack/route-ledger-export/quota-join.test.mjs` (new).\n- `pm-stack/route-ledger-export/dims/doors.json`: add `quota_service` and `quota_metric_map` per door (reviewed).\n\n## Approach\nImplement design §4.8.2 exactly. Readings are only used for a door whose `quota_service` is set; unmapped doors get\nNULLs, counted. `reset-suspected` when `after < before`, never a negative use.\n\n## Acceptance (runnable)\n1. `bun test pm-stack/route-ledger-export/quota-join.test.mjs` passes.\n2. Exact oracle (fixture): a hand-built set of 5 attempts and 8 readings with known nearest-prior/nearest-after\n   values; the join output equals the expected table (test asserts every field).\n3. Property test: for any attempt time `t` and readings sorted by `ts`, the chosen `before` reading has the maximal\n   `ts ≤ t` among readings within the window (generator-based).\n4. Every output row has `quota_pct_source = 'snapshot-window-join'` and `inferred = true` (exact check).\n",
+    "blocked_by": [
+      "D3-S6"
+    ],
+    "statements": [
+      "brief §5",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S9",
+    "repo": "developing-today/code",
+    "title": "Stats store: production rollups as mergeable states and stat_rollup_event",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nThe production rollup: per group and window, mergeable states (count, sum, min, max, Welford mean/M2 with Chan\nmerge, DDSketch α = 1 % histogram, exact value map for discrete fields), and an append-only `stat_rollup_event`\nrow per generated rollup (generation time, generator version, AA version and test date, time-frame basis,\ncounts of sessions/turns/tokens, models/efforts/providers/pools/doors covered, state digest, input membership).\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.4 (statistics set, merge classes, reporting rules), §4.5 (aggregates as events), §4.6.3 (rollup tiers and\nthe three clocks), §3.3 (quantile method, nearest rank).\n\n## Files\n- `pm-stack/route-ledger-export/rollup.mjs` (new): state merge and finalisation.\n- `pm-stack/route-ledger-export/rollup.test.mjs` (new): runs the oracle invariants on generated events.\n- `pm-stack/route-ledger-export/schema/facts.sql`: `stat_rollup_event` DDL (one statement, append-only).\n\n## Approach\nImplement the same nearest-rank definition as the oracle (`ceil(q·n)`), the same α, the same Chan formula. Store\n`quantile_method = nearest_rank_v1`, `alpha`. Every output row carries `n` for each quantile and the `unresolved`\nflag where n is below the threshold (design Q-D3-4 defaults: p90 ≥ 100, p99.9 ≥ 1000).\n\n## Acceptance (runnable)\n1. `python3 -I scripts/stats/test_stats_rollup_oracle.py --seeds 200` (D3-S5) passes, and\n   `bun test pm-stack/route-ledger-export/rollup.test.mjs` runs the same invariants on JS-generated events and passes.\n2. Cross-implementation oracle: for one fixed seed the JS rollup and the Python oracle produce the same exact fields\n   (count, sum, min, max, mode, mode±x) and the quantiles within α.\n3. `stat_rollup_event` is append-only: test attempts an UPDATE and a DELETE and asserts both are rejected by the\n   writer (exact).\n4. Re-running the same window with the same inputs produces the same `rollup_id` and `state_digest` (idempotence).\n",
+    "blocked_by": [
+      "D3-S5",
+      "D3-S6"
+    ],
+    "statements": [
+      "brief §5",
+      "brief §6",
+      "AD8"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D3-S10",
+    "repo": "developing-today/code",
+    "title": "Stats store: data-basis query set, one SQL file per brief §5 dimension",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "## Goal\nPut the data-basis queries for D1 and D4 into `scripts/stats/queries/`, one file per dimension, each with a header\n(dimension, source, oracle, status). Run in SQLite read-only against the live DB now; the same logic runs on the\n`v_*` views after D3-S6.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.9 (the query table, Q01–Q16, status T/D, live results). The queries below were run read-only on\n2026-11-13. Parameter `:since` is epoch ms.\n\n## Files (new)\n- `scripts/stats/queries/q01_target_effort_success.sql` … `q16_ttft_step.sql` (one per row of design §4.9 table).\n- `scripts/stats/queries/run_queries.sh`: runs each file with `sqlite3 -readonly -cmd \".parameter set :since …\"`.\n- `scripts/stats/queries/README.md`: the table of dimensions → files.\n\n## Queries (T = run and checked 2026-11-13)\n\nQ01 (target, effort: attempts and success):\n```sql\nSELECT route_id, provider_id, model_id, COALESCE(variant,'-') AS variant,\n       COUNT(*) AS attempts, SUM(outcome = 'success') AS ok,\n       ROUND(1.0 * SUM(outcome = 'success') / COUNT(*), 4) AS success_rate\nFROM route_attempt WHERE time_started >= :since\nGROUP BY route_id, provider_id, model_id, variant ORDER BY attempts DESC;\n```\n\nQ02 (pool offered vs chosen):\n```sql\nSELECT route_id, j.value AS candidate, COUNT(*) AS offered, SUM(chosen = j.value) AS chosen\nFROM route_decision, json_each(candidates) j WHERE time >= :since\nGROUP BY route_id, candidate ORDER BY offered DESC;\n```\n\nQ04 (sub-session count and depth):\n```sql\nWITH RECURSIVE t(root, id, depth) AS (\n  SELECT id, id, 0 FROM session_v2 WHERE parent_id IS NULL\n  UNION ALL\n  SELECT t.root, s.id, t.depth + 1 FROM session_v2 s JOIN t ON s.parent_id = t.id)\nSELECT root, MAX(depth) AS max_depth, COUNT(*) - 1 AS descendants\nFROM t GROUP BY root HAVING MAX(depth) > 0 ORDER BY descendants DESC;\n```\n\nQ06 (tool usage by name):\n```sql\nSELECT json_extract(j.value,'$.name') AS tool, COUNT(*) AS calls\nFROM session_message sm, json_each(sm.data,'$.content') j\nWHERE sm.type = 'assistant' AND sm.time_created >= :since\n  AND json_extract(j.value,'$.type') = 'tool'\nGROUP BY tool ORDER BY calls DESC;\n```\n\nQ12 (active minutes, 5-minute gap clip):\n```sql\nWITH a AS (\n  SELECT session_id, time_created AS t,\n         LAG(time_created) OVER (PARTITION BY session_id ORDER BY time_created) AS prev\n  FROM session_message WHERE type = 'assistant' AND time_created >= :since),\ng AS (SELECT session_id, MAX(0, t - prev) AS gap FROM a WHERE prev IS NOT NULL)\nSELECT session_id,\n       ROUND(SUM(CASE WHEN gap <= 300000 THEN gap ELSE 0 END) / 60000.0, 2) AS active_minutes_5m\nFROM g GROUP BY session_id;\n```\n\nQ15 (statistics block, nearest rank):\n```sql\nWITH s AS (\n  SELECT route_id, provider_id, model_id, COALESCE(variant,'-') AS variant, response_ms AS v\n  FROM route_attempt WHERE outcome = 'success' AND response_ms IS NOT NULL AND time_started >= :since),\nr AS (\n  SELECT *, ROW_NUMBER() OVER (PARTITION BY route_id, provider_id, model_id, variant ORDER BY v) AS rn,\n         COUNT(*) OVER (PARTITION BY route_id, provider_id, model_id, variant) AS n\n  FROM s)\nSELECT route_id, provider_id, model_id, variant, n,\n       MIN(v) AS min_v, MAX(v) AS max_v, ROUND(AVG(v), 1) AS mean_v,\n       MIN(CASE WHEN rn = MAX(1, (n + 1) / 2) THEN v END) AS p50,\n       MIN(CASE WHEN rn = MAX(1, (3*n + 3) / 4) THEN v END) AS q3,\n       MIN(CASE WHEN rn = MAX(1, (9*n + 9) / 10) THEN v END) AS p90,\n       MIN(CASE WHEN rn = MAX(1, (99*n + 99) / 100) THEN v END) AS p99\nFROM r GROUP BY route_id, provider_id, model_id, variant, n HAVING n >= 30 ORDER BY n DESC;\n```\n\nQ16 (TTFT proxy and step time):\n```sql\nSELECT COUNT(*) AS turns,\n       AVG(json_extract(data,'$.time.streamed') - json_extract(data,'$.time.created'))  AS ttft_proxy_ms_mean,\n       AVG(json_extract(data,'$.time.completed') - json_extract(data,'$.time.created')) AS step_ms_mean\nFROM session_message WHERE type = 'assistant' AND time_created >= :since\n  AND json_extract(data,'$.time.streamed') IS NOT NULL;\n```\n\nQ03, Q05, Q09, Q10, Q11, Q13 are one-line aggregates over `session_v2` / `route_attempt` / `route_decision`; their\ntext is in design §4.9. Q07, Q08 run over `v_tool_call` (D3-S4) and Q14 over `v_attempt` + `v_quota_reading` (D3-S8).\n\n## Acceptance (runnable)\n1. `bash scripts/stats/queries/run_queries.sh --since 2026-11-06` exits 0 on the live DB (read-only) and prints\n   one block per file.\n2. Oracle (exact): for Q15 the number of rows with `n >= 30` equals the same count computed in Python from a\n   `sqlite3 -readonly` dump of the same window; the p50/p90/p99 values equal the Python nearest-rank values exactly.\n3. Oracle (exact): Q04 counts sum to `SELECT COUNT(*) FROM session_v2` for the roots + descendants walk (equal to\n   the total, so no session is unreachable at query time; a mismatch names the orphan ids).\n4. No file uses `SELECT *` or a function outside SQLite for T-status queries (lint test).\n",
+    "blocked_by": [
+      "D3-S1",
+      "D3-S6"
+    ],
+    "statements": [
+      "brief §5",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S11",
+    "repo": "developing-today/code",
+    "title": "Stats store: append-only outcome, link, decision and feedback fact shapes",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "## Goal\nCreate the append-only tables and writers for `fact_outcome`, `fact_link` and `fact_feedback` (shape only; D6 owns\nthe values), and the `fact_decision` projection of D5/D6's `decision_record`. Enforce append-only with a guard.\nSupplement §5 outcome capture and §9 decision record: storage only.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.2.1 (`fact_decision`, `fact_outcome`, `fact_feedback`, `fact_link`), §4.2.2 (closed outcome codes),\n§4.2.3 (`tag_assignment` and label source). AD7: decisions and attempts are addressable events; feedback and\noutcomes are append-only; nothing rewrites a record. R3 §4.2 (Langfuse scores pattern).\n\n## Files\n- `pm-stack/route-ledger-export/outcomes.mjs` (new): `appendOutcome`, `appendLink`, `appendFeedback`; no update or\n  delete function exists.\n- `pm-stack/route-ledger-export/outcomes.test.mjs` (new).\n- `pm-stack/route-ledger-export/dims/outcome_codes.json` (new): the closed list with a definition per code.\n\n## Approach\nWriters only insert; `current` is a view. The outcome code list is loaded from the JSON; an unknown code is rejected.\n`observed_by` ∈ {self, parent, reviewer, system, user}. The `decision_record` projection reads D5/D6's table when it\nexists; until then the projection is an empty view with the columns in design §4.2.1.\n\n## Acceptance (runnable)\n1. `bun test pm-stack/route-ledger-export/outcomes.test.mjs` passes.\n2. Guard (exact): a test greps the module for `UPDATE`, `DELETE` and `DROP` statements and fails if any appears.\n3. Property test: for any sequence of appended outcomes for one subject, `v_outcome_current` returns exactly the latest\n   by `observed_at_ms` per `outcome_code` (generator-based).\n4. Code list parity: the outcome codes in `outcome_codes.json` equal the enum in design §4.2.2 (exact set equality).\n",
+    "blocked_by": [
+      "D3-S1"
+    ],
+    "statements": [
+      "supp §5",
+      "supp §9",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S12",
+    "repo": "developing-today/code",
+    "title": "Stats store: consume the fleet (code#9373) and mcpx (code#9374) ledgers when they land",
+    "version": "V2",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "## Goal\nWhen code#9373 (fleet invocation ledger) and code#9374 (mcpx daemon call ledger) exist, read them into the exporter\nand switch `fact_tool_call.source` from `session-message` / `script-parse` to `fleet-ledger` / `mcpx-ledger`, keeping\nthe inferred counts only as a cross-check. Brief §5: per-subcommand and per-action usage.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nExternal blockers (not D3 slices): developing-today/code#9373 and #9374 are OPEN (baseline G1, G3). This slice must not\nstart before both are merged. Contract: design §4.2.5. Gap register: baseline §5 G1, G3.\n\n## Files\n- `pm-stack/route-ledger-export/route-ledger-export.mjs`: add two readers behind a `--ledgers` flag.\n- `pm-stack/route-ledger-export/schema/facts.sql`: no new table; a `source` value is added to the enum (schema_version bump).\n\n## Acceptance (runnable)\n1. On a fixture where the same invocation appears in both the inferred and the ledger, the ledger row wins and the\n   inferred row is kept with `superseded = true` (exact).\n2. Cross-check report: for one week, the inferred fleet count per subcommand is within 10 % of the ledger count\n   (documented; a larger gap is reported, not hidden).\n3. `bun test pm-stack/route-ledger-export` passes.\n",
+    "blocked_by": [
+      "D3-S4"
+    ],
+    "statements": [
+      "brief §5",
+      "brief §9"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S13",
+    "repo": "developing-today/code",
+    "title": "Stats store: seed change markers from the V1 change record and track expected vs actual",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nBackfill `change_marker` from the V1 change record and merged PRs (brief §9), with dates from merge commits or backup\nfile times, and add the pre/post measurement rows (`change_marker_measure`) for each marker with an expected delta.\nBrief §6 \"known dates where a significant change happened, with expected and actual measurable difference\";\nbrief §8 trials (AD9).\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.3 (markers, clocks, expected vs actual, attempt → marker link), §4.3.2 (seed list: backups\n`opencode.jsonc.bak-effort-*`, `bak-luna-*`, `bak-20261102`; PRs #9381, #9382, #9384, #9385, #9388, #9018).\n\n## Files\n- `pm-stack/route-ledger-export/dims/change_markers.json` (new, reviewed).\n- `pm-stack/route-ledger-export/markers.mjs` (new): derives `change_marker_measure` rows with the design §4.9 SQL and\n  the pre/post windows (default 7 d each side), `n_min_met` (100 attempts per arm).\n\n## Acceptance (runnable)\n1. Every seeded marker has `at_ms` from a git commit date or file mtime, or `undated = true` (exact check).\n2. Every marker with a non-empty `expected_delta` has an `expected_delta.recorded_at_ms` ≤ its first measurement's\n   `measured_at_ms` (exact; the expectation is never written after the measurement).\n3. `bun test pm-stack/route-ledger-export/markers.test.mjs` passes with a fixture where the post-window is known.\n",
+    "blocked_by": [
+      "D3-S3"
+    ],
+    "statements": [
+      "brief §6",
+      "brief §8",
+      "AD9"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D3-S14",
+    "repo": "developing-today/code",
+    "title": "Stats store: historical reader for the quota analytics page",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "## Goal\nThe `/quota#analytics` page and `/api/quota-analytics.json` keep their live reader for the last 24 h and gain a\nhistorical reader over `v_attempt` for windows longer than 24 h, so burn, ratio and projection use the full store.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.6.4 \"Where it feeds\" and §2 consumers: `pm-stack/aggregator/src/analytics-store.ts` (reads live\n`route_attempt` at `:228`, `:246`, and `session_message` at `:298–324`); `quota-analytics.ts` (pure projection math,\nunchanged); `quota-analytics-view.ts` (the view).\n\n## Files\n- `pm-stack/aggregator/src/analytics-store.ts`: add the historical reader behind a window check.\n- `pm-stack/aggregator/src/analytics-store.test.ts` (existing test file, extended).\n- No change to `quota-analytics.ts` maths.\n\n## Acceptance (runnable)\n1. For a 7-day window the historical and live readers return the same per-pool attempt counts for the overlapping day\n   (exact check on a fixture export).\n2. Projection output for the same input is byte-identical before and after the change (golden test on\n   `quota-analytics.ts`).\n3. `bun test pm-stack/aggregator` passes.\n",
+    "blocked_by": [
+      "D3-S6",
+      "D3-S10"
+    ],
+    "statements": [
+      "brief §9",
+      "AD8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S15",
+    "repo": "developing-today/code",
+    "title": "Stats store research: DeepSeek 1107 presence, AA crosswalk coverage, reasoning-token convention",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "research",
+    "body": "## Goal\nAnswer with data the three questions the store cannot answer from the ledger: (1) is `1107` a served DeepSeek variant\nanywhere in the ledger, the config, or the provider docs, and which doors serve which variant; (2) what share of\nledger model ids have an AA price row after a reviewed crosswalk; (3) whether `tokens_output` includes reasoning tokens\n(overlaps D3-S7; this slice gives the evidence for both).\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §2 fact 4 (no `1107` in 649,414 ledger rows), §7 Q-D3-1, Q-D3-3, Q-D3-13. Config files: `~/.local/share/opencode/opencode.jsonc`\nand `.bak-*`; `.opencode/opencode.jsonc` in this repo. Provider docs via web search only (no credentials).\n\n## Deliverable\n`doc/2026-11-13T09-26-00Z_design_pool_effort_system/research/R3b-variant-and-crosswalk.md` (new), with: the\nledger/config evidence paths, the variant-per-door table, the crosswalk coverage count, and a recommendation for\n`dim_model_alias`. Every external claim carries a URL; unverified claims are marked **[unverified]**.\n\n## Acceptance (runnable)\n1. `grep -c \"1107\" ~/.local/share/opencode/opencode.db` is not used (DB is binary); instead the report lists each\n   query used with its result (the live query `select count(*) from route_attempt where model_id like '%1107%'`).\n2. Crosswalk coverage: the report gives `n_matched / n_distinct_model_ids` for the last 30 days, computed by a script\n   committed alongside it.\n3. The report names the **RULING** items for Drew (Q-D3-1) with the default applied.\n",
+    "blocked_by": [],
+    "statements": [
+      "brief §6",
+      "AD8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S16",
+    "repo": "developing-today/code",
+    "title": "Stats store: Roadmap & Stats Space consumer contract (V3 seed)",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "design",
+    "body": "## Goal\nSpecify how the Roadmap & Stats Space consumes `stat_rollup_event` and `v_rollup_latest` as its daily input, and\nhow it reports `n` next to every quantile. The pipeline named in brief §9 is absent (baseline G13), so this is a\ncontract, not an integration.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.6.4 \"Where it feeds\"; §7 Q-D3-6 (ask Drew before depending on the pipeline path). The contract includes the\nrollup event schema (design §4.5) and the reporting rules (design §4.4).\n\n## Deliverable\n`doc/…/designs/D3-roadmap-stats-contract.md` (new, one page): the inputs, the outputs, the failure states (missing rollup,\nstale rollup, n below threshold), and the owner question.\n\n## Acceptance (runnable)\n1. The contract lists every field it reads by its name in design §4.5, checked by a grep in CI on main (docs guard).\n2. The owner question is recorded in the file as an open question with the default (wait for the path).\n",
+    "blocked_by": [
+      "D3-S9"
+    ],
+    "statements": [
+      "brief §9"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D3-S17",
+    "repo": "developing-today/code",
+    "title": "Stats store V3: in-place quota percent per attempt recorded by the route proxy",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "## Goal\nRecord the quota percent at call start and end in `route_attempt`, replacing the S4 inference where it exists and\nkeeping the inferred column for older rows. Brief §5 quota % per attempt, made exact.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §5 (V3 gate: ≥ 14 days of V2 facts; agreement of the S4 join with recorded readings measured for 14 days),\n§3.7 option 4. Proxy: `bin/opencode-route-proxy.mjs` (`recordAttempt` at `:506`, `INSERT` at `:511`).\n\n## Gate\nDo not start until D3-S8 has 14 days of inferred values and the agreement report exists.\n\n## Acceptance (runnable)\n1. A migration adds `quota_pct_start`, `quota_pct_end` (nullable) to `route_attempt`; the old rows are untouched\n   (exact check).\n2. `bun test bin/opencode-route-proxy.test.mjs` passes, including a new case where the percent is read from a\n   provider header fixture.\n3. Agreement report: on the 14-day window the recorded and inferred percentages agree within the window tolerance for\n   at least the agreed share of attempts (threshold set in the report before the measurement).\n",
+    "blocked_by": [
+      "D3-S8"
+    ],
+    "statements": [
+      "brief §5",
+      "AD7"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D3-S18",
+    "repo": "developing-today/code",
+    "title": "Stats store V3: measured tail bands and drift guard for D1 and D4 values",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "guard",
+    "body": "## Goal\nPer door and effort, a measured median, p90 and p99 band from `v_attempt` (with `n`), and a guard that fails when a\ncurrent measured value drifts beyond its recorded band. Feeds D1 overlay values with provenance `measured`.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §5 (V3 layers), §4.4 (reporting rules), §4.3.3 (expected vs actual). Gate: D3-S9 and D3-S7 shipped and at least\n14 days of facts per tuned decision (main.md §0).\n\n## Acceptance (runnable)\n1. Guard test: for a fixture where one door's p90 moves beyond its band, the guard exits non-zero and names the door\n   (exact).\n2. The band is never reported without `n`; a band with `n` below threshold is `unresolved` (exact, reporting rule 1).\n3. `bun test pm-stack/route-ledger-export` passes.\n",
+    "blocked_by": [
+      "D3-S9",
+      "D3-S7"
+    ],
+    "statements": [
+      "brief §5",
+      "brief §7",
+      "AD8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D3-S19",
+    "repo": "developing-today/code",
+    "title": "Stats store: operator guide for querying and reporting the store",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "docs",
+    "body": "## Goal\nOne page for the operator and for other agents: how to run the query set, how to read a stats row (`n`,\nquantile method, alpha, unresolved flag, inferred flag, `source`), and the reporting rules. Keeps the reporting rules\nfrom being re-learnt per session.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.4 (reporting rules 1–4), §4.9 (query set), §7 (defaults). Link to `scripts/stats/queries/README.md` (D3-S10).\n\n## Files\n- `pm-stack/route-ledger-export/README.md` (extend), or `docs/route-ledger-store.md` if the repo keeps a docs folder for\n  operators (check `doc/agents/` conventions first).\n\n## Acceptance (runnable)\n1. The guide names every field in design §4.5 `stat_rollup_event` and §4.2 facts it mentions (grep check).\n2. The reporting rules appear verbatim (test compares them with design §4.4).\n",
+    "blocked_by": [
+      "D3-S10"
+    ],
+    "statements": [
+      "brief §6"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D3-S20",
+    "repo": "developing-today/code",
+    "title": "Stats store guard: every quantile is printed with its n",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "## Goal\nA guard over every query output and every rollup row: a quantile value is never shown without `n`, and a quantile below\nits threshold is marked `unresolved`. Enforces brief §5 \"statistics wherever possible\" with the honesty rule of design §4.4.\n\n## Context\nDesign: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D3-stats-store.md` on main (section refs below). Program: code#9399, pool & effort system. Standing rules: gh CLI only; merge commits only; CI on main only; secrets by name only; read `opencode.db` read-only (`mode=ro`), never write it.\nDesign §4.4 reporting rules 1–4; §7 Q-D3-4 (thresholds p90 ≥ 100, p99.9 ≥ 1000 — defaults, heuristic). Oracle: the\nprototype's note that every day cell at 20 seeds was below 1,000 (p99.9 unresolved).\n\n## Files\n- `scripts/stats/check_quantile_reporting.py` (new, stdlib): reads a result file (CSV/JSON) and fails when a column named\n  `p90|p99|p999|median|q1|q3` lacks a sibling `n` column or an `unresolved` flag where `n` is below threshold.\n- `scripts/stats/test_check_quantile_reporting.py` (new).\n\n## Acceptance (runnable)\n1. `python3 -I scripts/stats/test_check_quantile_reporting.py` passes (fixtures: a good file, a file missing `n`, a file with\n   `p999` and `n = 500` lacking the flag; the checker must reject the last two).\n2. Run against the Q15 output of D3-S10 on the live DB: exit 0 (every row carries `n`, rows with n < 1000 have p999 flagged).\n",
+    "blocked_by": [
+      "D3-S5",
+      "D3-S10"
+    ],
+    "statements": [
+      "brief §5",
+      "AD8"
+    ],
+    "estimate": "S"
+  }
+]

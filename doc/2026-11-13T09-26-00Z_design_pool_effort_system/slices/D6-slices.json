@@ -1,0 +1,462 @@
+[
+  {
+    "id": "D6-S1",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision_record tables, legs, prompt versions, append-only triggers (opencode.db migration)",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: add the decision tables to opencode.db so every decision and every routed leg has a durable, addressable row (design §4.2).\n\nFiles to change:\n- NEW packages/core/src/database/migration/<timestamp>_decision_record.ts, modelled on 20261006083034_model_route_log.ts (same DatabaseMigration shape, tx.run with SQL strings).\n- packages/core/src/database/schema.gen.ts (regenerate per the repo's existing generator; do not hand-edit beyond what the generator produces).\n- NEW packages/core/test/decision-record-migration.test.ts.\n\nApproach: create decision_prompt_version, decision_record, decision_leg with every CHECK, index and append-only trigger exactly as in design §4.2. Additive only: no change to route_attempt or route_decision.\n\nAcceptance (runnable):\n1. `bun test packages/core/test/decision-record-migration.test.ts` passes.\n2. The test runs the migration against a COPY of a db (never the live ~/.local/share/opencode/opencode.db): create a fixture DB, migrate, then assert `SELECT name FROM sqlite_master WHERE name LIKE 'decision_%'` returns the 3 tables and the 6 triggers.\n3. UPDATE and DELETE on decision_record, decision_leg, decision_prompt_version each raise 'append-only' / 'immutable' (test asserts the error text).\n4. Migrating twice is a no-op (migration id recorded once).\n\nOracle: the DDL in design §4.2 is the reference; the test asserts each CHECK by inserting one valid and one invalid row per CHECK (golden table of 12 cases).\n\nDo not run against the live DB. Do not change route_attempt.",
+    "blocked_by": [],
+    "statements": [
+      "supp §3",
+      "supp §9",
+      "supp §2",
+      "supp §6",
+      "supp §7",
+      "AD7",
+      "AD10",
+      "prompt-surface §2"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S2",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision prompt version registry and request hashing helper",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: make every decision name the exact prompt it used: version, date, sha256, full body stored once (design §4.2 'Prompt version rule', §4.7).\n\nFiles to change:\n- NEW packages/core/src/decision/prompt-version.ts: upsertPromptVersion(tx, {promptId, version, promptDate, body}) — insert-or-verify.\n- NEW packages/core/src/decision/request-hash.ts: canonicalJson(value) (sorted keys, no whitespace) and requestSha256(value) returning {sha256, bytes}.\n- NEW packages/core/test/decision-prompt-version.test.ts, packages/core/test/decision-request-hash.test.ts.\n\nRules:\n- Same (promptId, version) with the same sha256: no-op. Different sha256: throws PromptVersionConflict; the executor must then record `not-configured` for the LLM leg (design §4.2).\n- Body over 16384 bytes: throws before any write.\n- Hash is over the exact bytes of the prompt file, not a re-serialization.\n\nAcceptance:\n1. Property test: for random JSON values, canonicalJson is idempotent (canonicalJson(JSON.parse(canonicalJson(v))) === canonicalJson(v)) and key-order invariant.\n2. Golden: requestSha256 of three fixture requests equals committed hex digests.\n3. Conflict test: second upsert with changed body throws PromptVersionConflict and the stored row is unchanged.\n\nOracle: the reference is sha256 from node:crypto over the canonical bytes (independent re-computation in the test with `sha256sum` of a fixture file).",
+    "blocked_by": [
+      "D6-S1"
+    ],
+    "statements": [
+      "supp §9",
+      "AD7"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S3",
+    "repo": "developing-today-forks/opencode",
+    "title": "decision record writer: one transaction per decision, legs, invariants in code",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the single write path the D5 executor calls when a decision finishes (design §4.2 'Write path'). D5 owns collecting legs; D6 owns persisting them.\n\nFiles to change:\n- NEW packages/core/src/decision/record.ts: mintDecisionId() -> 'dec_' + ULID; writeDecisionRecord(db, {record, legs, promptVersion?}) — one transaction: upsert prompt version (D6-S2), insert decision_record, insert each decision_leg.\n- NEW packages/core/src/decision/record-invariants.ts: validateRecord(record, legs) returning a list of violated invariants (design §4.2 invariants 1–8).\n- NEW packages/core/test/decision-record.test.ts.\n\nRules:\n- Refuses to write if validateRecord returns any violation; nothing is written (transaction rolled back).\n- decision id is minted before the first leg runs and passed in, so a leg can reference it.\n- No body text is accepted by the API: request is sha256 + bytes only; answer_json and probabilities_json are length-checked before insert.\n- Credentials never appear: the writer rejects any leg field named like a secret (credential value), accepting only credential_id.\n\nAcceptance:\n1. Happy path: answered-on-leg-2 fixture (one budget-skipped leg, one answered leg) writes 1 record + 2 legs; a read back equals the input.\n2. Each invariant 1–8 has a failing fixture that is refused with the invariant's name in the error.\n3. A forced SQLite error in the middle of the leg insert leaves zero rows (rollback test).\n\nOracle: the invariant list in design §4.2 is the model; fixtures are generated from it and the expected verdict is hand-written per fixture.",
+    "blocked_by": [
+      "D6-S1",
+      "D6-S2"
+    ],
+    "statements": [
+      "supp §3",
+      "supp §4",
+      "supp §9",
+      "AD7",
+      "AD6"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S4",
+    "repo": "developing-today-forks/opencode",
+    "title": "guard: decision record invariants (property test) and append-only triggers on main",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "guard",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: a standing guard that the decision record cannot drift from the design (design §4.2 invariants, §4.2 triggers). Runs on main (CI on main only).\n\nFiles to change:\n- NEW packages/core/test/decision-record.guard.test.ts.\n- The repo's existing test wiring (package.json script or CI workflow on main) — add the new file to the core test run; do not add a PR-gating check.\n\nApproach: property test (fast-check if already a dependency of packages/core, otherwise a seeded generator with 2,000 cases) that generates random leg sequences: outcomes drawn from the closed vocabulary (design §4.2 leg outcome CHECK), attempt_no 1–2, optional answered leg, optional default. Oracle: validateRecord from D6-S3 must accept exactly the sequences that satisfy invariants 1–8, computed by an independent reference predicate written in the test (not by calling validateRecord).\n\nTriggers: for each of the six triggers, assert UPDATE/DELETE aborts and the row is unchanged.\n\nAcceptance:\n1. `bun test packages/core/test/decision-record.guard.test.ts` passes with the fixed seed and 2,000 cases.\n2. Mutation check: deliberately flipping invariant 4 in a scratch copy makes the test fail (documented in the PR description, not committed).\n3. The leg outcome vocabulary in the test equals the CHECK list in the migration (parsed from the migration file; the test fails if they differ).\n\nOracle: the independent reference predicate in the test, plus the parsed CHECK list.",
+    "blocked_by": [
+      "D6-S1",
+      "D6-S3"
+    ],
+    "statements": [
+      "AD7",
+      "supp §4",
+      "supp §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S5",
+    "repo": "developing-today-forks/opencode",
+    "title": "linkage in the fork: leg to route_attempt, decision to route_decision, sub-sessions inherit the task",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: make the joins in design §4.6 real: a leg knows its route_attempt id; a decision knows its route_decision row; a sub-session carries the task that spawned it.\n\nFiles to change:\n- Route proxy path that calls recordAttempt (packages/core/src/session/runner/step.ts around recordAttempt; and bin/opencode-route-proxy.mjs in the route layer): return the inserted route_attempt.id to the caller.\n- The decision executor's leg result type (D6-S3 contract): add route_attempt_id.\n- session metadata: when a session is created with a parent, copy metadata.task from the parent (packages/core/src/session/ create path). Field name `task` holds 'queue:<queue>#<id>' or null.\n- Tests under packages/core/test/ next to the existing route-log tests.\n\nAcceptance:\n1. A decision with two attempts: each decision_leg row for an HTTP leg carries the matching route_attempt.id (read back and compared).\n2. cycle-skipped and walled-skipped legs carry route_attempt_id NULL (no call made).\n3. A child session created under a parent with metadata.task = 'queue:x#1' has the same task value; a child without a parent-task leaves it null.\n4. No change to the outcome of any existing route test (run the existing route-log test files unchanged).\n\nOracle: the existing route-log tests (unchanged) plus the three fixture assertions above.",
+    "blocked_by": [
+      "D6-S1"
+    ],
+    "statements": [
+      "supp §5",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S6",
+    "repo": "developing-today/code",
+    "title": "fleet-platform sink: outcome, feedback, link and review tables (Turso DDL) plus outbox and idempotent sync",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the cross-machine store for feedback, outcomes, links and review sets (design §3.2, §4.3, §4.4, §4.6, Appendix B), with a local JSONL outbox and idempotent sync, following the decision-events pattern.\n\nFiles to change:\n- NEW pkgs/fleet/crates/fleet/src/outcome.rs (module: DDL constants, row types, outbox append, sync). Wire into pkgs/fleet/crates/fleet/src/main.rs as a subcommand group, no verbs yet (S8 adds them).\n- NEW pkgs/fleet/crates/fleet/src/outcome_ddl.sql (or a const), CREATE TABLE IF NOT EXISTS for outcome_observation, outcome_link, decision_feedback, fact_link, review_set, review_set_member, plus views v_outcome_current and v_decision_feedback_current.\n- Reference for the sink client and token-by-name resolution: pm-stack/aggregator/src/decision-events-sync.ts (INSERT OR IGNORE by id, token resolved by name, never logged) and pm-stack/decision-events-worker/schema.sql (keep the DDL in step).\n\nRules:\n- Token resolved by secret NAME only (for example fleet-platform-rw); never printed or written to the outbox.\n- Outbox default ~/.local/state/fleet/outcome-outbox.jsonl; OUTCOME_OUTBOX_FILE overrides.\n- Delivery at-least-once; the sink dedupes on id; a sync that fails leaves entries pending and reports the count.\n- Every row validated before outbox append: id prefix (out_, fbk_, olk_, fl_, rs_, rsm_), points 0–5 each and at least one present, reason and note length, evidence scheme https.\n\nAcceptance:\n1. cargo test -p fleet outcome: a row written, synced twice, appears once in the sink fixture (sink simulated by a local libsql or an in-memory mock of the pipeline endpoint).\n2. A row with points_correct = 6 is refused before outbox append; a row with both points null is refused.\n3. The DDL test parses the constant and checks every table and both views exist and the CHECK constraints match design §4.3–4.4 (golden string comparison of the CHECK clauses).\n\nOracle: the design's DDL (golden) and the idempotency invariant (sync twice == sync once).",
+    "blocked_by": [],
+    "statements": [
+      "supp §5",
+      "supp §9",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S7",
+    "repo": "developing-today/code",
+    "title": "outcome label registry (pm-stack/outcome-labels.json) and validator",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the closed outcome vocabulary as data, covering every term in supplement §5 (design §4.5 table is the content).\n\nFiles to change:\n- NEW pm-stack/outcome-labels.json: { \"version\": \"1\", \"labels\": [ { \"id\", \"polarity\", \"group\" (lifecycle|impact|judgement), \"definition\", \"detection\" ([\"auto-gh\"], [\"auto-git\"], [\"auto-queue\"], [\"reported\"], [\"reviewed\"] — list allowed), \"auto_rule\", \"project\" (bool), \"severity_applies\" (bool) } ], \"severity\": [ {level, meaning} x6 ] } with the 34 labels of design §4.5.\n- NEW pm-stack/aggregator/src/outcome-labels.ts: loadRegistry(), validateRegistry(), labelIds(), and the pure function labelFor(id).\n- NEW pm-stack/aggregator/src/outcome-labels.test.ts.\n\nAcceptance:\n1. Test: the golden list of supplement §5 terms (quoted in the test, copied from brief-decisions-supplement.md §5) each maps to a registry label id by the table in the test; the test fails if any term has no label. Known mapping: \"PRs merged\"→pr-merged, \"issues closed/resolved\"→issue-resolved, \"issues made\"→issue-made, \"canceled\"→canceled, \"PRs closed incomplete\"→pr-closed-incomplete, \"duplicate work\"→duplicate-work, \"work not pushed\"→work-not-pushed, \"PRs and commits reverted\"→pr-reverted and commit-reverted, \"rework\"→rework, \"work undone\"→work-undone, \"caused incident\"→caused-incident, \"data loss\"→data-loss, \"invalid\"→invalid, \"unclear\"→unclear, \"misunderstood\"→misunderstood, \"too-big\"→too-big, \"overcomplicated\"→overcomplicated, \"oversimplified\"→oversimplified, \"perfect\"→perfect, \"simple\"→simple, \"safe\"→safe, \"fixed\"→fixed, \"partial\"→partial, \"cheaper than expectation\"→cheaper-than-expectation, \"unneeded-worry\"→unneeded-worry, \"overtested\"→overtested, \"undertested\"→undertested, \"significant expense\"→significant-expense, \"slow\"→slow, \"heavy\"→heavy, \"network\"→network, \"not-scalable\"→not-scalable.\n2. validateRegistry rejects: duplicate id, polarity not in set, detection kind not in set, severity not 0–5, a label whose detection includes only auto kinds but has no auto_rule.\n3. `bun test pm-stack/aggregator/src/outcome-labels.test.ts` passes.\n\nOracle: the golden term-to-label table in the test (from supplement §5) plus the validator's invariants.",
+    "blocked_by": [],
+    "statements": [
+      "supp §5",
+      "brief §6"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S8",
+    "repo": "developing-today/code",
+    "title": "fleet outcome writer: report, rate, list, link, labels",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the one writer for outcomes, ratings and links, usable by any session (design §4.9, Appendix A.3).\n\nFiles to change:\n- pkgs/fleet/crates/fleet/src/outcome.rs (verbs), pkgs/fleet/crates/fleet/src/main.rs (dispatch, same style as the queue verbs in pkgs/fleet/crates/fleet-queue/src/client.rs:5314–5340).\n- Reads pm-stack/outcome-labels.json (S7) at build or runtime (choose one, state it in the module header).\n\nVerbs and rules:\n- report --item --label [--severity 0-5] [--note] [--evidence] [--decision] [--caused-by] [--chain]. Refused unless --evidence or a note of >= 20 characters. Refused if the label is not in the registry (error lists the registry version). Writes outcome_observation with observed_by/observer_role from the environment (session id, host, lane); a --by flag is a usage error.\n- rate --decision --role caller|callee|other --perspective self|parent|subsession|other --correct 0-5 --wrong 0-5 [--reason]. At least one of --correct/--wrong.\n- list --item|--decision [--current] [--json].\n- link --from out_ --to out_ --kind caused|amplified|preceded [--note]. Refused if from == to.\n- labels [--json].\n- Rate limit: 50 report calls per session per hour (config value).\n- All flags declared; unknown flag = usage error, non-zero exit, before any write (operator script argument contract).\n\nAcceptance:\n1. cargo test -p fleet outcome passes.\n2. report without evidence or note is refused, exit code != 0, outbox unchanged.\n3. report with an unknown label is refused and lists the registry version.\n4. rate with --correct 6 is refused.\n5. 51st report in an hour is refused.\n6. Running report twice with the same arguments writes two rows with distinct ids (two observations, not dedupe) — and list --current keeps the later one per (subject, label, observer).\n\nOracle: the registry file (S7) for labels; the Appendix A.3 contract for flags; the design §4.4 current-view rule for list --current.",
+    "blocked_by": [
+      "D6-S6",
+      "D6-S7"
+    ],
+    "statements": [
+      "supp §5",
+      "supp §9",
+      "brief §6"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S9",
+    "repo": "developing-today/code",
+    "title": "automatic outcome sweep: gh and git detectors, golden corpus, schedule registry entry",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: write the automatic outcomes (pr-merged, issue-resolved, issue-made, canceled, pr-closed-incomplete, closed-incomplete, duplicate-work, work-not-pushed, pr-reverted, commit-reverted, rework) by mechanical rules, never by judgement (design §3.7, §4.5).\n\nFiles to change:\n- pkgs/fleet/crates/fleet/src/outcome_sweep.rs (detectors), wired as `fleet outcome sweep [--since 14d] [--dry-run]`.\n- doc/fleet-schedule-registry.md: add the sweep schedule in the same PR (AGENTS.md \"Fleet schedules\": a schedule not in the registry is a defect).\n- Fixtures: pkgs/fleet/crates/fleet/tests/fixtures/outcome-sweep/ with recorded `gh pr view --json` and `gh issue view --json` outputs and a small git repo fixture for revert and churn.\n\nRules:\n- gh only (no direct REST); merge commits only in fixtures (no rebase).\n- Idempotent: a second sweep over the same window writes zero new rows (it skips a subject-label-observer triple already current with the same evidence_url).\n- rework: a later commit within 14 days that changes >= 50 % of the item's files, linked to the same issue (provisional, design Q5).\n- Hints (significant-expense, too-big, partial, heavy) are NOT auto-written; they are shown in the review surface only.\n\nAcceptance:\n1. Golden corpus: each fixture case produces the expected labels (table in the test). At least one case per detector: merged, closed-incomplete, duplicate, reverted PR, reverted commit, rework, work-not-pushed.\n2. Idempotency: run twice; second run writes 0 rows.\n3. --dry-run writes nothing (outbox byte-identical before and after).\n\nOracle: the golden corpus table (reference = expected labels hand-written from the fixture facts) and the idempotency invariant.",
+    "blocked_by": [
+      "D6-S7",
+      "D6-S8"
+    ],
+    "statements": [
+      "supp §5",
+      "brief §5"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D6-S10",
+    "repo": "developing-today/code",
+    "title": "git trailers: Task-Id, Session-Id, Decision-Id, Assisted-by; worktree hook and orphan finder",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: commit trailers as the join key of record (design §4.8). Merge commits keep them; no rebase.\n\nFiles to change:\n- NEW the fleet worktree hook under pkgs/fleet/ (commit-msg template and install step used by fleet worktree creation; name the file in the module header). It appends the trailers from the environment: FLEET_TASK_ID -> Task-Id, the session id -> Session-Id, decision ids listed in $FLEET_DECISION_IDS -> repeated Decision-Id, and Assisted-by: opencode (<route head>).\n- NEW pkgs/fleet/crates/fleet/src/trace.rs: `fleet trace check [--since] ` finds commits whose trailers name tasks/sessions/decisions missing from the fact_link table, and commits with no trailers on fleet worktree branches (orphans). Writes fact_link rows (kind commit-task, commit-session, commit-decision) through the outbox from S6.\n- Tests: pkgs/fleet/crates/fleet/tests/trace.rs using a temp git repo.\n\nRules:\n- Trailers use git trailer syntax; the hook never rewrites an existing trailer block (appends only, dedupes identical lines).\n- Assisted-by names the route head (opencode-route/<pool>), not the serving leaf.\n- Hook is a no-op outside fleet worktrees (no error on other checkouts).\n\nAcceptance:\n1. `git interpret-trailers --parse` on a hook-written message returns the four keys with the expected values (test runs git).\n2. Hook twice on the same message: identical output (idempotent).\n3. Outside a fleet worktree the hook leaves the message byte-identical.\n4. `fleet trace check` on the fixture repo reports exactly the seeded orphan commit.\n\nOracle: git's own trailer parser as the reference for the format; the seeded fixture for the orphan count.",
+    "blocked_by": [
+      "D6-S6"
+    ],
+    "statements": [
+      "supp §5",
+      "AD7"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S11",
+    "repo": "developing-today/code",
+    "title": "per-session metrics: pure definitions over route_attempt and session_message rows, with golden fixtures",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: compute the supplement §5 per-session metrics (design §4.6 table) from raw rows, as pure functions, so D3 and the review surface share one definition.\n\nFiles to change:\n- NEW pm-stack/aggregator/src/session-metrics.ts: pure functions over arrays of attempt rows and session_message rows: tokens (in/out/reasoning/cache), tokensContext, userInput, thinking, toolCalls(name counts, reads), ttftPerStep, firstTtft, stepTimeTotal, stepCount (distinct assistant_message_id and attempts), sessionActiveMs (time_updated - time_created - time_idle, labelled estimate), questionPrompts, questionCount, timeToSubmitMs, autoReroutes, subSessionCount and depth.\n- NEW pm-stack/aggregator/src/session-metrics.test.ts with fixtures under pm-stack/aggregator/test/fixtures/session-metrics/.\n- Read-only over opencode.db as analytics-store.ts already does (bun:sqlite, mode=ro). No writes.\n\nOracle: reference = hand-computed expected values for each fixture (committed JSON next to the fixture). Plus invariants (property test over random attempt sequences): firstTtft equals ttft of the earliest attempt by time_started; stepTime equals the sum of response_ms; stepCount >= attempts that produced output; tokens total equals the sum of parts.\n\nAcceptance:\n1. bun test pm-stack/aggregator/src/session-metrics.test.ts passes.\n2. The question-shape assumption (Q12) is verified against 9 real question tool rows (read-only) and recorded in the test header; if the shape differs, the test fails and the header says which field is used.\n3. No mutation of opencode.db (test asserts the file's mtime and size unchanged around the read in the integration test, or the test uses an in-memory fixture only).",
+    "blocked_by": [],
+    "statements": [
+      "supp §5",
+      "brief §5",
+      "brief §6"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S12",
+    "repo": "developing-today/code",
+    "title": "outcome_report native tool (trail_add shape) for sessions that cannot shell out",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: a native tool so any session can report an outcome in one call, with the same contract as the CLI (design §3.6 A, §4.9).\n\nFiles to change: the repo that ships the opencode-cockpit tool set (trail_add lives there; Q6 in design §7.2 — confirm the repo before editing; if it is outside developing-today/code, open the slice's PR in that repo and keep this issue as the tracker). Tool: outcome_report({item, label, severity?, note?, evidence?, decision?, causedBy?}) which shells to `fleet outcome report` with the same arguments and returns its result verbatim.\n\nAcceptance:\n1. Calling the tool with a missing note and no evidence returns the CLI's usage error, not a success.\n2. Calling it with a valid label writes exactly one outbox row (checked by counting lines before and after).\n3. The tool description lists the registry label ids read from pm-stack/outcome-labels.json at load (or says 'see fleet outcome labels').\n\nOracle: the CLI behaviour (S8) is the reference; the tool must return the same error text and row count.",
+    "blocked_by": [
+      "D6-S8"
+    ],
+    "statements": [
+      "supp §5"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S13",
+    "repo": "developing-today/code",
+    "title": "docs: outcome-reporting topic file, AGENTS pointer within budget, PR Trace block in the pr skill and template",
+    "version": "V2",
+    "tier": "crucial",
+    "kind": "docs",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: every session knows it can report on any item (design Appendix A), without pushing AGENTS.md over its budget.\n\nFiles to change:\n- NEW doc/agents/outcome-reporting.md (text from design Appendix A.1).\n- AGENTS.md: add the pointer from Appendix A.2 (about 260 bytes). Current size is 7,493 bytes of an 8,000-byte budget checked by scripts/research_workflow.py check; the PR must keep it under budget.\n- The pr skill (skill id pr) and the repo PR template: add the '## Trace' block from Appendix A.4 (generated mirror; the commit trailers are the record).\n- doc/agents/parallel-writers-and-subsessions.md: one sentence pointing to the reporting topic (optional, only if within the same budget rules).\n\nAcceptance:\n1. `python3 -I scripts/research_workflow.py check` passes (AGENTS budget).\n2. `wc -c AGENTS.md` is below 8000 after the change.\n3. `grep -c 'fleet outcome report' doc/agents/outcome-reporting.md` >= 1 and every command in the topic file parses against the S8 CLI (`fleet outcome --help` lists each verb).\n\nOracle: the research_workflow check (budget) and the CLI help text (commands exist).",
+    "blocked_by": [
+      "D6-S8",
+      "D6-S10"
+    ],
+    "statements": [
+      "supp §5",
+      "AGENTS budget"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S14",
+    "repo": "developing-today/code",
+    "title": "PM review panel on one item: labels, severity, gauges, evidence",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: feedback, labels and scores on one item from the item page (design §4.10 row 1, §4.4 current view).\n\nFiles to change:\n- pm-stack/aggregator/src/render.ts (renderItem for /item/<subject>): a 'Review' panel; pm-stack/aggregator/src/server.ts: POST /api/review/items/<ref>/outcomes and /api/review/items/<ref>/ratings, both calling the S8 writer (never write tables directly); GET reads v_outcome_current and v_decision_feedback_current.\n- Authorization follows comments.ts (operator-token binding); legacy unverified writes are marked, as comments.ts does.\n\nAcceptance:\n1. A label picked on the item page writes one outcome row with detection 'reviewed' and observer_role 'reviewer' (fixture server test).\n2. Labels not in the registry are not offered by the picker (the picker is built from the registry).\n3. The panel shows the current view and marks 'reported' negatives with severity >= 4 that lack a second observer (design §4.4 display rule).\n\nOracle: the registry (S7) for the picker; the current-view definition (design §4.4) for display.",
+    "blocked_by": [
+      "D6-S8"
+    ],
+    "statements": [
+      "supp §8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S15",
+    "repo": "developing-today/code",
+    "title": "review sets: query, marked and model-selected sets over items, append-only membership, standalone set views",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the set-based review surface (design §3.8 A, §4.10 rows 2–5). Each set is a view; scores attach to items, never to sets.\n\nFiles to change:\n- NEW pm-stack/aggregator/src/review-sets.ts: createSet (kind query|marked|model-selected, predicate_json), addMember/removeMember (append review_set_member), currentMembers(setId) (latest action per item_ref), resolveQuerySet(predicate, pool, outcomes, feedback) (pure).\n- pm-stack/aggregator/src/server.ts: /review page; /api/review/sets (GET, POST), /api/review/sets/<id>/members (POST).\n- Reuse the ranking approach of pm-stack/aggregator/src/needs-drew.ts for model-selected ordering; do not reuse the decisions.ts container (design §3.8 D).\n- Writes via the Turso sink (S6) or an outbox equivalent; never direct edits.\n\nAcceptance:\n1. Two sets open at once; removing an item from one does not change the other (test).\n2. A query set recomputed twice on the same inputs gives the same members (pure function, determinism test).\n3. A model-selected set stores its predicate; re-running the predicate after new data changes membership, but the stored predicate string is unchanged.\n4. Scores written from one set appear on the item when viewed from another set and standalone (test).\n\nOracle: the pure resolveQuerySet function over fixture inputs (expected member lists hand-written), and the standalone-equivalence invariant.",
+    "blocked_by": [
+      "D6-S6",
+      "D6-S14"
+    ],
+    "statements": [
+      "supp §8"
+    ],
+    "estimate": "L"
+  },
+  {
+    "id": "D6-S16",
+    "repo": "developing-today/code",
+    "title": "search terminal items by epic, roadmap and timeline",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: find terminal items by epic, roadmap and week closed (design §4.10 row 6).\n\nFiles to change:\n- pm-stack/aggregator/src/search-view.ts (searchWork): parse facets epic:<ref>, roadmap:<ref>, closed:<from>..<to>, status:Done. Terminal = canonical Done (status-taxonomy.ts) or PR merged/closed, or queue completed/canceled/failed.\n- Epic membership from pm-stack/aggregator/src/epic-graph.ts (epicSelector / epic-graph membership); roadmap from roadmap-annotations.ts; closed weeks from item-history.ts weekly cutoffs (an incomplete week is excluded, as item-history already does).\n- Tests: pm-stack/aggregator/src/search-view.test.ts with fixtures.\n\nAcceptance:\n1. epic:<ref> returns exactly the terminal items whose epicRef chain contains <ref> (fixture).\n2. closed:2026-11-01..2026-11-07 excludes an item closed on 2026-11-08 and excludes items in an incomplete week (fixture).\n3. An unmapped status value is reported as unmapped, never guessed as Done (status-taxonomy rule).\n\nOracle: hand-written expected result sets over the fixture pool; the status-taxonomy unmapped rule.",
+    "blocked_by": [],
+    "statements": [
+      "supp §8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S17",
+    "repo": "developing-today/code",
+    "title": "repo-queue reprioritize verb and /queue control: priority rows in the existing events table",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: review and reprioritize queued work, recorded (design §4.10 row 7, Q14).\n\nFiles to change:\n- pkgs/fleet/crates/fleet-queue/src/client.rs: add \"reprioritize\" to the verb dispatch (lines ~5314–5340 pattern): `repo-queue reprioritize <task> --priority N --reason \"<text>\"`. Updates tasks.priority only for status queued or parked; appends an events row (kind 'priority', detail {before, after, reason, actor}) in the same transaction.\n- pkgs/fleet/crates/fleet-queue/src/turso_queue.rs: the update function; no DDL change (events table exists, turso_queue.rs:928–933).\n- pm-stack/aggregator/src/server.ts (/queue, server.ts:2507) and queue-view.ts: a priority control posting to the verb (through the dispatch, never SQL).\n\nAcceptance:\n1. cargo test -p fleet-queue reprioritize: priority changes; one events row with before/after and reason exists; `repo-queue timeline <task>` shows it.\n2. Reprioritize of a claimed task is refused with a clear error (claimed work is not reordered).\n3. Without --reason the command is a usage error.\n\nOracle: the events table row as the record (before/after values equal the pre- and post-state read back).",
+    "blocked_by": [],
+    "statements": [
+      "supp §8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S18",
+    "repo": "developing-today/code",
+    "title": "research: label base rates and severity calibration from the first 14 days of reviewed rows",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: decide the severity scale and the Q4 quota and size bands from data (design §4.5, §5.1). Entry gate: >= 14 days of V2 records per decision type.\n\nOutput: a research note under doc/ (new dated folder) with base rates per label and severity, n and a 95 % interval, and a proposed registry version bump (S7). No code change except the registry proposal.\n\nAcceptance: the note lists n per label; labels with n < 30 are marked insufficient; the proposal is a diff against pm-stack/outcome-labels.json, not applied.\n\nOracle: recount from the raw rows with an independent query (two queries, same result).",
+    "blocked_by": [
+      "D6-S8",
+      "D6-S9"
+    ],
+    "statements": [
+      "supp §5",
+      "brief §6"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S19",
+    "repo": "developing-today/code",
+    "title": "export D6 tables in the D3 nightly export manifest (Parquet by day)",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: D6's decision, feedback, outcome, link and review tables reach the stats store as day-partitioned Parquet (design §5.1; AD8).\n\nFiles to change: the D3 export manifest (owned by D3; add table definitions and schema_version per file). External edge: blocked by D3's export slice (name it when D3's ids are known).\n\nAcceptance: a nightly export for one day produces one Parquet file per table; row counts equal the source counts for that day (SQL count vs Parquet metadata).\n\nOracle: source row counts.",
+    "blocked_by": [
+      "D6-S6"
+    ],
+    "statements": [
+      "brief §6",
+      "AD8"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S20",
+    "repo": "developing-today/code",
+    "title": "suggest-only outcome labels from a reviewer subsession (never writes reviewed)",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: a reviewer subsession proposes labels with evidence, stored as reported with observer_role other and provenance.source 'suggestion' (design §5.1).\n\nAcceptance: a suggestion can never produce a 'reviewed' row (test asserts the writer rejects detection 'reviewed' from source 'suggestion'); suggestions show in the review panel with the proposer's session id.\n\nOracle: the writer's rejection test.",
+    "blocked_by": [
+      "D6-S8"
+    ],
+    "statements": [
+      "supp §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S21",
+    "repo": "developing-today/code",
+    "title": "research: hunk-survival for work-undone, and change-marker deltas for slow and cheaper-than-expectation",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: decide whether git blame hunk survival and TTFT/quota change-marker deltas can make work-undone, slow and cheaper-than-expectation automatic (design §3.7 C, §5.1). Output: a research note with a recommendation and a measured false-positive rate on a fixture of 50 known cases.\n\nAcceptance: the note reports precision and recall on the fixture; no code change.\n\nOracle: the 50 hand-labelled cases.",
+    "blocked_by": [
+      "D6-S9"
+    ],
+    "statements": [
+      "supp §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S22",
+    "repo": "developing-today/code",
+    "title": "research: counterfactual evaluation and exploration design (V4 seed)",
+    "version": "V4",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: design how other decision policies could be evaluated from logged decisions: which fields must be retained (probability vectors, a replayable request under an explicit privacy decision, §7.2 of the design), how exploration stays inside a trial's safe set (AD9), and why IPS is unusable while the pool choice is deterministic (R2 §5.1).\n\nAcceptance: the note states the minimum retained fields and the privacy decision the owner must make; no code change.\n\nOracle: a worked example computed by hand on 10 logged rows.",
+    "blocked_by": [
+      "D6-S18"
+    ],
+    "statements": [
+      "AD9",
+      "supp §9"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S23",
+    "repo": "developing-today/code",
+    "title": "guard: outcome registry, DDL and writer label list agree (drift check on main)",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "guard",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: the registry file, the Turso DDL (S6) and the writer's label list cannot drift apart (design §5.1). Runs on main; reports, does not gate PRs.\n\nAcceptance: a fixture with a label added only to the writer fails the guard; the real repo passes.\n\nOracle: the three sources compared as sets.",
+    "blocked_by": [
+      "D6-S7",
+      "D6-S8"
+    ],
+    "statements": [
+      "supp §5"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S24",
+    "repo": "developing-today-forks/opencode",
+    "title": "size and privacy guard for the decision record; 30-day storage measurement; blob TTL job (off by default)",
+    "version": "V2",
+    "tier": "recommended",
+    "kind": "guard",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: enforce design §4.7 bounds and measure real bytes per decision before retention is set (R3 §7.1 item 7).\n\nFiles to change: packages/core/test/decision-record.size.test.ts (bounds); a measurement script under packages/core/scripts/ that reports bytes/day for decision_record, decision_leg (read-only on a copy); the blob TTL job is written but disabled by config.\n\nAcceptance:\n1. Writes with an answer_json over 8192 bytes, a prompt body over 16384 bytes, a note over 500 characters, or an evidence URL with a non-https scheme are refused (test).\n2. The measurement script on a copy of opencode.db with the decision tables (fixture rows) prints bytes/day and per-row bytes; 30-day measurement is a runbook step, not a CI gate.\n3. Blob TTL job deletes rows older than 14 days only when enabled; disabled by default (test).\n\nOracle: the design §4.7 bounds table (golden) and the fixture byte counts.",
+    "blocked_by": [
+      "D6-S3",
+      "D6-S4"
+    ],
+    "statements": [
+      "supp §9",
+      "AD7"
+    ],
+    "estimate": "S"
+  },
+  {
+    "id": "D6-S25",
+    "repo": "developing-today-forks/opencode",
+    "title": "session_fact snapshot at session close (append-only point-in-time facts)",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: an append-only session_fact row at close for point-in-time facts that D3 needs (design §3.9 C, §5.1). Files: a migration analogous to D6-S1 plus a writer at the session close path. Acceptance: exactly one fact row per closed session; re-closing does not add a row (idempotent by session id).\n\nOracle: one row per session in a fixture of 20 sessions.",
+    "blocked_by": [
+      "D6-S11"
+    ],
+    "statements": [
+      "brief §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S26",
+    "repo": "developing-today/code",
+    "title": "causal-chain report: chains longer than two steps, asserted-by split",
+    "version": "V3",
+    "tier": "contingent",
+    "kind": "implement",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: render outcome chains from outcome_link (design §5.1, §6.2): each chain with its steps, observers, detection and the share asserted by a reviewer versus reported. Files: pm-stack/aggregator/src/causal-chains.ts (pure) and a read-only page.\n\nAcceptance: the worked example in design §6.2 is reproduced exactly from fixture rows (golden text).\n\nOracle: the design §6.2 table.",
+    "blocked_by": [
+      "D6-S8",
+      "D6-S9"
+    ],
+    "statements": [
+      "supp §5"
+    ],
+    "estimate": "M"
+  },
+  {
+    "id": "D6-S27",
+    "repo": "developing-today/code",
+    "title": "research: review ordering model for the model-selected set (labelling assistant seed, V4)",
+    "version": "V4",
+    "tier": "contingent",
+    "kind": "research",
+    "body": "Design: doc/2026-11-13T09-26-00Z_design_pool_effort_system/designs/D6-outcomes-review.md (read it first; section refs below are into that file).\nProgram: code#9399 pool & effort system. Binding: AD7 (append-only records), AD5 (decision pools, D5 owns the executor), AD8 (export via D3).\n\nGoal: define the ordering that puts the most informative items first in a model-selected review set (design §5.2). Output: a note with the candidate score (expected information of a label given current evidence), the data it needs, and a hand-computed example on 10 items. No code change.\n\nOracle: the hand-computed example.",
+    "blocked_by": [
+      "D6-S15",
+      "D6-S18"
+    ],
+    "statements": [
+      "supp §8"
+    ],
+    "estimate": "M"
+  }
+]
