@@ -333,22 +333,42 @@ impl Scheduler {
             }
             SchedEvent::Missing { holder, range } => {
                 // Shrink the holder's known ranges by the reported range,
-                // and requeue anything it had in flight there.
-                if let HeldRanges::Ranges(rs) = &mut self.holders[holder].held {
-                    let mut out = Vec::new();
-                    for &(s, e) in rs.iter() {
-                        if e <= range.start || s >= range.end {
-                            out.push((s, e));
-                        } else {
-                            if s < range.start {
-                                out.push((s, range.start));
-                            }
-                            if e > range.end {
-                                out.push((range.end, e));
+                // and requeue anything it had in flight there. A holder
+                // that claimed `Complete` but reports a gap is downgraded
+                // to explicit ranges (full blob minus the gap); without
+                // this a dead `Complete` holder would be retried forever.
+                // An optimistic (`Unknown`) holder stays optimistic but
+                // loses score so known holders are preferred next.
+                match &mut self.holders[holder].held {
+                    HeldRanges::Ranges(rs) => {
+                        let mut out = Vec::new();
+                        for &(s, e) in rs.iter() {
+                            if e <= range.start || s >= range.end {
+                                out.push((s, e));
+                            } else {
+                                if s < range.start {
+                                    out.push((s, range.start));
+                                }
+                                if e > range.end {
+                                    out.push((range.end, e));
+                                }
                             }
                         }
+                        *rs = out;
                     }
-                    *rs = out;
+                    HeldRanges::Complete => {
+                        let mut out = Vec::new();
+                        if 0 < range.start {
+                            out.push((0, range.start));
+                        }
+                        if range.end < self.blob_size {
+                            out.push((range.end, self.blob_size));
+                        }
+                        self.holders[holder].held = HeldRanges::Ranges(out);
+                    }
+                    HeldRanges::Unknown => {
+                        self.holders[holder].score -= 1;
+                    }
                 }
                 for g in self.groups_in(range) {
                     if let GroupState::InFlight(h) = self.state[g as usize] {

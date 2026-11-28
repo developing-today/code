@@ -68,6 +68,8 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 
 [dev-dependencies]
+# Chunk-number ranges for the #2261 live-holder PoC test (swarm_live.rs).
+bao-tree = "0.16"
 # Decodes the QR images rendered by the extracted module's round-trip tests.
 rqrr = { version = "0.11.0", default-features = false }
 # Crate-split fallout (#3447): the presentation ANSI-diff tests and the
