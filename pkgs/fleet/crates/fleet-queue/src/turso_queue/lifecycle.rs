@@ -1929,14 +1929,44 @@ pub(crate) fn manual_override_park_cover(
     if audit.get("previous_wait_kind").and_then(Value::as_str) != Some(wait_kind) {
         return None;
     }
-    if audit
+    let previous = audit
         .get("previous_ready_condition")
-        .unwrap_or(&Value::Null)
-        != condition
-    {
+        .unwrap_or(&Value::Null);
+    if !same_wait_condition(previous, condition, wait_kind) {
         return None;
     }
     Some(audit.clone())
+}
+
+/// #16392: is the incoming park's condition the SAME wait the audit
+/// recorded, for cover purposes? Exact equality is the base case,
+/// but a time condition's `until` is a lapse horizon minted fresh
+/// on every bare park (now + delay) — it is not what makes the wait
+/// the wait (#9179 (c)4's own framing). Two time conditions are
+/// therefore the same wait when everything except `until` matches,
+/// and a recorded NULL condition (older rows parked before a
+/// condition was always stored) matches a bare timer re-park: the
+/// recorded wait carried no explicit condition, so there is no
+/// materially new condition to honor instead.
+fn same_wait_condition(previous: &Value, incoming: &Value, wait_kind: &str) -> bool {
+    if previous == incoming {
+        return true;
+    }
+    if previous.is_null() {
+        return wait_kind == "timer"
+            && incoming.get("kind").and_then(Value::as_str) == Some("time");
+    }
+    let strip_until = |v: &Value| -> Value {
+        let mut obj = match v.as_object() {
+            Some(o) => o.clone(),
+            None => return v.clone(),
+        };
+        obj.remove("until");
+        Value::Object(obj)
+    };
+    previous.get("kind").and_then(Value::as_str) == Some("time")
+        && incoming.get("kind").and_then(Value::as_str) == Some("time")
+        && strip_until(previous) == strip_until(incoming)
 }
 
 pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
@@ -4027,6 +4057,80 @@ mod manual_claim_override_audit_tests {
         assert_eq!(row["wait_kind"], "review");
         assert_eq!(row["ready_condition"], new_condition);
         assert_eq!(row["result"]["park_reason"], "needs owner review");
+    }
+
+    #[test]
+    fn first_boot_honors_manual_override_default_timer_repark_refused_16392() {
+        // Oracle for #16392: a bare (default-timer) park stores
+        // {"kind": "time", "until": T1}; a bare re-park under the
+        // manual override mints a FRESH until (T2), so exact
+        // ready_condition equality can never hold — yet it is the
+        // unchanged wait and the §2 cover must still refuse it.
+        // Fixed explicit not_before values keep the repro
+        // deterministic (no wall-clock dependence).
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91786)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            &t,
+            &json!({"worker": "timer-boot-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "task_id": id,
+                "reason": "supervision backoff", "not_before": "2027-01-01T00:00:00Z",
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+        let before = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(before["wait_kind"], "timer", "{before}");
+        assert_eq!(before["ready_condition"]["kind"], "time", "{before}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "queue": QUEUE, "task_id": id,
+                "session_id": "ses_timer_boot_override",
+                "manual_override": "timer wait independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        let audit = row["result"]["manual_override"].clone();
+        assert_eq!(audit["previous_wait_kind"], "timer");
+        assert_eq!(audit["previous_ready_condition"], before["ready_condition"]);
+
+        // Boot re-parks bare with a later explicit not_before: the
+        // stored condition's until differs from the recorded one,
+        // but the wait is unchanged — the override must hold.
+        let boot = verb_park(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "task_id": id,
+                "reason": "supervision backoff", "not_before": "2027-06-01T00:00:00Z",
+            }),
+        );
+        assert_eq!(
+            boot["ok"], false,
+            "default-timer re-park under a live manual override must refuse: {boot}"
+        );
+        assert!(
+            boot["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("manual-claim override")),
+            "{boot}"
+        );
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["result"]["manual_override"], audit);
+        let refusals = events_for(&t, id, "park_refused");
+        assert_eq!(refusals.len(), 1, "one recorded refusal");
+        let detail: Value = serde_json::from_str(refusals[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["refusal"], "manual_override_honored");
     }
 
     #[test]
