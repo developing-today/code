@@ -2204,7 +2204,11 @@ mod tests {
 
     /// #818, updated for #807: every step kind is applied by `apply_steps`
     /// over the wire — module install and schedules included — so every
-    /// step counts toward the applied summary.
+    /// step counts toward the applied summary. The one exception is
+    /// `SetRoles` (#13237), the first reported-only step: it plans,
+    /// diffs, and model-applies, but the host serves no admin role
+    /// operation yet, so it never counts (see
+    /// `set_roles_is_reported_only`).
     #[test]
     fn every_step_kind_counts_as_applied() {
         use id_caps::world_manifest::ApplyStep;
@@ -2229,6 +2233,43 @@ mod tests {
         ];
         let applied = steps.iter().filter(|step| step_is_applied(step)).count();
         assert_eq!(applied, steps.len());
+    }
+
+    /// #13237: `SetRoles` is the first reported-only step — planned,
+    /// diffed, and model-applied, but with no admin role operation on
+    /// the host it must never count toward the applied summary, or an
+    /// `id world apply` would claim credit for roles it never touched.
+    #[test]
+    fn set_roles_is_reported_only() {
+        use id_caps::world_manifest::ApplyStep;
+        let step = ApplyStep::SetRoles {
+            roles: id_caps::role_config::starter_roles(),
+        };
+        assert_eq!(step.kind(), "set_roles");
+        assert!(!step_is_applied(&step));
+    }
+
+    /// #13237: declared configuration ranks with the profile, grants,
+    /// and ceiling — before the module install that runs under it —
+    /// even though the wire executor refuses the step until the admin
+    /// role path lands.
+    #[test]
+    fn set_roles_orders_with_declared_configuration() {
+        use id_caps::world_manifest::ApplyStep;
+        let steps = [
+            ApplyStep::InstallModule {
+                hash: Some("abc".to_owned()),
+                source: None,
+                seed: 0,
+            },
+            ApplyStep::SetRoles { roles: vec![] },
+            ApplyStep::SetGrants { grants: vec![] },
+        ];
+        let kinds: Vec<&str> = ordered_steps(&steps)
+            .iter()
+            .map(|step| step.kind())
+            .collect();
+        assert_eq!(kinds, ["set_grants", "set_roles", "install_module"]);
     }
 
     /// The execution order is what makes a plan reachable (#807): a

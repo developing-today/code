@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::role_config::{ROLE_CONFIG_SCHEMA_VERSION, RoleDefinition};
 use crate::world_caps::{
     MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_DAYS, MAX_SCHEDULE_HORIZON_MS,
     default_ceiling_names, validate_ceiling_names, validate_grant_names,
@@ -64,6 +65,32 @@ pub struct WorldManifest {
     /// reconciled exactly — missing ids are scheduled, undeclared ones
     /// cancelled.
     pub schedules: Option<BTreeMap<String, u64>>,
+    /// Declared role definitions (design #13237): the versioned
+    /// `[role_config]` table, parsed with the canonical
+    /// [`crate::role_config`] module types — never a parallel copy.
+    /// `None` (the table is omitted) leaves the live roles alone; a
+    /// present table is authoritative, reconciled by name exactly like
+    /// grants and schedules. The wire executor has no admin role path
+    /// yet, so a declared table plans a reported-only step until that
+    /// path lands.
+    pub role_config: Option<RoleConfigSection>,
+}
+
+/// The declarative `[role_config]` table: versioned role definitions a
+/// world carries as configuration. `schema_version` must be
+/// [`ROLE_CONFIG_SCHEMA_VERSION`]; anything else fails at parse time so
+/// a future shape never parses into old meaning. Role bodies are the
+/// canonical [`RoleDefinition`] — validated by
+/// [`RoleDefinition::validate`], never re-checked field by field here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoleConfigSection {
+    /// Shape version of this table; 1 is the only accepted value.
+    pub schema_version: u32,
+    /// Declared roles, reconciled by name. An empty list is
+    /// authoritative: it declares the world holds no roles.
+    #[serde(default)]
+    pub roles: Vec<RoleDefinition>,
 }
 
 /// The relevant current state of a live world, as `id world stats` would see
@@ -84,6 +111,11 @@ pub struct WorldState {
     pub presentation: PresentationPolicy,
     /// Pending schedules: id to fire time, in unix milliseconds.
     pub schedules: BTreeMap<String, u64>,
+    /// Declared role definitions, by declaration order. The host reports
+    /// no roles yet, so the wire projection starts empty and a manifest
+    /// that declares roles plans a reported-only step until the admin
+    /// role path lands.
+    pub roles: Vec<RoleDefinition>,
 }
 
 impl Default for WorldState {
@@ -96,6 +128,7 @@ impl Default for WorldState {
             profile: WorldExecutionProfile::default(),
             presentation: PresentationPolicy::default(),
             schedules: BTreeMap::new(),
+            roles: Vec::new(),
         }
     }
 }
@@ -162,6 +195,13 @@ pub enum ApplyStep {
         /// When it fires, in unix milliseconds.
         at_ms: u64,
     },
+    /// Replace the declared role definitions. Reported-only until the
+    /// admin role path lands: the wire executor refuses this step
+    /// loudly instead of claiming it applied roles it never touched.
+    SetRoles {
+        /// Desired roles, in declaration order.
+        roles: Vec<RoleDefinition>,
+    },
     /// Cancel a schedule the manifest does not declare.
     CancelSchedule {
         /// The schedule's id.
@@ -181,6 +221,7 @@ impl ApplyStep {
             Self::SetPresentation { .. } => "set_presentation",
             Self::ScheduleAt { .. } => "schedule_at",
             Self::CancelSchedule { .. } => "cancel_schedule",
+            Self::SetRoles { .. } => "set_roles",
         }
     }
 }
@@ -287,6 +328,31 @@ impl WorldManifest {
             for (id, at_ms) in schedules {
                 crate::world_caps::validate_schedule_id(id)?;
                 ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+            }
+        }
+        if let Some(role_config) = &self.role_config {
+            ensure!(
+                role_config.schema_version == ROLE_CONFIG_SCHEMA_VERSION,
+                "unknown role_config schema version {} (expected {ROLE_CONFIG_SCHEMA_VERSION})",
+                role_config.schema_version
+            );
+            // Bodies are the canonical RoleDefinition: the single
+            // authority is RoleDefinition::validate, never a parallel
+            // field-by-field re-check here (#13237).
+            let mut seen = std::collections::BTreeSet::new();
+            for (index, role) in role_config.roles.iter().enumerate() {
+                ensure!(
+                    seen.insert(role.name.clone()),
+                    "duplicate role_config role name {:?} (index {index})",
+                    role.name
+                );
+                role.validate().map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid role_config role {:?} (index {index}): {}",
+                        role.name,
+                        error.code()
+                    )
+                })?;
             }
         }
         ensure!(
@@ -426,6 +492,25 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
         }
     }
 
+    // Roles: an omitted table leaves the live roles alone; a present
+    // table is authoritative and reconciles by name — a reordered table
+    // with identical definitions is not drift, exactly like grants and
+    // the ceiling. The step is reported-only until the admin role path
+    // lands (see ApplyStep::SetRoles).
+    if let Some(role_config) = &desired.role_config {
+        fn by_name(roles: &[RoleDefinition]) -> BTreeMap<&str, &RoleDefinition> {
+            roles
+                .iter()
+                .map(|role| (role.name.as_str(), role))
+                .collect()
+        }
+        if by_name(&role_config.roles) != by_name(&current.roles) {
+            steps.push(ApplyStep::SetRoles {
+                roles: role_config.roles.clone(),
+            });
+        }
+    }
+
     steps
 }
 
@@ -518,6 +603,22 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
                     changed += 1;
                 }
             }
+            ApplyStep::SetRoles { roles } => {
+                // Defensive re-check (#4769): a manifest is validated
+                // first, but a hand-built step must still refuse unknown
+                // ceilings and bad bounds instead of folding them into
+                // state. Duplicate names cannot survive parse, so the
+                // fold keeps declaration order verbatim.
+                for role in roles {
+                    role.validate().map_err(|error| {
+                        anyhow::anyhow!("invalid role {:?}: {}", role.name, error.code())
+                    })?;
+                }
+                if state.roles != *roles {
+                    state.roles = roles.clone();
+                    changed += 1;
+                }
+            }
         }
     }
     Ok(changed)
@@ -600,6 +701,10 @@ fn render_steps(steps: &[ApplyStep]) -> String {
             }
             ApplyStep::CancelSchedule { id } => {
                 out.push_str(&format!("- schedule {id}\n"));
+            }
+            ApplyStep::SetRoles { roles } => {
+                let names: Vec<&str> = roles.iter().map(|role| role.name.as_str()).collect();
+                out.push_str(&format!("~ roles [{}]\n", names.join(", ")));
             }
         }
     }
@@ -1449,6 +1554,160 @@ tree = "T"
             assert_eq!(steps.len(), 1, "{steps:?}");
             apply(&steps, &mut state).unwrap();
             assert_eq!(state.presentation, PresentationPolicy::default());
+        }
+    }
+
+    mod roles {
+        use super::*;
+        use crate::role_config::starter_roles;
+
+        const MANIFEST: &str = r#"
+[role_config]
+schema_version = 1
+
+[[role_config.roles]]
+name = "observer"
+ceiling = 17
+lifetime_min_secs = 900
+lifetime_max_secs = 3600
+
+[role_config.roles.quota_class]
+budget = { frames = 500, tool_calls = 500, program_invocations = 0 }
+
+[role_config.roles.review]
+queue_above_ceiling = false
+digest_every_refusals = 10
+"#;
+
+        #[test]
+        fn a_role_table_parses_and_round_trips() {
+            let manifest = parse(MANIFEST).unwrap();
+            let section = manifest.role_config.as_ref().unwrap();
+            assert_eq!(section.schema_version, ROLE_CONFIG_SCHEMA_VERSION);
+            assert_eq!(section.roles, starter_roles()[..1]);
+            assert_eq!(round_trip(&manifest).unwrap(), manifest);
+        }
+
+        #[test]
+        fn an_unknown_schema_version_is_refused() {
+            for bad in [
+                "[role_config]\nschema_version = 0\n",
+                "[role_config]\nschema_version = 2\n",
+                // A versioned table without its version is not version 1
+                // by assumption: it is a missing shape marker.
+                "[role_config]\n",
+            ] {
+                let err = parse(bad).unwrap_err();
+                assert!(err.to_string().contains("role_config"), "{bad}: {err:?}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_section_key_is_refused() {
+            let err = parse("[role_config]\nschema_version = 1\nshapes = []\n").unwrap_err();
+            assert!(err.to_string().contains("shapes"), "{err:?}");
+        }
+
+        #[test]
+        fn invalid_roles_fail_naming_the_role() {
+            // Unknown ceiling bits (bit 7 names no scope), an empty name,
+            // and inverted lifetime bounds each fail at parse time — the
+            // canonical validate() is the authority, surfaced with the
+            // role's name and code.
+            let ceiling = MANIFEST.replace("ceiling = 17", "ceiling = 128");
+            let err = parse(&ceiling).unwrap_err();
+            assert!(err.to_string().contains("bad_ceiling_bits"), "{err:?}");
+
+            let name = MANIFEST.replace("name = \"observer\"", "name = \"\"");
+            let err = parse(&name).unwrap_err();
+            assert!(err.to_string().contains("bad_name"), "{err:?}");
+
+            let bounds = MANIFEST
+                .replace("lifetime_min_secs = 900", "lifetime_min_secs = 7200")
+                .replace("lifetime_max_secs = 3600", "lifetime_max_secs = 1000");
+            let err = parse(&bounds).unwrap_err();
+            assert!(err.to_string().contains("bad_lifetime_bounds"), "{err:?}");
+            assert!(err.to_string().contains("observer"), "{err:?}");
+        }
+
+        #[test]
+        fn duplicate_role_names_are_refused() {
+            let doubled = format!(
+                "{MANIFEST}\n[[role_config.roles]]\nname = \"observer\"\nceiling = 7\nlifetime_min_secs = 900\nlifetime_max_secs = 900\n\n[role_config.roles.quota_class]\nbudget = {{ frames = 0, tool_calls = 0, program_invocations = 0 }}\n\n[role_config.roles.review]\nqueue_above_ceiling = false\ndigest_every_refusals = 0\n"
+            );
+            let err = parse(&doubled).unwrap_err();
+            assert!(err.to_string().contains("duplicate"), "{err:?}");
+            assert!(err.to_string().contains("observer"), "{err:?}");
+        }
+
+        #[test]
+        fn an_omitted_table_leaves_live_roles_alone() {
+            // No [role_config] table: a world holding roles drifts nothing.
+            let mut state = WorldState::default();
+            state.roles = starter_roles();
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
+        }
+
+        #[test]
+        fn drift_plans_applies_converges_and_diffs() {
+            let manifest = parse(MANIFEST).unwrap();
+            let mut state = WorldState::default();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert_eq!(steps[0].kind(), "set_roles");
+            assert_eq!(diff(&manifest, &state), "~ roles [observer]\n");
+
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert_eq!(state.roles, starter_roles()[..1]);
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
+            assert_eq!(diff(&manifest, &state), "no drift");
+        }
+
+        #[test]
+        fn a_reordered_table_with_identical_definitions_is_not_drift() {
+            let mut two = MANIFEST.to_owned();
+            two.push_str(
+                "\n[[role_config.roles]]\nname = \"participant\"\nceiling = 7\nlifetime_min_secs = 900\nlifetime_max_secs = 14400\n\n[role_config.roles.quota_class]\nbudget = { frames = 1, tool_calls = 1, program_invocations = 1 }\n\n[role_config.roles.review]\nqueue_above_ceiling = false\ndigest_every_refusals = 10\n",
+            );
+            let manifest = parse(&two).unwrap();
+            let mut state = WorldState::default();
+            state.roles = manifest
+                .role_config
+                .as_ref()
+                .unwrap()
+                .roles
+                .iter()
+                .rev()
+                .cloned()
+                .collect();
+            assert_eq!(
+                plan(&manifest, &state),
+                [] as [ApplyStep; 0],
+                "{:?}",
+                state.roles
+            );
+        }
+
+        #[test]
+        fn a_present_empty_table_clears_live_roles() {
+            // Present-but-empty is authoritative, like grants and ceiling:
+            // it declares the world holds no roles.
+            let manifest = parse("[role_config]\nschema_version = 1\n").unwrap();
+            assert_eq!(manifest.role_config.as_ref().unwrap().roles, Vec::new());
+            let mut state = WorldState::default();
+            state.roles = starter_roles();
+            let steps = plan(&manifest, &state);
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert!(matches!(
+                &steps[0],
+                ApplyStep::SetRoles { roles } if roles.is_empty()
+            ));
+            assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+            assert!(state.roles.is_empty());
+            assert_eq!(plan(&manifest, &state), [] as [ApplyStep; 0]);
         }
     }
 }

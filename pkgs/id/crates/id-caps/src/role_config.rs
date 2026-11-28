@@ -93,6 +93,15 @@ pub struct ReviewPolicy {
     pub digest_every_refusals: u64,
 }
 
+/// Schema version of the declarative `[role_config]` manifest section
+/// ([`crate::world_manifest::RoleConfigSection`]). Version 1 is the only
+/// version the manifest boundary accepts; a breaking change to the
+/// section shape bumps this constant and the manifest parser together,
+/// so old manifests fail loudly instead of parsing into new meaning.
+/// The per-definition [`RoleRegistry`] versions stay independent: they
+/// count edits to one role, this counts revisions of the file shape.
+pub const ROLE_CONFIG_SCHEMA_VERSION: u32 = 1;
+
 /// A role definition (§2.1): the versioned world-configuration object
 /// a grant refers to by name.
 ///
