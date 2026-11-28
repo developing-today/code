@@ -726,6 +726,28 @@ mod tests {
     }
 
     #[test]
+    fn task_ids_flag_parses_the_named_batch_9178() {
+        // #9178 §3 oracle: --tasks names the batch explicitly —
+        // a comma-separated list of positive ids, whitespace
+        // tolerated; an absent flag is no batch; anything else
+        // is a usage error, never a silent pick.
+        assert_eq!(parse_task_ids_flag(None), Ok(vec![]));
+        assert_eq!(
+            parse_task_ids_flag(Some("12,34".to_string())),
+            Ok(vec![12, 34])
+        );
+        assert_eq!(
+            parse_task_ids_flag(Some(" 7 , 8 ,9".to_string())),
+            Ok(vec![7, 8, 9])
+        );
+        assert!(parse_task_ids_flag(Some("".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("0".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("-3".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,x".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,".to_string())).is_err());
+    }
+
+    #[test]
     fn stack_transition_body_carries_the_transition_shape_8582() {
         // #8582 increment 4 oracle: the client transition body is
         // exactly the broker's transition shape (stack, position,
