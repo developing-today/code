@@ -29,7 +29,7 @@ Run COMMAND where builds belong, or open a shell there with no COMMAND.
   --codespace NAME                       which codespace (default: the first available)
   --cwd DIR                              directory to run in
   --build                                a heavy build: take a fleet-build-lock slot;
-                                          direct Cargo commands use its shared target lane
+                                          Cargo workspaces use a shared target lane
   --timeout SECS                         how long a laptop command may run
   --detach                               start it as a laptop job and return its id
                                          (follow with: fleet laptop-agent poll JOB --wait N)
@@ -293,11 +293,82 @@ fn needs_shell(command: &str) -> bool {
     )
 }
 
-/// Run direct commands as wrapper argv so Cargo reaches the broker's shared
-/// target lane. Keep compound shell input inside one sh -c argument.
+/// Commands that may launch Cargo use the target broker when a workspace
+/// root is the current directory. "just" and "make" are included because
+/// they commonly hide Cargo invocations in recipes.
+fn may_invoke_cargo(command: &str) -> bool {
+    command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
+        .any(|word| matches!(word, "cargo" | "just" | "make"))
+}
+
+/// Keep the whole shell command under one build-lock slot while leasing a
+/// shared target directory for its Cargo work. The caller's cwd is important:
+/// laptop-agent applies --cwd before starting this command, and the broker
+/// uses that directory to clean only the selected workspace's artifacts.
+fn broker_aware_shell(command: &str) -> String {
+    let profile = if command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .any(|word| matches!(word, "test" | "bench"))
+    {
+        "test"
+    } else if command.split_ascii_whitespace().any(|word| word == "--release") {
+        "release"
+    } else {
+        "dev"
+    };
+    let script = r#"command_text=__COMMAND__
+broker="$HOME/tools/cargo-target-broker"
+if [ -z "${CARGO_TARGET_DIR:-}" ] && [ -x "$broker" ]; then
+  manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+  if [ -n "$manifest" ]; then
+    root=${manifest%/Cargo.toml}
+    case "$root" in
+      */pkgs/*) repo=${root##*/pkgs/}; repo=${repo%%/*} ;;
+      pkgs/*) repo=${root#pkgs/}; repo=${repo%%/*} ;;
+      *) repo=${root##*/} ;;
+    esac
+    repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
+    if [ -n "$repo" ]; then
+      lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+      if [ -n "$lease" ]; then
+        target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
+        lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
+        if [ -n "$target" ] && [ -n "$lease_id" ]; then
+          export CARGO_TARGET_DIR="$target"
+          trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
+          sh -c "$command_text"
+          status=$?
+          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+          trap - EXIT
+          exit "$status"
+        fi
+        if [ -n "$lease_id" ]; then
+          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+        fi
+      fi
+    fi
+  fi
+  echo "fleet shell: shared Cargo target unavailable; using the normal target directory" >&2
+fi
+exec sh -c "$command_text"
+"#;
+    let script = script
+        .replace("__PROFILE__", profile)
+        .replace("__COMMAND__", &sh_quote_always(command));
+    format!("sh -c {}", sh_quote_always(&script))
+}
+
+/// Run direct commands as wrapper argv so the lock's Cargo routing applies.
+/// Compound commands keep one lock slot and lease a broker target for the
+/// duration of the shell, rather than acquiring one slot per command.
 fn under_build_lock(command: &str) -> String {
     if needs_shell(command) {
-        format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+        if may_invoke_cargo(command) {
+            format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+        } else {
+            format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+        }
     } else {
         format!("{BUILD_LOCK} {command}")
     }
@@ -310,13 +381,36 @@ fn local_build_line(command: &str, cwd: Option<&str>) -> String {
         .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
         .unwrap_or_default();
     let (locked, fallback) = if needs_shell(command) {
-        let quoted = sh_quote_always(command);
         (
-            format!("{BUILD_LOCK} sh -c {quoted}"),
-            format!("sh -c {quoted}"),
+            under_build_lock(command),
+            format!("sh -c {}", sh_quote_always(command)),
         )
     } else {
-        (format!("{BUILD_LOCK} {command}"), command.to_string())
+        (under_build_lock(command), command.to_string())
+    };
+    format!(
+        "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
+    )
+}
+
+/// A codespace may have the fleet build tools from its dotfiles. Use the same
+/// lock and broker path when present; otherwise try the broker directly and
+/// report that the host cannot serialize builds.
+fn codespace_build_line(command: &str, cwd: Option<&str>) -> String {
+    let change_dir = cwd
+        .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
+        .unwrap_or_default();
+    let locked = if may_invoke_cargo(command) {
+        format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+    } else {
+        under_build_lock(command)
+    };
+    let fallback = if may_invoke_cargo(command) {
+        broker_aware_shell(command)
+    } else if needs_shell(command) {
+        format!("sh -c {}", sh_quote_always(command))
+    } else {
+        command.to_string()
     };
     format!(
         "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
@@ -390,9 +484,13 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
             }
             let mut args = argv(&["codespace", "ssh", "-c", name]);
             if !interactive {
-                let line = match &opts.cwd {
-                    Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
-                    None => command,
+                let line = if opts.build {
+                    codespace_build_line(&command, opts.cwd.as_deref())
+                } else {
+                    match &opts.cwd {
+                        Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
+                        None => command,
+                    }
                 };
                 args.push("--".to_string());
                 args.push(line);

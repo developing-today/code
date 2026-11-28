@@ -1061,42 +1061,64 @@ fn a_single_string_cargo_command_uses_the_shared_target_lane() {
 }
 
 #[test]
-fn a_build_with_environment_assignment_keeps_shell_semantics() {
+fn a_build_with_environment_assignment_uses_the_shared_target_lane() {
     let plan = shell::plan(
         Target::Laptop,
         "test".into(),
         &words(&["RUST_LOG=debug cargo test"]),
         &Options {
+            cwd: Some("pkgs/id".into()),
             build: true,
             ..opts()
         },
     )
     .unwrap();
-    assert_eq!(
-        plan.args.last().unwrap(),
-        "~/tools/fleet-build-lock sh -c 'RUST_LOG=debug cargo test'"
-    );
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("RUST_LOG=debug cargo test"));
 }
 
 #[test]
-fn a_compound_build_command_runs_whole_under_the_lock() {
-    // The lock wrapper execs one program with its arguments
-    // (pkgs/fleet/fleet-build-lock ends in `exec "$@"`), so `cd` and
-    // `&&` must reach it inside one shell's argument.
+fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
+    // --cwd selects the workspace before the lock and broker run; each
+    // Cargo invocation in this compound command shares one exclusive lease.
     let plan = shell::plan(
         Target::Laptop,
         "test".into(),
-        &words(&["cd pkgs/id && cargo test -p 'id core'"]),
+        &words(&["cargo test -p 'id core' && cargo clippy -p id-core"]),
         &Options {
+            cwd: Some("pkgs/id".into()),
             build: true,
             ..opts()
         },
     )
     .unwrap();
-    assert_eq!(
-        plan.args.last().unwrap(),
-        r#"~/tools/fleet-build-lock sh -c 'cd pkgs/id && cargo test -p '\''id core'\'''"#
-    );
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("checkout --repo \"$repo\" --profile test"));
+    assert!(command.contains("cargo test -p"));
+}
+
+#[test]
+fn codespace_build_uses_shared_lane_tools_when_installed() {
+    let plan = shell::plan(
+        Target::Codespace("dev".into()),
+        "test".into(),
+        &words(&["cargo test -p id-core"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.program, "gh");
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("fleet-build-lock"));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cd pkgs/id"));
 }
 
 /// A HOME whose `tools/fleet-build-lock` logs its arguments, one per
