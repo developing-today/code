@@ -1,8 +1,8 @@
 {
   "description": "Decision-set event pipeline (#9335): authenticated webhook -> D1 store + Durable Object per set for fan-out.",
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261124.1",
-    "cf": "1.0.0-rc.5",
+    "@cloudflare/workers-types": "5.20261125.1",
+    "cf": "1.0.0-rc.6",
     "typescript": "^7.0.2",
     "wrangler": "4.168.0"
   },
