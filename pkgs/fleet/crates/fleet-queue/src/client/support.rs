@@ -193,7 +193,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   meta <get|set|unset|keys> ...\n\
   staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
   needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
-  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
+  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--tasks <id,id,...>] [--take-over] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
   release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
@@ -252,7 +252,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\nThe stewardship needs-user read: blocked/parked tasks carrying a question metadata entry, oldest last transition first, with the question object and a blocked-by count read from the blocked_deps cache (superseded by task_deps counts when Q6 lands)."
         }
         "claim" => {
-            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch."
+            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--tasks <id,id,...>] [--take-over] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch. With --tasks <id,id,...> (#9178 §3), claims several named tasks for this session in one operation and reports a per-task outcome (claimed / already-owned-by-this-session / skipped-claimed / not-found / failed); --take-over transfers named live-claimed tasks from their recorded holder session instead of skipping them. --tasks combines with neither --task, --count, --from-session, --manual-override, --handoff, nor --bind."
         }
         "release" => {
             "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
@@ -828,8 +828,9 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
     if queue_scope.is_some() || args.has("handoff") || args.has("bind") {
         return None;
     }
-    const INTENT_FLAGS: [&str; 11] = [
+    const INTENT_FLAGS: [&str; 12] = [
         "task",
+        "tasks",
         "filter",
         "queue",
         "count",
