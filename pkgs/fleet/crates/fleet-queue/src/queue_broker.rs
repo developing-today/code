@@ -15,10 +15,11 @@
 //!      or unix://<path> for the secrets broker's socket, #6218),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      QUEUE_BROKER_DOOR_URL + QUEUE_BROKER_DOOR_TOKEN_FILE (optional,
-//!      read-only hosted-door probes at POST /door-health,
+//!      hosted-door probes at POST /door-health,
 //!      POST /door-list, POST /door-show for per-task rows, the
-//!      POST /door-shadow dual-read comparison, and
-//!      POST /door-timeline for per-task event history in the
+//!      POST /door-shadow dual-read comparison,
+//!      POST /door-timeline for per-task event history, and the
+//!      POST /door-enqueue first-write probe in the
 //!      CF-2b shadow comparison.
 //!
 //! Backend: the queue core on the dedicated Turso DB `fleet-queue`
@@ -39,9 +40,10 @@ struct State {
     secrets_url: String,
     secrets_token: String,
     agent: ureq::Agent,
-    /// Optional, read-only hosted-door probes (#14987 CF-2b shadow
+    /// Optional hosted-door probes (#14987 CF-2b shadow
     /// comparison). Queue traffic continues to use Turso until a later
-    /// cutover explicitly routes verbs through this client.
+    /// cutover explicitly routes verbs through this client; /door-enqueue
+    /// is the first write probe and is diagnostic only.
     hosted_door: Option<HostedQueueDoor>,
     /// Filled by the startup thread once the Turso token resolves and
     /// the schema is ensured (#12247); until then queue verbs answer
@@ -66,12 +68,14 @@ struct TrustBundleClientReport {
 }
 
 /// Authenticated client for the hosted queue door. This slice
-/// exposes diagnostic read-only probes (`/door-health`,
+/// exposes diagnostic probes (`/door-health`,
 /// `/door-list`, `/door-show`, the `/door-shadow` dual-read
-/// comparison, and `/door-timeline` per-task event history)
+/// comparison, `/door-timeline` per-task event history, and the
+/// `/door-enqueue` first-write probe)
 /// for the CF-2b shadow
 /// comparison; it deliberately does not switch the broker's
-/// authoritative store or forward queue writes.
+/// authoritative store or forward live queue writes — only explicit
+/// `/door-enqueue` calls reach the door.
 struct HostedQueueDoor {
     base_url: String,
     token: String,
@@ -109,12 +113,14 @@ impl HostedQueueDoor {
         self.forward("health", request)
     }
 
-    /// Forward one read-only verb to the hosted door (#14987 CF-2b):
+    /// Forward one verb to the hosted door (#14987 CF-2b):
     /// POST /v1/queue/<verb> with a Bearer service token and the
     /// original JSON request; the door's broker-envelope response is
     /// returned intact so a shadow comparison can diff it against the
-    /// Turso plane. Only `health`, `list`, `show`, `shadow`, and
-    /// `timeline` are exposed as broker `/door-*` routes today.
+    /// Turso plane. `health`, `list`, `show`, `shadow`, and
+    /// `timeline` are read-only; `enqueue` is the first write probe,
+    /// exposed as broker `/door-enqueue` only — live `/enqueue`
+    /// traffic still uses Turso.
     fn forward(&self, verb: &str, request: &Value) -> Result<Value, String> {
         let url = format!("{}/v1/queue/{verb}", self.base_url);
         let mut response = self
@@ -1379,6 +1385,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             Some(door) => door.forward("timeline", req).unwrap_or_else(|e| fail(3, e)),
             None => fail(3, "hosted queue door is not configured"),
         },
+        "/door-enqueue" => match &st.hosted_door {
+            Some(door) => door.forward("enqueue", req).unwrap_or_else(|e| fail(3, e)),
+            None => fail(3, "hosted queue door is not configured"),
+        },
         _ => {
             let Some(turso) = st.turso.get() else {
                 let why = st
@@ -2526,6 +2536,105 @@ mod tests {
             target: "/door-show".to_string(),
             headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
             body: br#"{"task_id":23710}"#.to_vec(),
+            transport: crate::uds_http::RequestTransport {
+                kind: crate::uds_http::RequestTransportKind::Uds,
+                peer_ip: None,
+            },
+        };
+        let (status, body) = handle_request(&state, "token", &request);
+        assert_eq!(status, 200);
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["exit"], json!(3));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not configured")
+        );
+    }
+
+    #[test]
+    fn door_enqueue_forwards_authenticated_hosted_queue_contract() {
+        // Oracle (#14987 CF-2b first write probe): the broker forwards an
+        // enqueue probe as POST /v1/queue/enqueue with a Bearer service
+        // token and the original JSON request; the door's
+        // broker-envelope response is returned intact. Live /enqueue
+        // traffic still uses Turso — only explicit /door-enqueue calls
+        // reach the door.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let body_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "client closed before sending the request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    let end = header_end + 4 + content_length;
+                    if request.len() >= end {
+                        break end;
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 33\r\nconnection: close\r\n\r\n{\"ok\":true,\"row\":{\"id\":1}}",
+                )
+                .unwrap();
+            String::from_utf8(request[..body_end].to_vec()).unwrap()
+        });
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let door = HostedQueueDoor {
+            base_url: format!("http://{address}"),
+            token: "service-token".into(),
+            agent,
+        };
+
+        let response = door
+            .forward("enqueue", &json!({"queue": "repo-health-code-pilot"}))
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/queue/enqueue HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer service-token\r\n")
+        );
+        assert!(
+            request.contains("repo-health-code-pilot"),
+            "hosted request includes the requested queue: {request:?}"
+        );
+        assert_eq!(response, json!({"ok": true, "row": {"id": 1}}));
+    }
+
+    #[test]
+    fn door_enqueue_without_door_is_config_error() {
+        // Oracle: POST /door-enqueue without QUEUE_BROKER_DOOR_URL
+        // configured answers exit 3, mirroring /door-health and
+        // /door-list.
+        let state = test_state();
+        let request = crate::uds_http::HttpRequest {
+            method: "POST".to_string(),
+            target: "/door-enqueue".to_string(),
+            headers: vec![("X-Agent-Token".to_string(), "token".to_string())],
+            body: br#"{"queue":"q"}"#.to_vec(),
             transport: crate::uds_http::RequestTransport {
                 kind: crate::uds_http::RequestTransportKind::Uds,
                 peer_ip: None,
