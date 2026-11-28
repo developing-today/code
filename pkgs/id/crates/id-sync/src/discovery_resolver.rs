@@ -22,7 +22,7 @@ use std::fmt;
 
 use anyhow::{Result, bail};
 
-use crate::announcement::{SignedAnnouncement, Visibility};
+use crate::announcement::{Occupancy, SignedAnnouncement, Visibility};
 use crate::announcement_relay::RelaySinks;
 use crate::bridge_http::BridgeHttp;
 use crate::registry::{RegistryEntry, SignedRegistryList};
@@ -213,12 +213,12 @@ pub fn registry_offer(list: &SignedRegistryList, world_id: &[u8; 32]) -> Offer {
     }
 }
 
-/// Browse the subscribed registries by name or tag.
+/// Browse the subscribed registries by name, description, or tag.
 ///
-/// Returns every live listed world whose name contains `query` or
-/// whose tags include it, ignoring case, one result per world (the
-/// highest seq any registry holds), ordered by name. An empty query
-/// lists every live world.
+/// Returns every live listed world whose name or description contains
+/// `query` or whose tags include it, ignoring case, one result per
+/// world (the highest seq any registry holds), ordered by name. An
+/// empty query lists every live world.
 ///
 /// Tags are discovery hints only (design §3): a match here says what
 /// a registry holds, never that the world is what its tags say. An
@@ -229,6 +229,24 @@ pub fn search<'a>(
     query: &str,
     now: u64,
 ) -> Vec<&'a RegistryEntry> {
+    search_filtered(registries, query, None, now)
+}
+
+/// [`search`], narrowed to one coarse [`Occupancy`] (v2 design §3:
+/// `has_room` / `near_full` / `full`, conjunctive with the text
+/// match). `None` keeps every occupancy — the same rows [`search`]
+/// returns.
+///
+/// Coarse by design (v1 §3): the endpoint must not invent precision
+/// the announcements deliberately withhold, so the filter is exact
+/// equality, never a range or ranking.
+#[must_use]
+pub fn search_filtered<'a>(
+    registries: &'a [SignedRegistryList],
+    query: &str,
+    occupancy: Option<Occupancy>,
+    now: u64,
+) -> Vec<&'a RegistryEntry> {
     let query = query.trim().to_lowercase();
     let mut found: Vec<&RegistryEntry> = Vec::new();
     for list in registries {
@@ -237,8 +255,12 @@ pub fn search<'a>(
             if announcement.visibility != Visibility::Listed {
                 continue;
             }
+            if occupancy.is_some_and(|wanted| announcement.occupancy != wanted) {
+                continue;
+            }
             let matches = query.is_empty()
                 || announcement.name.to_lowercase().contains(&query)
+                || announcement.description.to_lowercase().contains(&query)
                 || announcement
                     .tags
                     .iter()
@@ -391,6 +413,43 @@ mod tests {
         let mut registry = Registry::new(registry_key(byte), "worlds we like").unwrap();
         if let Some(announcement) = announcement {
             registry.include(announcement, NOW - 30).unwrap();
+        }
+        registry.publish(NOW - 10).unwrap()
+    }
+
+    fn listed_world(
+        seed: u8,
+        name: &str,
+        description: &str,
+        occupancy: Occupancy,
+        seq: u64,
+    ) -> SignedAnnouncement {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        SignedAnnouncement::sign(
+            &key,
+            Announcement {
+                world_id: key.verifying_key().to_bytes(),
+                name: name.to_owned(),
+                description: description.to_owned(),
+                subject: Subject::Endpoint {
+                    node_id: [8; 32],
+                    relay: None,
+                },
+                occupancy,
+                tags: Vec::new(),
+                visibility: Visibility::Listed,
+                issued_at: NOW - 60,
+                expires_at: NOW + 3_600,
+                seq,
+            },
+        )
+        .unwrap()
+    }
+
+    fn registry_holding(byte: u8, worlds: Vec<SignedAnnouncement>) -> SignedRegistryList {
+        let mut registry = Registry::new(registry_key(byte), "worlds we like").unwrap();
+        for world in worlds {
+            registry.include(world, NOW - 30).unwrap();
         }
         registry.publish(NOW - 10).unwrap()
     }
@@ -624,5 +683,35 @@ mod tests {
             search(&registries, "", NOW + 3_600),
             [] as [&RegistryEntry; 0]
         );
+    }
+
+    #[test]
+    fn search_filtered_matches_descriptions_and_occupancy_conjunctively() {
+        let harbor = listed_world(11, "harbor", "a quiet world", Occupancy::HasRoom, 1);
+        let forge = listed_world(12, "forge", "a busy harbor town", Occupancy::Full, 1);
+        let loft = listed_world(13, "loft", "up high", Occupancy::Full, 1);
+        let registries = vec![registry_holding(1, vec![harbor, forge, loft])];
+
+        // The description carries the word the name does not.
+        let by_description = search_filtered(&registries, "quiet", None, NOW);
+        assert_eq!(by_description.len(), 1);
+        assert_eq!(by_description[0].announcement.announcement.name, "harbor");
+
+        // Occupancy alone narrows to the two full worlds.
+        let full = search_filtered(&registries, "", Some(Occupancy::Full), NOW);
+        assert_eq!(full.len(), 2);
+        assert_eq!(full[0].announcement.announcement.name, "forge");
+        assert_eq!(full[1].announcement.announcement.name, "loft");
+
+        // Text and occupancy are conjunctive: "harbor" names one world
+        // and describes another, but only the full one passes both.
+        let both = search_filtered(&registries, "harbor", Some(Occupancy::Full), NOW);
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].announcement.announcement.name, "forge");
+
+        // The unfiltered search keeps its rows: no occupancy is every
+        // occupancy, and the wrapper still sees descriptions.
+        assert_eq!(search(&registries, "", NOW).len(), 3);
+        assert_eq!(search(&registries, "quiet", NOW).len(), 1);
     }
 }
