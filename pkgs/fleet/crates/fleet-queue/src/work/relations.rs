@@ -1764,6 +1764,155 @@ pub fn blocker_state(edge: &Edge) -> BlockerState {
     BlockerState::Unsatisfied
 }
 
+/// One holding edge in the blockers read view (D8): the edge that
+/// holds and why it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldingBlocker {
+    /// `edge_id` of the holding edge (D4 canonical decimal).
+    pub edge_id: String,
+    /// Why the edge holds, per [`blocker_state`].
+    pub state: BlockerState,
+}
+
+/// The blockers read view for one work item (D8): every active hard
+/// `blocks` edge targeting the work, each with its [`blocker_state`],
+/// and whether the work is ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockersView {
+    /// The holding edges, in input order.
+    pub holders: Vec<HoldingBlocker>,
+    /// True only when the evaluation is complete and nothing holds.
+    pub ready: bool,
+}
+
+/// The blockers read view (D8) for `target_key`: every edge that gates
+/// the work's readiness with why it holds, in input order, plus whether
+/// the work is ready. Only active hard `blocks` edges targeting the work
+/// gate (DEP-04 §6.1); hierarchy, soft, resolved, removed and quarantined
+/// edges, and edges targeting other work, appear nowhere in the view.
+pub fn blockers(target_key: &str, edges: &[Edge], complete: bool) -> BlockersView {
+    let holders = edges
+        .iter()
+        .filter(|edge| edge.gates_readiness() && edge.target.key() == target_key)
+        .map(|edge| HoldingBlocker {
+            edge_id: edge.edge_id.clone(),
+            state: blocker_state(edge),
+        })
+        .collect::<Vec<_>>();
+    let ready = blockers_ready(complete, holders.len());
+    BlockersView { holders, ready }
+}
+
+// ---------------------------------------------------------------------------
+// DEP-04 §4. Native link import mapping
+// ---------------------------------------------------------------------------
+
+closed_enum! {
+    /// How native GitHub links are imported for one repository
+    /// (DEP-04 §4.2). The mode never touches edges a person added.
+    NativeImportMode {
+        /// Nothing is imported.
+        Off => "off",
+        /// Native blockers are written as soft `blocks`; they gate
+        /// nothing and show as "would block".
+        Shadow => "shadow",
+        /// Native blockers are written as hard `blocks` through
+        /// DEP-03's insert check.
+        Enforce => "enforce",
+    }
+}
+
+/// One native GitHub link fact about an issue X, as the `fleet gh`
+/// adapter reads it (DEP-04 §4.1). The mapping is taken from X's side:
+/// the side whose Fleet task becomes the imported edge's target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeLink {
+    /// Issue X is blocked by issue B (native dependency).
+    BlockedBy(EdgeEnd),
+    /// Issue X blocks issue D. Nothing is imported from X's side;
+    /// D's own import writes the edge if D has Fleet work.
+    Blocks(EdgeEnd),
+    /// Issue X has parent P (native sub-issue).
+    Parent(EdgeEnd),
+    /// Issue X has sub-issue C. Nothing is imported from X's side;
+    /// C's own import writes the edge if C has Fleet work.
+    SubIssue(EdgeEnd),
+    /// X was closed as a duplicate of Y, with Y named.
+    DuplicateOf(EdgeEnd),
+    /// X was closed as a duplicate with no target named. No edge;
+    /// the importer records a `dep_import_unmapped` event instead.
+    DuplicateUnnamed,
+    /// A Project "parent" field, tracked-by prose, a task-list
+    /// checkbox, or "blocked by #N" text in a body or comment.
+    /// Prose is never parsed into an edge (#9208 §6).
+    ProseOnly,
+}
+
+/// The one edge a native link imports as (DEP-04 §4.1): the canonical
+/// edge plus the fields every imported row carries — `reason_code =
+/// imported`, `certainty = verified` (GitHub's own native fact, not
+/// an inference) — and the hardness the import mode assigns (§4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeEdgeSpec {
+    /// The canonical edge the link maps to.
+    pub canonical: CanonicalEdge,
+    /// Whether the imported edge gates readiness.
+    pub hardness: Hardness,
+    /// Where the edge came from; always `imported`.
+    pub origin: EdgeOrigin,
+    /// How sure the ends are; always `verified`.
+    pub certainty: Certainty,
+}
+
+/// Map one native link fact about the issue `task` is linked to, to
+/// the one edge spec it imports as (DEP-04 §4.1), or `None` when the
+/// fact imports no edge from this side. Each relation is imported
+/// from exactly one side, so a link is never written twice by two
+/// imports racing. In `off` mode nothing is imported. A native
+/// blocker is `soft` in `shadow` mode and `hard` in `enforce` mode;
+/// hierarchy and duplicates never gate in any mode, so they are
+/// always `soft`. Pure: no storage, adapter, or provenance stamping
+/// — the importer stamps `provenance.source_ref` when it writes the
+/// row the spec describes.
+pub fn native_link_edge_spec(
+    task: &EdgeEnd,
+    link: &NativeLink,
+    mode: NativeImportMode,
+) -> Result<Option<NativeEdgeSpec>, RelationError> {
+    if mode == NativeImportMode::Off {
+        return Ok(None);
+    }
+    let (canonical, hardness) = match link {
+        NativeLink::BlockedBy(blocker) => {
+            let canonical = normalize(task, RelationSpelling::BlockedBy, blocker)?;
+            let hardness = match mode {
+                NativeImportMode::Shadow => Hardness::Soft,
+                NativeImportMode::Enforce => Hardness::Hard,
+                NativeImportMode::Off => unreachable!("off returned above"),
+            };
+            (canonical, hardness)
+        }
+        NativeLink::Parent(parent) => {
+            let canonical = normalize(task, RelationSpelling::ChildOf, parent)?;
+            (canonical, Hardness::Soft)
+        }
+        NativeLink::DuplicateOf(original) => {
+            let canonical = normalize(task, RelationSpelling::Duplicates, original)?;
+            (canonical, Hardness::Soft)
+        }
+        NativeLink::Blocks(_)
+        | NativeLink::SubIssue(_)
+        | NativeLink::DuplicateUnnamed
+        | NativeLink::ProseOnly => return Ok(None),
+    };
+    Ok(Some(NativeEdgeSpec {
+        canonical,
+        hardness,
+        origin: EdgeOrigin::Imported,
+        certainty: Certainty::Verified,
+    }))
+}
+
 /// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
 /// The SQL insert carries its own `:max_reach`; this constant is the
 /// pure-model default the tests and callers without a measured broker
@@ -3191,6 +3340,209 @@ mod tests {
         overridden.resolution.as_mut().unwrap().override_ = true;
         overridden.validate().unwrap();
         assert_eq!(blocker_state(&overridden), BlockerState::OverrideActive);
+    }
+
+    #[test]
+    fn pmo_dep_blockers_view_lists_each_hold() {
+        // Oracle: D8. The blockers view lists each active hard `blocks`
+        // edge targeting the work with its `blocker_state`, and reports
+        // ready only when the evaluation is complete and nothing holds.
+        let target = work("1").key();
+        let mut plain = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        plain.hardness = Hardness::Hard;
+        plain.validate().unwrap();
+
+        let mut unresolved = edge(Relation::Blocks, issue("a/x", "9", None), work("1"));
+        unresolved.hardness = Hardness::Hard;
+        unresolved.edge_id = "9".to_string();
+        unresolved.reason_code = EdgeOrigin::Imported;
+        unresolved.certainty = Certainty::Uncertain;
+        unresolved.validate().unwrap();
+
+        // Edges that must not appear: a hard blocker for other work, a
+        // soft `blocks` edge, a hierarchy edge, and a resolved edge.
+        let mut other = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("2"));
+        other.hardness = Hardness::Hard;
+        other.edge_id = "11".to_string();
+
+        let soft = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+
+        let hierarchy = edge(Relation::Hierarchy, work("3"), work("1"));
+
+        let mut resolved_edge = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        resolved_edge.hardness = Hardness::Hard;
+        resolved_edge.edge_id = "13".to_string();
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+
+        let edges = vec![plain, unresolved, other, soft, hierarchy, resolved_edge];
+
+        // Complete evaluation with two holders: not ready.
+        let view = blockers(&target, &edges, true);
+        assert_eq!(view.holders.len(), 2);
+        assert_eq!(view.holders[0].edge_id, "7");
+        assert_eq!(view.holders[0].state, BlockerState::Unsatisfied);
+        assert_eq!(view.holders[1].edge_id, "9");
+        assert_eq!(view.holders[1].state, BlockerState::UnresolvedExternal);
+        assert!(!view.ready);
+
+        // Nothing holds: ready follows the evaluation flag.
+        let clear = blockers(&target, &edges[2..], true);
+        assert!(clear.holders.is_empty());
+        assert!(clear.ready);
+        let incomplete = blockers(&target, &edges[2..], false);
+        assert!(incomplete.holders.is_empty());
+        assert!(!incomplete.ready);
+    }
+
+    #[test]
+    fn pmo_dep_native_link_maps_to_one_edge_spec() {
+        // Oracle: DEP-04 §4.1 + §4.2. Each native GitHub link fact
+        // about an issue maps to exactly one imported edge spec, taken
+        // from the side whose Fleet task becomes the target — or to
+        // no edge, for the facts §4.1 imports nothing from. Imported
+        // rows carry reason_code=imported and certainty=verified; a
+        // native blocker is soft in shadow mode and hard in enforce
+        // mode, and off mode imports nothing.
+        let task = work("1");
+        let blocker = issue("a/x", "7", Some("I_7"));
+        let parent = work("2");
+
+        // Native blockedBy, shadow: blocks, blocker -> task, soft.
+        let shadow = native_link_edge_spec(
+            &task,
+            &NativeLink::BlockedBy(blocker.clone()),
+            NativeImportMode::Shadow,
+        )
+        .unwrap()
+        .expect("shadow blockedBy imports one spec");
+        assert_eq!(shadow.canonical.relation, Relation::Blocks);
+        assert_eq!(shadow.canonical.source, blocker);
+        assert_eq!(shadow.canonical.target, task);
+        assert_eq!(shadow.canonical.role, None);
+        assert_eq!(shadow.hardness, Hardness::Soft);
+        assert_eq!(shadow.origin, EdgeOrigin::Imported);
+        assert_eq!(shadow.certainty, Certainty::Verified);
+
+        // Native blockedBy, enforce: the same edge, hard. The spec
+        // builds a valid D4 edge under both modes' hardness.
+        let enforce = native_link_edge_spec(
+            &task,
+            &NativeLink::BlockedBy(issue("a/x", "7", Some("I_7"))),
+            NativeImportMode::Enforce,
+        )
+        .unwrap()
+        .expect("enforce blockedBy imports one spec");
+        assert_eq!(enforce.canonical, shadow.canonical);
+        assert_eq!(enforce.hardness, Hardness::Hard);
+        for spec in [&shadow, &enforce] {
+            let mut imported = edge(
+                spec.canonical.relation,
+                spec.canonical.source.clone(),
+                spec.canonical.target.clone(),
+            );
+            imported.hardness = spec.hardness;
+            imported.reason_code = spec.origin;
+            imported.certainty = spec.certainty;
+            imported.validate().unwrap();
+        }
+
+        // Off mode imports nothing, whatever the fact.
+        assert_eq!(
+            native_link_edge_spec(
+                &task,
+                &NativeLink::BlockedBy(issue("a/x", "7", Some("I_7"))),
+                NativeImportMode::Off,
+            )
+            .unwrap(),
+            None
+        );
+
+        // Native parent: hierarchy, parent -> task, soft in both
+        // importing modes (hierarchy never gates).
+        for mode in [NativeImportMode::Shadow, NativeImportMode::Enforce] {
+            let spec = native_link_edge_spec(&task, &NativeLink::Parent(parent.clone()), mode)
+                .unwrap()
+                .expect("parent imports one spec");
+            assert_eq!(spec.canonical.relation, Relation::Hierarchy);
+            assert_eq!(spec.canonical.source, parent);
+            assert_eq!(spec.canonical.target, task);
+            assert_eq!(spec.hardness, Hardness::Soft);
+            assert_eq!(spec.origin, EdgeOrigin::Imported);
+            assert_eq!(spec.certainty, Certainty::Verified);
+        }
+
+        // Facts §4.1 imports nothing from, from this side: X blocks
+        // D, X has sub-issue C, an unnamed duplicate, and prose.
+        for link in [
+            NativeLink::Blocks(issue("a/x", "8", Some("I_8"))),
+            NativeLink::SubIssue(work("3")),
+            NativeLink::DuplicateUnnamed,
+            NativeLink::ProseOnly,
+        ] {
+            assert_eq!(
+                native_link_edge_spec(&task, &link, NativeImportMode::Enforce).unwrap(),
+                None,
+                "{link:?}"
+            );
+        }
+
+        // Closed as duplicate of a named issue: the §3.3 pair, with
+        // the role naming this issue (the task's) as the duplicate.
+        let dup = native_link_edge_spec(
+            &task,
+            &NativeLink::DuplicateOf(issue("a/x", "9", Some("I_9"))),
+            NativeImportMode::Enforce,
+        )
+        .unwrap()
+        .expect("named duplicate imports one spec");
+        assert_eq!(dup.canonical.relation, Relation::Duplicates);
+        assert_eq!(dup.canonical.source, issue("a/x", "9", Some("I_9")));
+        assert_eq!(dup.canonical.target, task);
+        assert_eq!(dup.canonical.role, Some(DuplicateRole::TargetIsDuplicate));
+        assert_eq!(dup.hardness, Hardness::Soft);
+
+        // The same fact between two work items keeps the role on the
+        // stated copy even when pair order moves it to the source.
+        let dup_pair = native_link_edge_spec(
+            &work("9"),
+            &NativeLink::DuplicateOf(work("5")),
+            NativeImportMode::Shadow,
+        )
+        .unwrap()
+        .expect("named duplicate imports one spec");
+        assert_eq!(dup_pair.canonical.source, work("5"));
+        assert_eq!(dup_pair.canonical.target, work("9"));
+        assert_eq!(
+            dup_pair.canonical.role,
+            Some(DuplicateRole::TargetIsDuplicate)
+        );
+        let dup_pair_swapped = native_link_edge_spec(
+            &work("5"),
+            &NativeLink::DuplicateOf(work("9")),
+            NativeImportMode::Shadow,
+        )
+        .unwrap()
+        .expect("named duplicate imports one spec");
+        assert_eq!(dup_pair_swapped.canonical.source, work("5"));
+        assert_eq!(dup_pair_swapped.canonical.target, work("9"));
+        assert_eq!(
+            dup_pair_swapped.canonical.role,
+            Some(DuplicateRole::SourceIsDuplicate)
+        );
+
+        // A native link from an issue to itself is refused, never
+        // mapped to a near edge.
+        assert_eq!(
+            native_link_edge_spec(
+                &task,
+                &NativeLink::BlockedBy(task.clone()),
+                NativeImportMode::Enforce,
+            )
+            .unwrap_err()
+            .code(),
+            "self_edge"
+        );
     }
 
     fn end_strategy() -> impl Strategy<Value = EdgeEnd> {

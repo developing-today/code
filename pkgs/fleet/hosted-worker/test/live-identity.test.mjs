@@ -3,7 +3,7 @@ import test from "node:test";
 import { main, parseArgs, INVALID_RP_TOKEN } from "../smoke/live-identity.mjs";
 
 const token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwcm9iZSJ9.AA";
-const health = { status: "ok", service: "fleet-hosted", version: "0.1.0", auth: { rp_configured: true, tenancy_configured: true } };
+const health = { status: "ok", service: "fleet-hosted", version: "0.1.0", auth: { rp_configured: true, tenancy_configured: true }, storage: { d1_bound: true, metadata_durable: true } };
 const capabilities = { build: { name: "fleet-hosted", invoked_as: "fleet-hosted", profile: "hosted", edition: "hosted", version: "0.1.0" } };
 function harness(replies, env = { FLEET_HOSTED_RP_TOKEN: token }) {
   const calls = [], output = [];
@@ -137,4 +137,25 @@ test("oracle: WAF HTML and transport failure are incomplete proof, not RP reject
   const lines = [];
   assert.equal(await main([], { env: {}, output: (s) => lines.push(s), fetchImpl: async () => { throw new Error(token); } }), 1);
   assert.ok(!lines.join("").includes(token));
+});
+
+test("oracle: deployed durability is explicit proof, not implied by identity", async () => {
+  const durable = { ...health, storage: { d1_bound: true, metadata_durable: true } };
+  const replies = success(); replies[0] = [200, durable];
+  const h = harness(replies);
+  assert.equal(await h.run(), 0);
+  assert.equal(JSON.parse(h.output[0]).checks.find((c) => c.name === "metadata durable").result, "passed");
+});
+
+test("oracle: absent or false durability flags are incomplete, never durable evidence", async () => {
+  for (const storage of [undefined, {}, { d1_bound: false, metadata_durable: false }, { d1_bound: true, metadata_durable: false }, { d1_bound: false, metadata_durable: true }]) {
+    const bare = { ...health }; delete bare.storage;
+    const replies = success();
+    replies[0] = [200, storage === undefined ? bare : { ...bare, storage }];
+    const h = harness(replies);
+    assert.equal(await h.run(), 1, JSON.stringify(storage));
+    const check = JSON.parse(h.output[0]).checks.find((c) => c.name === "metadata durable");
+    assert.equal(check.result, "incomplete");
+    assert.equal(check.error, "metadata_not_durable");
+  }
 });

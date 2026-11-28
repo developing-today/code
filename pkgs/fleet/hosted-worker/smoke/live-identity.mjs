@@ -36,6 +36,11 @@ export function parseArgs(args) {
 
 export async function verifyLiveIdentity({ baseUrl, token, fetchImpl = globalThis.fetch }) {
   const checks = [];
+  // /health is public and fetched once: the identity check and the
+  // durability check below are two readings of the same body, so the
+  // transcript stays five read-only requests. Durability (#16096) is
+  // exactly when buildDeps resolves D1MetadataStore over the fixture.
+  let healthDoc = null;
   async function check(name, path, options, accepts) {
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -53,9 +58,11 @@ export async function verifyLiveIdentity({ baseUrl, token, fetchImpl = globalThi
       checks.push({ name, result: "incomplete", error: "request_failed" });
     }
   }
-  await check("health identity", "/health", {}, (status, body) =>
-    status === 200 && body?.status === "ok" && body.service === "fleet-hosted" && typeof body.version === "string" && body.version.length > 0 &&
-    body.auth?.rp_configured === true && body.auth?.tenancy_configured === true);
+  await check("health identity", "/health", {}, (status, body) => {
+    healthDoc = { status, storage: body?.storage };
+    return status === 200 && body?.status === "ok" && body.service === "fleet-hosted" && typeof body.version === "string" && body.version.length > 0 &&
+      body.auth?.rp_configured === true && body.auth?.tenancy_configured === true;
+  });
   await check("capabilities identity", "/capabilities", {}, (status, body) =>
     status === 200 && body?.build?.name === "fleet-hosted" && body.build.invoked_as === "fleet-hosted" &&
     body.build.edition === "hosted" && body.build.profile === "hosted" && typeof body.build.version === "string" && body.build.version.length > 0);
@@ -75,6 +82,14 @@ export async function verifyLiveIdentity({ baseUrl, token, fetchImpl = globalThi
   await check("absent RP rejected", "/v1/queue/health", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }, (status, body) => status === 401 && body?.error === "missing_token");
+  // Appended last so the identity/capabilities indices the version-agreement
+  // and auth_not_configured oracles read are unchanged.
+  if (healthDoc !== null && healthDoc.status === 200 && healthDoc.storage?.d1_bound === true && healthDoc.storage?.metadata_durable === true) {
+    checks.push({ name: "metadata durable", status: healthDoc.status, result: "passed" });
+  } else {
+    checks.push({ name: "metadata durable", ...(healthDoc === null ? {} : { status: healthDoc.status }), result: "incomplete",
+      error: healthDoc !== null && healthDoc.status === 200 ? "metadata_not_durable" : "health_unavailable" });
+  }
   return { result: checks.every((c) => c.result === "passed") ? "passed" : "incomplete", checks };
 }
 
