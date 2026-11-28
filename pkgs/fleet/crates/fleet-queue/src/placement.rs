@@ -4048,6 +4048,81 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_refuses_command_carrying_t3_proxy_credential() {
+        // #16368: the T3 credential is the password in the seat's
+        // HTTPS_PROXY userinfo — no broker name covers it, so the
+        // named-secret refusal alone would let it through as
+        // dispatch metadata.
+        use super::adapters::reject_proxy_credential_in_command;
+        let password = "proxy-password-0123456789";
+        let url = format!("http://seat:{password}@proxy.example:3130");
+        for cmd in [
+            format!("HTTPS_PROXY={url} fleet ssh health"),
+            format!("fleet ssh exec -- curl -x http://seat:{password}@proxy.example:3130 ."),
+            format!("echo {password}"),
+        ] {
+            let err = match reject_proxy_credential_in_command(&cmd, Some(&url)) {
+                Ok(()) => panic!("a command carrying the T3 proxy credential must die"),
+                Err(e) => e,
+            };
+            assert!(err.0.contains("HTTPS_PROXY"), "{}", err.0);
+            assert!(
+                !err.0.contains(password),
+                "the error must not echo the credential"
+            );
+            assert!(!err.0.contains(&cmd), "the error must not echo the command");
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_percent_encoded_t3_proxy_credential() {
+        // The tunnel percent-decodes the userinfo before use, so
+        // the decoded form of an encoded password is the same
+        // credential and must match too.
+        use super::adapters::{embedded_proxy_credential, reject_proxy_credential_in_command};
+        let url = "http://seat:p%40ssword-0123456789@proxy.example:3130";
+        assert!(embedded_proxy_credential("echo p@ssword-0123456789", url));
+        assert!(
+            reject_proxy_credential_in_command("echo p@ssword-0123456789", Some(url)).is_err()
+        );
+    }
+
+    #[test]
+    fn dispatch_allows_credential_free_proxy_env() {
+        // The in-job T3 provisioning shape (#16368): join the
+        // tailnet inside the job and export tailscaled's local
+        // CONNECT proxy — a credential-free URL leaks nothing and
+        // must stay dispatchable. Unset proxy likewise.
+        use super::adapters::reject_proxy_credential_in_command;
+        let cmd = "export HTTPS_PROXY=http://127.0.0.1:3130; fleet ssh health";
+        assert!(reject_proxy_credential_in_command(cmd, Some("http://127.0.0.1:3130")).is_ok());
+        assert!(reject_proxy_credential_in_command(cmd, None).is_ok());
+        assert!(
+            reject_proxy_credential_in_command(
+                "nix build .#mcpx",
+                Some("http://seat:proxy-password-0123456789@proxy.example:3130")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn proxy_credential_values_extracts_password_only() {
+        use super::adapters::proxy_credential_values;
+        assert_eq!(
+            proxy_credential_values("http://seat:proxy-password-0123456789@proxy.example:3130"),
+            vec!["proxy-password-0123456789".to_string()]
+        );
+        // No userinfo, userinfo without a password, and a short
+        // password under the shared floor all carry no matchable
+        // credential.
+        assert!(proxy_credential_values("http://127.0.0.1:3130").is_empty());
+        assert!(proxy_credential_values("http://seat@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("http://seat:short@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("").is_empty());
+    }
+
+    #[test]
     fn embedded_secret_reports_the_matching_name() {
         use super::adapters::{DISPATCH_SECRET_NAMES, embedded_secret_name};
         assert!(DISPATCH_SECRET_NAMES.contains(&"desktop-commander.machine-bearer"));
