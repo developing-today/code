@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use super::*;
 
 pub(super) fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_verb_args(
+    let args = parse_verb_args_multi(
         "claim",
         rest,
         &[
@@ -35,6 +35,8 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "manual-override",
         ],
         &["handoff", "bind", "take-over"],
+        // #9178 §3: --task repeats to name a batch of tasks.
+        &["task"],
     );
     reject_extra_pos("claim", &args, 0);
     // #8606: a zero-intent claim refuses before any broker
@@ -149,8 +151,15 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // ordinary predicate, or a sink row). The opencode claimant
     // uses this to collect handed-off tasks out of the sink; a
     // plain claim never names a task.
-    if let Some(task) = args.get_i64("task") {
-        body["task_id"] = json!(task);
+    // A repeated (or comma-joined) --task names a by-ids batch
+    // instead (derived below); only a single --task is a by-id
+    // claim of exactly one row.
+    let repeated_task_batch =
+        args.get("tasks").is_none() && args.get_list("task").len() > 1;
+    if !repeated_task_batch {
+        if let Some(task) = args.get_i64("task") {
+            body["task_id"] = json!(task);
+        }
     }
     // --tasks <id,id,...> (#9178 §3): by-ids batch claim — claim
     // several NAMED tasks for this session in one operation; the
@@ -161,8 +170,24 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
         Ok(ids) => ids,
         Err(e) => die(2, &e),
     };
+    // Repeated --task <id> (#9178 §3, ported from PR #16396): the
+    // section's example form — `--task <id1> --task <id2>` — names
+    // the same batch as --tasks; the multi parser accumulated the
+    // occurrences comma-joined, so get_list reads every id.
+    let task_ids = if task_ids.is_empty() && repeated_task_batch {
+        args.get_list("task")
+            .iter()
+            .map(|raw| match parse_i64_flag("task", raw) {
+                Ok(n) if n > 0 => n,
+                Ok(_) => die(2, "claim: --task ids must be positive task ids (#9178 §3)"),
+                Err(msg) => die(2, &msg),
+            })
+            .collect::<Vec<i64>>()
+    } else {
+        task_ids
+    };
     if !task_ids.is_empty() {
-        if args.get_i64("task").is_some()
+        if (args.has("task") && !repeated_task_batch)
             || args.has("handoff")
             || args.get("from-session").is_some()
             || args.get("manual-override").is_some()
@@ -182,7 +207,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     } else if args.has("take-over") {
         die(
             2,
-            "claim: --take-over requires --tasks <id,id,...> (#9178 §3)",
+            "claim: --take-over requires a by-ids batch (--tasks <id,id,...> or repeated --task) (#9178 §3)",
         );
     }
     if let Some(reason) = args.get("manual-override") {
