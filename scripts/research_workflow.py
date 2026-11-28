@@ -1138,6 +1138,7 @@ def main(argv=None):
                     if p.is_dir()
                     and (
                         name_re.fullmatch(p.name)
+                        and (p / "transcript.txt").is_file()
                         or (p / "main.md").is_file()
                         and STATE.search(unfenced((p / "main.md").read_text()))
                     )

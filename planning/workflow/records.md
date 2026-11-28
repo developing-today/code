@@ -304,7 +304,7 @@ What `scripts/research_workflow.py` and `scripts/research_workflow_items.py` on 
 - IDs: `ids` lists concept, item, segment, note and decision IDs but does not allocate decision IDs.
 - Commands missing: `lease acquire|release|list`, `verify-transcript`, `status --live`, `check --changed-since`, `check --remote-notes`, `check --run-validation`, `check --profile-only`, and the `init` flags `--preview-segments`, `--source`, `--encoding` and `--visibility`.
 - Encoding: non-UTF-8 input is always refused.
-- Discovery: besides the name pattern, any folder whose `main.md` has a state block counts as a package.
+- Discovery: a folder matching the name pattern counts as a package when it has `transcript.txt` (every package has one); a folder whose `main.md` has a state block also counts. Plain research records with neither (hand-written notes, with or without a `main.md`) are skipped.
 - `init` writes its change-log line as `- <UTC> | intake | prepared | <text>`, with a stage name instead of `S0`.
 - Decisions and `human-review.md` have no tool support. Skills create issues and search markers with `gh`.
 - CI runs `check` over the whole tree on every PR, not only the changed packages.

@@ -880,6 +880,16 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.cli("check", "--repo-root", self.root, ok=True)
 
+    def test_package_discovery_ignores_plain_research_records_without_workflow_files(self):
+        self.init()
+        record = self.root / self.profile["requests_root"] / "2026-11-23T22-00-25Z_research_roc-ecosystem"
+        record.mkdir(parents=True)
+        (record / "2026-11-23T22-00-25Z_research_roc-ecosystem.md").write_text(
+            "# Roc ecosystem\n", encoding="utf-8"
+        )
+        (record / "main.md").write_text("# Plain record\n", encoding="utf-8")
+        self.cli("check", "--repo-root", self.root, ok=True)
+
     def test_dotted_concept_ids_are_accepted(self):
         package = self.init()
         main = package / "main.md"
