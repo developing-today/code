@@ -20,6 +20,12 @@ main = "src/index.ts"
 compatibility_date = "2025-09-15"
 workers_dev = true
 
+[vars]
+# #15793 criterion 1: the deployed commit, stamped per deploy by the
+# package deploy script (--var VERSION:<git HEAD> overrides this);
+# "unknown" is the honest unstamped default /version answers.
+VERSION = "unknown"
+
 [durable_objects]
 bindings = [{ name = "PM_NOTIFY", class_name = "PmNotify" }]
 
