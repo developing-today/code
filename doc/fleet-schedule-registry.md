@@ -23,6 +23,9 @@ specified in the #2020 Jules investigation).
   PM-stack aggregator process, live only while it runs (#9988).
 - **Surface 7 — Cloudflare Worker cron triggers:** `triggers.crons` in
   a Worker's `wrangler.jsonc`, deployed from the flake (#6369).
+- **Surface 8 — Codex desktop scheduled tasks:** recurring Codex
+  automations attached to a local project and run by the Codex desktop
+  scheduler.
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -347,6 +350,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
+<<<<<<< Updated upstream
 Surface 2a amended 2026-11-23: the 15 enabled queue-lane prompts in the
 `code` project store now use `fleet agent next` as their intake front door,
 with existing unfiltered versus `repo = code` designations and cadences
@@ -355,6 +359,18 @@ preserved. OpenChamber scheduled tasks remain on the configured
 executor remains on its own protocol.
 
 ### 2b. Laptop systemd user timers (49 listed: 43 enabled, 1 installed-but-disabled; 5 Nix-configured pending deployment; 1 declared in repo pending laptop install)
+||||||| Stash base
+### 2b. Laptop systemd user timers (47 listed: 43 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+=======
+Surface 2a amended 2026-11-22: the 15 enabled queue-lane prompts in the
+`code` project store (`any-n`, `any-o`, `code-f` through `code-j`, and
+`oc-code-01` through `oc-code-08`) now use `fleet agent next` as their
+intake front door. Their existing unfiltered versus `repo = code` lane
+designations and cadences are unchanged; the separate #3026 claimant /
+executor remains on its own protocol.
+
+### 2b. Laptop systemd user timers (47 listed: 43 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+>>>>>>> Stashed changes
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -521,6 +537,7 @@ on 2026-11-19. The second row is a Durable Object alarm: it is set by
 the Worker's code, so it appears in no `wrangler.jsonc` and in no
 schedules listing.
 
+<<<<<<< Updated upstream
 | name/id                                                                        | repo/scope            | cadence                           | state                                                                                                                                                                                                                                                                                                                      | owner / scope | prompt/brief pointer                                                                                        | budget                                           | kill criteria                                                                                                                 | created    | last review |
 | ------------------------------------------------------------------------------ | --------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `queue-transport-alert` (Worker cron trigger)                                  | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes                                                                                                               | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`)                                             | Workers free-tier requests; one probe per tick   | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired                               | 2026-11-19 | 2026-11-19  |
@@ -541,3 +558,30 @@ repository.
 | `codex-fleet-lane-b` | developing-today/code | `FREQ=HOURLY;BYMINUTE=15` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-b`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-c` | developing-today/code | `FREQ=HOURLY;BYMINUTE=30` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-c`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-d` | developing-today/code | `FREQ=HOURLY;BYMINUTE=45` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-d`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
+||||||| Stash base
+| name/id                                       | repo/scope            | cadence                           | state                                                                                                                                                                                                        | owner / scope | prompt/brief pointer                                            | budget                                         | kill criteria                                                                                   | created    | last review |
+| --------------------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `queue-transport-alert` (Worker cron trigger) | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`) | Workers free-tier requests; one probe per tick | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired | 2026-11-19 | 2026-11-19  |
+| pm-console-edge silent-host alarm             | developing-today/code | 10 minutes after each host report | Durable Object alarm, re-armed by every report from the laptop, so it fires only when the laptop has been silent for ten minutes                                                                             | PR #12505     | `pm-stack/console/edge/src/edge.ts` (`Edge.alarm`)              | one notification a silence                     | Goes with the Worker; `expose.py --edge off` takes the hostname off it                          | 2026-11-22 | 2026-11-22  |
+=======
+| name/id                                       | repo/scope            | cadence                           | state                                                                                                                                                                                                        | owner / scope | prompt/brief pointer                                            | budget                                         | kill criteria                                                                                   | created    | last review |
+| --------------------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `queue-transport-alert` (Worker cron trigger) | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`) | Workers free-tier requests; one probe per tick | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired | 2026-11-19 | 2026-11-19  |
+| pm-console-edge silent-host alarm             | developing-today/code | 10 minutes after each host report | Durable Object alarm, re-armed by every report from the laptop, so it fires only when the laptop has been silent for ten minutes                                                                             | PR #12505     | `pm-stack/console/edge/src/edge.ts` (`Edge.alarm`)              | one notification a silence                     | Goes with the Worker; `expose.py --edge off` takes the hostname off it                          | 2026-11-22 | 2026-11-22  |
+
+## Surface 8 — Codex desktop scheduled tasks (4 entries)
+
+Codex-native recurring automations attached to the local `code` project.
+Each run is additive to OpenChamber and first checks the per-surface Fleet
+lane counts; it exits without claiming when the Codex pool already has at
+least eight healthy lanes and never grows that pool past twelve. The task prompt is the source
+of truth; the model route is recorded here because the app stores it as a
+task field rather than in the repository.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| `codex-fleet-lane-a` | developing-today/code | `FREQ=HOURLY;BYMINUTE=0` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-a`; `gpt-6.1-sol`, medium | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-22 |
+| `codex-fleet-lane-b` | developing-today/code | `FREQ=HOURLY;BYMINUTE=15` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-b`; `gpt-6.1-sol`, medium | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-22 |
+| `codex-fleet-lane-c` | developing-today/code | `FREQ=HOURLY;BYMINUTE=30` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-c`; `gpt-6.1-sol`, medium | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-22 |
+| `codex-fleet-lane-d` | developing-today/code | `FREQ=HOURLY;BYMINUTE=45` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-d`; `gpt-6.1-sol`, medium | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-22 |
+>>>>>>> Stashed changes
