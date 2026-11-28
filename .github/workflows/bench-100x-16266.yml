@@ -1,0 +1,79 @@
+# One-off 100x many_worlds re-run for #16266 scope items 2-3 (lane 1837-L).
+#
+# Re-runs the 100x tier with the raised hub session ceiling
+# (ID_BENCH_MW_MAX_SESSIONS, landed by PR #16279) on the same
+# GitHub-hosted ubuntu-24.04 class as the first attempt (Fleet run
+# 45931139557, record in pkgs/id/benches/results/
+# 2026-11-27T02-55Z-many-worlds-100x-wall.md). The bench step is
+# continue-on-error: a measured wall is a valid result for #16266, and
+# the output artifact must upload either way. This workflow is removed
+# by the results-record PR that lands the run's record.
+
+name: bench 100x 16266
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench100x:
+    name: "100x many_worlds re-run (#16266)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            fallback = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Record machine class
+        run: |
+          {
+            echo "date: $(date -u +%FT%TZ)"
+            echo "sha: ${{ github.sha }}"
+            echo "runner: $RUNNER_NAME / $ImageOS $ImageVersion"
+            echo "cpus: $(nproc)"
+            lscpu | grep -E "Model name|CPU\(s\):" || true
+            free -h
+            df -h / | tail -1
+          } | tee "$GITHUB_WORKSPACE/machine.txt"
+
+      - name: Run 100x many_worlds with raised session ceiling
+        id: bench
+        continue-on-error: true
+        working-directory: pkgs/id
+        env:
+          ID_BENCH_MW_IDLE_WORLDS: "100000"
+          ID_BENCH_MW_ACTIVE_WORLDS: "10000"
+          ID_BENCH_MW_EVENTS_PER_SECOND: "20"
+          ID_BENCH_MW_DURATION_SECS: "10"
+          ID_BENCH_MW_MAX_OPEN_WORLDS: "11000"
+          ID_BENCH_MW_MAX_SESSIONS: "11000"
+        run: |
+          nix develop --command cargo bench --bench world_bench -- --only many_worlds 2>&1 | tee "$GITHUB_WORKSPACE/bench-100x-output.txt"
+          echo "bench exit: ${PIPESTATUS[0]}" | tee -a "$GITHUB_WORKSPACE/bench-100x-output.txt"
+
+      - name: Memory after the run
+        if: always()
+        run: free -h | tee -a "$GITHUB_WORKSPACE/machine.txt"
+
+      - name: Upload bench output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-100x-output
+          path: |
+            bench-100x-output.txt
+            machine.txt
+          if-no-files-found: warn
