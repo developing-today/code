@@ -68,14 +68,23 @@ pub(crate) async fn current_world_state(
         profile,
         presentation,
         schedules,
+        // The host reports no roles yet: the projection starts empty, so
+        // a manifest that declares [role_config] plans a reported-only
+        // SetRoles step until the admin role path lands (#13237).
+        roles: Vec::new(),
     })
 }
 
 /// Whether [`apply_steps`] actually applies this step over the wire. Every
 /// step kind is wired since #807 (module install and schedules included),
-/// so every step counts toward the "applied N step(s)" summary (#818). The
-/// predicate stays explicit per kind so a future reported-only step cannot
-/// silently claim credit: list it here only when its apply path lands.
+/// so every step counts toward the "applied N step(s)" summary (#818) —
+/// except `SetRoles`, the first reported-only step this predicate was
+/// written to anticipate: role definitions plan, diff, and fold in the
+/// pure model, but the host serves no admin role operation yet, so the
+/// wire executor refuses the step loudly and it never claims credit.
+/// The predicate stays explicit per kind so a future reported-only step
+/// cannot silently claim credit: list it here only when its apply path
+/// lands.
 pub(crate) fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
     use id_caps::world_manifest::ApplyStep;
     matches!(
@@ -127,8 +136,13 @@ pub(crate) fn ordered_steps<'a>(
             ApplyStep::SetGrants { .. } => 2,
             ApplyStep::SetCeiling { .. } => 3,
             ApplyStep::SetPresentation { .. } => 4,
-            ApplyStep::InstallModule { .. } => 5,
-            ApplyStep::ScheduleAt { .. } => 6,
+            // Declared configuration lands before the module install
+            // that runs under it — like the profile, grants, and
+            // ceiling it travels with. Unreachable in practice until
+            // the admin role path lands: apply_steps refuses SetRoles.
+            ApplyStep::SetRoles { .. } => 5,
+            ApplyStep::InstallModule { .. } => 6,
+            ApplyStep::ScheduleAt { .. } => 7,
         }
     }
     let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
@@ -238,6 +252,19 @@ pub(crate) async fn apply_steps(
                     .await?
                     .cancel_schedule(admin_token, id)
                     .await?;
+            }
+            ApplyStep::SetRoles { roles } => {
+                // Reported-only (#13237): the manifest boundary plans,
+                // diffs, and model-applies role definitions, but the host
+                // serves no admin role operation yet. Refuse loudly —
+                // never fold roles into a live world half-applied, and
+                // never claim the applied-step credit step_is_applied
+                // withholds. Names the count so the operator sees what a
+                // future apply path will carry.
+                anyhow::bail!(
+                    "role_config has no admin apply path yet: {} declared role(s) planned but not applied",
+                    roles.len()
+                );
             }
         }
     }
