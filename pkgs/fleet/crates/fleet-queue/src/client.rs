@@ -336,6 +336,55 @@ mod tests {
     }
 
     #[test]
+    fn fold_task_events_16383_keeps_only_history_kinds_in_id_order() {
+        // #16383 oracle: the batched show/timeline read folds one
+        // unfiltered /events-list page client-side — history kinds
+        // survive (with timeline_event's normalization:
+        // lane_session_bound reads as session_bound), every other
+        // recorded kind stays out, and the result is in event-id
+        // order regardless of page order.
+        let rows = vec![
+            json!({"id": 3, "kind": "heartbeat", "detail": {}, "created_at": "2026-11-28T00:00:03Z"}),
+            json!({"id": 2, "kind": "lane_session_bound", "detail": {"session_id": "ses_a"}, "created_at": "2026-11-28T00:00:02Z"}),
+            json!({"id": 1, "kind": "claimed", "detail": {"session_id": "ses_a"}, "created_at": "2026-11-28T00:00:01Z"}),
+            json!({"id": 4, "kind": "note_added", "detail": {}, "created_at": "2026-11-28T00:00:04Z"}),
+        ];
+        let out = fold_task_events(&rows, &["claimed", "lane_session_bound", "session_bound"]);
+        let kinds: Vec<&str> = out.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["claimed", "session_bound"]);
+        let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn show_and_timeline_batch_events_list_16383() {
+        // #16383: show and timeline assemble a task's history
+        // through the batched fetch_task_events (one unfiltered
+        // /events-list call + the client-side fold) instead of
+        // looping one call per kind; the per-kind loop survives
+        // only inside fetch_task_events as its saturation fallback.
+        let src = include_str!("client/commands_query.rs");
+        let show = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show.contains("fetch_task_events(task_id, &history_kinds)"),
+            "cmd_show reads its history through the batched fetch"
+        );
+        let timeline = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("pub(super) fn rollup_event(").next())
+            .unwrap_or("");
+        assert!(
+            timeline.contains("fetch_task_events(task_id, &timeline_kinds)"),
+            "cmd_timeline reads its history through the batched fetch"
+        );
+    }
+
+    #[test]
     fn show_history_uses_history_event_fields_and_is_a_tail() {
         let event = |id, trigger: &str| TimelineEvent {
             id,
