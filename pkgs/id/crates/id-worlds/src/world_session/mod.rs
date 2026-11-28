@@ -76,9 +76,7 @@ mod session_core;
 /// View state and view sending (split from this module, #8594).
 mod view;
 pub use hex::{decode_hex, encode_hex};
-pub(crate) use install::{
-    ACTOR_DENIED, install_module_session, install_module_session_joined,
-};
+pub(crate) use install::{ACTOR_DENIED, install_module_session, install_module_session_joined};
 
 use audit::{admin_frame_name, audit_admin_frame};
 pub(crate) use session_core::run_world_session;
@@ -918,7 +916,6 @@ async fn send_module_bytes<I: SessionIo>(
     }
     Ok(())
 }
-
 
 async fn joined<I: SessionIo>(
     service: &WorldService,
