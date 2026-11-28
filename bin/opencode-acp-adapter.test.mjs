@@ -40,6 +40,12 @@ function startStubServe(script) {
   let promptAsyncResponseDelay = 0;
   let hangSessionCreate = false;
   let hangEventConnect = false;
+  // #16391: fault injection for POST /api/session — { status, padBytes }
+  // makes the stub answer session-create with a JSON body carrying
+  // padBytes of padding (200) or an error status with a padded body,
+  // so the adapter's serveJson byte budget can be exercised. Null is
+  // the normal small response.
+  let sessionCreateFault = null;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -62,6 +68,11 @@ function startStubServe(script) {
     },
     hangEventConnect: () => {
       hangEventConnect = true;
+    },
+    // #16391: fault POST /api/session with { status, padBytes } (see
+    // sessionCreateFault above); null restores the normal response.
+    setSessionCreateFault: (fault) => {
+      sessionCreateFault = fault;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -135,6 +146,14 @@ function startStubServe(script) {
       if (req.method === 'POST' && url.pathname === '/api/session') {
         // #15982: a hung serve accepts the request and never answers.
         if (hangSessionCreate) return;
+        // #16391: faulted session-create answers with a padded body,
+        // exercising the adapter's serveJson byte budget.
+        if (sessionCreateFault) {
+          const { status = 200, padBytes = 0 } = sessionCreateFault;
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: { id: SESSION_ID, pad: 'x'.repeat(padBytes) } }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
@@ -414,6 +433,50 @@ test('a single delimited /api/event event past the byte cap drops the stream and
     prompt: [{ type: 'text', text: 'say hello' }],
   });
   assert.equal(result.stopReason, 'end_turn');
+});
+
+test('an over-cap serveJson success body rejects with a byte-budget error (#16391)', async (t) => {
+  // Oracle: the stub serve answers session-create with a 16 KiB JSON
+  // body against a small env-set cap (4096). The #15982 timeout
+  // bounds time, not bytes, so without a serveJson byte budget this
+  // body would materialize whole into JSON.parse. The adapter must
+  // reject with a byte-budget error in the existing serve shape —
+  // and normal small responses must keep working afterwards.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES: '4096',
+  });
+  stub.controls.setSessionCreateFault({ status: 200, padBytes: 16 * 1024 });
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> response body exceeded 4096 bytes/,
+    'over-cap success body rejects instead of buffering',
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the over-cap body');
+  stub.controls.setSessionCreateFault(null);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+});
+
+test('an over-cap serveJson error body rejects with a byte-budget error (#16391)', async (t) => {
+  // Oracle: the stub serve answers session-create with a 500 whose
+  // body alone is past the cap. The error path used to res.text()
+  // the whole body before slicing 200 chars for the message; it must
+  // now reject with the byte-budget error (already in the serve
+  // shape) instead of buffering the error body.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES: '4096',
+  });
+  stub.controls.setSessionCreateFault({ status: 500, padBytes: 16 * 1024 });
+  await assert.rejects(
+    acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] }),
+    /serve POST \/api\/session -> response body exceeded 4096 bytes/,
+    'over-cap error body rejects instead of buffering',
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the over-cap error body');
 });
 
 test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {

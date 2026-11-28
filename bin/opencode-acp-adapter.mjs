@@ -233,6 +233,34 @@ const SERVE_REQUEST_TIMEOUT_MS = (() => {
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
 })();
 
+// #16391: stream a serve response body with a byte budget instead of
+// res.text(). A fast multi-hundred-MB loopback body (buggy serve,
+// runaway payload) would otherwise materialize unbounded before the
+// #15982 timeout — which bounds time, not bytes — could fire, OOMing
+// the adapter (or V8-throwing past ~512MB) the same way the SSE side
+// did before #16226/#16390. The shared EVENT_BUFFER_MAX_BYTES
+// default is generous next to real REST bodies (small loopback JSON)
+// and overridable via OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES in tests.
+// Breaches throw in the existing `serve METHOD pathname -> …` shape
+// so callers log/retry them like timeouts and HTTP errors.
+async function readCappedBody(res, method, pathname, cap = EVENT_BUFFER_MAX_BYTES) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`serve ${method} ${pathname} -> response body exceeded ${cap} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQUEST_TIMEOUT_MS } = {}) {
   let res;
   try {
@@ -254,11 +282,20 @@ async function serveJson(pathname, { method = 'GET', body, timeoutMs = SERVE_REQ
     throw err;
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    // #16391: the error body is capped too — only the surfaced
+    // message used to be sliced (200 chars), while res.text()
+    // buffered the whole body first. A byte-budget breach on an
+    // error body propagates as the budget error itself (it already
+    // carries the `serve METHOD pathname -> …` shape); any other
+    // read failure degrades to the empty body as before.
+    const text = await readCappedBody(res, method, pathname).catch((err) => {
+      if (/response body exceeded/.test(err?.message ?? '')) throw err;
+      return '';
+    });
     throw new Error(`serve ${method} ${pathname} -> ${res.status} ${text.slice(0, 200)}`);
   }
   if (res.status === 204) return null;
-  const text = await res.text();
+  const text = await readCappedBody(res, method, pathname);
   if (!text) return null;
   const parsed = JSON.parse(text);
   // The v2 API wraps responses in a {data: …} envelope.
