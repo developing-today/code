@@ -472,6 +472,7 @@ impl HttpTransport {
     /// built.
     pub fn new(base_url: &str, token: String) -> Result<Self, TursoError> {
         let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|err| TursoError::Transport(err.to_string()))?;
         // The pipeline endpoint is HTTPS; a libsql:// address names
