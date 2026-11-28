@@ -25,6 +25,7 @@
 // usage refusals at 400, transport failures at 502.
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
+import { readJsonBody } from "../body.ts";
 import { FailClosed } from "../errors.ts";
 import { NO_DEP_PROBE, type QueueStore } from "../queue-store.ts";
 import { executeQueueVerb, QUEUE_VERBS, type QueueEnv } from "../queue.ts";
@@ -65,12 +66,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 async function jsonBody(req: Request): Promise<JsonObject> {
-  let parsed: unknown;
-  try {
-    parsed = await req.json();
-  } catch {
-    throw new FailClosed(400, "invalid_body", "request body is not valid JSON");
-  }
+  const parsed: unknown = await readJsonBody(req);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new FailClosed(400, "invalid_body", "request body must be a JSON object");
   }

@@ -57,6 +57,7 @@
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
 import { SERVICE_NAME } from "../config.ts";
+import { readJsonBody } from "../body.ts";
 import { FailClosed } from "../errors.ts";
 import type { RouteDef } from "../router.ts";
 import { checkedSessionId, requireOpenSession, type SessionRecord } from "../sessions.ts";
@@ -79,12 +80,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 async function jsonBody(req: Request): Promise<Record<string, unknown>> {
-  let parsed: unknown;
-  try {
-    parsed = await req.json();
-  } catch {
-    throw new FailClosed(400, "invalid_body", "request body is not valid JSON");
-  }
+  const parsed: unknown = await readJsonBody(req);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new FailClosed(400, "invalid_body", "request body must be a JSON object");
   }

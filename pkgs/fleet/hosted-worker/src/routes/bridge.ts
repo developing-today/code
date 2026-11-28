@@ -17,6 +17,7 @@
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
 import { bridgeSurfaceFrom, parseBridgeMessagesQuery, parseBridgeSendRequest } from "../bridge.ts";
+import { readJsonBody } from "../body.ts";
 import { FailClosed } from "../errors.ts";
 import type { RouteDef } from "../router.ts";
 
@@ -35,11 +36,7 @@ function caller(ctx: CallerContext | null): CallerContext {
 }
 
 async function jsonBody(req: Request): Promise<unknown> {
-  try {
-    return await req.json();
-  } catch {
-    throw new FailClosed(400, "invalid_body", "request body is not valid JSON");
-  }
+  return readJsonBody(req);
 }
 
 async function send(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
