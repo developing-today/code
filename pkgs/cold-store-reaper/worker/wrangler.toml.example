@@ -1,0 +1,33 @@
+# Reference configuration for the cold-store rehydrator Worker.
+#
+# Deployment is API-driven (the operator uploads dist/worker.js through the
+# Cloudflare REST API and attaches these bindings there); this file documents
+# the exact binding names/ids the code expects. If wrangler is used instead,
+# copy this to wrangler.toml and fill in nothing else — the values below are
+# the live ones (database ids are not secrets).
+name = "cold-store-rehydrator"
+main = "dist/worker.js"
+compatibility_date = "2026-10-25"
+
+# D1 manifest: objects -> members -> bundles lookups.
+[[d1_databases]]
+binding = "MANIFEST"
+database_name = "cold-store-manifest"
+database_id = "15d5f460-835c-4f24-b229-222908a5b30c"
+
+# Single-flight per bundle id.
+[[durable_objects.bindings]]
+name = "BUNDLE_FLIGHT"
+class_name = "BundleFlight"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BundleFlight"]
+
+# Secrets — set out-of-band (CF API secret_text bindings, or
+# `wrangler secret put <name>`). NEVER commit values.
+#   REHYDRATOR_API_KEY    bearer token callers must present on /fetch/<sha>
+#   GOOGLE_CLIENT_ID      OAuth client of the "Cold Store Reaper" app
+#   GOOGLE_CLIENT_SECRET  ditto (Bitwarden: google.cold-store-reaper.client-secret)
+#   GOOGLE_REFRESH_TOKEN  the one-time grant's refresh token
+#                         (Bitwarden: google.cold-store-reaper.refresh-token)

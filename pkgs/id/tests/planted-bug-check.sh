@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Planted-bug check for the membership / voiding layer (plan P2.3 / P2.8, #1395)
+# and the tag observed-remove fold (plan P5.1 / section 13 layer 11, #1421).
+#
+# A test suite that passes both the correct and a broken implementation proves
+# nothing. This script proves the voiding and frontier suites can fail: it
+# applies one named mutation at a time from tests/planted/, runs the suites
+# that are supposed to catch it, and requires each run to FAIL. The unmutated
+# baseline must pass first, so a red baseline cannot fake a catch.
+#
+# Usage:  pkgs/id/tests/planted-bug-check.sh        (or: just planted-bug-check)
+#         Accepts no positional arguments (operator-script argument contract,
+#         #3352 / #10568): extra arguments are rejected before any checks.
+# Exit:   0 = baseline green and every planted bug caught
+#         1 = a planted bug survived (a suite passed with the mutation in),
+#             or unaccounted CLI arguments were passed
+#         2 = baseline red, a patch did not apply, or the tree was dirty
+#
+# The mutated files are restored after every run, including on error/interrupt.
+set -u
+
+usage() {
+  echo "Usage: planted-bug-check.sh" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): $*" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ID_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PATCH_DIR="$SCRIPT_DIR/planted"
+REPO_ROOT="$(git -C "$ID_DIR" rev-parse --show-toplevel)"
+
+# Files the mutations touch, relative to the repo root.
+MUTATED_FILES=(
+  "pkgs/id/crates/id-core/src/membership/layer.rs"
+  "pkgs/id/crates/id-core/src/membership/frontier.rs"
+  "pkgs/id/crates/id-events/src/groups/delegation.rs"
+  "pkgs/id/crates/id-store/src/tag_claims.rs"
+)
+
+restore() {
+  git -C "$REPO_ROOT" checkout -- "${MUTATED_FILES[@]}" 2>/dev/null
+}
+# Refusal must never restore files: arm cleanup only after every target is
+# present, tracked, and clean in both the index and worktree.
+for f in "${MUTATED_FILES[@]}"; do
+  if [ ! -f "$REPO_ROOT/$f" ] || ! tracked="$(git -C "$REPO_ROOT" ls-files -v --error-unmatch -- "$f" 2>/dev/null)"; then
+    echo "planted-bug-check: $f is missing or untracked; refusing to mutate it" >&2
+    exit 2
+  fi
+  # Status can hide edits under assume-unchanged or skip-worktree flags.
+  # Only an ordinary tracked entry may reach the cleanup-armed phase.
+  if [ "$tracked" != "H $f" ]; then
+    echo "planted-bug-check: $f has unsupported index flags; refusing to mutate it" >&2
+    exit 2
+  fi
+  if ! dirty="$(git --no-optional-locks -C "$REPO_ROOT" status --porcelain -- "$f")"; then
+    echo "planted-bug-check: cannot check $f cleanliness; refusing to mutate it" >&2
+    exit 2
+  fi
+  if [ -n "$dirty" ]; then
+    echo "planted-bug-check: $f has uncommitted changes; refusing to mutate it" >&2
+    exit 2
+  fi
+done
+trap restore EXIT INT TERM
+
+cd "$ID_DIR" || exit 2
+
+# Suites per mutation. The voiding suites judge grants/removals in the groups
+# engine; the frontier unit tests pin the mapping directly and the membership
+# suites exercise it through the layer.
+SUITES_voiding_authority="cargo test --test voiding_scenarios --test voiding_properties"
+SUITES_delegation_voiding="cargo test --test delegation_voiding_scenarios"
+SUITES_frontier_mapping="cargo test -p id-core --lib membership::frontier && cargo test --test membership_properties --test membership_scenarios"
+SUITES_tag_fold_clear="cargo test --lib tag_claims && cargo test --test tag_claims --test tag_index"
+
+run_suites() {
+  # $1 = space-separated suite commands joined by &&
+  eval "$1" >"$2" 2>&1
+}
+
+echo "== baseline: all suites must pass unmutated =="
+if ! run_suites "$SUITES_voiding_authority && $SUITES_frontier_mapping && $SUITES_delegation_voiding && $SUITES_tag_fold_clear" /tmp/planted-bug-baseline.log; then
+  echo "planted-bug-check: BASELINE RED — suites fail without any mutation; see /tmp/planted-bug-baseline.log" >&2
+  exit 2
+fi
+echo "baseline green"
+
+failed=0
+check_mutation() {
+  name="$1" patch="$2" suites="$3"
+  echo "== mutation: $name =="
+  if ! git -C "$REPO_ROOT" apply "$patch"; then
+    echo "planted-bug-check: patch $patch did not apply (source moved?); re-derive the mutation" >&2
+    exit 2
+  fi
+  if run_suites "$suites" "/tmp/planted-bug-$name.log"; then
+    echo "planted-bug-check: SURVIVED — $name was NOT caught; the suites passed with the bug planted (see /tmp/planted-bug-$name.log)" >&2
+    failed=1
+  else
+    echo "caught: $name makes the suites fail, as required"
+  fi
+  restore
+}
+
+# voiding-authority: the resolver-filter verdict in
+# Membership::is_effective is inverted, so the concurrent operations of a
+# removed member take effect instead of being voided — the authority
+# voiding the event-store resolve path (pass two) actually runs for the
+# S2 suites. Plant history (task 6582): two mutations at Engine::void in
+# src/groups/delegation.rs (strong-removal gate, causal-past) SURVIVED
+# these suites, because voiding_scenarios / voiding_properties exercise
+# authority voiding through the event store and contain no
+# delegation-grant coverage, so nothing in them reaches Engine::void.
+# The plant therefore lives here, in the exercised path. Grant-voiding
+# scenarios reaching Engine::void were the separate gap #7071; they now
+# exist (delegation_voiding_scenarios) and carry their own plant below.
+check_mutation "voiding-authority" "$PATCH_DIR/voiding-authority.patch" "$SUITES_voiding_authority"
+# frontier-mapping: a group operation no longer contributes itself to the
+# auth frontier (the mapping test in CausalIndex::combine is inverted).
+check_mutation "frontier-mapping" "$PATCH_DIR/frontier-mapping.patch" "$SUITES_frontier_mapping"
+# delegation-voiding: the strong-removal gate at Engine::void in
+# src/groups/delegation.rs is inverted, so a grant concurrent with its
+# grantor's removal stands under strong remove and is voided under weak
+# remove — exactly backwards (design §6.2/§6.3). The delegation_voiding
+# scenarios judge a grant, its grantor's concurrent removal, and the
+# grantee's onward operation through the groups fold (#7071).
+check_mutation "delegation-voiding" "$PATCH_DIR/delegation-voiding.patch" "$SUITES_delegation_voiding"
+# tag-fold-clear: the causal-past filter in live_claims
+# (src/tag_claims.rs) is inverted, so a clear removes exactly the claims
+# its author had NOT seen and keeps the ones it had — both halves of the
+# observed-remove rule (plan P5.1, #1421). Caught by the tag_claims unit
+# tests in src/tag_claims.rs (the compacted-fold pair) and by the
+# tag_claims / tag_index integration suites (the live-set oracle property
+# and the compacted-fold agreement property).
+check_mutation "tag-fold-clear" "$PATCH_DIR/tag-fold-clear.patch" "$SUITES_tag_fold_clear"
+
+if [ "$failed" -ne 0 ]; then
+  exit 1
+fi
+
+# ── Own argument contract (#10568) ───────────────────────────────────
+# This script takes no arguments either: a copy invoked with an extra
+# argument must be rejected (exit 1, usage + unaccounted-argument on
+# stderr) before dirty-tree checks or suite runs. TMPDIR is pointed at
+# a fresh dir so a broken preflight would leave its temp tree behind.
+_self_tmp="$(mktemp -d)"
+mkdir -p "$_self_tmp/empty"
+cp "$SCRIPT_DIR/planted-bug-check.sh" "$_self_tmp/planted-bug-check.sh"
+_self_rc=0
+TMPDIR="$_self_tmp/empty" bash "$_self_tmp/planted-bug-check.sh" extra \
+  >"$_self_tmp/out" 2>"$_self_tmp/err" || _self_rc=$?
+if [ "$_self_rc" -ne 1 ]; then
+  echo "planted-bug-check: FAIL: own extra argument exited $_self_rc instead of 1" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if ! grep -q 'Usage: planted-bug-check.sh' "$_self_tmp/err"; then
+  echo "planted-bug-check: FAIL: own extra argument did not print usage" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if ! grep -q 'unaccounted argument' "$_self_tmp/err"; then
+  echo "planted-bug-check: FAIL: own extra argument did not report unaccounted argument" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if [ -n "$(ls -A "$_self_tmp/empty")" ]; then
+  echo "planted-bug-check: FAIL: own extra argument did work before rejection" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+rm -rf "$_self_tmp"
+
+echo "planted-bug-check: OK — baseline green, all planted bugs caught"

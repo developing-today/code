@@ -1,0 +1,204 @@
+warning: docs for function which may panic missing `# Panics` section
+ --> src/lib.rs:2:1
+  |
+2 | pub fn assert_empty(v: &Vec<u8>) {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+note: first possible panic found here
+ --> src/lib.rs:3:5
+  |
+3 |     assert!(v.is_empty());
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#missing_panics_doc
+  = note: `-W clippy::missing-panics-doc` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_panics_doc)]`
+
+warning: writing `&Vec` instead of `&[_]` involves a new object where a slice will do
+ --> src/lib.rs:2:24
+  |
+2 | pub fn assert_empty(v: &Vec<u8>) {
+  |                        ^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#ptr_arg
+  = note: `-W clippy::ptr-arg` implied by `-W clippy::all`
+  = help: to override `-W clippy::all` add `#[allow(clippy::ptr_arg)]`
+help: change this to
+  |
+2 - pub fn assert_empty(v: &Vec<u8>) {
+2 + pub fn assert_empty(v: &[u8]) {
+  |
+
+warning: used `assert!` to check that a value is empty
+ --> src/lib.rs:3:5
+  |
+3 |     assert!(v.is_empty());
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#assert_is_empty
+  = note: `-W clippy::assert-is-empty` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::assert_is_empty)]`
+help: use `assert_eq!` to show the value on failure
+  |
+3 -     assert!(v.is_empty());
+3 +     assert_eq!(v.as_slice(), []);
+  |
+
+warning: this function could have a `#[must_use]` attribute
+ --> src/lib.rs:5:8
+  |
+5 | pub fn zero_capacity() -> Vec<u8> {
+  |        ^^^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#must_use_candidate
+  = note: `-W clippy::must-use-candidate` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+  |
+5 + #[must_use]
+6 | pub fn zero_capacity() -> Vec<u8> {
+  |
+
+warning: calling `with_capacity(0)` is equivalent to `new()`
+ --> src/lib.rs:6:5
+  |
+6 |     Vec::with_capacity(0)
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#with_capacity_zero
+  = note: `-W clippy::with-capacity-zero` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::with_capacity_zero)]`
+help: use `new()` instead
+  |
+6 -     Vec::with_capacity(0)
+6 +     Vec::new()
+  |
+
+warning: this function could have a `#[must_use]` attribute
+ --> src/lib.rs:8:8
+  |
+8 | pub fn chunked(xs: &[u8]) -> usize {
+  |        ^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#must_use_candidate
+help: add the attribute
+  |
+8 + #[must_use]
+9 | pub fn chunked(xs: &[u8]) -> usize {
+  |
+
+warning: using `chunks_exact` with a constant chunk size
+ --> src/lib.rs:9:8
+  |
+9 |     xs.chunks_exact(4).count()
+  |        ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<4>().0.iter()`
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#chunks_exact_to_as_chunks
+  = note: `-W clippy::chunks-exact-to-as-chunks` implied by `-W clippy::all`
+  = help: to override `-W clippy::all` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+warning: this function could have a `#[must_use]` attribute
+  --> src/lib.rs:11:8
+   |
+11 | pub fn bit_width() -> u32 {
+   |        ^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#must_use_candidate
+help: add the attribute
+   |
+11 + #[must_use]
+12 | pub fn bit_width() -> u32 {
+   |
+
+warning: this could be a `const fn`
+  --> src/lib.rs:11:1
+   |
+11 | / pub fn bit_width() -> u32 {
+12 | |     (std::mem::size_of::<u32>() * 8) as u32
+13 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#missing_const_for_fn
+   = note: `-W clippy::missing-const-for-fn` implied by `-W clippy::nursery`
+   = help: to override `-W clippy::nursery` add `#[allow(clippy::missing_const_for_fn)]`
+help: make the function `const`
+   |
+11 | pub const fn bit_width() -> u32 {
+   |     +++++
+
+warning: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+  --> src/lib.rs:12:5
+   |
+12 |     (std::mem::size_of::<u32>() * 8) as u32
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#cast_possible_truncation
+   = note: `-W clippy::cast-possible-truncation` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+help: ... or use `try_from` and handle the error accordingly
+   |
+12 -     (std::mem::size_of::<u32>() * 8) as u32
+12 +     u32::try_from(std::mem::size_of::<u32>() * 8)
+   |
+
+warning: this function could have a `#[must_use]` attribute
+  --> src/lib.rs:14:8
+   |
+14 | pub fn unbounded(mut n: u32) -> u32 {
+   |        ^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#must_use_candidate
+help: add the attribute
+   |
+14 + #[must_use]
+15 | pub fn unbounded(mut n: u32) -> u32 {
+   |
+
+warning: this function could have a `#[must_use]` attribute
+  --> src/lib.rs:23:8
+   |
+23 | pub fn unchecked(o: Option<u8>) -> u8 {
+   |        ^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#must_use_candidate
+help: add the attribute
+   |
+23 + #[must_use]
+24 | pub fn unchecked(o: Option<u8>) -> u8 {
+   |
+
+warning: this could be a `const fn`
+  --> src/lib.rs:23:1
+   |
+23 | / pub fn unchecked(o: Option<u8>) -> u8 {
+24 | |     if o.is_some() {
+25 | |         unsafe { o.unwrap_unchecked() }
+26 | |     } else {
+...  |
+29 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#missing_const_for_fn
+help: make the function `const`
+   |
+23 | pub const fn unchecked(o: Option<u8>) -> u8 {
+   |     +++++
+
+warning: unused `async` for async trait impl function with no `.await` statements
+  --> src/lib.rs:35:5
+   |
+35 | /     async fn run(&self) -> u8 {
+36 | |         1
+37 | |     }
+   | |_____^
+   |
+   = note: `std::future::ready` creates a `Future` which returns the value immediately when `poll`ed
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#unused_async_trait_impl
+   = note: `-W clippy::unused-async-trait-impl` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::unused_async_trait_impl)]`
+help: consider removing the `async` from this function and returning `impl Future<Output = u8>` instead
+   |
+35 ~     fn run(&self) -> impl Future<Output = u8> {
+36 ~         std::future::ready(1)
+   |
+

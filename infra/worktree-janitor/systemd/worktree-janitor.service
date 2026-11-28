@@ -1,0 +1,6 @@
+[Unit]
+Description=Remove aging fleet worktrees that pass the full safety gate (#6884)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/worktree-janitor --apply

@@ -1,0 +1,17 @@
+[package]
+name = "iroh-allowlist-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# N30 spike: can an iroh 1.3.0 endpoint refuse an unlisted EndpointId before the peer learns our
+# addresses? Standalone: the empty [workspace] keeps cargo from joining the spikes workspace.
+[workspace]
+
+[dependencies]
+iroh = "=1.3.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

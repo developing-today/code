@@ -1,0 +1,12 @@
+{
+  "apis": [
+    {
+      "description": "The caller's Outlook mail and calendar, read through Microsoft Graph v1.0 with the caller's own access token. The declaration carries no credential: the Authorization header is the ${OUTLOOK_ACCESS_TOKEN} placeholder, expanded from the environment when the declaration is loaded, so the token itself is never written into a file. Only GET operations are declared, so the read-only default method set applies \u2014 messages, mail folders, events and the caller's profile; no send, edit or delete endpoint is declared.",
+      "headers": {
+        "Authorization": "Bearer ${OUTLOOK_ACCESS_TOKEN}"
+      },
+      "name": "outlook",
+      "spec": "./outlook.openapi.json"
+    }
+  ]
+}

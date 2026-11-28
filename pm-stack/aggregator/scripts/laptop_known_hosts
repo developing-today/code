@@ -1,0 +1,8 @@
+# Pinned SSH host key for the laptop aggregator (user@100.99.113.103).
+# Captured 2026-10-26 via ssh-keyscan over the Tailscale route (tailnet
+# WireGuard peer authentication) for issue #948; the laptop sshd offers
+# only this ed25519 key. push-fleet-feed.sh verifies against this file
+# with StrictHostKeyChecking=yes. If the laptop's host key is ever
+# regenerated, re-capture over the tailnet and update this file in a
+# reviewed commit — never bypass the check instead.
+100.99.113.103 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHmqYb8kYdZwwdd8n7vkW9XenQc2ymIZRoeOSj0lt5ja

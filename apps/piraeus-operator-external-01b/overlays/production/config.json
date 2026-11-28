@@ -1,0 +1,11 @@
+{
+  "appName": "piraeus-operator-external-01b",
+  "userGivenName": "piraeus-operator-external-01b",
+  "destNamespace": "piraeus-datastore-external-01b",
+  "destServer": "https://kubernetes.default.svc",
+  "srcPath": "apps/piraeus-operator-external-01b/overlays/production",
+  "srcRepoURL": "https://github.com/developing-today/code.git",
+  "srcTargetRevision": "",
+  "labels": null,
+  "annotations": null
+}

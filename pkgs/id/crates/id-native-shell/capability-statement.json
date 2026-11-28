@@ -1,0 +1,55 @@
+{
+  "contract": { "file": "pkgs/id/contract/shell-contract.v1.json", "name": "id-shell", "version": 1 },
+  "excludes": [
+    "rich surfaces (3D, audio, widget) — design steps 3-4, conditional on the F13.6 Q1 decision; not in this shell",
+    "frame kinds the contract does not name — the shell adds none and privately extends none",
+    "offline reading — not claimed; that is the browser shell's slice-1 surface (issue #10927). This shell presents a live session",
+    "mobile-native presentation — deferred to the v2 rung (issue #6297)"
+  ],
+  "platform": "linux-desktop",
+  "posture": "local-first: the shell is a presentation client of a world host reached directly over iroh; it hosts no world and implements no hosted or quota surface",
+  "presentation": {
+    "error": "not presented as content: an error frame refuses the session and surfaces as a session failure",
+    "events": "retained as a bounded tail and summarized for presentation (chat_posted, region_changed, object_changed, input_applied, program_changed, system_event)",
+    "screen": "styled per-cell grid with the xterm-256 palette (src/render.rs)",
+    "semantic_diff": "retained as a bounded tail and rendered as text (agent profile, contract revision 11)",
+    "surface_less_view": "the legacy `data` text fallback, the same rule the terminal shell presents",
+    "text_and_form": "deterministic text projection; form surfaces render as widget rows with their actions, answered with form_result",
+    "view_surfaces": ["screen", "text", "form"]
+  },
+  "presents": [
+    "error",
+    "event",
+    "form_result_status",
+    "program_changed",
+    "provider_request",
+    "screen_subscription",
+    "semantic_diff",
+    "snapshot",
+    "view"
+  ],
+  "providers": [
+    {
+      "declaration": "named in the provider_offer frame at session start; the grant is local and per world, bounded by the F12.4 provider manifest (id_caps::world_caps::CLIENT_FILE_READ_MANIFEST) composed by minimum with the shell's local bounds — a provider only ever narrows the session",
+      "execution": "reads only beneath the granted root (openat2 RESOLVE_BENEATH on Linux); every request is answered with a provider_reply frame and recorded in the shell's local audit",
+      "id": "client.file.read",
+      "kind": "client capability provider (F13.7, issue #789)"
+    }
+  ],
+  "recorded_for": "shells v1 slice 2 (issue #10928); terms per doc/2026-11-10T20-40-00Z_design_more_shells_v1 (issue #6296), section 2 and 'The one gate'",
+  "sends": [
+    "chat",
+    "form_result",
+    "input",
+    "join",
+    "paste",
+    "provider_offer",
+    "provider_reply",
+    "resize",
+    "screen_subscribe"
+  ],
+  "shell": "id-native-shell",
+  "statement": "shell-capability-statement",
+  "transport": "iroh (contract transport 'iroh', alpn /id-world/1)",
+  "version": 1
+}

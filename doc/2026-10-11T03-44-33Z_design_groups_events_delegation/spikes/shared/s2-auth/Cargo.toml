@@ -1,0 +1,11 @@
+[package]
+name = "s2-auth"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Spike S2 only needs the auth layer. `test_utils` enables the char/u32 test types
+# (TestOperation, TestGroup, TestGroupState) and the serde derives they rely on.
+p2panda-auth = { workspace = true, features = ["test_utils"] }

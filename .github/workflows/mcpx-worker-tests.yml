@@ -1,0 +1,39 @@
+name: mcpx worker tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/worker/**"
+      - ".github/workflows/mcpx-worker-tests.yml"
+  pull_request:
+    paths:
+      - "pkgs/mcpx/worker/**"
+      - ".github/workflows/mcpx-worker-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Worker tests and typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pkgs/mcpx/worker/package-lock.json
+      - name: Install dependencies
+        working-directory: pkgs/mcpx/worker
+        run: npm ci --no-audit --no-fund
+      - name: Run Worker tests
+        working-directory: pkgs/mcpx/worker
+        run: npm test
+      - name: Typecheck
+        working-directory: pkgs/mcpx/worker
+        run: npm run typecheck
