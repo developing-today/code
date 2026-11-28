@@ -6192,6 +6192,39 @@ mod claim_by_ids_tests {
     }
 
     #[test]
+    fn batch_claim_manual_only_row_claims_through_by_id_path_9178() {
+        // §3 x §4 composition (oracle: the claimed row), ported
+        // from PR #16396 by lane 2137-H's reconciliation: the
+        // automatic pick excludes manual-only rows, but the
+        // explicit by-id path — single or batch — may claim them,
+        // so a batch naming a manual-only row claims it for the
+        // session.
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917839);
+        t.exec(
+            "UPDATE tasks SET manual_only = 1 WHERE id = ?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "batch-worker", "queue": QUEUE, "lane": "batch-lane",
+                "session_id": "ses_batch", "task_ids": [id]
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            outcomes(&out),
+            vec![(id, "claimed".to_string())],
+            "{out}"
+        );
+        let row = get_task(&t, id).unwrap().expect("claimed row");
+        assert_eq!(row["status"], "claimed", "{row}");
+        assert_eq!(row["worker_id"], "batch-worker", "{row}");
+    }
+
+    #[test]
     fn batch_claim_rejects_combinations_and_bad_ids_9178() {
         // §3 guard (oracle: the fail envelope, and no row moves):
         // task_ids combines with no other naming/picking shape,
