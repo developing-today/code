@@ -885,6 +885,57 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             );
         }
     }
+    // #9178 §3 (FDR-0003): batch claim of named tasks. `task_ids`
+    // is the multi-ID form of `task_id`: every ID is claimed for
+    // this call's session through the by-id path, with a per-task
+    // result. A batch names every ID explicitly, so it never
+    // combines with the broker-picked count, a session transfer, a
+    // handoff pick, or a manual override.
+    let task_ids: Option<Vec<i64>> = match req.get("task_ids") {
+        None | Some(Value::Null) => None,
+        Some(ids) => {
+            let Some(arr) = ids.as_array() else {
+                return fail(
+                    2,
+                    "claim_repo_task: task_ids must be an array of task ids",
+                );
+            };
+            if arr.is_empty() || arr.len() > BATCH_CLAIM_MAX as usize {
+                return fail(
+                    2,
+                    format!(
+                        "claim_repo_task: task_ids names 1..={} tasks",
+                        BATCH_CLAIM_MAX
+                    ),
+                );
+            }
+            let mut out = Vec::with_capacity(arr.len());
+            for id in arr {
+                match id.as_i64() {
+                    Some(n) if n > 0 => out.push(n),
+                    _ => {
+                        return fail(
+                            2,
+                            "claim_repo_task: task_ids must be positive task ids",
+                        );
+                    }
+                }
+            }
+            if req.get("manual_override").is_some()
+                || req.get("from_session").is_some()
+                || req.get("pick").is_some()
+                || req
+                    .get("count")
+                    .is_some_and(|count| count.as_i64() != Some(1))
+            {
+                return fail(
+                    2,
+                    "claim_repo_task: task_ids cannot combine with manual override, transfer, handoff, or batch count",
+                );
+            }
+            Some(out)
+        }
+    };
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     // One-queue model (#8097, 2026-11-10): the request's queue
     // is OPTIONAL. Absent, empty, "*" or "all" names no stream:
@@ -1012,6 +1063,31 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             remaining_budget_minutes,
             count,
         );
+    }
+
+    // #9178 §3 (FDR-0003): batch by-id claim. The preamble runs
+    // once for the whole batch; every ID goes through the by-id
+    // path with this call's session. The batch returns its own
+    // per-task envelope, not the single-row shape below.
+    if let Some(ids) = &task_ids {
+        if let Err(e) = claim_preamble(t, queue.as_deref(), &worker, &lane) {
+            return terr(e);
+        }
+        return match claim_by_ids(
+            t,
+            ids,
+            queue.as_deref(),
+            &worker,
+            &lane,
+            lease_seconds,
+            family.as_deref(),
+            &model,
+            claim_session.as_deref(),
+            &pool,
+        ) {
+            Ok(batch) => ok(batch),
+            Err(e) => terr(e),
+        };
     }
 
     let work = (|| -> Result<Option<Value>, TErr> {
@@ -5464,5 +5540,207 @@ mod holder_guard_tests {
             HOLDER_GUARD.matches('?').count(),
             holder_guard_args("w", &json!({})).len()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod batch_by_id_tests {
+    // #9178 §3 (FDR-0003): one claim call names several task IDs for one
+    // session and reports a per-task result.
+    // Oracle: the broker's per-task results — `claimed`,
+    // `already-owned-by-this-session`, `skipped-claimed`, `not-found`,
+    // or `failed` with a reason for every non-claim.
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+    const WORKER: &str = "batch-by-id-worker";
+    const LANE: &str = "batch-by-id-lane";
+    const SESSION: &str = "ses_batch_by_id";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("batch by-id oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "batch by-id test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn enqueue(t: &TursoBackend, number: i64) -> i64 {
+        let out = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(number)}));
+        assert_eq!(out["ok"], true, "{out}");
+        out["row"]["id"].as_i64().expect("task id")
+    }
+
+    fn claim_ids(t: &TursoBackend, ids: Vec<Value>) -> Value {
+        verb_claim(
+            &t,
+            &json!({
+                "worker": WORKER,
+                "queue": QUEUE,
+                "lane": LANE,
+                "session_id": SESSION,
+                "task_ids": ids,
+            }),
+        )
+    }
+
+    fn outcome<'a>(out: &'a Value, id: i64) -> &'a Value {
+        out["results"]
+            .as_array()
+            .unwrap_or_else(|| panic!("per-task results: {out}"))
+            .iter()
+            .find(|r| r["task_id"] == id)
+            .unwrap_or_else(|| panic!("result for task {id}: {out}"))
+    }
+
+    #[test]
+    fn two_unclaimed_tasks_claim_in_one_call_with_per_task_results_9178() {
+        let (t, _) = fake_backend();
+        let a = enqueue(&t, 917801);
+        let b = enqueue(&t, 917802);
+        let out = claim_ids(&t, vec![json!(a), json!(b)]);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(outcome(&out, a)["outcome"], "claimed", "{out}");
+        assert_eq!(outcome(&out, b)["outcome"], "claimed", "{out}");
+        for id in [a, b] {
+            let row = get_task(&t, id).unwrap().expect("claimed row");
+            assert_eq!(row["status"], "claimed", "{row}");
+            assert_eq!(row["worker_id"], WORKER, "{row}");
+            assert_eq!(
+                row["progress"]["session_id"],
+                SESSION,
+                "batch binds the one session: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_batch_reports_per_task_outcomes_without_disturbing_skipped_9178() {
+        let (t, _) = fake_backend();
+        let mine = enqueue(&t, 917811);
+        let other = enqueue(&t, 917812);
+        // Another worker holds `other` under a live lease.
+        let taken = verb_claim(
+            &t,
+            &json!({
+                "worker": "other-worker",
+                "queue": QUEUE,
+                "lane": "other-lane",
+                "session_id": "ses_other",
+                "task_id": other,
+            }),
+        );
+        assert_eq!(taken["ok"], true, "{taken}");
+        let held_before = get_task(&t, other).unwrap().expect("held row");
+        // A parked row without an override stays unclaimable.
+        let parked = enqueue(&t, 917813);
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 1, max_attempts = 3, \
+             not_before = '2027-01-01T00:00:00Z', park_kind = 'backoff' WHERE id = ?",
+            &[Arg::Int(parked)],
+        )
+        .unwrap();
+
+        let out = claim_ids(&t, vec![json!(mine), json!(other), json!(999417), json!(parked)]);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(outcome(&out, mine)["outcome"], "claimed", "{out}");
+        let skipped = outcome(&out, other);
+        assert_eq!(skipped["outcome"], "skipped-claimed", "{out}");
+        assert_eq!(
+            skipped["holder_worker_id"], "other-worker",
+            "skip names the holder: {out}"
+        );
+        assert_eq!(outcome(&out, 999417)["outcome"], "not-found", "{out}");
+        let failed = outcome(&out, parked);
+        assert_eq!(failed["outcome"], "failed", "{out}");
+        assert!(
+            failed["reason"].as_str().unwrap_or("").contains("parked"),
+            "park refusal names the state: {out}"
+        );
+
+        // The skipped claim is untouched: same holder, same lease, no
+        // claim_refused event from the batch.
+        let held_after = get_task(&t, other).unwrap().expect("held row");
+        assert_eq!(held_after["worker_id"], "other-worker", "{held_after}");
+        assert_eq!(
+            held_after["lease_until"], held_before["lease_until"],
+            "{held_after}"
+        );
+        assert!(
+            events_for(&t, other, "claim_refused").is_empty(),
+            "batch skip writes no refusal event"
+        );
+    }
+
+    #[test]
+    fn same_owner_retry_reports_already_owned_9178() {
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917821);
+        let first = claim_ids(&t, vec![json!(id)]);
+        assert_eq!(outcome(&first, id)["outcome"], "claimed", "{first}");
+        let second = claim_ids(&t, vec![json!(id)]);
+        assert_eq!(
+            outcome(&second, id)["outcome"],
+            "already-owned-by-this-session",
+            "{second}"
+        );
+    }
+
+    #[test]
+    fn manual_only_row_claims_through_the_batch_by_id_path_9178() {
+        // FDR-0004 composition: the automatic pick excludes manual-only,
+        // but the explicit by-id path (single or batch) may claim it.
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917831);
+        t.exec(
+            "UPDATE tasks SET manual_only = 1 WHERE id = ?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let out = claim_ids(&t, vec![json!(id)]);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(outcome(&out, id)["outcome"], "claimed", "{out}");
+    }
+
+    #[test]
+    fn batch_rejects_exclusive_combinations_9178() {
+        let (t, _) = fake_backend();
+        let id = enqueue(&t, 917841);
+        for (name, extra) in [
+            ("manual_override", json!({"manual_override": "x"})),
+            ("from_session", json!({"from_session": "ses_else"})),
+            ("pick", json!({"pick": "handed_off"})),
+            ("count", json!({"count": 2})),
+        ] {
+            let mut req = json!({
+                "worker": WORKER,
+                "queue": QUEUE,
+                "task_ids": [id],
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                req[k] = v.clone();
+            }
+            let out = verb_claim(&t, &req);
+            assert_eq!(out["ok"], false, "{name}: {out}");
+        }
     }
 }

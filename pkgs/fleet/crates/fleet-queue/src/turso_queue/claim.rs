@@ -1584,6 +1584,229 @@ pub(crate) fn claim_by_id(
     Ok(Some(row))
 }
 
+/// Batch claim of named tasks for one session (#9178 §3, FDR-0003).
+/// Every ID goes through the same by-id path a single `--task` claim
+/// uses, so guards, quarantine, manual-only eligibility, lease
+/// handling, and event shapes are identical; the batch only changes
+/// how many IDs one call may name. Per-row modifiers stay out: each
+/// ID is claimed for the call's session with no resume fallback and
+/// no manual override (a batch carrying either is rejected).
+/// The broker reports a per-task result for every ID: `claimed`,
+/// `already-owned-by-this-session`, `skipped-claimed`, `not-found`,
+/// or `failed` with a reason. A task held by another worker is
+/// skipped WITHOUT calling the by-id path, so its claim — and its
+/// event record — stays untouched; a refused claim is never part of
+/// a batch skip.
+pub(crate) fn claim_by_ids(
+    t: &TursoBackend,
+    task_ids: &[i64],
+    queue: Option<&str>,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<&str>,
+    model: &Option<ClaimModel>,
+    claim_session: Option<&str>,
+    pool: &Option<String>,
+) -> Result<Value, TErr> {
+    let now = iso(now_unix());
+    let claimer = ClaimerCtx {
+        family: family.map(str::to_string),
+        lane: lane.clone(),
+        worker: worker.to_string(),
+        pool: pool.clone(),
+        model: model.clone(),
+    };
+    let mut results = Vec::with_capacity(task_ids.len());
+    for &task_id in task_ids {
+        results.push(batch_claim_one(
+            t,
+            task_id,
+            queue,
+            worker,
+            lane,
+            lease_seconds,
+            family,
+            model,
+            claim_session,
+            pool,
+            &claimer,
+            &now,
+        )?);
+    }
+    Ok(json!({"results": results}))
+}
+
+/// One ID inside a batch claim: classify first, claim second. The
+/// pre-read keeps the skip path event-free: only IDs this call may
+/// take reach `claim_by_id`.
+fn batch_claim_one(
+    t: &TursoBackend,
+    task_id: i64,
+    queue: Option<&str>,
+    worker: &str,
+    lane: &Option<String>,
+    lease_seconds: i64,
+    family: Option<&str>,
+    model: &Option<ClaimModel>,
+    claim_session: Option<&str>,
+    pool: &Option<String>,
+    claimer: &ClaimerCtx,
+    now: &str,
+) -> Result<Value, TErr> {
+    let row = match get_task(t, task_id)? {
+        Some(row)
+            if queue.is_none_or(|q| row.get("queue").and_then(|v| v.as_str()) == Some(q)) =>
+        {
+            row
+        }
+        _ => {
+            return Ok(json!({
+                "task_id": task_id,
+                "outcome": "not-found",
+                "reason": "no such task in scope",
+            }));
+        }
+    };
+    if let Some((holder_worker, holder_lane, holder_lease_until)) = live_claim_holder(&row, now)
+    {
+        if holder_worker == worker && holder_lane == *lane {
+            let row_session = row
+                .get("progress")
+                .and_then(|p| p.get("session_id"))
+                .and_then(|v| v.as_str());
+            let same_session = match (row_session, claim_session) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+            if same_session {
+                // Idempotent retry: the task is already claimed for
+                // this worker, lane, and session. Report it without
+                // touching the row — in particular without running
+                // the by-id path, which would refuse an already-live
+                // claim and record a claim_refused event.
+                return Ok(json!({
+                    "task_id": task_id,
+                    "outcome": "already-owned-by-this-session",
+                    "row": row,
+                }));
+            }
+            // Same worker and lane, different session: mirror the
+            // single by-id path, which refuses (recording
+            // claim_refused) rather than silently rebinding.
+            return match claim_by_id(
+                t,
+                task_id,
+                queue,
+                worker,
+                lane,
+                lease_seconds,
+                family,
+                model,
+                claim_session,
+                None,
+                pool,
+                None,
+            )? {
+                Some(row) => Ok(json!({
+                    "task_id": task_id,
+                    "outcome": "claimed",
+                    "row": row,
+                })),
+                None => Ok(json!({
+                    "task_id": task_id,
+                    "outcome": "failed",
+                    "reason": "already_claimed_by_this_worker",
+                })),
+            };
+        }
+        return Ok(json!({
+            "task_id": task_id,
+            "outcome": "skipped-claimed",
+            "holder_worker_id": holder_worker,
+            "holder_lane_id": holder_lane,
+            "holder_lease_until": holder_lease_until,
+        }));
+    }
+    match claim_by_id(
+        t,
+        task_id,
+        queue,
+        worker,
+        lane,
+        lease_seconds,
+        family,
+        model,
+        claim_session,
+        None,
+        pool,
+        None,
+    )? {
+        Some(row) => Ok(json!({
+            "task_id": task_id,
+            "outcome": "claimed",
+            "row": row,
+        })),
+        None => {
+            let reason = batch_refusal_reason(t, task_id, claimer, now)?;
+            Ok(json!({
+                "task_id": task_id,
+                "outcome": "failed",
+                "reason": reason,
+            }))
+        }
+    }
+}
+
+/// Name why a batch ID did not claim, from a fresh read of its row.
+/// The by-id path returns no reason (it returns no row), so the
+/// batch re-reads; the read happens after the attempt, so a row
+/// quarantined or raced during the attempt reports its new state.
+fn batch_refusal_reason(
+    t: &TursoBackend,
+    task_id: i64,
+    claimer: &ClaimerCtx,
+    now: &str,
+) -> Result<String, TErr> {
+    let Some(row) = get_task(t, task_id)? else {
+        return Ok("race_lost".to_string());
+    };
+    let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "parked" {
+        return Ok("parked".to_string());
+    }
+    if status == "blocked" {
+        let detail = row
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("quarantined");
+        return Ok(format!("quarantined: {detail}"));
+    }
+    if status == "queued" {
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if attempts >= max {
+            return Ok("at_max_attempts".to_string());
+        }
+        if let Some(nb) = row.get("not_before").and_then(|v| v.as_str())
+            && nb > now
+        {
+            return Ok("not_before_in_future".to_string());
+        }
+        if let Some(why) = task_requirements_unmet(&row, claimer) {
+            return Ok(format!("requirements_unmet: {why}"));
+        }
+    }
+    if status == "handed_off" {
+        return Ok("handoff_not_ready".to_string());
+    }
+    Ok("race_lost".to_string())
+}
+
 /// The task-side half of the union match: a row whose payload
 /// declares `requires` is servable only by a claimer declaring
 /// the required attributes. Five placeholders, bound from the

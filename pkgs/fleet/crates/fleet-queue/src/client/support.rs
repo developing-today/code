@@ -193,7 +193,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   meta <get|set|unset|keys> ...\n\
   staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
   needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
-  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
+  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>]... [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
   release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
@@ -252,7 +252,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\nThe stewardship needs-user read: blocked/parked tasks carrying a question metadata entry, oldest last transition first, with the question object and a blocked-by count read from the blocked_deps cache (superseded by task_deps counts when Q6 lands)."
         }
         "claim" => {
-            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch."
+            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>]... [--manual-override <reason>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task. With --task, --manual-override requires a non-empty reason and claims only an under-cap parked task, preserving attempts and auditing the prior park state. Cannot combine with transfer, handoff, or batch. Repeat --task to claim several tasks in one call (#9178): every ID is claimed for the call's session with a per-task result; a batch never combines with manual override, transfer, handoff, bind, or --count."
         }
         "release" => {
             "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
@@ -447,11 +447,25 @@ pub(super) fn usage_error(verb: &str, msg: &str) -> ! {
 /// duplicate flag, flag without its value) prints the error plus
 /// the verb's usage and exits 2.
 pub(super) fn parse_verb_args(verb: &str, rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
+    parse_verb_args_multi(verb, rest, flags, bools, &[])
+}
+
+/// `parse_verb_args` with repeatable value flags (#9178 §3): a flag
+/// named in `repeatable` may appear several times (`--task 1 --task
+/// 2`) and its values accumulate comma-joined, so `Args::get_list`
+/// reads every occurrence. Any other duplicate stays a usage error.
+pub(super) fn parse_verb_args_multi(
+    verb: &str,
+    rest: &[String],
+    flags: &[&str],
+    bools: &[&str],
+    repeatable: &[&str],
+) -> Args {
     if wants_help(rest, flags) {
         println!("{}", usage(verb));
         exit(0);
     }
-    match parse_args_inner(rest, flags, bools) {
+    match parse_args_inner_multi(rest, flags, bools, repeatable) {
         Ok(args) => args,
         Err(msg) => usage_error(verb, &msg),
     }
@@ -473,6 +487,19 @@ pub(super) fn parse_args_inner(
     flags: &[&str],
     bools: &[&str],
 ) -> Result<Args, String> {
+    parse_args_inner_multi(rest, flags, bools, &[])
+}
+
+/// Pure core of `parse_verb_args_multi`: `repeatable` names the
+/// value flags whose repeats accumulate comma-joined instead of
+/// erroring as duplicates (#9178 §3 `--task`). A repeated boolean,
+/// or a repeat naming an unknown flag, stays a usage error.
+pub(super) fn parse_args_inner_multi(
+    rest: &[String],
+    flags: &[&str],
+    bools: &[&str],
+    repeatable: &[&str],
+) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
     let mut i = 0;
@@ -484,7 +511,29 @@ pub(super) fn parse_args_inner(
                 None => (long.to_string(), None),
             };
             if opts.contains_key(&name) {
-                return Err(format!("argument --{name}: duplicate flag"));
+                if !repeatable.contains(&name.as_str())
+                    || !flags.contains(&name.as_str())
+                    || bools.contains(&name.as_str())
+                {
+                    return Err(format!("argument --{name}: duplicate flag"));
+                }
+                let v = if let Some(v) = inline {
+                    v
+                } else if i + 1 < rest.len() && !rest[i + 1].starts_with("--") {
+                    let v = rest[i + 1].clone();
+                    i += 1;
+                    v
+                } else {
+                    return Err(format!("argument --{name}: expected one argument"));
+                };
+                let prev = opts
+                    .get(&name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                opts.insert(name, Value::String(format!("{prev},{v}")));
+                i += 1;
+                continue;
             }
             if bools.contains(&name.as_str()) {
                 if let Some(v) = inline {
@@ -527,6 +576,20 @@ impl Args {
     }
     pub(super) fn has(&self, name: &str) -> bool {
         self.opts.contains_key(name)
+    }
+    /// Every value of a (possibly repeated) flag: the raw
+    /// comma-joined value split on commas, trimmed, empties dropped
+    /// (#9178 §3: `--task 1 --task 2` and `--task 1,2` read alike).
+    pub(super) fn get_list(&self, name: &str) -> Vec<String> {
+        match self.opts.get(name).and_then(|v| v.as_str()) {
+            None => Vec::new(),
+            Some(raw) => raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect(),
+        }
     }
     pub(super) fn get_i64(&self, name: &str) -> Option<i64> {
         match self.get(name) {

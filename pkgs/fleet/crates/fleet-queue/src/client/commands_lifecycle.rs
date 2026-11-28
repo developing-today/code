@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use super::*;
 
 pub(super) fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_verb_args(
+    let args = parse_verb_args_multi(
         "claim",
         rest,
         &[
@@ -34,6 +34,8 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "manual-override",
         ],
         &["handoff", "bind"],
+        // #9178 §3: --task repeats to name a batch of tasks.
+        &["task"],
     );
     reject_extra_pos("claim", &args, 0);
     // #8606: a zero-intent claim refuses before any broker
@@ -147,8 +149,46 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // broker's by-id predicate allows it (a queued row under the
     // ordinary predicate, or a sink row). The opencode claimant
     // uses this to collect handed-off tasks out of the sink; a
-    // plain claim never names a task.
-    if let Some(task) = args.get_i64("task") {
+    // plain claim never names a task. Repeat --task to claim
+    // several tasks in one call (#9178 §3, FDR-0003): every ID is
+    // claimed for this call's session and the broker reports a
+    // per-task result. A batch names every ID explicitly, so it
+    // never combines with transfer, handoff, bind, broker-picked
+    // batch count, or a manual override.
+    let task_ids = task_id_list(&args);
+    if task_ids.len() > 1 {
+        if task_ids.iter().any(|id| *id <= 0) {
+            die(2, "claim: batch by-id --task ids must be positive task ids");
+        }
+        if task_ids.len() as i64 > crate::BATCH_CLAIM_MAX {
+            die(
+                2,
+                &format!(
+                    "claim: batch by-id takes 1..={} --task ids (#9178)",
+                    crate::BATCH_CLAIM_MAX
+                ),
+            );
+        }
+        if args.get("manual-override").is_some() {
+            die(
+                2,
+                "claim: --manual-override cannot combine with a batch by-id claim",
+            );
+        }
+        if args.get("from-session").is_some() || args.has("handoff") {
+            die(
+                2,
+                "claim: batch by-id cannot combine with transfer or handoff",
+            );
+        }
+        if args.has("bind") {
+            die(2, "claim: batch by-id cannot combine with --bind");
+        }
+        if args.get_i64("count").unwrap_or(1) != 1 {
+            die(2, "claim: batch by-id cannot combine with --count");
+        }
+        body["task_ids"] = json!(task_ids);
+    } else if let Some(task) = args.get_i64("task") {
         body["task_id"] = json!(task);
     }
     if let Some(reason) = args.get("manual-override") {
@@ -230,6 +270,20 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     };
     if let Some(note) = claim_flow_partial_note(&resp) {
         eprint(&note);
+    }
+    if task_ids.len() > 1 {
+        // #9178 §3: one binding + stamp timeline record per
+        // claimed row, as in the --count batch path.
+        if let Some(results) = resp.get("results").and_then(|r| r.as_array()) {
+            for r in results {
+                if r.get("outcome").and_then(|o| o.as_str()) == Some("claimed")
+                    && let Some(row) = r.get("row")
+                {
+                    claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+                }
+            }
+        }
+        return claim_by_id_batch_output(&resp, &worker, task_ids.len() as i64);
     }
     if count > 1 {
         // #9046: one binding + stamp timeline record per row.
@@ -413,6 +467,23 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
     }
 }
 
+/// #9178 §3: the --task id list for a claim. One --task reads
+/// exactly as before (a single id via `get_i64` at the call site);
+/// repeated --task flags (or one comma-joined --task) read as a
+/// batch. Non-numeric values die with the same usage error the
+/// single-id path has always produced; positivity is enforced by
+/// the batch branch (the single-id path keeps its exact broker
+/// contract) and by the broker for every batch id.
+pub(super) fn task_id_list(args: &Args) -> Vec<i64> {
+    args.get_list("task")
+        .iter()
+        .map(|raw| match parse_i64_flag("task", raw) {
+            Ok(n) => n,
+            Err(msg) => die(2, &msg),
+        })
+        .collect()
+}
+
 /// The batch claim's response handling (#8217): the broker ran the
 /// pick repeatedly and returned every claimed row. Each row goes
 /// through the SAME per-item post-claim handling as a single
@@ -516,6 +587,106 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
             &no_claim_diagnostic(resp)
                 .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
         );
+        return NO_CLAIM_EXIT;
+    }
+    0
+}
+
+/// The batch BY-ID claim's response handling (#9178 §3): the broker
+/// claimed every named ID through the by-id path and returned a
+/// per-task result (`claimed`, `already-owned-by-this-session`,
+/// `skipped-claimed`, `not-found`, or `failed` with a reason).
+/// Each claimed row goes through the SAME per-item post-claim
+/// handling as a single claim — the payload defense in depth and
+/// the #6741 no-double-serve guard (a fallback-held row is blocked
+/// back, never served) — then prints one verdict:
+/// {"results": [...], "tasks": [...], "claimed": k, "requested": n,
+/// "guard_held": [...]}. Zero served rows is the usual no-claim
+/// verdict (NO_CLAIM_EXIT).
+pub(super) fn claim_by_id_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let results = resp
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    // #8581: the batch's gh-read leg is its worst guard outcome —
+    // one unchecked guard read degrades the batch's mode line.
+    let mut github_read = true;
+    for r in &results {
+        if r.get("outcome").and_then(|o| o.as_str()) != Some("claimed") {
+            continue;
+        }
+        let Some(row) = r.get("row") else {
+            continue;
+        };
+        // Payload defense in depth, as in claim_output (#5444): a
+        // well-formed claim never carries a null or {} payload.
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                github_read = false;
+                let mut row = row.clone();
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row.clone()),
+        }
+    }
+    let claimed = tasks.len();
+    let mut out = json!({
+        "results": results,
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    });
+    attach_mode_line(&mut out, "claim", legs_served(true, github_read));
+    print_json(&out);
+    if claimed == 0 {
+        eprint("repo-queue: no claimable task");
         return NO_CLAIM_EXIT;
     }
     0

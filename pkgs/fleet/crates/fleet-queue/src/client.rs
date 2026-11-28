@@ -165,8 +165,52 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn list_marks_manual_only_rows_9178() {
-        let cells = list_row_cells(&json!({
+    fn repeated_task_flag_accumulates_for_batch_by_id_9178() {
+        // #9178 §3: --task repeats to name a batch. Oracle: every
+        // occurrence is kept (repeated and comma-joined forms read
+        // alike), while any other repeated flag stays a usage error.
+        let argv = |words: &[&str]| {
+            words.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        };
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11", "--task", "22"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22"]);
+        assert_eq!(args.get("task").as_deref(), Some("11,22"));
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11,22", "--task", "33"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22", "33"]);
+        let single = parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"])
+            .unwrap();
+        assert_eq!(single.get_i64("task"), Some(11));
+        // A repeated non-repeatable flag is still rejected.
+        assert!(
+            parse_args_inner_multi(&argv(&["--worker", "a", "--worker", "b"]), &["worker"], &[], &[])
+                .is_err()
+        );
+        // A repeatable boolean is still a duplicate-flag error.
+        assert!(
+            parse_args_inner_multi(
+                &argv(&["--bind", "--bind"]),
+                &["task"],
+                &["bind"],
+                &["bind"],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn list_marks_manual_only_rows_9178() {        let cells = list_row_cells(&json!({
             "id": 7,
             "priority": 10,
             "status": "queued",
