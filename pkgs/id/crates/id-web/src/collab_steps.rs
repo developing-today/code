@@ -38,6 +38,12 @@
 //! claiming `openStart: 1`, an empty paragraph claiming 2) is a slice
 //! no cut can produce; `replace` throws for it on every client.
 //!
+//! Marks are also checked where they appear, not only that they
+//! exist: `editor.ts` declares `code_block` with `marks: ""` in both
+//! schemas, so no mark may ride on the text inside a code block. The
+//! editor can never produce marked code text, and a stored step
+//! carrying it fails content checking when clients apply it.
+//!
 //! This does not yet prove that a structurally plausible step applies
 //! against the evolving document. Full server-side application is the
 //! later stage of #1618.
@@ -489,6 +495,31 @@ fn check_content_expression(kind: &str, children: &[Value]) -> Result<(), String
     Ok(())
 }
 
+/// Check the marks on a slice node's children against the mark set
+/// its parent admits in `editor.ts`. Only `code_block` restricts
+/// marks at all: it declares `marks: ""` in both the rich and the raw
+/// schema, so its `text*` content carries no marks. Every other
+/// container admits the schema's full mark set on its inline content,
+/// which [`check_mark`] has already validated type by type.
+///
+/// Marks that are not an array, and children that are not objects,
+/// are left to the recursion in [`node_size`], which refuses them.
+fn check_content_marks(kind: &str, children: &[Value]) -> Result<(), String> {
+    if kind != "code_block" {
+        return Ok(());
+    }
+    for child in children {
+        let marked = child
+            .get("marks")
+            .and_then(Value::as_array)
+            .is_some_and(|marks| !marks.is_empty());
+        if marked {
+            return Err("`code_block` content cannot carry marks".to_owned());
+        }
+    }
+    Ok(())
+}
+
 /// The size of one node inside a slice, checked against the schema.
 fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, String> {
     if depth >= MAX_NODE_DEPTH {
@@ -523,6 +554,7 @@ fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, Stri
     };
     if let Some(children) = content {
         check_content_expression(kind, children)?;
+        check_content_marks(kind, children)?;
     }
     if kind == "text" {
         if content.is_some_and(|children| !children.is_empty()) {
@@ -916,5 +948,45 @@ mod tests {
         let step = json!({"stepType": "replace", "from": 0, "to": 0, "slice": {"content": [node]}});
         let refusal = check_steps(rich(), 2, &[step]).unwrap_err();
         assert!(refusal.reason.contains("deeper"));
+    }
+
+    #[test]
+    fn slice_marks_are_checked_against_their_parent() {
+        // Oracle: `web/src/editor.ts` declares `code_block` with
+        // `marks: ""` in both schemas — no marks inside a code block.
+        // Each step wraps one node in a replace slice.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for mark in ["strong", "em", "code", "link", "strikethrough"] {
+            let reason = refused(json!({"type": "code_block", "content": [
+                {"type": "text", "text": "x = 1", "marks": [{"type": mark}]}]}));
+            assert!(reason.contains("code_block"), "{reason}");
+            assert!(reason.contains("marks"), "{reason}");
+        }
+        // Valid controls: unmarked code text, an empty marks array,
+        // and the same marks on text where the schema admits them.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "code_block", "content": [{"type": "text", "text": "x = 1"}]}),
+            json!({"type": "code_block", "content": [
+                {"type": "text", "text": "x = 1", "marks": []}]}),
+            json!({"type": "code_block"}),
+            json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x", "marks": [{"type": "strong"}]}]}),
+            json!({"type": "heading", "content": [
+                {"type": "text", "text": "x", "marks": [{"type": "link", "attrs": {"href": "y"}}]}]}),
+            json!({"type": "table_cell", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "x", "marks": [{"type": "em"}]}]}]}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
     }
 }
