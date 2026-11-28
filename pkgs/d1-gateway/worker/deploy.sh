@@ -41,10 +41,10 @@ else
     "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$worker/settings")
   if [[ $code == 404 ]]; then
     echo "d1-gateway does not exist yet; creating it with wrangler deploy" >&2
-    out=$(wrangler deploy 2>&1 | tee /dev/stderr)
+    out=$(wrangler deploy --var "VERSION:$sha" 2>&1 | tee /dev/stderr)
     vid=$(grep -oE 'Current Version ID: [0-9a-f-]{36}' <<<"$out" | awk '{print $4}' | tail -1)
   else
-    out=$(wrangler versions upload --tag "git-${sha:0:12}" --message "$sha" 2>&1 | tee /dev/stderr)
+    out=$(wrangler versions upload --tag "git-${sha:0:12}" --message "$sha" --var "VERSION:$sha" 2>&1 | tee /dev/stderr)
     vid=$(grep -oE 'Worker Version ID: [0-9a-f-]{36}' <<<"$out" | awk '{print $4}' | tail -1)
     [[ $vid =~ $uuid_re ]] || {
       echo "could not read the uploaded version id" >&2
