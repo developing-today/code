@@ -4,9 +4,9 @@
 // /api/decision-sets with refresh:true, scripts/submit-decision-set.ts
 // --refresh) has no standing ledger-mirror sets to maintain until
 // something seeds them. This module is that something: the slice-1
-// seeding half. Slice 2 (same issue) adds the hourly-job cadence that
-// replaces this bootstrap payload from the live pending-questions
-// ledger on schedule.
+// seeding half. Slice 2 (same issue, src/standing-refresh.ts) adds
+// the hourly-job cadence that replaces this bootstrap payload from
+// the live pending-questions ledger on schedule.
 //
 // The seed is a bootstrap placeholder, not live ledger content — it
 // says so on its own questions — so the Questions section #9360 added

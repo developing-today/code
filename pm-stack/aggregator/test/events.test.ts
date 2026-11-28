@@ -445,9 +445,9 @@ describe("events audit v2 (#3322 slice A)", () => {
     expect(boundary).toHaveLength(500);
     const ok = await store.record({ ...base, source: { identity: "dashboard", link: boundary } });
     expect(ok.source.link).toBe(boundary);
-    await expect(
-      store.record({ ...base, source: { identity: "dashboard", link: `${boundary}x` } }),
-    ).rejects.toThrow("source.link");
+    await expect(store.record({ ...base, source: { identity: "dashboard", link: `${boundary}x` } })).rejects.toThrow(
+      "source.link",
+    );
     expect(await store.list()).toHaveLength(1);
   });
 

@@ -8,12 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FailClosed } from "../src/errors.ts";
-import {
-  METADATA_END,
-  METADATA_START,
-  parseMetadataBlock,
-  renderMetadataBlock,
-} from "../src/metadata.ts";
+import { METADATA_END, METADATA_START, parseMetadataBlock, renderMetadataBlock } from "../src/metadata.ts";
 
 function assertInvalidBlock(body: string): void {
   assert.throws(
@@ -60,9 +55,7 @@ test("genuinely invalid delimiters and payloads still fail closed", () => {
   // Opening fence without a closing delimiter line.
   assertInvalidBlock(`${METADATA_START}\n\`\`\`json\n{ "pm_meta": 1 }\n${METADATA_END}`);
   // Non-whitespace content after the closing fence.
-  assertInvalidBlock(
-    `${METADATA_START}\n\`\`\`json\n{ "pm_meta": 1 }\n\`\`\`\ntrailing\n${METADATA_END}`,
-  );
+  assertInvalidBlock(`${METADATA_START}\n\`\`\`json\n{ "pm_meta": 1 }\n\`\`\`\ntrailing\n${METADATA_END}`);
   // Malformed JSON inside a well-formed fence.
   assertInvalidBlock(`${METADATA_START}\n\`\`\`json\n{ pm_meta: 1 }\n\`\`\`\n${METADATA_END}`);
   // Well-formed JSON that is not a pm_meta: 1 object.

@@ -11,12 +11,27 @@
 // only through the jurisdiction-restricted namespace (routing.ts).
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
-import { FailClosed, parseBindingId, parseJurisdiction, userStub, type BlobsEnv, type ObjectNamespaceLike } from "./routing.ts";
+import {
+  FailClosed,
+  parseBindingId,
+  parseJurisdiction,
+  userStub,
+  type BlobsEnv,
+  type ObjectNamespaceLike,
+} from "./routing.ts";
 import { TenancyRegistry, type TenancyDatabase } from "./tenancy-registry.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
 import { handleMigrationOperatorRequest, migrationOperatorEnabled } from "./migration-operator.ts";
 import { workerMigrationPorts } from "./migration-coordinator.ts";
-import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import {
+  HDR_BINDING,
+  HDR_CSE,
+  HDR_IROH,
+  HDR_JURISDICTION,
+  HDR_ROUTED,
+  bodyTooLarge,
+  requestBodyLimit,
+} from "./user-do.ts";
 import { FENCE_RETRY_AFTER_SECONDS, HDR_MIGRATION } from "./migration-fence.ts";
 
 export { UserDO } from "./user-do.ts";
@@ -79,8 +94,15 @@ export default {
         try {
           const routeRecord = await directory.findByBindingId(bindingId);
           if (routeRecord) {
-            if (await directory.legacyInventory(routeRecord.subjectKey) || await directory.findLegacyByBindingId(bindingId)) {
-              throw new FailClosed(503, "invalid_directory_record", "account conflicts with legacy inventory; failing closed");
+            if (
+              (await directory.legacyInventory(routeRecord.subjectKey)) ||
+              (await directory.findLegacyByBindingId(bindingId))
+            ) {
+              throw new FailClosed(
+                503,
+                "invalid_directory_record",
+                "account conflicts with legacy inventory; failing closed",
+              );
             }
             if (routeRecord.phase === "switched") {
               return json(
@@ -90,7 +112,11 @@ export default {
               );
             }
             if (routeRecord.jurisdiction !== jurisdiction) {
-              throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the migration route projection; failing closed");
+              throw new FailClosed(
+                403,
+                "directory_jurisdiction_mismatch",
+                "request jurisdiction does not match the migration route projection; failing closed",
+              );
             }
           } else if (await directory.findLegacyByBindingId(bindingId)) {
             throw new FailClosed(

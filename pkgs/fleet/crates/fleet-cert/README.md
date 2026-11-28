@@ -83,15 +83,23 @@ Implements the fleet architecture spec v0.3
   audit exits 1 iff expired>0 or drift>0. Nothing writes.
 - `fleet cert format convert|verify` — certificate PEM/DER conversion
   plus password-protected PKCS#12 export from a verified bundle,
-  PKCS#12 import back to DER files, and archive verification. Export
+  PKCS#12 import back to DER files, archive verification, and
+  public-only JWK conversion for Ed25519 and P-256 keys (RSA and
+  ML-DSA are rejected, never silently dropped). Export
   requires exactly one in-bundle identity and a `--password-file`;
   output is created owner-only and never overwrites an existing file.
   Import (`convert --from pkcs12 --in <archive> --password-file <f>
-  --out <new-dir>`) writes `certificate.der`, owner-only
+--out <new-dir>`) writes `certificate.der`, owner-only
   `private-key.pk8`, and `chain-NN.der` files without replacing an
   existing directory. The API requires a matching cert/key pair,
   preserves additional certificates as the CA chain, and rejects malformed
-  archives. Verification redacts keys.
+  archives. Verification redacts keys. JWK export
+  (`convert --to jwk --algorithm <id> [--in <key> | --bundle <dir>]`)
+  reads a validated PKCS#8 key or the bundle's exactly-one matching
+  private-key identity and writes the canonical public JWK; JWK import
+  (`convert --from jwk --to pem|der`) rewrites it as SubjectPublicKeyInfo;
+  `verify --in <key.jwk> --algorithm <id> --key <key.pk8>` proves the
+  JWK matches the canonical DER key material.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,

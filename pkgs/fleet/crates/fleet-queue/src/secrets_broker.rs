@@ -6,6 +6,15 @@
 //! repo-queue.py invocation pay 10-40 s. Binds the laptop tailnet IP
 //! only; consumers reach it through the sandbox session proxy.
 //!
+//! Backend selection (#14151): this broker is Bitwarden-only by
+//! decision. 1Password stays a client-chain-only source in the
+//! fleet-secrets crate (`OpSource` with its own self-loaded
+//! service-account token): a broker op backend would need a second
+//! per-seat credential, a second refresh loop, and a merge rule for
+//! names present in both vaults, while the client chain already
+//! resolves the same names locally. The `/secrets` listing here
+//! therefore never carries a 1Password-only name.
+//!
 //! Endpoints (header `X-Agent-Token` required except /health):
 //!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
 //!                          refresh_progress, oldest_secret_age_seconds}

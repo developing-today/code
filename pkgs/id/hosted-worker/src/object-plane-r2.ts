@@ -139,7 +139,11 @@ export class R2ObjectPlaneAdapter implements ObjectPlaneAdapter {
   }
 
   capabilities(): AdapterCapabilityMatrix {
-    return { ...R2_CAPABILITY_MATRIX, stagingTtlSeconds: this.stagingTtlSeconds, notes: [...R2_CAPABILITY_MATRIX.notes] };
+    return {
+      ...R2_CAPABILITY_MATRIX,
+      stagingTtlSeconds: this.stagingTtlSeconds,
+      notes: [...R2_CAPABILITY_MATRIX.notes],
+    };
   }
 
   /** Mint a read capability for content in this adapter's partition
@@ -234,7 +238,13 @@ export class R2ObjectPlaneAdapter implements ObjectPlaneAdapter {
 
   async read(contentId: string, capability: ObjectReadCapability, opts?: { now?: string }): Promise<ReadResult> {
     const id = parseContentId(contentId);
-    await verifyReadCapability(this.capabilityKey, id, this.partition, capability, opts?.now ?? new Date().toISOString());
+    await verifyReadCapability(
+      this.capabilityKey,
+      id,
+      this.partition,
+      capability,
+      opts?.now ?? new Date().toISOString(),
+    );
     const key = publishedKey(this.partition, id);
     const stores: R2BucketLike[] = [this.primary, ...this.replicaBuckets];
     for (let i = 0; i < stores.length; i++) {
@@ -333,7 +343,11 @@ export class R2ObjectPlaneAdapter implements ObjectPlaneAdapter {
     }
     const sidecar = await readJson(this.primary, receiptKey(this.partition, stagingId));
     if (typeof sidecar?.stagedAt !== "string") {
-      throw new FailClosed(409, "staging_receipt_missing", "staged bytes lack their receipt sidecar; refusing to verify");
+      throw new FailClosed(
+        409,
+        "staging_receipt_missing",
+        "staged bytes lack their receipt sidecar; refusing to verify",
+      );
     }
     const bytes = await readAllBytes(staged.body);
     const sha = await sha256Hex(bytes);

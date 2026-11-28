@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
@@ -26,6 +27,15 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Timing diagnostics for #16312: a hang on the add/reload path left no
+	// daemon-side evidence in any log, so the synchronous swap records its
+	// own boundaries and the background orphan drain reports per-pool
+	// progress below. A future hang is greppable for "reload start:" with
+	// no matching "reload done:", or for an orphaned pool that never
+	// reports drained.
+	start := time.Now()
+	r.logf("reload start: %d configured servers", len(servers))
 
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
@@ -115,9 +125,14 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 
 	// Drained, not closed: a call running on an orphan finishes on it, as it
 	// does on a lazy restart. Close would cut one that ran past its grace.
+	r.logf("reload done: added=%v removed=%v in %s", added, removed, time.Since(start).Truncate(time.Millisecond))
 	go func() {
 		for _, p := range orphans {
+			name := p.Name()
+			r.logf("reload: waiting for orphaned pool %q to drain", name)
+			drainStart := time.Now()
 			p.WaitDrained()
+			r.logf("reload: orphaned pool %q drained in %s", name, time.Since(drainStart).Truncate(time.Millisecond))
 			if removedPools[p] {
 				r.reloadMu.Lock()
 				r.mu.RLock()
@@ -152,7 +167,9 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 			sessions = r.hooks.Sessions
 		}
 		r.mu.RUnlock()
+		discardStart := time.Now()
 		pool.DiscardUnconfiguredSessionRecords(sessions, configured)
+		r.logf("reload: unconfigured session records discarded in %s", time.Since(discardStart).Truncate(time.Millisecond))
 		r.reloadMu.Unlock()
 	}()
 	return added, removed, nil

@@ -48,12 +48,7 @@
 // see nor delete another partition's replicas.
 
 import { FailClosed, parseBindingId } from "./routing.ts";
-import {
-  parseContentId,
-  type Partition,
-  type ReferenceStore,
-  type SensitivityTier,
-} from "./references.ts";
+import { parseContentId, type Partition, type ReferenceStore, type SensitivityTier } from "./references.ts";
 import type { DeleteAuditEvent, ObjectPlaneAdapter } from "./object-plane.ts";
 import type { ReferenceIndex } from "./reference-index.ts";
 
@@ -268,10 +263,18 @@ export class GcSweeper {
       throw new FailClosed(409, "gc_staging_partition", "staging is reaped by lifecycle rules, not by the GC sweep");
     }
     if (!samePartition(opts.index.partition, opts.partition)) {
-      throw new FailClosed(409, "gc_index_partition_mismatch", "the reference index is not in this sweeper's partition");
+      throw new FailClosed(
+        409,
+        "gc_index_partition_mismatch",
+        "the reference index is not in this sweeper's partition",
+      );
     }
     if (!samePartition(opts.adapter.partition, opts.partition)) {
-      throw new FailClosed(409, "gc_adapter_partition_mismatch", "the object-plane adapter is not in this sweeper's partition");
+      throw new FailClosed(
+        409,
+        "gc_adapter_partition_mismatch",
+        "the object-plane adapter is not in this sweeper's partition",
+      );
     }
     const graceMs = opts.policy?.graceMs ?? DEFAULT_GRACE_MS[opts.partition.tier];
     if (!Number.isFinite(graceMs) || graceMs < 0) {
@@ -530,7 +533,11 @@ export class GcSweeper {
     const who = parseBindingId(requester);
     this.requireStores(stores);
     if (this.partition.tier !== "tenant-restricted") {
-      throw new FailClosed(409, "erasure_wrong_tier", "sole-referencer erasure applies to tenant-restricted content only");
+      throw new FailClosed(
+        409,
+        "erasure_wrong_tier",
+        "sole-referencer erasure applies to tenant-restricted content only",
+      );
     }
     if (!this.policy.soleReferencerErasure) {
       throw new FailClosed(403, "erasure_not_enabled", "the partition policy does not allow zero-grace erasure");
@@ -539,12 +546,14 @@ export class GcSweeper {
     parseTime(now, "now");
 
     const everReferenced = stores.some((s) =>
-      s.referencesFor(id).some(
-        (r) =>
-          r.created_by === who &&
-          r.jurisdiction === this.partition.jurisdiction &&
-          r.sensitivity_tier === this.partition.tier,
-      ),
+      s
+        .referencesFor(id)
+        .some(
+          (r) =>
+            r.created_by === who &&
+            r.jurisdiction === this.partition.jurisdiction &&
+            r.sensitivity_tier === this.partition.tier,
+        ),
     );
     if (!everReferenced) {
       throw new FailClosed(403, "erasure_not_a_referencer", "the requester holds no reference to this content");

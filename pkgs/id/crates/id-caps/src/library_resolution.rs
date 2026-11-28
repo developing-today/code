@@ -360,6 +360,7 @@ mod tests {
                 .collect(),
             subtypes: Vec::new(),
             attachments: Vec::new(),
+            migrations: Vec::new(),
             source_url: None,
         }
     }

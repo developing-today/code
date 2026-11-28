@@ -215,12 +215,15 @@ describe("atlas-search MCP endpoint", () => {
     const s0 = counts.search;
     const audit = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    const call = await rpc({
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: { name: "search", arguments: { query: "mcp context probe" } },
-    }, { ...GATE, "X-Atlas-Agent-Id": "forged-agent" });
+    const call = await rpc(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "search", arguments: { query: "mcp context probe" } },
+      },
+      { ...GATE, "X-Atlas-Agent-Id": "forged-agent" },
+    );
     expect(call.status).toBe(200);
     const body = (await call.json()) as RpcResponse;
     expect(body.result?.isError).toBe(false);

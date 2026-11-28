@@ -54,15 +54,24 @@ check(install.includes("PM_AGG_SOURCE=live"), "install.sh renders PM_AGG_SOURCE=
 
 const live = read("pm-stack/aggregator/src/sources/live.ts");
 const poolIdx = live.indexOf("poolFromFeed(feed)");
-const projectorItemsIdx = live.indexOf("projectorItems(cfg.projector.baseUrl");
+// #8570 Phase 3: the projector read seam. items() no longer calls
+// projectorItems(cfg.projector.baseUrl …) directly; it reads through
+// projectorReader.items(), whose default is the HTTP client built from
+// cfg.projector.baseUrl (createHttpProjectorReader preserves the exact
+// current behaviour).
+const projectorItemsIdx = live.indexOf("projectorReader.items(");
 check(
   poolIdx >= 0 && projectorItemsIdx > poolIdx,
   "live.ts items() resolves the fleet-feed Project pool before the projector (pool-first)",
 );
-const commentsStart = live.indexOf("async comments(refs)");
-const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStart + 600) : "";
 check(
-  commentsBody.includes("projectorComments(cfg.projector.baseUrl"),
+  live.includes("createHttpProjectorReader(cfg.projector.baseUrl)"),
+  "live.ts defaults the projector seam to the HTTP projector client from cfg.projector.baseUrl (#8570)",
+);
+const commentsStart = live.indexOf("async comments(refs)");
+const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStart + 800) : "";
+check(
+  commentsBody.includes("projectorReader.comments("),
   "live.ts comments() reads the GitHub comment projection from the projector",
 );
 check(

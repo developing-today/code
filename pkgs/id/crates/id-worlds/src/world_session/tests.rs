@@ -2943,6 +2943,168 @@ mod tests {
         );
     }
 
+    /// Oracle (#1067 F12.10 world-count activation slice): a session
+    /// acting for an account at its per-account world limit is refused
+    /// with the hub's existing `TooManyWorlds` message — on both the
+    /// `create_world` frame and the lease path — while another
+    /// account may still create, and a session with no account skips
+    /// the quota exactly as before.
+    #[tokio::test]
+    async fn session_world_creation_enforces_the_caller_account_quota() {
+        use crate::world_hub::ResolveError;
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits {
+            max_worlds_per_account: 1,
+            ..crate::world_hub::HubLimits::default()
+        });
+        assert!(hub.create_as("w1", Some("acct-a")).await.unwrap());
+        let refused = ResolveError::TooManyWorlds.message();
+
+        // The explicit create-world frame counts against the caller.
+        let mut full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        full.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w2"}))
+            .await;
+        assert_eq!(full.next().await.unwrap()["message"], refused);
+        full.close().await;
+
+        // So does the lease path: an admin invite that would create a
+        // new world for the full account is refused the same way.
+        let mut lease_full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        lease_full
+            .say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"x","world":"w3"}))
+            .await;
+        assert_eq!(lease_full.next().await.unwrap()["message"], refused);
+        lease_full.close().await;
+
+        // Another account is unaffected, and no-account sessions skip
+        // the quota exactly as the pre-quota paths did.
+        let mut other = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-b".to_owned()),
+        );
+        other
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w2"}))
+            .await;
+        assert_eq!(other.next().await.unwrap()["type"], "world_created");
+        other.close().await;
+
+        let mut anon = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        anon.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w-anon"}))
+            .await;
+        assert_eq!(anon.next().await.unwrap()["type"], "world_created");
+        anon.close().await;
+    }
+
+    /// Oracle (#1067 F12.10 storage-boundary slice): a session
+    /// acting for an account at its per-account storage limit is
+    /// refused with the hub's `StorageQuota` message — on both the
+    /// `create_world` frame and the lease path — while another
+    /// account may still create, and a session with no account skips
+    /// the quota exactly as before.
+    #[tokio::test]
+    async fn session_world_creation_surfaces_the_caller_storage_quota() {
+        use crate::world_hub::{ResolveError, WorldOpener};
+        use std::collections::HashMap;
+
+        struct SizedOpener {
+            inner: Arc<crate::world_hub::testing::MemoryOpener>,
+            sizes: HashMap<String, u64>,
+        }
+        impl WorldOpener for SizedOpener {
+            fn open<'a>(&'a self, name: &'a str, create: bool) -> crate::world_hub::OpenFuture<'a> {
+                self.inner.open(name, create)
+            }
+            fn exists(&self, name: &str) -> bool {
+                self.inner.exists(name)
+            }
+            fn list(&self) -> Vec<String> {
+                self.inner.list()
+            }
+            fn durable(&self) -> bool {
+                self.inner.durable()
+            }
+            fn stored_bytes(&self, name: &str) -> Option<u64> {
+                self.sizes.get(name).copied()
+            }
+        }
+
+        let opener = Arc::new(SizedOpener {
+            inner: crate::world_hub::testing::MemoryOpener::new(false),
+            sizes: HashMap::from([
+                ("w60".to_owned(), 60),
+                ("w50".to_owned(), 50),
+                ("w51".to_owned(), 50),
+            ]),
+        });
+        let dyn_opener: Arc<dyn WorldOpener> = opener;
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits {
+                max_storage_bytes_per_account: 100,
+                ..crate::world_hub::HubLimits::default()
+            },
+        );
+        hub.lease_as(Some("w60"), Some("admin"), Some("acct-a"))
+            .await
+            .unwrap();
+        assert_eq!(hub.storage_charged_by("acct-a"), 60);
+        let refused = ResolveError::StorageQuota.message();
+
+        // The explicit create-world frame counts the measured bytes
+        // against the caller and is refused whole at the limit.
+        let mut full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        full.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w50"}))
+            .await;
+        assert_eq!(full.next().await.unwrap()["message"], refused);
+        full.close().await;
+
+        // So does the lease path: an admin invite that would create a
+        // new world for the full account is refused the same way.
+        let mut lease_full = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-a".to_owned()),
+        );
+        lease_full
+            .say(serde_json::json!({"type":"invite","admin_token":"admin","display_name":"x","world":"w51"}))
+            .await;
+        assert_eq!(lease_full.next().await.unwrap()["message"], refused);
+        lease_full.close().await;
+
+        // Another account is unaffected, and no-account sessions skip
+        // the quota exactly as the pre-quota paths did.
+        let mut other = Peer::connect_hub_with_account(
+            hub.clone(),
+            SessionConfig::default(),
+            Some("acct-b".to_owned()),
+        );
+        other
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w51"}))
+            .await;
+        assert_eq!(other.next().await.unwrap()["type"], "world_created");
+        other.close().await;
+
+        let mut anon = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        anon.say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"w-anon"}))
+            .await;
+        assert_eq!(anon.next().await.unwrap()["type"], "world_created");
+        anon.close().await;
+    }
+
     #[tokio::test]
     async fn routed_admin_history_authenticates_before_lookup_and_never_creates() {
         let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());

@@ -141,6 +141,56 @@ class D1PlaneTests(unittest.TestCase):
                 drop_scratch=False,
             )
 
+    def test_export_skips_turso_internal_bookkeeping(self):
+        # Turso-internal tables ride along when the plane is seeded
+        # from Turso; they are not queue user data and must never
+        # enter the dump, the meta record, or the backup copy (#14943).
+        live = self.fake.find_database(fq_common.LIVE_D1_NAME)
+        conn = self.fake.dbs[live["uuid"]]["conn"]
+        conn.execute("CREATE TABLE __turso_internal_seq_tasks (seq INTEGER)")
+        conn.execute("INSERT INTO __turso_internal_seq_tasks VALUES (3)")
+        conn.commit()
+        result = export_d1_to_d1.export_with_clients(
+            self.fake, fq_common.LIVE_D1_NAME, fq_common.DEFAULT_D1_NAME, create=True
+        )
+        self.assertEqual(result["counts"], {"tasks": 3, "task_events": 2})
+        backup = self.fake.find_database(fq_common.DEFAULT_D1_NAME)
+        rows = self.fake.query(
+            backup["uuid"], "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+        names = [row["name"] for row in rows]
+        self.assertNotIn("__turso_internal_seq_tasks", names)
+
+    def test_restore_drill_ignores_post_export_internal_tables(self):
+        # Live failure signature, #14943 (2026-11-27): the backup gains
+        # two one-row __turso_internal_seq_* tables after the export
+        # (import side-effect / stale leftover), so a re-read
+        # enumerates 34 tables against a 32-table export record while
+        # every shared table matches exactly. The drill must verify
+        # the faithful copy, not refuse it as smeared.
+        export_d1_to_d1.export_with_clients(
+            self.fake, fq_common.LIVE_D1_NAME, fq_common.DEFAULT_D1_NAME, create=True
+        )
+        backup = self.fake.find_database(fq_common.DEFAULT_D1_NAME)
+        conn = self.fake.dbs[backup["uuid"]]["conn"]
+        for table in (
+            "__turso_internal_seq___turso_internal_autoincrement_github_issue_history",
+            "__turso_internal_seq___turso_internal_autoincrement_github_label_history",
+        ):
+            conn.execute(f'CREATE TABLE "{table}" (seq INTEGER)')
+            conn.execute(f'INSERT INTO "{table}" VALUES (1)')
+        conn.commit()
+        result = restore_drill_d1.drill_with_clients(
+            self.fake,
+            fq_common.DEFAULT_D1_NAME,
+            "fleet-queue-restore-drill",
+            create_scratch=True,
+            drop_scratch=True,
+        )
+        self.assertEqual(result["counts"], {"tasks": 3, "task_events": 2})
+        self.assertTrue(result["dropped"])
+        self.assertIsNone(self.fake.find_database("fleet-queue-restore-drill"))
+
 
 if __name__ == "__main__":
     unittest.main()

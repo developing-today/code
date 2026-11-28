@@ -27,11 +27,10 @@ Make the platform something other people can build on without changing its core:
 
 Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client-shells.md). F13.1 (shell contract, #783) and F13.2 (SSH frame transport, #784) are already done; the rest waits behind Phase 12 foundations (F13.7 needs F12.4 + F12.6; F13.4/F13.5 need the F11.9 baseline).
 
-| Title                         | Status  | Intent                                                                               | Links      |
-| ----------------------------- | ------- | ------------------------------------------------------------------------------------ | ---------- |
-| Presentation capability tiers | planned | Terminal classes detected in-band; tiered rendering instead of one assumed terminal. | F13.4 #786 |
-| Native TUI client             | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.  | #1071      |
-| Native GUI client             | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.  | #1072      |
+| Title             | Status | Intent                                                                              | Links |
+| ----------------- | ------ | ----------------------------------------------------------------------------------- | ----- |
+| Native TUI client | idea   | A ratatui TUI on the shell contract, with a custom efficient presentation protocol. | #1071 |
+| Native GUI client | idea   | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better. | #1072 |
 
 ## Later — Phase 14: hosted, federated, local-first (plan of record #6312)
 

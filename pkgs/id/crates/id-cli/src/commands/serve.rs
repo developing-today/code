@@ -455,6 +455,12 @@ pub struct ServeOptions {
     pub world_max_open: usize,
     /// Most world sessions at once, across all worlds.
     pub world_max_sessions: usize,
+    /// Most worlds one account may hold at once (#1067, F12.10
+    /// per-account quotas). `0` = no per-account bound.
+    pub world_max_per_account: u32,
+    /// Most storage bytes one account may be charged at once (#1067,
+    /// F12.10 per-account quotas). `0` = no per-account bound.
+    pub world_storage_max_per_account: u64,
     /// Close durable worlds idle for this many seconds (`0` never); when
     /// absent, as [`resolve_world_idle_secs`] decides.
     pub world_idle_secs: Option<u64>,
@@ -1031,6 +1037,24 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
     fn durable(&self) -> bool {
         !self.ephemeral
     }
+
+    fn stored_bytes(&self, name: &str) -> Option<u64> {
+        // The journal is the world's durable bytes (#1067, F12.10):
+        // a stat, never an open, so it stays cheap under the hub's
+        // slot-map lock. Ephemeral servers keep nothing, and a missing
+        // journal (a world about to be created) measures zero via the
+        // hub's `unwrap_or(0)`.
+        if self.ephemeral {
+            return None;
+        }
+        std::fs::metadata(
+            Path::new(WORLDS_DIR)
+                .join(name)
+                .join(id_worlds::world_storage::JOURNAL_FILE),
+        )
+        .ok()
+        .map(|meta| meta.len())
+    }
 }
 
 /// Whether `name` is a durable world under `root` that this server may
@@ -1385,6 +1409,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_checkpoint_every,
         world_max_open,
         world_max_sessions,
+        world_max_per_account,
+        world_storage_max_per_account,
         world_idle_secs,
         world_host,
         world_partition,
@@ -1854,6 +1880,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 max_open_worlds: world_max_open,
                 max_sessions: world_max_sessions,
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
+                // #1067 F12.10: opt-in per-account world quota, `0` keeps
+                // the unconfigured hub's behaviour (no per-account bound).
+                max_worlds_per_account: world_max_per_account,
+                // #1067 F12.10: opt-in per-account storage quota, `0`
+                // keeps the unconfigured hub's behaviour. The hub owns
+                // the ledger; the write-path measurement slice lands
+                // the charges.
+                max_storage_bytes_per_account: world_storage_max_per_account,
             },
         );
         info!("serve startup: opening default world via hub (#190 breadcrumb)");

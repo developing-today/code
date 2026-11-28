@@ -171,18 +171,13 @@ export function splitBatches(events: Uint8Array[], limits: BridgeLimits): Uint8A
   let batchBytes = 4; // the encoded count prefix
   for (const event of events) {
     const framed = encodedEventBytes(event);
-    if (
-      batch.length > 0 &&
-      (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)
-    ) {
+    if (batch.length > 0 && (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)) {
       batches.push(batch);
       batch = [];
       batchBytes = 4;
     }
     if (batchBytes + framed > limits.maxBatchBytes) {
-      throw new Error(
-        `event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`,
-      );
+      throw new Error(`event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`);
     }
     batch.push(event);
     batchBytes += framed;
@@ -285,8 +280,99 @@ function jsonFrame(tag: number, value: unknown): Uint8Array {
   return frame(tag, new TextEncoder().encode(JSON.stringify(value)));
 }
 
-function parseJson(payload: Uint8Array): unknown {
-  return JSON.parse(new TextDecoder().decode(payload));
+/**
+ * Parses one peer bridge frame, refusing a duplicated object key at
+ * any depth (#16360, contract #6520): `JSON.parse` collapses a
+ * duplicate last-wins, and a bridge frame is frontier evidence — the
+ * document this leg acts on must be the document as written. The
+ * refusal names the repeated key, in the native gate's vocabulary.
+ */
+export function parseJson(payload: Uint8Array): unknown {
+  const text = new TextDecoder().decode(payload);
+  const value: unknown = JSON.parse(text);
+  assertNoDuplicateKeys(text);
+  return value;
+}
+
+const STRING_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+
+/**
+ * Refuses a duplicated object key at any depth in `text`, naming the
+ * key. The text has already parsed, so it is well-formed JSON; this
+ * pass only tracks each object's key set. Keys are compared after
+ * escape decoding, as `JSON.parse` compares them.
+ */
+function assertNoDuplicateKeys(text: string): void {
+  interface ObjectFrame {
+    keys: Set<string>;
+    expectingKey: boolean;
+  }
+  const stack: (ObjectFrame | null)[] = []; // null: an array frame
+  let i = 0;
+  const readString = (): string => {
+    // text[i] is the opening quote; returns the decoded string and
+    // leaves i just past the closing quote.
+    let out = "";
+    i += 1;
+    while (text[i] !== '"') {
+      const ch = text[i];
+      if (ch === "\\") {
+        const esc = text[i + 1];
+        if (esc === "u") {
+          out += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16));
+          i += 6;
+        } else {
+          out += STRING_ESCAPES[esc] ?? esc;
+          i += 2;
+        }
+      } else {
+        out += ch;
+        i += 1;
+      }
+    }
+    i += 1;
+    return out;
+  };
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "{") {
+      stack.push({ keys: new Set<string>(), expectingKey: true });
+      i += 1;
+    } else if (ch === "[") {
+      stack.push(null);
+      i += 1;
+    } else if (ch === "}" || ch === "]") {
+      stack.pop();
+      i += 1;
+    } else if (ch === ",") {
+      const top = stack[stack.length - 1];
+      if (top) top.expectingKey = true;
+      i += 1;
+    } else if (ch === '"') {
+      const top = stack[stack.length - 1];
+      if (top && top.expectingKey) {
+        const key = readString();
+        if (top.keys.has(key)) {
+          throw new Error(`duplicate JSON object key ${JSON.stringify(key)}`);
+        }
+        top.keys.add(key);
+        top.expectingKey = false;
+      } else {
+        readString(); // a value string: skipped, its decode unused
+      }
+    } else {
+      i += 1; // whitespace, ":", and scalar characters
+    }
+  }
 }
 
 // ----- the server session (the hosted store side) --------------------
@@ -567,10 +653,7 @@ export class BridgeSessionServer {
       // A held event that cannot fit any batch under these limits:
       // name it and close, rather than emit a batch the peer's
       // decoder is bound to reject (#14644).
-      return this.fail(
-        "event_too_large",
-        e instanceof Error ? e.message : "an event cannot fit the batch bound",
-      );
+      return this.fail("event_too_large", e instanceof Error ? e.message : "an event cannot fit the batch bound");
     }
     for (const batch of batches) {
       this.send(frame(TAG.batch, encodeBatch(batch)));

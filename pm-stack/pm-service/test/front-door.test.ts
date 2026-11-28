@@ -118,14 +118,8 @@ describe("front door (H1)", () => {
         return accountId === FIXTURE_ACCOUNT && bindingId === FIXTURE_BINDING ? ["owner", "agent"] : [];
       },
     });
-    const github = await resolveFrontDoor(
-      await mintToken(fixture, validClaims({ sub: "github|123" })),
-      deps,
-    );
-    const google = await resolveFrontDoor(
-      await mintToken(fixture, validClaims({ sub: "google|456" })),
-      deps,
-    );
+    const github = await resolveFrontDoor(await mintToken(fixture, validClaims({ sub: "github|123" })), deps);
+    const google = await resolveFrontDoor(await mintToken(fixture, validClaims({ sub: "google|456" })), deps);
 
     expect(github.ok).toBe(true);
     expect(google.ok).toBe(true);

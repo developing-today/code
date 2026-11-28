@@ -83,6 +83,15 @@ pub struct ExportManifest {
     /// count for a snapshot, `base_ordinal` plus the new entries for an
     /// incremental. The next set in a chain starts here.
     pub entries: u64,
+    /// Lowercase hex of the blake3 hash of the exact journal bytes this
+    /// export was taken from. Unlike the entry count, this binds the
+    /// manifest to the journal's content: two different journals (for
+    /// example after checkpoint compaction) can share an entry count but
+    /// never this digest. Unlike the export envelope, it is stable
+    /// across exports of the same journal — the per-export nonce is not
+    /// part of it. Absent in exports written before this field existed.
+    #[serde(default)]
+    pub journal_digest: String,
     /// Lowercase hex of the session nonce every frame is bound to.
     pub nonce: String,
     /// Which set of the custody chain this file holds. Absent — a P3
@@ -132,6 +141,7 @@ pub async fn export_world<W: AsyncWrite + Unpin + Send>(
         source: encode_hex(&source),
         header_version: snapshot.header_version,
         entries: u64::try_from(entries).unwrap_or(u64::MAX),
+        journal_digest: encode_hex(blake3::hash(&snapshot.bytes).as_bytes()),
         nonce: encode_hex(&nonce),
         set_kind: ExportSetKind::Snapshot,
         base_ordinal: 0,
@@ -164,6 +174,43 @@ pub async fn export_world_to_file(
     signing_key: &SigningKey,
     path: &Path,
 ) -> Result<ExportManifest> {
+    export_world_to_file_with_dir_sync(service, signing_key, path, &sync_export_parent_dir).await
+}
+
+/// Make the rename of an exported file durable by syncing its parent
+/// directory (#16179), mirroring `HostFile::save`: without it, a power
+/// loss can lose the renamed file even though the export returned `Ok`.
+/// Best-effort no-op off unix, mirroring the `#[cfg(unix)]` shape in
+/// `host.rs`.
+///
+/// # Errors
+///
+/// The parent directory cannot be opened, or its sync fails.
+fn sync_export_parent_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync export directory {}", parent.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// [`export_world_to_file`] with the parent-directory sync step
+/// supplied, split out so tests can fault-inject a sync failure (the
+/// same shape as the #16058/#16131/#16140 durability tests).
+async fn export_world_to_file_with_dir_sync(
+    service: &WorldService,
+    signing_key: &SigningKey,
+    path: &Path,
+    sync_dir: &(dyn Fn(&Path) -> Result<()> + Send + Sync),
+) -> Result<ExportManifest> {
     if tokio::fs::symlink_metadata(path).await.is_ok() {
         bail!("{} already exists: export to a new file", path.display());
     }
@@ -180,6 +227,10 @@ pub async fn export_world_to_file(
         tokio::fs::rename(&partial, path)
             .await
             .with_context(|| format!("renaming {} to {}", partial.display(), path.display()))?;
+        // Make the rename itself durable before reporting success: the
+        // directory entry is synced after the rename, and a sync failure
+        // is propagated rather than acking a non-durable export (#16179).
+        sync_dir(path)?;
         Ok(manifest)
     }
     .await;
@@ -226,6 +277,7 @@ pub async fn export_incremental_set<W: AsyncWrite + Unpin + Send>(
         source: encode_hex(&source),
         header_version: snapshot.header_version,
         entries: u64::try_from(total).unwrap_or(u64::MAX),
+        journal_digest: encode_hex(blake3::hash(&snapshot.bytes).as_bytes()),
         nonce: encode_hex(&nonce),
         set_kind: ExportSetKind::Incremental,
         base_ordinal,
@@ -709,6 +761,58 @@ mod tests {
         service
     }
 
+    // #16179 oracle: the durable ack requires the parent-directory sync
+    // after the rename — the injected sync observes the renamed file
+    // already in place, and is called exactly once with the export path.
+    #[tokio::test]
+    async fn an_export_syncs_the_parent_directory_after_the_rename() {
+        let root = TempDir::new().unwrap();
+        let world_dir = root.path().join("w");
+        let service = busy_world(&world_dir).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let file = root.path().join("w.export");
+        let synced = std::sync::Mutex::new(Vec::new());
+        let recording_sync = |path: &Path| -> Result<()> {
+            assert!(
+                path.exists(),
+                "directory sync ran before the rename landed"
+            );
+            synced.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        };
+        let manifest =
+            export_world_to_file_with_dir_sync(&service, &key, &file, &recording_sync)
+                .await
+                .unwrap();
+        service.world().shutdown().await.unwrap();
+        assert_eq!(manifest.world, "w");
+        assert_eq!(*synced.lock().unwrap(), vec![file.clone()]);
+        assert!(file.exists());
+    }
+
+    // #16179 oracle: a parent-directory sync failure is propagated, not
+    // a successful export — the caller must not treat the export as
+    // crash-durable when its rename was never made durable.
+    #[tokio::test]
+    async fn an_export_propagates_a_parent_directory_sync_failure() {
+        let root = TempDir::new().unwrap();
+        let world_dir = root.path().join("w");
+        let service = busy_world(&world_dir).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let file = root.path().join("w.export");
+        let failing_sync = |_: &Path| -> Result<()> {
+            bail!("injected directory sync failure")
+        };
+        let error = export_world_to_file_with_dir_sync(&service, &key, &file, &failing_sync)
+            .await
+            .unwrap_err();
+        service.world().shutdown().await.unwrap();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "{error:#}"
+        );
+    }
+
     #[tokio::test]
     async fn an_export_restores_byte_for_byte_and_reopens() {
         let root = TempDir::new().unwrap();
@@ -756,6 +860,36 @@ mod tests {
 
         // A second restore to the same place is refused.
         assert!(import_world_from_file(&file, &dest, source).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn journal_digest_binds_the_exact_journal_not_the_envelope() {
+        // Oracle: the digest names journal content, so re-exporting an
+        // unchanged journal (fresh nonce, new envelope) keeps it, and
+        // any state change changes it — even though a later compaction
+        // could bring the entry count back to the same value.
+        let root = TempDir::new().unwrap();
+        let service = busy_world(&root.path().join("w")).await;
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let mut first = Vec::new();
+        let one = export_world(&service, &key, &mut first).await.unwrap();
+        let mut second = Vec::new();
+        let two = export_world(&service, &key, &mut second).await.unwrap();
+        assert_ne!(one.nonce, two.nonce);
+        assert_eq!(one.journal_digest, two.journal_digest);
+        assert_eq!(one.entries, two.entries);
+        assert!(!one.journal_digest.is_empty());
+
+        let (_, ann) = service
+            .world()
+            .issue("ann2", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(ann, "changed").await.unwrap();
+        let mut third = Vec::new();
+        let three = export_world(&service, &key, &mut third).await.unwrap();
+        assert_ne!(one.journal_digest, three.journal_digest);
+        service.world().shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -923,6 +1057,7 @@ mod tests {
             source: "9".repeat(64),
             header_version: 1,
             entries,
+            journal_digest: "0".repeat(64),
             nonce: "0".repeat(32),
             set_kind,
             base_ordinal,

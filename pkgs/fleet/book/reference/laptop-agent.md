@@ -79,7 +79,7 @@ fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 | Flag        | Argument | Default        | Meaning                                                                                                                  |
 | ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
-| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. The client deadline is timeout + 15 s transport grace.                                   |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. Must be positive. The client deadline is timeout + 15 s transport grace.                 |
 | `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
 | `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 
@@ -105,25 +105,25 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 ## fleet laptop-agent run
 
 ```
-fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
+fleet laptop-agent run [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
-| Flag        | Argument | Default        | Meaning                                                                                                                                  |
-| ----------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
-| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
-| `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
-| `--timeout` | —        | —              | **Not accepted** — passing it is an unknown-option error. Detached jobs have no client-side timeout; use `poll --wait` to bound waiting. |
+| Flag        | Argument | Default        | Meaning                                                                                                                                             |
+| ----------- | -------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                                      |
+| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                           |
+| `--`        | —        | required       | Separator; everything after it is the command.                                                                                                      |
+| `--timeout` | `SECS`   | 120 (ignored)  | Accepted for Python-CLI compatibility and ignored: detached jobs have no client-side timeout; use `poll --wait` to bound waiting. Must be positive. |
 
 ### Behaviour
 
-**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure.
+**Detached** submit: `POST /jobs`. Prints the returned `job_id` and exits 0. Follow up with `poll`. `run` is non-idempotent for the ladder: it is never replayed after a sent failure. A passed `--timeout` is not sent to the daemon and does not change the fixed submit deadline, matching the legacy Python client.
 
 ### Exit codes
 
 - `0` — job submitted, `job_id` printed.
 - `1` — transport failure.
-- `2` — usage (including `--timeout`).
+- `2` — usage.
 
 ### Example
 
@@ -147,7 +147,7 @@ fleet laptop-agent poll JOB [--wait SECS]
 
 ### Behaviour
 
-Incremental output streaming: `GET /jobs/<job>?out_off=N&err_off=M&wait_s=10`. The server holds the request for at most `wait_s` seconds (capped at 30), returning sooner when output changes or the job completes. The client persists per-job output offsets in a local offsets file (`<job>.json` in the laptop-agent state dir), sends them on each poll, appends only the new stdout/stderr, and saves the returned `out_next`/`err_next`. It waits for output or completion, with a maximum 10 s detection delay for quiet jobs, until the wait deadline passes, printing `still running` and returning **0** (still-running is not a failure). A reply without offsets is an error, exit 1.
+Incremental output streaming: `GET /jobs/<job>?out_off=N&err_off=M&wait_s=50`. The server holds the request for at most `wait_s` seconds (capped at 50), returning sooner when output changes or the job completes. The client persists per-job output offsets in a local offsets file (`<job>.json` in the laptop-agent state dir), sends them on each poll, appends only the new stdout/stderr, and saves the returned `out_next`/`err_next`. It waits for output or completion, with completion reported within about a second for quiet jobs (bounded by 10 s), until the wait deadline passes, printing `still running` and returning **0** (still-running is not a failure). A reply without offsets is an error, exit 1.
 
 ### Exit codes
 
@@ -233,7 +233,7 @@ fleet laptop-agent fetch REMOTE_PATH LOCAL_PATH
 
 ### Behaviour
 
-Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
+Hash-checked copy with resume. First it sizes and hashes the remote file _on the laptop_ (`wc -c` and `shasum -a 256` through `/exec`). An existing destination is resumed from its current size — only the missing tail is pulled, in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` — and a destination longer than the remote file is refused, never appended to. The SHA-256 of the complete file (existing prefix + downloaded tail) is verified against the remote hash before anything is appended — a mismatch writes nothing and exits 1. On success it prints the legacy receipt: `fetched N bytes from REMOTE -> LOCAL in T round trip(s)`, with `(resumed from offset K)` when a partial destination was continued.
 
 ### Exit codes
 

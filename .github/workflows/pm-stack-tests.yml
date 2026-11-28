@@ -106,6 +106,19 @@ jobs:
       - name: Test CF-12 read-only tier probe observations
         run: python3 -I pm-stack/scripts/tier-drill-probe.test.py
 
+      # CF-12 evidence evaluator (#14952): synthetic probe records only,
+      # no network and no live services. Named explicitly and asserted to
+      # exist first, like the probe suite above, so a green run cannot be
+      # a silently skipped suite.
+      - name: Test CF-12 tier drill evidence evaluator
+        run: |
+          t=pm-stack/scripts/tier-drill-evaluate.test.py
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the CF-12 evidence evaluator suite was not run."
+            exit 1
+          fi
+          python3 -I "$t"
+
       - name: Test seed and deploy/install scripts
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh

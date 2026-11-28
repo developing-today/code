@@ -308,6 +308,7 @@ pub fn export_trust_bundle(req: &TrustExportRequest, out_dir: &Path) -> Result<B
         cross_signing: None,
         certificates,
         files: Vec::new(),
+        revocations: Vec::new(),
         warnings: Vec::new(),
     };
     write_bundle(out_dir, manifest, &artifacts)

@@ -45,7 +45,9 @@ use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
+mod admin_time;
 mod claim;
+mod claim_filter;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
@@ -53,6 +55,7 @@ pub mod ctx_scope;
 mod hrana_double;
 mod label_enrich;
 mod lifecycle;
+mod lifecycle_limits;
 mod links;
 mod notes;
 mod placement_coord;
@@ -64,11 +67,14 @@ mod work_identity;
 
 pub use actions_exec::*;
 pub use admin::*;
+pub use admin_time::*;
 pub use claim::*;
+pub use claim_filter::*;
 pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use lifecycle_limits::*;
 pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
@@ -92,14 +98,17 @@ mod tests {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/claim_filter.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
+            include_str!("turso_queue/lifecycle_limits.rs"),
             include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue/closed_bound.rs"),
+            include_str!("turso_queue/admin_time.rs"),
             include_str!("turso_queue.rs"),
         ]
         .iter()
@@ -849,6 +858,65 @@ mod tests {
         .to_string()
     }
 
+    /// One parked task row in TASK_COLS order with a broker-owned
+    /// ready condition, for the #16006 sweeper oracle. Cells are
+    /// keyed by column name so a TASK_COLS addition cannot silently
+    /// shift the row (same pattern as task_row_13091).
+    fn parked_row_16006(id: i64, condition: &Value) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text("{}"));
+        cells.insert(
+            "dedupe_key",
+            text("repo-health:v1:fix:developing-today/code:issue:16006"),
+        );
+        cells.insert("priority", int(30));
+        cells.insert("status", text("parked"));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("park_kind", text("condition"));
+        cells.insert("wait_kind", text("condition"));
+        cells.insert("ready_condition", text(&condition.to_string()));
+        cells.insert("last_checked_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-20T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
+    }
+
+    fn status_reply_16006(status: &str) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "status"}],
+                "rows": [[{"type": "text", "value": status}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    fn count_reply_16006(n: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "n"}],
+                "rows": [[{"type": "integer", "value": n.to_string()}]],
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
     /// A #12744-shaped packet whose payload carries labels, so the
     /// mirror enrichment (and its backend call) is skipped and the
     /// first backend call is the dedupe read.
@@ -1026,6 +1094,186 @@ mod tests {
         assert!(
             bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
             "a failed predecessor must still revive: {bodies:?}"
+        );
+    }
+
+    /// A #16349-shaped triage packet: the production shape of
+    /// packet_13091 but kind triage with a matching :triage: key
+    /// (triage timebox 20, payload labels set so the mirror
+    /// enrichment — and its backend call — is skipped).
+    fn packet_16349(issue: i64) -> Value {
+        let mut p = packet_13091(issue);
+        p["dedupe_key"] = json!(format!(
+            "repo-health:v1:triage:developing-today/code:issue:{issue}"
+        ));
+        p["payload"]["kind"] = json!("triage");
+        p["payload"]["timebox_minutes"] = json!(20);
+        p
+    }
+
+    fn payload_16349(issue: i64) -> Value {
+        packet_16349(issue)["payload"].clone()
+    }
+
+    #[test]
+    fn enqueue_triage_after_completion_on_the_same_key_revives_16349() {
+        // #16349 monitor scenario, no fix follow-on ever landed:
+        // a triage re-file is a reassessment, not re-served work.
+        // Over a done predecessor with the same key the broker
+        // files a fresh queued row with the revived_from link (the
+        // #6838 revive path; #16007 recovery), instead of returning
+        // the done row the way #13091 requires for fix packets.
+        // The fix-key route answers the recovery check's follow-on
+        // lookup: no fix follow-on exists, so nothing covers the
+        // issue and the re-file revives.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![]),
+            ),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_16349(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["revived_from"]["task_id"], 4242, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done triage predecessor must revive, not absorb: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_triage_after_completion_under_another_key_revives_16349() {
+        // The identity twin of the same-key rule: a done triage
+        // holder under a different key must not absorb a triage
+        // re-file either. The stub answers the done-identity lookup
+        // with the holder itself, so only a skipped lookup files.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283:dispatch:0123abcd",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![]),
+            ),
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_16349(10283);
+        packet["dedupe_key"] =
+            json!("repo-health:v1:triage:developing-today/code:issue:10283:dispatch:0123abcd");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert!(
+            out.get("work_identity_collision").is_none(),
+            "no done holder absorbs a triage re-file: {out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done triage identity holder must not absorb: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_triage_after_done_follow_on_revives_16349() {
+        // #16349 remainder beyond #16007: the fix follow-on already
+        // completed, but the issue is still open and labelled
+        // queue/queued with no live task, so the monitor re-files
+        // triage. A done fix is not the issue being done — the
+        // re-triage is the reassessment the label asks for, and its
+        // verdict (already-resolved or still-open) is what finally
+        // reconciles the label. The broker files a fresh queued row;
+        // no fix work is re-served (a follow-on the re-triage files
+        // carries the deterministic fix key, still absorbed by the
+        // #13091 done-fix rule) and a closed issue retires the
+        // revival at claim time (#10626).
+        let done_triage = task_row_13091(
+            4242,
+            "done",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let done_fix = task_row_13091(
+            4244,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_16349(10283),
+            "repo-health:v1:triage:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            (
+                "repo-health:v1:fix:developing-today/code:issue:10283",
+                task_select_reply_13091(vec![done_fix.clone()]),
+            ),
+            ("= 'small_fix'", task_select_reply_13091(vec![done_fix])),
+            ("dedupe_key = ?", task_select_reply_13091(vec![done_triage])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_16349(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        assert_eq!(out["row"]["status"], "queued", "{out}");
+        assert_eq!(out["revived_from"]["task_id"], 4242, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a done fix follow-on must not block triage reassessment: {bodies:?}"
         );
     }
 
@@ -2958,12 +3206,7 @@ mod tests {
             "released"
         );
         assert_eq!(
-            revalidate_outcome(
-                Some("task_status"),
-                Some("blocked"),
-                Some("blocked"),
-                false
-            ),
+            revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false),
             "released"
         );
         assert_eq!(
@@ -3012,6 +3255,223 @@ mod tests {
         assert!(
             reval_seg.contains("if observe_only"),
             "the observe branch must remain for explicit observe cycles"
+        );
+    }
+
+    #[test]
+    fn default_sweep_releases_satisfied_condition_parks_16006() {
+        // #16006 oracle (cherry-picked end-to-end sweep proof offered
+        // on #16022 from branch queue/26155-16006-revalidation-default):
+        // the default scheduled path — /sweep with revalidate and NO
+        // observe_only flag — releases satisfied broker-condition
+        // parks, keeps an unsatisfied one parked, and never releases
+        // a person_answer park (that waits for /wake). The pick
+        // exclusion (#13143) strands these rows without this path.
+        // Reuses the #13091 routed stub (identical wire shape).
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        // Sweeper call routing: target-status reads answer per
+        // task id (100 done, 200 still queued), the wake-event count
+        // is seen, and every write gets a bare ok.
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // No observe_only key: the request exercises the broker
+        // default, which #16006 flips to mutating.
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(out["row"]["observe_only"], false, "{out}");
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        assert_eq!(rev["would_release"], 0, "{out}");
+        // Exactly the two satisfied rows release to queued (401:
+        // terminal task done; 403: wake event seen); the
+        // unsatisfied task_status (402) and the person_answer park
+        // (404) only get their check stamps and stay parked.
+        let bodies = captured.lock().unwrap();
+        let updates: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("UPDATE tasks SET"))
+            .collect();
+        assert_eq!(updates.len(), 4, "{bodies:?}");
+        let releases: Vec<&&String> = updates
+            .iter()
+            .filter(|b| b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(releases.len(), 2, "{bodies:?}");
+        for r in &releases {
+            let v: Value = serde_json::from_str(r).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "401" || id["value"] == "403",
+                "only the satisfied parks release: {r}"
+            );
+        }
+        let stamps: Vec<&&String> = updates
+            .iter()
+            .filter(|b| !b.contains("SET status = 'queued'"))
+            .collect();
+        assert_eq!(stamps.len(), 2, "{bodies:?}");
+        for s in &stamps {
+            let v: Value = serde_json::from_str(s).unwrap();
+            let args = &v["requests"][0]["stmt"]["args"];
+            let id = args.as_array().unwrap().last().unwrap();
+            assert!(
+                id["value"] == "402" || id["value"] == "404",
+                "only the unsatisfied/person parks stamp: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn revalidation_rate_bound_16006() {
+        // #16006 appended criterion: revalidation is rate-bounded —
+        // no wake storm when many conditions flip at once, with the
+        // cadence/backoff observable in task history.
+        //
+        // Oracle (oracle: the per-cycle bound): the default scheduled
+        // /sweep path asks the store for at most `limit` oldest-due
+        // parked rows (default 500) whose last check is older than
+        // `min_age_seconds` (default 24h), and every examined row
+        // leaves a history-visible event (park_released on release,
+        // park_revalidated otherwise) plus a fresh last_checked_at —
+        // so a mass condition flip drains at most one bounded batch
+        // per sweep and never re-wakes inside the backoff window.
+        let parked = task_select_reply_13091(vec![
+            parked_row_16006(401, &json!({"kind": "task_terminal", "task_id": 100})),
+            parked_row_16006(
+                402,
+                &json!({"kind": "task_status", "task_id": 200, "status": "blocked"}),
+            ),
+            parked_row_16006(
+                403,
+                &json!({"kind": "event_seen", "task_id": 300, "event_kind": "wake_ping"}),
+            ),
+            parked_row_16006(404, &json!({"kind": "person_answer"})),
+        ]);
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("\"value\":\"100\"", status_reply_16006("done")),
+            ("\"value\":\"200\"", status_reply_16006("queued")),
+            ("FROM events WHERE task_id", count_reply_16006(1)),
+            ("FROM tasks WHERE status = 'parked'", parked),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        // A tight explicit bound: at most 2 rows per cycle with a
+        // 1h backoff — the request must carry both to the store.
+        // (The stub has no SQL engine and answers canned rows
+        // regardless of LIMIT; the oracle asserts the bound is
+        // requested on the wire, which is what a real store
+        // enforces. Outcome counts below prove all four canned rows
+        // were examined exactly once this cycle.)
+        let out = verb_sweep(
+            &backend,
+            &json!({
+                "revalidate": true,
+                "expire": false,
+                "dep_recheck": false,
+                "quarantine_recheck": false,
+                "time_recheck": false,
+                "closed_bound": false,
+                "labels_sync": false,
+                "limit": 2,
+                "min_age_seconds": 3600,
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let rev = &out["row"]["revalidation"];
+        assert_eq!(rev["released"], 2, "{out}");
+        assert_eq!(rev["confirmed"], 1, "{out}");
+        assert_eq!(rev["stale"], 1, "{out}");
+        let bodies = captured.lock().unwrap();
+        // 1. The parked read is bounded and oldest-due-first: one
+        // SELECT carrying LIMIT 2 and a ~1h-ago cutoff arg.
+        let selects: Vec<&String> = bodies
+            .iter()
+            .filter(|b| b.contains("FROM tasks WHERE status = 'parked'"))
+            .collect();
+        assert_eq!(selects.len(), 1, "{bodies:?}");
+        let sel: Value = serde_json::from_str(selects[0]).unwrap();
+        let stmt = sel["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| {
+                r["stmt"]["sql"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("FROM tasks WHERE status = 'parked'")
+            })
+            .expect("parked SELECT stmt")["stmt"]
+            .clone();
+        let sql = stmt["sql"].as_str().unwrap_or("");
+        assert!(
+            sql.contains("ORDER BY COALESCE(last_checked_at, updated_at) ASC"),
+            "{sql}"
+        );
+        assert!(sql.contains("LIMIT ?"), "{sql}");
+        let args = stmt["args"].as_array().cloned().unwrap_or_default();
+        assert_eq!(args.len(), 2, "{stmt}");
+        assert_eq!(args[1]["value"], "2", "{stmt}");
+        let cutoff = args[0]["value"].as_str().unwrap_or("").to_string();
+        assert!(cutoff.len() >= 20 && cutoff.ends_with('Z'), "{stmt}");
+        assert!(cutoff < now_iso(), "{stmt}");
+        // 2. Every examined row leaves history: 2 releases + 2
+        // check-stamps as events, so the cadence is observable in
+        // the event/task-history read surfaces.
+        let released_bodies = bodies
+            .iter()
+            .filter(|b| b.contains("\"park_released\""))
+            .count();
+        let revalidated_bodies = bodies
+            .iter()
+            .filter(|b| b.contains("\"park_revalidated\""))
+            .count();
+        assert_eq!(released_bodies, 2, "{bodies:?}");
+        assert_eq!(revalidated_bodies, 2, "{bodies:?}");
+        // 3. The broker defaults bound the unattended path: with no
+        // limit/min_age keys the cycle still caps at 500 rows with
+        // a 24h backoff — asserted at the source of the default.
+        let src = test_source();
+        let sweep_seg = src
+            .split("fn verb_sweep(")
+            .nth(1)
+            .and_then(|s| s.split("\n/// `/coverage`").next())
+            .unwrap_or("");
+        assert!(
+            sweep_seg.contains("req_i64(req, \"limit\").unwrap_or(500)"),
+            "the default sweep cycle must stay capped"
+        );
+        assert!(
+            sweep_seg.contains("req_i64(req, \"min_age_seconds\").unwrap_or(86_400)"),
+            "the default sweep cycle must keep its backoff"
         );
     }
 
@@ -3405,17 +3865,28 @@ mod tests {
         // claim_update_sql. Keep those seams visible so SQL drift fails
         // before the Python contention oracle runs.
         let src = test_source();
-        let pick = seg8217(&src, "pub(crate) fn default_pick_predicate(", "\npub(crate) fn handoff_pick_predicate(");
+        let pick = seg8217(
+            &src,
+            "pub(crate) fn default_pick_predicate(",
+            "\npub(crate) fn handoff_pick_predicate(",
+        );
         assert!(pick.contains("status = 'queued' AND attempts < max_attempts"));
         assert!(pick.contains("not_before IS NULL OR not_before <= ?"));
-        let update = seg8217(&src, "pub(crate) fn claim_update_sql(", "\n/// The default (lane) pick predicate");
+        let update = seg8217(
+            &src,
+            "pub(crate) fn claim_update_sql(",
+            "\n/// The default (lane) pick predicate",
+        );
         assert!(update.contains("WHERE id = ?"));
         assert!(update.contains("AND ( {pick_predicate} )"));
         assert!(update.contains("{PLATFORM_LIMIT_PICK_CLAUSE}"));
 
         let output = std::process::Command::new("python3")
             .arg("-I")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/claim_contention.py"))
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/claim_contention.py"
+            ))
             .arg("--verify")
             .output()
             .expect("claim contention oracle requires Python 3 with stdlib sqlite3");

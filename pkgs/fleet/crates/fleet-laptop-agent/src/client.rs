@@ -19,7 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::ladder::{Answer, CallError, Failure, Ladder, Request};
 use crate::{
-    CANCEL_BUDGET_S, FILE_CHUNK_MAX, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip, offset_dir,
+    CANCEL_BUDGET_S, FILE_CHUNK_MAX, LONG_POLL_WAIT_S, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip,
+    offset_dir,
 };
 
 /// The wait for a reply when the verb has no deadline of its own: the
@@ -438,6 +439,165 @@ pub fn kill(ladder: &Arc<Ladder>, job: &str) -> i32 {
     }
 }
 
+/// Read an `exec-batch` file: the POST body plus the client-side
+/// deadline. Mirrors laptop-agent-legacy.py: the body is posted
+/// exactly as read, `cmds` defaults to [] and `timeout_s` defaults
+/// to 120. Anything else malformed is refused before any transport.
+pub(crate) fn read_batch_file(path: &std::path::Path) -> Result<(Value, u64), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read batch file {}: {e}", path.display()))?;
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("invalid JSON in batch file {}: {e}", path.display()))?;
+    if !body.is_object() {
+        return Err(format!(
+            "batch file {} must contain a JSON object",
+            path.display()
+        ));
+    }
+    let timeout_s = match body.get("timeout_s") {
+        Some(v) => v.as_u64().ok_or_else(|| {
+            format!(
+                "batch file {}: timeout_s must be a whole number",
+                path.display()
+            )
+        })?,
+        None => 120,
+    };
+    if let Some(cmds) = body.get("cmds")
+        && !cmds.is_array()
+    {
+        return Err(format!(
+            "batch file {}: cmds must be an array",
+            path.display()
+        ));
+    }
+    Ok((body, timeout_s))
+}
+
+/// Python truthiness for a JSON field, matching the legacy
+/// `if r.get(...)` checks: None/missing, false, 0, "", [], and {}
+/// are falsy; everything else is truthy.
+pub(crate) fn json_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .map(|i| i != 0)
+            .unwrap_or_else(|| n.as_f64().map(|f| f != 0.0).unwrap_or(false)),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(m)) => !m.is_empty(),
+    }
+}
+
+/// The worst per-command exit code. Mirrors the legacy `_batch`
+/// accumulator: a result with a (truthy) error counts 1, a (truthy)
+/// timeout counts TIMEOUT_EXIT, otherwise the command's own exit; a
+/// reply with no results exits 0 after printing.
+pub(crate) fn batch_exit_code(reply_body: &Value) -> i32 {
+    let Some(results) = reply_body.get("results").and_then(Value::as_array) else {
+        return 0;
+    };
+    let mut worst = 0;
+    for r in results {
+        if json_truthy(r.get("error")) {
+            worst = worst.max(1);
+        } else if json_truthy(r.get("timeout")) {
+            worst = worst.max(TIMEOUT_EXIT);
+        } else if let Some(exit) = r.get("exit").and_then(Value::as_i64) {
+            worst = worst.max(exit as i32);
+        }
+    }
+    worst
+}
+
+pub(crate) fn batch_truncated(reply_body: &Value) -> bool {
+    reply_body
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| results.iter().any(|r| json_truthy(r.get("truncated"))))
+        .unwrap_or(false)
+}
+
+/// Render a reply the way the legacy prints it:
+/// `print(json.dumps(out, indent=1))` — one space per level. Key
+/// order follows the JSON map (sorted here, wire order there);
+/// byte-identity holds for ASCII payloads with sorted keys.
+pub(crate) fn render_batch_reply(value: &Value) -> String {
+    use serde::Serialize;
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    value
+        .serialize(&mut ser)
+        .expect("in-memory JSON serialization");
+    buf.push(b'\n');
+    String::from_utf8(buf).expect("serializer emits UTF-8")
+}
+
+/// Words for the primary-checkout guard: the argv, or the shell
+/// string split on whitespace — the same split `exec --shell` uses.
+fn batch_words(cmd: &Value) -> Vec<String> {
+    if let Some(shell) = cmd.get("shell").and_then(Value::as_str) {
+        return shell.split_whitespace().map(str::to_string).collect();
+    }
+    cmd.get("argv")
+        .and_then(Value::as_array)
+        .map(|argv| {
+            argv.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `exec-batch FILE.json`: guard every command, POST the file body
+/// unchanged, print the reply, exit with the worst per-command code.
+pub fn exec_batch(ladder: &Arc<Ladder>, path: &std::path::Path) -> i32 {
+    let (body, timeout_s) = match read_batch_file(path) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("laptop-agent: {message}");
+            return 1;
+        }
+    };
+    if let Some(cmds) = body.get("cmds").and_then(Value::as_array) {
+        for cmd in cmds {
+            let cwd = cmd.get("cwd").and_then(Value::as_str);
+            if let Err(message) = crate::guard::check_job(cwd, &batch_words(cmd)) {
+                eprintln!("laptop-agent: {message}");
+                return 1;
+            }
+        }
+    }
+    let trip = crate::new_trip();
+    let deadline = Duration::from_secs(timeout_s + TRANSPORT_GRACE_S);
+    match call(ladder, &trip, "POST", "/exec", Some(body), false, deadline) {
+        Ok(reply) => {
+            note_fallbacks(&reply);
+            print!("{}", render_batch_reply(&reply.body));
+            // One warning per truncated result, like the legacy loop.
+            if let Some(results) = reply.body.get("results").and_then(Value::as_array) {
+                for r in results {
+                    if json_truthy(r.get("truncated")) {
+                        eprintln!(
+                            "laptop-agent: warning: a command's output was truncated at the 1 MiB/stream capture cap (tail kept)"
+                        );
+                    }
+                }
+            }
+            batch_exit_code(&reply.body)
+        }
+        Err(CallFailure::Deadline) => {
+            cancel(ladder, &trip);
+            fail(CallFailure::Deadline)
+        }
+        Err(e) => fail(e),
+    }
+}
+
 /// What a command runs: an argv, or a shell string (`--shell`).
 /// The caller's `FLEET_CTX_*` record rides the spec's `env`
 /// (code#14188): the daemon merges it into the job's environment and
@@ -696,21 +856,43 @@ pub(crate) fn spool_cap_marker(body: &Value) -> Option<String> {
     (dropped > 0).then(|| format!("[spool cap reached: {dropped} bytes dropped]"))
 }
 
+/// Rest between long-poll trips (#5757): when the server already held
+/// the last fetch for (nearly) the full requested wait, it did the
+/// waiting, so the next trip starts at once instead of sleeping again
+/// (that sleep would only delay completion detection). Otherwise the
+/// usual backoff applies, e.g. after a fetch that returned early with
+/// fresh output.
+fn long_poll_rest(requested: Duration, waited: Duration, backoff: Duration) -> Duration {
+    if !requested.is_zero() && waited + Duration::from_secs(2) >= requested {
+        Duration::ZERO
+    } else {
+        backoff
+    }
+}
+
 pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(wait_s);
     let mut offs = load_offsets(job);
+    // How long the last fetch asked the server to hold the request, and
+    // how long the server actually held it: when the server waited out
+    // the request, the inter-poll sleep below is skipped.
+    let held = std::cell::Cell::new((Duration::ZERO, Duration::ZERO));
     let fetch = |o: &Offsets| {
         let trip = crate::new_trip();
         let wait = deadline
             .saturating_duration_since(Instant::now())
             .as_secs_f64()
             .ceil() as u64;
-        let wait = wait.min(10);
+        let wait = wait.min(LONG_POLL_WAIT_S);
         let path = format!(
             "/jobs/{job}?out_off={}&err_off={}&wait_s={wait}",
             o.out, o.err
         );
-        call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body)
+        let started = Instant::now();
+        let reply =
+            call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body);
+        held.set((Duration::from_secs(wait), started.elapsed()));
+        reply
     };
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
@@ -721,7 +903,10 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
         &mut out,
         &mut err,
         |o| save_offsets(job, o),
-        thread::sleep,
+        |backoff| {
+            let (requested, waited) = held.get();
+            thread::sleep(long_poll_rest(requested, waited, backoff))
+        },
     ) {
         Drained::Done(body) => {
             if let Some(marker) = spool_cap_marker(&body) {
@@ -792,13 +977,16 @@ fn remote_sha256(ladder: &Arc<Ladder>, remote: &str) -> Result<String, String> {
         .ok_or_else(|| format!("unexpected shasum output for {remote}"))
 }
 
-/// One `GET /file` range. Raw bytes, so the reply is not parsed as JSON.
-fn fetch_chunk(ladder: &Arc<Ladder>, remote: &str, off: u64) -> Result<Vec<u8>, CallFailure> {
+/// One `GET /file` range of `len` bytes. Raw bytes, so the reply is
+/// not parsed as JSON.
+fn fetch_chunk(
+    ladder: &Arc<Ladder>,
+    remote: &str,
+    off: u64,
+    len: u64,
+) -> Result<Vec<u8>, CallFailure> {
     let trip = crate::new_trip();
-    let path = format!(
-        "/file?path={}&off={off}&len={FILE_CHUNK_MAX}",
-        percent_encode(remote)
-    );
+    let path = format!("/file?path={}&off={off}&len={len}", percent_encode(remote));
     let answer = send_ex(
         ladder,
         &trip,
@@ -830,9 +1018,155 @@ fn percent_encode(s: &str) -> String {
         .collect()
 }
 
-/// Copy a remote file to `dest`, hash-checked: the bytes are written only
-/// when their sha256 matches the remote's own.
-pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 {
+/// The size of the remote file, read on the laptop by `wc -c` through
+/// `/exec` (portable across the macOS daemon host, like `shasum` in
+/// [`remote_sha256`]). The ladder drops reply headers, so the daemon's
+/// `X-File-Size` header on `GET /file` is not visible here — the size
+/// rides this fingerprint request instead (code#16088).
+fn remote_size(ladder: &Arc<Ladder>, remote: &str) -> Result<u64, String> {
+    let cmd = vec!["wc".to_string(), "-c".to_string(), remote.to_string()];
+    let spec = command_spec(None, false, &cmd);
+    let trip = crate::new_trip();
+    let body = json!({ "cmds": [spec], "timeout_s": 60 });
+    let reply = call(
+        ladder,
+        &trip,
+        "POST",
+        "/exec",
+        Some(body),
+        false,
+        Duration::from_secs(60 + TRANSPORT_GRACE_S),
+    )
+    .map_err(|e| e.to_string())?;
+    let r = reply
+        .body
+        .get("results")
+        .and_then(|v| v.get(0))
+        .ok_or("reply has no result")?;
+    if r.get("exit").and_then(Value::as_i64) != Some(0) {
+        let err = r
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Err(format!("cannot size {remote}: {err}"));
+    }
+    let out = r.get("stdout").and_then(Value::as_str).unwrap_or("");
+    parse_wc_size(out).ok_or_else(|| format!("unexpected wc output for {remote}"))
+}
+
+/// Parse `wc -c` output: the byte count is the first token, whether wc
+/// printed just the count or `count path`.
+fn parse_wc_size(out: &str) -> Option<u64> {
+    out.split_whitespace().next()?.parse().ok()
+}
+
+/// The legacy overshoot refusal (code#16088): an existing OUT longer
+/// than the remote file can never be a prefix of it, so appending is
+/// refused before any range request is made. `None` means proceed.
+fn overshoot_refusal(dest: &std::path::Path, off: u64, remote: &str, total: u64) -> Option<String> {
+    if off > total {
+        Some(format!(
+            "local {} is {off} bytes but remote {remote} is only {total}; \
+             refusing to append — remove or rename the local file and retry",
+            dest.display()
+        ))
+    } else {
+        None
+    }
+}
+
+/// Download the remote range `[off, total)` one chunk at a time through
+/// `get`, returning the bytes and the number of range requests made
+/// (the legacy receipt's round trips). Like the legacy, at least one
+/// request is always made — a resumed-from-complete OUT costs one
+/// empty probe — and an empty chunk before `total` is an error, never
+/// a silent short file.
+fn fetch_tail(
+    mut get: impl FnMut(u64, u64) -> Result<Vec<u8>, CallFailure>,
+    mut off: u64,
+    total: u64,
+    len: u64,
+) -> Result<(Vec<u8>, u64), FetchTailError> {
+    let mut data = Vec::new();
+    let mut trips = 0;
+    loop {
+        let chunk = get(off, len).map_err(FetchTailError::Call)?;
+        trips += 1;
+        if chunk.is_empty() {
+            if off < total {
+                return Err(FetchTailError::EmptyBeforeEof);
+            }
+            break;
+        }
+        data.extend_from_slice(&chunk);
+        off += chunk.len() as u64;
+        if off >= total {
+            break;
+        }
+    }
+    Ok((data, trips))
+}
+
+#[derive(Debug)]
+enum FetchTailError {
+    Call(CallFailure),
+    EmptyBeforeEof,
+}
+
+/// The legacy fetch receipt (code#16088), printed to stderr: total
+/// bytes, the round trips the transfer took, and the resume offset
+/// when an existing OUT was continued.
+fn fetch_receipt(
+    total: u64,
+    remote: &str,
+    dest: &std::path::Path,
+    trips: u64,
+    resumed_from: u64,
+) -> String {
+    let mut line = format!(
+        "fetched {total} bytes from {remote} -> {} in {trips} round trip(s)",
+        dest.display()
+    );
+    if resumed_from > 0 {
+        line.push_str(&format!(" (resumed from offset {resumed_from})"));
+    }
+    line
+}
+
+/// Copy a remote file to `dest`, hash-checked: bytes are appended only
+/// when the sha256 of the complete file (existing prefix + downloaded
+/// tail) matches the remote's own. `chunk` is the GET /file range size
+/// (`--chunk`, default 1 MiB); it is clamped to the daemon's 1 MiB
+/// per-request cap. An existing `dest` is resumed from its current
+/// size, never restarted (the legacy fetch contract, code#16088); a
+/// `dest` longer than the remote file is refused, not appended to.
+pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path, chunk: u64) -> i32 {
+    let len = chunk.clamp(1, FILE_CHUNK_MAX);
+    let resumed_from = match std::fs::metadata(dest) {
+        Ok(m) if m.is_file() => m.len(),
+        Ok(_) => {
+            eprintln!("laptop-agent: {} is not a regular file", dest.display());
+            return 1;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            eprintln!("laptop-agent: cannot stat {}: {e}", dest.display());
+            return 1;
+        }
+    };
+    let total = match remote_size(ladder, remote) {
+        Ok(n) => n,
+        Err(message) => {
+            eprintln!("laptop-agent: {message}");
+            return 1;
+        }
+    };
+    if let Some(message) = overshoot_refusal(dest, resumed_from, remote, total) {
+        eprintln!("laptop-agent: {message}");
+        return 1;
+    }
     let want = match remote_sha256(ladder, remote) {
         Ok(h) => h,
         Err(message) => {
@@ -840,15 +1174,32 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
             return 1;
         }
     };
-    let mut data = Vec::new();
-    loop {
-        match fetch_chunk(ladder, remote, data.len() as u64) {
-            Ok(chunk) if chunk.is_empty() => break,
-            Ok(chunk) => data.extend_from_slice(&chunk),
-            Err(e) => return fail(e),
+    let (tail, trips) = match fetch_tail(
+        |off, n| fetch_chunk(ladder, remote, off, n),
+        resumed_from,
+        total,
+        len,
+    ) {
+        Ok(v) => v,
+        Err(FetchTailError::Call(e)) => return fail(e),
+        Err(FetchTailError::EmptyBeforeEof) => {
+            eprintln!("laptop-agent: empty chunk before EOF; fetch incomplete");
+            return 1;
+        }
+    };
+    let mut hasher = Sha256::new();
+    if resumed_from > 0 {
+        match std::fs::read(dest) {
+            Ok(prefix) => hasher.update(&prefix),
+            Err(e) => {
+                eprintln!("laptop-agent: cannot read {}: {e}", dest.display());
+                return 1;
+            }
         }
     }
-    let got: String = Sha256::digest(&data)
+    hasher.update(&tail);
+    let got: String = hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
@@ -858,14 +1209,21 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
         );
         return 1;
     }
-    if let Err(e) = std::fs::write(dest, &data) {
+    let written = if resumed_from > 0 {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dest)
+            .and_then(|mut f| f.write_all(&tail))
+    } else {
+        std::fs::write(dest, &tail)
+    };
+    if let Err(e) = written {
         eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
         return 1;
     }
     eprintln!(
-        "[laptop-agent] fetched {remote} -> {} ({} bytes, sha256 {got})",
-        dest.display(),
-        data.len()
+        "{}",
+        fetch_receipt(total, remote, dest, trips, resumed_from)
     );
     0
 }
@@ -1274,5 +1632,245 @@ mod tests {
             assert!(cur <= Duration::from_secs(10), "capped at poll {n}");
             prev = cur;
         }
+    }
+
+    /// #5757 long-poll follow-on: when the server held the last fetch
+    /// for (nearly) the full requested wait, the next trip starts at
+    /// once (the server did the waiting); otherwise the backoff stands.
+    #[test]
+    fn long_poll_rest_skips_sleep_after_a_full_server_wait_5757() {
+        // Quiet expiry: server held the whole 50 s request.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_secs(50),
+                Duration::from_secs(1)
+            ),
+            Duration::ZERO
+        );
+        // Within the 2 s transport slack still counts as a full wait.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_secs(49),
+                Duration::from_secs(2)
+            ),
+            Duration::ZERO
+        );
+        // Early return with fresh output: the backoff sleep stands.
+        assert_eq!(
+            long_poll_rest(
+                Duration::from_secs(50),
+                Duration::from_millis(300),
+                Duration::from_secs(1)
+            ),
+            Duration::from_secs(1)
+        );
+        // Zero requested wait (budget exhausted): never skip, so the
+        // drain still exits through its deadline path instead of
+        // spinning on immediate fetches.
+        assert_eq!(
+            long_poll_rest(Duration::ZERO, Duration::ZERO, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+    }
+
+    /// code#16088 exec-batch parity slice: the legacy `_batch` exit
+    /// oracle — worst per-command code wins (an error counts 1, a
+    /// timeout counts TIMEOUT_EXIT, otherwise the command's own
+    /// exit; a reply with no results exits 0 after printing, exactly
+    /// like the Python's `worst` accumulator).
+    #[test]
+    fn batch_exit_matches_python_legacy_worst_code_oracle() {
+        assert_eq!(batch_exit_code(&json!({})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": []})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": [{"exit": 0}]})), 0);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"exit": 0}, {"exit": 3}, {"exit": 1}]})),
+            3
+        );
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": "boom"}]})), 1);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"timeout": true}]})),
+            TIMEOUT_EXIT
+        );
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"error": "x"}, {"timeout": true}, {"exit": 5}]})),
+            TIMEOUT_EXIT
+        );
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"exit": 0}, {"exit": 7}]})),
+            7
+        );
+        // Python truthiness: falsy error/timeout values do not count.
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": ""}]})), 0);
+        assert_eq!(batch_exit_code(&json!({"results": [{"error": null}]})), 0);
+        assert_eq!(
+            batch_exit_code(&json!({"results": [{"timeout": false}]})),
+            0
+        );
+    }
+
+    /// code#16088: the legacy prints `json.dumps(out, indent=1)` —
+    /// one space per level (bytes captured from CPython for an ASCII
+    /// payload; key order follows the JSON map, so the fixture uses
+    /// sorted keys).
+    #[test]
+    fn batch_reply_renders_python_indent_one() {
+        let body = json!({"results": [{"exit": 0, "stdout": "hi"}]});
+        assert_eq!(
+            render_batch_reply(&body),
+            "{\n \"results\": [\n  {\n   \"exit\": 0,\n   \"stdout\": \"hi\"\n  }\n ]\n}\n"
+        );
+    }
+
+    #[test]
+    fn batch_truncated_flags_any_truncated_result() {
+        assert!(!batch_truncated(&json!({})));
+        assert!(!batch_truncated(&json!({"results": [{"exit": 0}]})));
+        assert!(batch_truncated(
+            &json!({"results": [{"exit": 0}, {"exit": 0, "truncated": true}]})
+        ));
+    }
+
+    /// code#16088: the file carries the POST body; `cmds` defaults
+    /// to [], `timeout_s` defaults to 120 (the legacy `body.get`
+    /// defaults). Malformed files are refused before any transport.
+    #[test]
+    fn batch_file_parses_body_with_legacy_defaults() {
+        let dir = std::env::temp_dir().join(format!("la-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("batch.json");
+        std::fs::write(&file, r#"{"cmds": [{"argv": ["echo", "hi"]}]}"#).unwrap();
+        let (body, timeout) = read_batch_file(&file).unwrap();
+        assert_eq!(timeout, 120);
+        assert_eq!(body["cmds"].as_array().unwrap().len(), 1);
+        let full = dir.join("full.json");
+        std::fs::write(&full, r#"{"cmds": [], "timeout_s": 45}"#).unwrap();
+        let (_, timeout_full) = read_batch_file(&full).unwrap();
+        assert_eq!(timeout_full, 45);
+        assert!(read_batch_file(&dir.join("missing.json")).is_err());
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        assert!(read_batch_file(&bad).is_err());
+        let bad_timeout = dir.join("bad-timeout.json");
+        std::fs::write(&bad_timeout, r#"{"cmds": [], "timeout_s": "soon"}"#).unwrap();
+        assert!(read_batch_file(&bad_timeout).is_err());
+        let bad_cmds = dir.join("bad-cmds.json");
+        std::fs::write(&bad_cmds, r#"{"cmds": {}}"#).unwrap();
+        assert!(read_batch_file(&bad_cmds).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// code#16088 fetch --chunk parity slice: the requested chunk size
+    /// rides the GET /file `len` parameter on every range request.
+    #[test]
+    fn fetch_chunk_wires_len_to_the_file_request() {
+        struct Capture {
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+        impl Leg for Capture {
+            fn name(&self) -> &'static str {
+                "tailscale"
+            }
+            fn call(&self, req: &Request) -> Result<LegReply, LegError> {
+                self.seen.lock().unwrap().push(req.path.clone());
+                Ok(LegReply {
+                    status: 200,
+                    body: Vec::new(),
+                })
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ladder = Arc::new(Ladder::new(vec![
+            Box::new(Capture { seen: seen.clone() }) as Box<dyn Leg>
+        ]));
+        fetch_chunk(&ladder, "/remote/a.bin", 0, 64).unwrap();
+        fetch_chunk(&ladder, "/remote/a.bin", 64, 64).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].contains("len=64"), "{}", seen[0]);
+        assert!(seen[0].contains("off=0"), "{}", seen[0]);
+        assert!(seen[1].contains("off=64"), "{}", seen[1]);
+    }
+
+    /// code#16088 fetch resume slice: `wc -c` output parses whether it
+    /// carries the path or not; junk is not a size. Oracle: the legacy
+    /// reads the daemon's reported total before appending.
+    #[test]
+    fn wc_size_parses_count_with_or_without_path() {
+        assert_eq!(parse_wc_size("  12345 /remote/a.bin\n"), Some(12345));
+        assert_eq!(parse_wc_size("0\n"), Some(0));
+        assert_eq!(parse_wc_size(""), None);
+        assert_eq!(parse_wc_size("wc: /nope: No such file"), None);
+    }
+
+    /// code#16088 fetch resume slice: an existing OUT at or under the
+    /// remote size proceeds; one byte over is refused with the legacy
+    /// wording (dest, local size, remote size, remedy). Oracle:
+    /// laptop-agent-legacy.py's overshoot refusal.
+    #[test]
+    fn overshoot_refusal_only_when_local_is_longer() {
+        let dest = std::path::Path::new("/tmp/out.bin");
+        assert_eq!(overshoot_refusal(dest, 0, "/remote/a.bin", 10), None);
+        assert_eq!(overshoot_refusal(dest, 10, "/remote/a.bin", 10), None);
+        let msg = overshoot_refusal(dest, 11, "/remote/a.bin", 10).unwrap();
+        assert!(msg.contains("/tmp/out.bin is 11 bytes"), "{msg}");
+        assert!(msg.contains("remote /remote/a.bin is only 10"), "{msg}");
+        assert!(msg.contains("refusing to append"), "{msg}");
+    }
+
+    /// code#16088 fetch resume slice: the tail loop starts at the
+    /// resume offset, counts one round trip per range request, and
+    /// stops exactly at the remote total. Oracle: the legacy fetch
+    /// loop's offset/trip accounting.
+    #[test]
+    fn fetch_tail_resumes_at_offset_and_counts_trips() {
+        let remote: Vec<u8> = (0..250u32).map(|i| (i % 251) as u8).collect();
+        let mut offsets = Vec::new();
+        let (tail, trips) = fetch_tail(
+            |off, len| {
+                offsets.push(off);
+                let end = usize::min(remote.len(), (off + len) as usize);
+                Ok(remote[off as usize..end].to_vec())
+            },
+            100,
+            250,
+            64,
+        )
+        .unwrap();
+        assert_eq!(offsets, vec![100, 164, 228]);
+        assert_eq!(trips, 3);
+        assert_eq!(tail, remote[100..].to_vec());
+    }
+
+    /// code#16088 fetch resume slice: a complete OUT still costs the
+    /// legacy's one probe trip and downloads nothing; an empty chunk
+    /// before the total is an error, not a short file. Oracle: the
+    /// legacy `while total is None or off < total` loop plus its
+    /// empty-before-EOF guard.
+    #[test]
+    fn fetch_tail_complete_probes_once_and_short_chunks_error() {
+        let (tail, trips) = fetch_tail(|_, _| Ok(Vec::new()), 250, 250, 64).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(trips, 1);
+        let err = fetch_tail(|_, _| Ok(Vec::new()), 0, 10, 64).unwrap_err();
+        assert!(matches!(err, FetchTailError::EmptyBeforeEof));
+    }
+
+    /// code#16088 fetch resume slice: the receipt names total bytes,
+    /// round trips, and the resume offset only when an existing OUT
+    /// was continued. Oracle: the legacy stderr receipt verbatim.
+    #[test]
+    fn fetch_receipt_names_bytes_trips_and_resume_offset() {
+        let dest = std::path::Path::new("/tmp/out.bin");
+        assert_eq!(
+            fetch_receipt(250, "/remote/a.bin", dest, 3, 0),
+            "fetched 250 bytes from /remote/a.bin -> /tmp/out.bin in 3 round trip(s)"
+        );
+        assert_eq!(
+            fetch_receipt(250, "/remote/a.bin", dest, 3, 100),
+            "fetched 250 bytes from /remote/a.bin -> /tmp/out.bin in 3 round trip(s) (resumed from offset 100)"
+        );
     }
 }

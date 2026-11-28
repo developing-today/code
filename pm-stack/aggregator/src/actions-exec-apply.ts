@@ -27,11 +27,16 @@
 // A second answer for the same handle with a different answer_id is
 // recorded as superseded and never sent (double-tap guard).
 //
-// Failure behaviour here is S3 only: transient broker/throat failures
-// stay `failed` for retry with bounded backoff; S4 adds the alert
-// (`actions-exec-apply:<answer_id>`) and the re-raise when the throat
-// returns. This module takes an injectable decide caller + key so
-// tests never touch the network or the secrets chain.
+// Failure behaviour is S4 (#14043 §4): a transient broker failure
+// stays `failed` for retry with bounded backoff, and each failed
+// application raises its own visible alert
+// (`fleet-actions-exec` / `actions-exec-apply:<answer_id>`, critical)
+// via the alerts throat. If the throat itself is down, the failure
+// stays in this ledger with the alert pending and is re-raised when
+// the throat answers. Terminal outcomes (rejected / superseded) never
+// raise a failure alert. This module takes an injectable decide caller,
+// alert raiser and key so tests never touch the network or the
+// secrets chain.
 
 import { createHmac } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -65,6 +70,57 @@ export interface ApplyRecord {
   via?: string;
   note?: string;
   updatedAt: string;
+  /** S4: decide attempts so far (transient failures). Absent on rows
+   *  written by S3 reads as 0. */
+  attempts?: number;
+  /** S4: earliest ISO instant a transient failure may be retried. */
+  nextRetryAt?: string;
+  /** S4: ISO instant the failure alert for this answer reached the
+   *  alerts throat. Absent while the alert is still pending. */
+  alertRaisedAt?: string;
+}
+
+/** S4 alert identity (design §4): one visible alert per failed
+ *  application, deduped by key like the other throat alerts. */
+export const APPLY_ALERT_SOURCE = "fleet-actions-exec";
+export type ApplyAlertSeverity = "critical";
+export const APPLY_ALERT_SEVERITY: ApplyAlertSeverity = "critical";
+
+export function applyAlertKey(answerId: string): string {
+  return `actions-exec-apply:${answerId}`;
+}
+
+export interface ApplyFailureIncident {
+  source: typeof APPLY_ALERT_SOURCE;
+  key: string;
+  severity: ApplyAlertSeverity;
+  title: string;
+  body?: string;
+}
+
+/** Build the throat incident for a failed application: it names the
+ *  handle, the answer and the broker's error. Design §4 says severity
+ *  "high"; the throat vocabulary is critical | warning | info and only
+ *  critical pushes, so high maps to critical. */
+export function buildApplyFailureIncident(
+  rec: Pick<ApplyRecord, "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt">,
+  brokerError: string,
+): ApplyFailureIncident {
+  const verdict = rec.approve ? "approve" : "deny";
+  return {
+    source: APPLY_ALERT_SOURCE,
+    key: applyAlertKey(rec.answerId),
+    severity: APPLY_ALERT_SEVERITY,
+    title: `Actions-exec apply failed for ${rec.handle} (${verdict})`,
+    body: `answer ${rec.answerId} (ledger ${rec.ledgerId}, answered ${rec.answeredAt}) did not reach the broker: ${brokerError}`,
+  };
+}
+
+/** S4 bounded backoff for transient decide failures: 60s, doubling to
+ *  a 30-minute cap (attempts counts the failure just recorded, ≥1). */
+export function applyRetryDelayMs(attempts: number): number {
+  const n = Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 1;
+  return Math.min(60_000 * 2 ** (n - 1), 30 * 60_000);
 }
 
 interface ApplyFileShape {
@@ -219,6 +275,13 @@ export interface ApplierDeps {
   resolveKeyFn?: (name: string) => Promise<string | null>;
   decideFn?: DecideFn;
   fetchImpl?: FetchLike;
+  /** S4: raise one failure incident. Defaults to the alerts throat
+   *  (postIncident + alert tick); inject in tests. A throw or a null
+   *  store leaves the alert pending for the next tick. */
+  raiseAlertFn?: (incident: ApplyFailureIncident) => Promise<{ created: boolean } | void>;
+  getAlertsStoreFn?: () => Promise<{
+    postIncident: (incident: ApplyFailureIncident) => Promise<unknown>;
+  } | null>;
 }
 
 export interface ApplierTickResult {
@@ -228,6 +291,10 @@ export interface ApplierTickResult {
   rejected: number;
   failed: number;
   errors: string[];
+  /** S4: failure alerts that reached the throat on this tick. */
+  alertsRaised: number;
+  /** S4: failed rows whose alert is still pending (throat down). */
+  alertsPending: number;
 }
 
 /** Default decide caller: POST /actions-exec-extend-decide with the
@@ -291,9 +358,12 @@ export async function postSignedDecide(
 /** One applier pass (§3/§6): read recorded broker-sourced answers,
  *  sign each unapplied one, POST the decide verb, run the answer_id
  *  state machine. Idempotent: applied/superseded/rejected rows are
- *  never re-sent; a second answer for the same handle is superseded. */
+ *  never re-sent; a second answer for the same handle is superseded.
+ *  S4: transient failures retry on bounded backoff and raise one
+ *  failure alert per answer, re-raised when a down throat returns. */
 export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResult> {
   const now = deps.now ?? (() => Date.now());
+  const tickNowMs = now();
   const result: ApplierTickResult = {
     checked: 0,
     applied: 0,
@@ -301,6 +371,8 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
     rejected: 0,
     failed: 0,
     errors: [],
+    alertsRaised: 0,
+    alertsPending: 0,
   };
   const answers = await (deps.listAnswersFn ?? listAnswers)(deps.needsDrewFile);
   const brokered = answers.filter((q) => needsDrewAnswerHandle(q) !== null);
@@ -325,7 +397,43 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
 
   const decide: DecideFn = deps.decideFn ?? ((body) => postSignedDecide(deps.brokerUrl, token, body, deps.fetchImpl));
 
+  /** S4: raise one failure incident for a failed application.
+   *  Returns true when the throat accepted it; a throw, a null store
+   *  or a raiseAlertFn failure returns false and the alert stays
+   *  pending in the ledger for the next tick. */
+  const raiseApplyAlert = async (
+    rec: Pick<ApplyRecord, "answerId" | "ledgerId" | "handle" | "approve" | "answeredAt">,
+    brokerError: string,
+  ): Promise<boolean> => {
+    const incident = buildApplyFailureIncident(rec, brokerError);
+    try {
+      if (deps.raiseAlertFn) {
+        await deps.raiseAlertFn(incident);
+        return true;
+      }
+      const getStore =
+        deps.getAlertsStoreFn ??
+        (async () => {
+          const { getAlertsStore } = await import("./alerts.ts");
+          return getAlertsStore();
+        });
+      const store = await getStore();
+      if (!store) return false;
+      await store.postIncident(incident);
+      try {
+        const { requestAlertTick } = await import("./alerts.ts");
+        requestAlertTick();
+      } catch {
+        // The incident is recorded; the delivery tick is best-effort.
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const pending: ApplyRecord[] = [];
+  const alertAttempted = new Set<string>();
   for (const q of brokered) {
     const handle = needsDrewAnswerHandle(q);
     if (!handle) continue;
@@ -333,6 +441,13 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
     if (!answerId) continue;
     const existing = byAnswer.get(answerId);
     if (existing && existing.state !== "pending" && existing.state !== "failed") continue;
+    // S4 bounded backoff: a transient failure retries only once its
+    // window has elapsed. The alert sweep below still re-raises a
+    // pending failure alert while the decide call waits.
+    if (existing?.state === "failed" && existing.nextRetryAt) {
+      const retryAt = Date.parse(existing.nextRetryAt);
+      if (Number.isFinite(retryAt) && tickNowMs < retryAt) continue;
+    }
     // Double-tap guard: the first applied answer for a handle wins; a
     // second answer for the same handle (different answer_id) is
     // recorded superseded and never sent.
@@ -433,7 +548,7 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
       }
     } else {
       const classified = classifyDecideError(res.error);
-      pending.push({
+      const failedRecord: ApplyRecord = {
         answerId,
         ledgerId: q.ledgerId,
         handle,
@@ -442,13 +557,57 @@ export async function runApplierTick(deps: ApplierDeps): Promise<ApplierTickResu
         state: classified.state,
         note: classified.note,
         updatedAt: stamp,
-      });
+      };
       if (classified.state === "superseded") result.superseded += 1;
       else if (classified.state === "rejected") result.rejected += 1;
       else {
+        // S4: transient — count the attempt, arm the backoff, and
+        // raise the failure alert. A throat outage leaves the alert
+        // pending in this row for the re-raise sweep below.
+        const attempts = (existing?.attempts ?? 0) + 1;
+        failedRecord.attempts = attempts;
+        failedRecord.nextRetryAt = new Date(tickNowMs + applyRetryDelayMs(attempts)).toISOString();
         result.failed += 1;
         result.errors.push(`${answerId}: ${res.error}`);
+        // A retry of an already-alerted failure keeps the original
+        // raise: one alert per answer, never one per attempt.
+        if (existing?.alertRaisedAt) {
+          failedRecord.alertRaisedAt = existing.alertRaisedAt;
+        } else {
+          alertAttempted.add(answerId);
+          if (await raiseApplyAlert(failedRecord, res.error)) {
+            failedRecord.alertRaisedAt = stamp;
+            result.alertsRaised += 1;
+          }
+        }
       }
+      pending.push(failedRecord);
+    }
+  }
+
+  // S4 re-raise sweep: failed rows whose alert never reached the
+  // throat (it was down on the failure tick) go out now. The throat
+  // dedupes by key, and alertRaisedAt keeps this to one raise per
+  // answer. Decide backoff never blocks this sweep.
+  const pendingIds = new Set(pending.map((r) => r.answerId));
+  for (const rec of byAnswer.values()) {
+    if (rec.state !== "failed" || rec.alertRaisedAt) continue;
+    if (pendingIds.has(rec.answerId) || alertAttempted.has(rec.answerId)) continue;
+    const stamp = new Date(now()).toISOString();
+    if (await raiseApplyAlert(rec, rec.note ?? "unknown broker error")) {
+      pending.push({ ...rec, alertRaisedAt: stamp, updatedAt: stamp });
+      pendingIds.add(rec.answerId);
+      result.alertsRaised += 1;
+    }
+  }
+
+  // S4: failed rows still without an alert after this tick.
+  {
+    const merged = new Map<string, ApplyRecord>();
+    for (const rec of byAnswer.values()) merged.set(rec.answerId, rec);
+    for (const rec of pending) merged.set(rec.answerId, rec);
+    for (const rec of merged.values()) {
+      if (rec.state === "failed" && !rec.alertRaisedAt) result.alertsPending += 1;
     }
   }
 

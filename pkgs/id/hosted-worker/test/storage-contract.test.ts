@@ -274,7 +274,11 @@ test("snapshot plus delta: contiguous replay reaches the target; gaps and short 
   // store exactly), §3.3 (never repaired silently), §5.3 (version).
   const snap = { contract_version: CONTRACT_VERSION, at_seq: 10 };
   assert.deepEqual(checkSnapshotDelta(snap, [11, 12, 13], 13), { ok: true, value: 13 });
-  assert.deepEqual(checkSnapshotDelta(snap, [11, 12, 13, 14], 12), { ok: true, value: 12 }, "entries past the target are not applied");
+  assert.deepEqual(
+    checkSnapshotDelta(snap, [11, 12, 13, 14], 12),
+    { ok: true, value: 12 },
+    "entries past the target are not applied",
+  );
   assert.deepEqual(checkSnapshotDelta(snap, [], 10), { ok: true, value: 10 });
 
   const gap = checkSnapshotDelta(snap, [11, 13], 13);
@@ -282,7 +286,10 @@ test("snapshot plus delta: contiguous replay reaches the target; gaps and short 
   assert.equal(!gap.ok && gap.refusal.kind === "verification" && gap.refusal.reason, "sequence_gap");
 
   const misaligned = checkSnapshotDelta(snap, [10, 11], 11);
-  assert.equal(!misaligned.ok && misaligned.refusal.kind === "verification" && misaligned.refusal.reason, "sequence_misaligned");
+  assert.equal(
+    !misaligned.ok && misaligned.refusal.kind === "verification" && misaligned.refusal.reason,
+    "sequence_misaligned",
+  );
 
   const short = checkSnapshotDelta(snap, [11, 12], 15);
   assert.equal(!short.ok && short.refusal.kind, "unavailable");
@@ -296,8 +303,16 @@ test("capability flags are the declared values, and gate placement only", () => 
   // #5863 §4.2: D1 offline_append false, embedded_replica false,
   // workers_native true; Turso false, true, false.
   assert.deepEqual(BACKEND_CAPABILITIES.d1, { offline_append: false, embedded_replica: false, workers_native: true });
-  assert.deepEqual(BACKEND_CAPABILITIES.turso, { offline_append: false, embedded_replica: true, workers_native: false });
-  assert.deepEqual(BACKEND_CAPABILITIES.do_sqlite, { offline_append: false, embedded_replica: false, workers_native: true });
+  assert.deepEqual(BACKEND_CAPABILITIES.turso, {
+    offline_append: false,
+    embedded_replica: true,
+    workers_native: false,
+  });
+  assert.deepEqual(BACKEND_CAPABILITIES.do_sqlite, {
+    offline_append: false,
+    embedded_replica: false,
+    workers_native: true,
+  });
   assert.deepEqual(missingCapabilities("d1", { embedded_replica: true }), ["embedded_replica"]);
   assert.deepEqual(missingCapabilities("turso", { embedded_replica: true }), []);
   assert.deepEqual(missingCapabilities("turso", { workers_native: true, offline_append: false }), ["workers_native"]);
@@ -327,7 +342,11 @@ test("manifest: created at generation 1, validated, advanced, and checked agains
   assert.equal(next.ok && next.value.backend, "turso");
   assert.equal(next.ok && next.value.cutover_seq, 40);
   if (next.ok) {
-    const back = advanceManifest(next.value, { backend: "do_sqlite", cutoverSeq: 39, recordedAt: "2026-11-28T00:00:00.000Z" });
+    const back = advanceManifest(next.value, {
+      backend: "do_sqlite",
+      cutoverSeq: 39,
+      recordedAt: "2026-11-28T00:00:00.000Z",
+    });
     assert.equal(!back.ok && back.refusal.kind, "verification", "a cutover never moves backwards");
   }
 
@@ -349,10 +368,7 @@ test("manifest: D1 placement preserves the tenant database id", () => {
   const checked = validateManifest({ ...base, database_id: "d1-tenant-a" }, A);
   assert.equal(checked.ok, true);
   if (checked.ok) {
-    assert.equal(
-      (checked.value as unknown as { database_id?: string }).database_id,
-      "d1-tenant-a",
-    );
+    assert.equal((checked.value as unknown as { database_id?: string }).database_id, "d1-tenant-a");
   }
 });
 
@@ -365,10 +381,7 @@ test("manifest: D1 placement without a database id fails closed", () => {
   });
   const checked = validateManifest({ ...base, database_id: undefined }, A);
   assert.equal(checked.ok, false);
-  assert.equal(
-    !checked.ok && checked.refusal.kind === "unavailable" && checked.refusal.reason,
-    "placement_unknown",
-  );
+  assert.equal(!checked.ok && checked.refusal.kind === "unavailable" && checked.refusal.reason, "placement_unknown");
 });
 
 test("manifest: D1 cutover records its database id and clears it on cutover away", () => {
@@ -429,10 +442,17 @@ test("manifest: missing, malformed or conflicting placement fails closed as plac
   for (const value of bad) {
     const r = validateManifest(value);
     assert.equal(r.ok, false, JSON.stringify(value));
-    assert.equal(!r.ok && r.refusal.kind === "unavailable" && r.refusal.reason, "placement_unknown", JSON.stringify(value));
+    assert.equal(
+      !r.ok && r.refusal.kind === "unavailable" && r.refusal.reason,
+      "placement_unknown",
+      JSON.stringify(value),
+    );
   }
   const conflicting = validateManifest(good, "b".repeat(32));
-  assert.equal(!conflicting.ok && conflicting.refusal.kind === "unavailable" && conflicting.refusal.reason, "placement_unknown");
+  assert.equal(
+    !conflicting.ok && conflicting.refusal.kind === "unavailable" && conflicting.refusal.reason,
+    "placement_unknown",
+  );
   const newer = validateManifest({ ...good, manifest_version: 2 });
   assert.equal(!newer.ok && newer.refusal.kind, "version");
   const newerContract = validateManifest({ ...good, contract_version: 2 });
@@ -603,7 +623,10 @@ test("DO: at the refused step a signed journal append (bridge push) still succee
   const eventBytes = events[0].bytes.length;
   const { doA } = makeDO({ USER_CEILING_BYTES: String(10 * eventBytes) });
 
-  assert.equal((await doA.fetch(routed("/v1/kv/fill", { method: "PUT", body: "x".repeat(9 * eventBytes) }))).status, 200);
+  assert.equal(
+    (await doA.fetch(routed("/v1/kv/fill", { method: "PUT", body: "x".repeat(9 * eventBytes) }))).status,
+    200,
+  );
   assert.equal(await budgetStepOf(doA), "refused");
   const kv = await doA.fetch(routed("/v1/kv/more", { method: "PUT", body: "x" }));
   assert.equal(kv.status, 413);
@@ -659,7 +682,9 @@ test("DO: reads honour a requested watermark and refuse one the store has not re
 
   // Deletes and further writes advance the head.
   assert.equal((await doA.fetch(routed("/v1/kv/k", { method: "DELETE" }))).headers.get(HDR_STORAGE_WATERMARK), "2");
-  const storage = (await (await doA.fetch(routed("/v1/storage"))).json()) as { head: { seq: number; watermark: number } };
+  const storage = (await (await doA.fetch(routed("/v1/storage"))).json()) as {
+    head: { seq: number; watermark: number };
+  };
   assert.equal(storage.head.seq, 2);
   assert.equal(storage.head.watermark, 2);
 });
@@ -708,7 +733,11 @@ test("DO: the store records and serves its backend manifest, refusing stale or i
   const staleBody = (await stale.json()) as RefusalBody;
   assert.equal(staleBody.error, "placement_stale");
   assert.equal(staleBody.refusal.kind === "unavailable" && staleBody.refusal.reason, "placement_stale");
-  assert.equal(((await (await doA.fetch(routed("/v1/kv/k"))).json()) as { value: string }).value, "v", "the stale write did not land");
+  assert.equal(
+    ((await (await doA.fetch(routed("/v1/kv/k"))).json()) as { value: string }).value,
+    "v",
+    "the stale write did not land",
+  );
 
   // A corrupted placement record fails every route closed.
   sql.exec("UPDATE meta SET value = ? WHERE key = ?", JSON.stringify({ backend: "do_sqlite" }), "backend_manifest");

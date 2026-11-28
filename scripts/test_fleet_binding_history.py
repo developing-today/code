@@ -273,9 +273,15 @@ class BindingHistoryTest(unittest.TestCase):
             script = str(Path(__file__).with_name("fleet_binding_history.py"))
             self.assertEqual(
                 subprocess.run(
-                    [sys.executable, "-I", script,
-                     "record", f"--history={history_path}",
-                     f"--export={export_path}", f"--now={NOW}"],
+                    [
+                        sys.executable,
+                        "-I",
+                        script,
+                        "record",
+                        f"--history={history_path}",
+                        f"--export={export_path}",
+                        f"--now={NOW}",
+                    ],
                     capture_output=True,
                     text=True,
                 ).returncode,
@@ -289,29 +295,51 @@ class BindingHistoryTest(unittest.TestCase):
             export_path.write_text(json.dumps(done))
             self.assertEqual(
                 subprocess.run(
-                    [sys.executable, "-I", script,
-                     "record", f"--history={history_path}",
-                     f"--export={export_path}", f"--now={NOW}"],
-                    capture_output=True, text=True,
+                    [
+                        sys.executable,
+                        "-I",
+                        script,
+                        "record",
+                        f"--history={history_path}",
+                        f"--export={export_path}",
+                        f"--now={NOW}",
+                    ],
+                    capture_output=True,
+                    text=True,
                 ).returncode,
                 0,
             )
             self.assertEqual(
                 subprocess.run(
-                    [sys.executable, "-I", script,
-                     "snapshot", f"--history={history_path}",
-                     f"--out={out_path}", f"--start={START}", f"--end={END}"],
-                    capture_output=True, text=True,
+                    [
+                        sys.executable,
+                        "-I",
+                        script,
+                        "snapshot",
+                        f"--history={history_path}",
+                        f"--out={out_path}",
+                        f"--start={START}",
+                        f"--end={END}",
+                    ],
+                    capture_output=True,
+                    text=True,
                 ).returncode,
                 0,
             )
             snap = json.loads(out_path.read_text())
             self.assertTrue(snap["binding_history_complete"])
             proc = subprocess.run(
-                [sys.executable, "-I", script,
-                 "checkin", f"--history={history_path}",
-                 f"--start={START}", f"--end={END}"],
-                capture_output=True, text=True,
+                [
+                    sys.executable,
+                    "-I",
+                    script,
+                    "checkin",
+                    f"--history={history_path}",
+                    f"--start={START}",
+                    f"--end={END}",
+                ],
+                capture_output=True,
+                text=True,
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("input per completed task: 7.00", proc.stdout)
@@ -320,7 +348,8 @@ class BindingHistoryTest(unittest.TestCase):
         script = str(Path(__file__).with_name("fleet_binding_history.py"))
         proc = subprocess.run(
             [sys.executable, "-I", script, "record", "--bogus"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(proc.returncode, 2)
 

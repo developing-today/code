@@ -71,6 +71,10 @@
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
+// FLEET_FEED_CHECKOUT_ROOT (#15827 slice 1: the checkout the collector
+// inspects — .opencode/opencode.jsonc lookup and checkout-drift
+// measurement. Unset or blank preserves the historical default of the
+// checkout this script runs from; a deployed copy sets it explicitly).
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -180,6 +184,20 @@ import { requireHome } from "../src/home.ts";
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = requireHome("the collect-fleet-feed paths");
 const HIDDEN = defaultHiddenDir(HOME);
+
+// #15827 slice 1 (M4): the collector must run from a deployed copy, not
+// the live checkout, so the checkout it inspects is explicit
+// configuration, not derived from this script's own file location. An
+// explicit root controls the .opencode/opencode.jsonc lookup and the
+// checkout-drift inspection; unset or blank preserves the historical
+// default (the checkout this script runs from). Relative values resolve
+// against the process working directory.
+export function resolveCheckoutRoot(env = process.env.FLEET_FEED_CHECKOUT_ROOT): string {
+  const explicit = env?.trim();
+  if (!explicit) return join(PKG, "..", "..");
+  return resolve(explicit);
+}
+const CHECKOUT_ROOT = resolveCheckoutRoot();
 
 export type FleetFeedPublication = Readonly<{
   /** Absolute destination path that was replaced. */
@@ -316,7 +334,7 @@ const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, 
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const burnHistoryStatePath =
   process.env.BURN_HISTORY_STATE_PATH ?? join(dirname(chargesSurfacedStatePath), "burn-history-state.json");
-const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(CHECKOUT_ROOT, ".opencode", "opencode.jsonc");
 const opencodeRuntimeConfigPath =
   process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
@@ -1378,7 +1396,7 @@ export async function main(): Promise<void> {
   // (collector running old code) is visible in the health view
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
-  const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
+  const checkout = await computeCheckoutDrift(CHECKOUT_ROOT);
 
   // --- historical burn + measured rate (#3933) -------------------------
   // Persist this run's pool-window observations beside the

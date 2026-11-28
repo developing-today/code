@@ -27,16 +27,38 @@ output=""
 list_only=0
 while (($#)); do
   case "$1" in
-    --manifest)
-      (($# >= 2)) || { echo "usage error: --manifest requires a value" >&2; exit 2; }
-      manifest=$2; shift 2 ;;
-    --output)
-      (($# >= 2)) || { echo "usage error: --output requires a value" >&2; exit 2; }
-      output=$2; shift 2 ;;
-    --list) list_only=1; shift ;;
-    --help|-h) usage; exit 0 ;;
-    --*) echo "usage error: unknown option '$1'" >&2; exit 2 ;;
-    *) echo "usage error: unexpected positional argument '$1'" >&2; exit 2 ;;
+  --manifest)
+    (($# >= 2)) || {
+      echo "usage error: --manifest requires a value" >&2
+      exit 2
+    }
+    manifest=$2
+    shift 2
+    ;;
+  --output)
+    (($# >= 2)) || {
+      echo "usage error: --output requires a value" >&2
+      exit 2
+    }
+    output=$2
+    shift 2
+    ;;
+  --list)
+    list_only=1
+    shift
+    ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
+  --*)
+    echo "usage error: unknown option '$1'" >&2
+    exit 2
+    ;;
+  *)
+    echo "usage error: unexpected positional argument '$1'" >&2
+    exit 2
+    ;;
   esac
 done
 
@@ -61,7 +83,7 @@ run() {
   printf 'live_proxy_pair=UNVERIFIED (loopback harness only; thresholds require live pair)\n'
   cargo test "${cargo_args[@]}" -- --ignored --nocapture
 }
-if [[ -n "$output" ]]; then
+if [[ -n $output ]]; then
   mkdir -p "$(dirname "$output")"
   run 2>&1 | tee "$output"
 else

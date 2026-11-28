@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import {
-  clearIdpJwksCache,
-  enforceIdpWriteRole,
-  verifyIdpAccessToken,
-} from "../src/idp-identity.ts";
+import { clearIdpJwksCache, enforceIdpWriteRole, verifyIdpAccessToken } from "../src/idp-identity.ts";
 
 const ISSUER = "http://idp.test";
 const KID = "fixture-kid";

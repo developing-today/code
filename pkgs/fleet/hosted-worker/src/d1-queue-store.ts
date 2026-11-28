@@ -25,7 +25,7 @@
 // same seam the other stores' parity suites inject.
 
 import type { Json } from "./queue-validate.ts";
-import type { EventRow, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
+import type { EventRow, HealthSnapshot, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
 import {
   LIBSQL_QUEUE_SCHEMA,
   LEDGER_COLS,
@@ -220,6 +220,86 @@ export class D1QueueStore implements QueueStore {
   async allTasks(): Promise<TaskRow[]> {
     const { rows } = await this.exec(`SELECT ${TASK_COLS} FROM tasks ORDER BY id ASC`);
     return rows.map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]> {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    const { rows } = await this.exec(
+      `SELECT ${TASK_COLS} FROM tasks WHERE status IN (${placeholders}) AND json_extract(payload, '$.kind') = ? ORDER BY id ASC`,
+      ...statuses,
+      kind,
+    );
+    return rows.map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async claimedExpired(nowIso: string): Promise<TaskRow[]> {
+    const { rows } = await this.exec(
+      `SELECT ${TASK_COLS} FROM tasks WHERE status = 'claimed' AND lease_until IS NOT NULL AND lease_until < ? ORDER BY id ASC`,
+      nowIso,
+    );
+    return rows.map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
+    const qf = queueFilter !== null ? " AND queue = ?" : "";
+    const qArgs: SqlParam[] = queueFilter !== null ? [queueFilter] : [];
+    const num = (v: unknown): number => (typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : 0);
+    const str = (v: unknown): string => (typeof v === "string" ? v : "");
+    const counts = (
+      await this.exec(
+        `SELECT queue, status, COUNT(*) AS n FROM tasks WHERE 1 = 1${qf} GROUP BY queue, status`,
+        ...qArgs,
+      )
+    ).rows;
+    const atCap = (
+      await this.exec(
+        `SELECT queue, COUNT(*) AS n FROM tasks WHERE status = 'queued' AND attempts >= max_attempts${qf} GROUP BY queue`,
+        ...qArgs,
+      )
+    ).rows;
+    const oldest = (
+      await this.exec(
+        `SELECT queue, MIN(created_at) AS oldest FROM tasks WHERE status = 'queued'${qf} GROUP BY queue`,
+        ...qArgs,
+      )
+    ).rows;
+    const dep = (
+      await this.exec(
+        `SELECT queue, COUNT(*) AS n FROM tasks WHERE status = 'blocked' AND blocked_deps IS NOT NULL${qf} GROUP BY queue`,
+        ...qArgs,
+      )
+    ).rows;
+    const parked = (
+      await this.exec(
+        `SELECT queue, not_before FROM tasks WHERE status = 'parked' AND not_before IS NOT NULL${qf}`,
+        ...qArgs,
+      )
+    ).rows;
+    const t7 = (
+      await this.exec(
+        `SELECT t.queue AS queue, COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?${queueFilter !== null ? " AND t.queue = ?" : ""} GROUP BY t.queue`,
+        ...(queueFilter !== null ? [since7Iso, queueFilter] : [since7Iso]),
+      )
+    ).rows;
+    const t24 = (
+      await this.exec(
+        `SELECT t.queue AS queue, COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?${queueFilter !== null ? " AND t.queue = ?" : ""} GROUP BY t.queue`,
+        ...(queueFilter !== null ? [since24Iso, queueFilter] : [since24Iso]),
+      )
+    ).rows;
+    return {
+      statusCounts: counts.map((r) => ({ queue: str(r["queue"]), status: str(r["status"]), count: num(r["n"]) })),
+      atCapQueued: atCap.map((r) => ({ queue: str(r["queue"]), count: num(r["n"]) })),
+      oldestQueuedAt: oldest.map((r) => ({
+        queue: str(r["queue"]),
+        oldest: typeof r["oldest"] === "string" ? (r["oldest"] as string) : null,
+      })),
+      depBlocked: dep.map((r) => ({ queue: str(r["queue"]), count: num(r["n"]) })),
+      parkedNotBefore: parked.map((r) => ({ queue: str(r["queue"]), not_before: str(r["not_before"]) })),
+      terminal7: t7.map((r) => ({ queue: str(r["queue"]), count: num(r["n"]) })),
+      terminal24: t24.map((r) => ({ queue: str(r["queue"]), count: num(r["n"]) })),
+    };
   }
 
   async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {

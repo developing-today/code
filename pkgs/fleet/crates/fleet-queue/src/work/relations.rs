@@ -16,6 +16,7 @@
 //! readiness), DEP-04 (GitHub projection, hierarchy) and CLI-13 (the
 //! commands) consume it.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use serde_json::{Map, Value};
@@ -1271,6 +1272,19 @@ impl Edge {
         }
     }
 
+    /// Whether this edge gates readiness (DEP-04 §3.1, §6.1): only an
+    /// active hard `blocks` edge. Hierarchy, related_to, duplicates
+    /// and supersedes never gate, whatever their status; a resolved
+    /// or removed `blocks` edge gates nothing. External close is not
+    /// represented here at all: `EdgeStatus` has no `closed` value,
+    /// so reading the other end's state can never complete this end
+    /// by itself.
+    pub fn gates_readiness(&self) -> bool {
+        self.relation == Relation::Blocks
+            && self.hardness == Hardness::Hard
+            && self.status == EdgeStatus::Active
+    }
+
     /// Check every D4 field rule.
     pub fn validate(&self) -> Result<(), RelationError> {
         require_decimal("edge_id", &self.edge_id)?;
@@ -1298,6 +1312,14 @@ impl Edge {
             return Err(RelationError::RelationNotGating {
                 relation: self.relation,
             });
+        }
+        if matches!(self.relation, Relation::RelatedTo | Relation::Duplicates) {
+            let (_, _, swapped) = pair_order(&self.source, &self.target)?;
+            if swapped {
+                // Refuse rather than silently swapping: on duplicates, role
+                // names an end and would change meaning if left untouched.
+                return Err(schema("source and target: non-canonical pair order"));
+            }
         }
         if self.role.is_some() && self.relation != Relation::Duplicates {
             return Err(schema(format!(
@@ -1710,6 +1732,139 @@ pub fn blockers_ready(complete: bool, active_hard_blockers: usize) -> bool {
     complete && active_hard_blockers == 0
 }
 
+/// Count the edges that gate readiness (DEP-04 §6.1): the active hard
+/// `blocks` edges. Hierarchy, related_to, duplicates and supersedes
+/// edges contribute nothing, by construction rather than by a second
+/// check at the call site.
+pub fn active_hard_blocker_count(edges: &[Edge]) -> usize {
+    edges.iter().filter(|edge| edge.gates_readiness()).count()
+}
+
+/// Why one edge holds, for the blockers read view (D8): quarantined
+/// edges are held aside by import or repair; a resolved edge with an
+/// override in force reports the override; an edge whose external
+/// end has no provider id blocks by default; anything else that
+/// reaches the view is unsatisfied. Precedence follows
+/// `validate_resolution`: only a resolved edge may carry an
+/// override, so quarantine is checked first.
+pub fn blocker_state(edge: &Edge) -> BlockerState {
+    if edge.status == EdgeStatus::Quarantined {
+        return BlockerState::Quarantined;
+    }
+    if edge
+        .resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.override_)
+    {
+        return BlockerState::OverrideActive;
+    }
+    if edge.source.missing_node_id() || edge.target.missing_node_id() {
+        return BlockerState::UnresolvedExternal;
+    }
+    BlockerState::Unsatisfied
+}
+
+/// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
+/// The SQL insert carries its own `:max_reach`; this constant is the
+/// pure-model default the tests and callers without a measured broker
+/// bound use.
+pub const BLOCKS_REACH_DEFAULT_BOUND: usize = 1024;
+
+/// A bounded BFS over active hard `blocks` edges from `from_key`,
+/// returning the path `from_key → … → to_key` when one exists
+/// (DEP-03 §5.1: `u → v` is a cycle iff `u == v` or a path
+/// `v → u` exists). Only `relation == blocks`, `hardness == hard`
+/// and `status == active` edges are followed; soft, non-`blocks`,
+/// resolved, removed and quarantined edges are not part of the path.
+/// The walk visits each key at most once (the SQL `UNION` semantics),
+/// so it terminates even when the committed graph already holds a
+/// cycle. When the reachable set reaches `max_reach` before the walk
+/// finishes, the check is refused with `graph_evaluation_incomplete`
+/// rather than answered from a partial walk (DEP-03 §5.3).
+pub fn blocks_reachable_path(
+    edges: &[Edge],
+    from_key: &str,
+    to_key: &str,
+    max_reach: usize,
+) -> Result<Option<Vec<String>>, RelationError> {
+    if from_key == to_key {
+        return Ok(Some(vec![from_key.to_string()]));
+    }
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in edges {
+        if !edge.gates_readiness() {
+            continue;
+        }
+        adjacency
+            .entry(edge.source.key())
+            .or_default()
+            .push(edge.target.key());
+    }
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut parent: HashMap<String, String> = HashMap::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    visited.insert(from_key.to_string());
+    queue.push_back(from_key.to_string());
+    while let Some(current) = queue.pop_front() {
+        if current == to_key {
+            let mut path = vec![current.clone()];
+            let mut node = current;
+            while let Some(prev) = parent.get(&node) {
+                path.push(prev.clone());
+                node = prev.clone();
+            }
+            path.reverse();
+            return Ok(Some(path));
+        }
+        // The walk did not finish within its bound: refuse, never
+        // assume. The target was not popped, and unexpanded nodes may
+        // remain, so no admission decision may rest on this walk.
+        if visited.len() >= max_reach {
+            return Err(RelationError::GraphEvaluationIncomplete {
+                detail: format!(
+                    "blocks reachability from {from_key:?} hit bound {max_reach} after {} visited",
+                    visited.len(),
+                ),
+            });
+        }
+        if let Some(nexts) = adjacency.get(&current) {
+            for next in nexts {
+                if visited.insert(next.clone()) {
+                    parent.insert(next.clone(), current.clone());
+                    queue.push_back(next.clone());
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The DEP-03 §5.1 insertion predicate for a proposed active hard
+/// `blocks` edge `proposed_source_key → proposed_target_key` against
+/// the committed `edges`. Rejects `u == v` as `self_edge` (the
+/// `WHERE :u <> :v` term) and a closing path `v → … → u` as
+/// `dependency_cycle` carrying the path as evidence; a truncated
+/// walk surfaces `graph_evaluation_incomplete`. Returns `Ok(())`
+/// when the edge may be admitted.
+pub fn check_blocks_insert(
+    edges: &[Edge],
+    proposed_source_key: &str,
+    proposed_target_key: &str,
+    max_reach: usize,
+) -> Result<(), RelationError> {
+    if proposed_source_key == proposed_target_key {
+        return Err(RelationError::SelfEdge {
+            key: proposed_source_key.to_string(),
+        });
+    }
+    match blocks_reachable_path(edges, proposed_target_key, proposed_source_key, max_reach)? {
+        Some(path) => Err(RelationError::DependencyCycle {
+            detail: path.join(" -> "),
+        }),
+        None => Ok(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D9. Legacy blocked_deps
 // ---------------------------------------------------------------------------
@@ -1906,6 +2061,60 @@ mod tests {
             expires_at: None,
             successor_edge_id: None,
         })
+    }
+
+    #[test]
+    fn pmo_dep_wire_rejects_noncanonical_pair_order() {
+        // Oracle: DEP-02 D1 pair order; numeric WorkRef ordering, not text ordering.
+        // Both JSON ingestion and direct validation must enforce the same invariant.
+        for relation in [Relation::RelatedTo, Relation::Duplicates] {
+            let reversed = edge(relation, work("10"), work("2"));
+            assert_eq!(reversed.validate().unwrap_err().code(), "invalid_schema");
+            assert_eq!(
+                Edge::from_json(&reversed.to_json()).unwrap_err().code(),
+                "invalid_schema"
+            );
+            let canonical = edge(relation, work("2"), work("10"));
+            assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+            // Authority sorts before numeric work id.
+            assert!(
+                edge(relation, remote_work("a", "10"), remote_work("z", "2"))
+                    .validate()
+                    .is_ok()
+            );
+            assert!(
+                edge(relation, remote_work("z", "2"), remote_work("a", "10"))
+                    .validate()
+                    .is_err()
+            );
+            // An external end belongs in source, regardless of lexical key.
+            assert!(
+                edge(relation, issue("z/repo", "2", Some("I_2")), work("10"))
+                    .validate()
+                    .is_ok()
+            );
+        }
+        // Directed relations must retain their meaning, not adopt pair ordering.
+        for relation in [Relation::Blocks, Relation::Hierarchy, Relation::Supersedes] {
+            assert!(edge(relation, work("10"), work("2")).validate().is_ok());
+        }
+    }
+
+    proptest! {
+        // Oracle: every distinct pair has exactly one valid orientation under
+        // WorkRef::Ord; reversing it must fail without silently swapping roles.
+        #[test]
+        fn pmo_dep_wire_pair_order_is_canonical(a in 1u64..u64::MAX, b in 1u64..u64::MAX) {
+            prop_assume!(a != b);
+            let (low, high) = (a.min(b).to_string(), a.max(b).to_string());
+            for relation in [Relation::RelatedTo, Relation::Duplicates] {
+                let canonical = edge(relation, work(&low), work(&high));
+                prop_assert_eq!(Edge::from_json(&canonical.to_json()).unwrap(), canonical);
+                let mut reversed = edge(relation, work(&high), work(&low));
+                reversed.role = (relation == Relation::Duplicates).then_some(DuplicateRole::SourceIsDuplicate);
+                prop_assert_eq!(Edge::from_json(&reversed.to_json()).unwrap_err().code(), "invalid_schema");
+            }
+        }
     }
 
     #[test]
@@ -2480,7 +2689,9 @@ mod tests {
             Box::new(|e: &mut Edge| e.role = Some(DuplicateRole::TargetIsDuplicate)),
             Box::new(|e: &mut Edge| e.role = None),
             Box::new(|e: &mut Edge| {
-                e.source = work("3");
+                // Keep pair order valid so this isolates identity mutation,
+                // rather than failing the independent schema invariant first.
+                e.source = remote_work("alpha", "3");
                 e.source_key = e.source.key();
             }),
             Box::new(|e: &mut Edge| e.target = work("4")),
@@ -2488,6 +2699,9 @@ mod tests {
         ];
         for change in &changes {
             let changed = next(&**change);
+            changed
+                .validate()
+                .expect("identity fixture must remain a valid edge");
             assert_eq!(
                 revise(&base, &changed, "op-2").unwrap_err().code(),
                 "invalid_transition",
@@ -2758,6 +2972,225 @@ mod tests {
         assert!(!blockers_ready(true, 1));
         assert!(!blockers_ready(false, 0));
         assert!(!blockers_ready(false, 2));
+    }
+
+    fn hard_blocks(source_id: &str, target_id: &str) -> Edge {
+        let mut out = edge(Relation::Blocks, work(source_id), work(target_id));
+        out.hardness = Hardness::Hard;
+        out.validate().unwrap();
+        out
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_insert_rejects_closing_path() {
+        // Oracle: DEP-03 §5.1. `u → v` is a cycle iff `u == v` or a
+        // path `v → u` of active hard `blocks` edges exists.
+        let committed = vec![hard_blocks("1", "2"), hard_blocks("2", "3")];
+        // 3 → 1 would close 1 → 2 → 3: refused with the path as evidence.
+        let err = check_blocks_insert(
+            &committed,
+            &work("3").key(),
+            &work("1").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "dependency_cycle");
+        let RelationError::DependencyCycle { detail } = err else {
+            panic!("expected dependency_cycle");
+        };
+        assert!(detail.contains(&work("1").key()), "{detail}");
+        assert!(detail.contains(&work("3").key()), "{detail}");
+        // 1 → 3 follows the DAG: admitted.
+        check_blocks_insert(
+            &committed,
+            &work("1").key(),
+            &work("3").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap();
+        // Self edge is refused, not admitted.
+        assert_eq!(
+            check_blocks_insert(
+                &committed,
+                &work("1").key(),
+                &work("1").key(),
+                BLOCKS_REACH_DEFAULT_BOUND,
+            )
+            .unwrap_err()
+            .code(),
+            "self_edge"
+        );
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_walk_ignores_non_gating_edges() {
+        // Oracle: DEP-03 §5.1. Soft, non-`blocks`, resolved and
+        // quarantined edges are not part of the path.
+        let mut soft = edge(Relation::Blocks, work("1"), work("2"));
+        assert_eq!(soft.hardness, Hardness::Soft);
+        let mut related = edge(Relation::RelatedTo, work("2"), work("3"));
+        related.validate().unwrap();
+        let mut resolved_edge = hard_blocks("2", "3");
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+        let committed = vec![soft, related, resolved_edge];
+        assert_eq!(
+            blocks_reachable_path(
+                &committed,
+                &work("1").key(),
+                &work("3").key(),
+                BLOCKS_REACH_DEFAULT_BOUND,
+            )
+            .unwrap(),
+            None
+        );
+        check_blocks_insert(
+            &committed,
+            &work("3").key(),
+            &work("1").key(),
+            BLOCKS_REACH_DEFAULT_BOUND,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pmo_dep03_blocks_walk_fails_closed_on_bound() {
+        // Oracle: DEP-03 §5.3. An unfinished walk refuses with
+        // `graph_evaluation_incomplete`, never an admission.
+        let committed = vec![hard_blocks("1", "2"), hard_blocks("2", "3")];
+        let err =
+            blocks_reachable_path(&committed, &work("1").key(), &work("9").key(), 1).unwrap_err();
+        assert_eq!(err.code(), "graph_evaluation_incomplete");
+        assert_eq!(
+            check_blocks_insert(&committed, &work("9").key(), &work("4").key(), 1)
+                .unwrap_err()
+                .code(),
+            "graph_evaluation_incomplete"
+        );
+    }
+
+    #[test]
+    fn pmo_dep_github_hierarchy_is_not_hard_blocking() {
+        // Oracle: DEP-04 §6.1 + §3.1. A native `blocked_by` and a native
+        // sub-issue parent stay distinct facts; only an active hard
+        // `blocks` edge gates readiness; closing either end completes
+        // nothing by itself.
+        let parent = work("1");
+        let child_a = work("2");
+        let child_b = work("3");
+        let blocker = issue("a/x", "7", Some("I_7"));
+
+        // blocked_by normalises to blocks; parent_of normalises to
+        // hierarchy: the same ends never collapse the two meanings.
+        let blocks = normalize(&blocker, RelationSpelling::Blocks, &child_b).unwrap();
+        assert_eq!(blocks.relation, Relation::Blocks);
+        let hierarchy = normalize(&parent, RelationSpelling::ParentOf, &child_a).unwrap();
+        assert_eq!(hierarchy.relation, Relation::Hierarchy);
+        assert_ne!(blocks.relation, hierarchy.relation);
+
+        // A hard hierarchy edge is refused rather than silently stored.
+        let mut hard_hierarchy = edge(Relation::Hierarchy, parent.clone(), child_a.clone());
+        hard_hierarchy.validate().unwrap();
+        hard_hierarchy.hardness = Hardness::Hard;
+        assert_eq!(
+            hard_hierarchy.validate().unwrap_err().code(),
+            "relation_not_gating"
+        );
+
+        // Readiness: the parent with only hierarchy edges is ready; the
+        // child with one active hard blocker is not, naming only it.
+        let mut hard_blocks = edge(Relation::Blocks, blocker.clone(), child_b.clone());
+        hard_blocks.hardness = Hardness::Hard;
+        hard_blocks.validate().unwrap();
+        let mut soft_hierarchy = edge(Relation::Hierarchy, parent.clone(), child_b.clone());
+        soft_hierarchy.validate().unwrap();
+        assert!(hard_blocks.gates_readiness());
+        assert!(!soft_hierarchy.gates_readiness());
+        // Resolving the blocker stops it gating; removing never gates.
+        let mut resolved_edge = hard_blocks.clone();
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+        assert!(!resolved_edge.gates_readiness());
+        // Every non-blocks relation never gates, even when active.
+        for relation in [
+            Relation::RelatedTo,
+            Relation::Hierarchy,
+            Relation::Duplicates,
+            Relation::Supersedes,
+        ] {
+            let mut advisory = edge(relation, work("11"), work("12"));
+            if relation == Relation::Duplicates {
+                advisory.role = Some(DuplicateRole::SourceIsDuplicate);
+            }
+            advisory.validate().unwrap();
+            assert!(!advisory.gates_readiness(), "{}", relation.as_str());
+        }
+        let parent_edges = vec![soft_hierarchy.clone()];
+        let child_edges = vec![soft_hierarchy, hard_blocks];
+        assert_eq!(active_hard_blocker_count(&parent_edges), 0);
+        assert_eq!(active_hard_blocker_count(&child_edges), 1);
+        assert!(blockers_ready(
+            true,
+            active_hard_blocker_count(&parent_edges)
+        ));
+        assert!(!blockers_ready(
+            true,
+            active_hard_blocker_count(&child_edges)
+        ));
+
+        // Closing either end completes nothing: there is no `closed`
+        // edge status, and no transition leads to one.
+        assert_eq!(
+            EdgeStatus::parse_field("status", "closed")
+                .unwrap_err()
+                .code(),
+            "invalid_schema"
+        );
+        for status in EdgeStatus::ALL {
+            assert_ne!(status.as_str(), "closed");
+            assert!(transition(Some(*status), *status).is_err());
+        }
+        assert!(transition(None, EdgeStatus::Active).is_ok());
+    }
+
+    #[test]
+    fn pmo_dep_blocker_state_names_why_it_holds() {
+        // Oracle: D8. The blockers view names one reason per holding
+        // edge: quarantined edges are held aside, an override in force
+        // wins over the ends, an unresolved external blocks by
+        // default, and a plain active hard blocker is unsatisfied.
+        let mut plain = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        plain.hardness = Hardness::Hard;
+        plain.validate().unwrap();
+        assert_eq!(blocker_state(&plain), BlockerState::Unsatisfied);
+
+        // Only an imported or migrated edge with certainty uncertain
+        // may keep an end without a provider id; it still gates.
+        let mut unresolved = edge(Relation::Blocks, issue("a/x", "7", None), work("1"));
+        unresolved.hardness = Hardness::Hard;
+        assert_eq!(unresolved.validate().unwrap_err().code(), "unresolved_ref");
+        unresolved.reason_code = EdgeOrigin::Imported;
+        unresolved.certainty = Certainty::Uncertain;
+        unresolved.validate().unwrap();
+        assert!(unresolved.gates_readiness());
+        assert_eq!(blocker_state(&unresolved), BlockerState::UnresolvedExternal);
+
+        // A quarantined edge is held aside even though it is hard blocks.
+        let mut quarantined = unresolved.clone();
+        quarantined.status = EdgeStatus::Quarantined;
+        quarantined.resolution = resolved("imported_cycle_held_aside");
+        quarantined.validate().unwrap();
+        assert!(transition(Some(EdgeStatus::Active), EdgeStatus::Quarantined).is_ok());
+        assert!(!quarantined.gates_readiness());
+        assert_eq!(blocker_state(&quarantined), BlockerState::Quarantined);
+
+        // An override is resolved-only; while in force it names the hold.
+        let mut overridden = unresolved.clone();
+        overridden.status = EdgeStatus::Resolved;
+        overridden.resolution = resolved("owner_override");
+        overridden.resolution.as_mut().unwrap().override_ = true;
+        overridden.validate().unwrap();
+        assert_eq!(blocker_state(&overridden), BlockerState::OverrideActive);
     }
 
     fn end_strategy() -> impl Strategy<Value = EdgeEnd> {

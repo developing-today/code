@@ -14,11 +14,14 @@
 //   1. No Worker of that name: stand up an empty one (init/). A version
 //      cannot be uploaded to a Worker that does not exist, and the
 //      storage behind the Durable Object class is only made by a deploy.
-//   2. Upload this checkout as a version, tagged with the commit. It
+//   2. Upload this checkout as a version, tagged with the commit and
+//      stamped with the full commit id and the time (VERSION and
+//      DEPLOYED_AT vars, which the health check reports back). It
 //      serves nothing yet.
 //   3. Put that version at 100%.
 //   4. Ask the Worker which version it is. If it does not answer as
-//      this one, put back the version that was serving, and fail.
+//      this one, with an age that matches its stamp, put back the
+//      version that was serving, and fail.
 //
 // When wrangler.jsonc has a Durable Object migration the Worker has not
 // had, steps 2 and 3 are one `wrangler deploy`: a version cannot carry a
@@ -91,6 +94,9 @@ const empty = configOf(readFileSync(join(here, "init", "wrangler.jsonc"), "utf8"
 const scratch = flag("--scratch");
 const worker = scratch ? scratchName(real.name) : real.name;
 const run = process.env.GITHUB_RUN_ID ? `workflow run ${process.env.GITHUB_RUN_ID}` : "a manual run";
+// When this version says it was deployed. The tests pin it through the
+// environment so the health gate's age check is deterministic.
+const stampedAt = process.env.PM_RELEASE_DEPLOYED_AT ?? new Date().toISOString();
 
 const say = (line) => console.log(`release.mjs: ${line}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -181,7 +187,7 @@ async function health() {
 async function answers(want) {
   let last = "silent";
   for (let attempt = 0; attempt < HEALTH_TRIES; attempt++) {
-    last = healthSays(await health(), commit.short);
+    last = healthSays(await health(), commit.full);
     if (last === want) return true;
     await sleep(HEALTH_WAIT_MS);
   }
@@ -221,7 +227,17 @@ async function release() {
   }
 
   if (steps.includes("deploy")) {
-    wrangler(["deploy", "--name", worker, "--var", `VERSION:${commit.short}`, "--message", commit.message]);
+    wrangler([
+      "deploy",
+      "--name",
+      worker,
+      "--var",
+      `VERSION:${commit.full}`,
+      "--var",
+      `DEPLOYED_AT:${stampedAt}`,
+      "--message",
+      commit.message,
+    ]);
     say(`deployed ${commit.short} to ${worker} in one step (its Durable Object classes changed)`);
     return answers("this");
   }
@@ -232,7 +248,20 @@ async function release() {
   let version;
   try {
     wrangler(
-      ["versions", "upload", "--name", worker, "--tag", commit.tag, "--message", commit.message, "--var", `VERSION:${commit.short}`],
+      [
+        "versions",
+        "upload",
+        "--name",
+        worker,
+        "--tag",
+        commit.tag,
+        "--message",
+        commit.message,
+        "--var",
+        `VERSION:${commit.full}`,
+        "--var",
+        `DEPLOYED_AT:${stampedAt}`,
+      ],
       out,
     );
     version = uploadedVersion(readFileSync(out, "utf8"), worker);

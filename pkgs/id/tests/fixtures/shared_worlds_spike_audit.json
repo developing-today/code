@@ -1,0 +1,287 @@
+{
+  "events": [
+    {
+      "actor": "spike-owner",
+      "agent": null,
+      "at": 1800000100,
+      "kind": "role.create",
+      "outcome": "executed",
+      "role": "observer",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": null,
+      "at": 1800000100,
+      "kind": "role.create",
+      "outcome": "executed",
+      "role": "participant",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": null,
+      "at": 1800000100,
+      "kind": "role.create",
+      "outcome": "executed",
+      "role": "archivist-editor",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": null,
+      "at": 1800000100,
+      "kind": "role.create",
+      "outcome": "executed",
+      "role": "visitor",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": "0101010101010101010101010101010101010101010101010101010101010101",
+      "at": 1800000100,
+      "kind": "role.grant",
+      "outcome": "executed",
+      "role": "participant",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": "0202020202020202020202020202020202020202020202020202020202020202",
+      "at": 1800000100,
+      "kind": "role.grant",
+      "outcome": "executed",
+      "role": "participant",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "spike-owner",
+      "agent": "0303030303030303030303030303030303030303030303030303030303030303",
+      "at": 1800000100,
+      "kind": "role.grant",
+      "outcome": "executed",
+      "role": "participant",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "owner:spike-owner",
+      "at": 1800000100,
+      "kind": "world.profile.set",
+      "note": null,
+      "outcome": "executed",
+      "subject": null,
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "owner:spike-owner",
+      "at": 1800000101,
+      "kind": "visitor.grant",
+      "note": null,
+      "outcome": "executed",
+      "subject": "human:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0/visitor",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0101010101010101010101010101010101010101010101010101010101010101",
+      "at": 1800000102,
+      "kind": "presence.enter",
+      "note": null,
+      "outcome": "executed",
+      "subject": null,
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202",
+      "at": 1800000102,
+      "kind": "presence.enter",
+      "note": null,
+      "outcome": "executed",
+      "subject": null,
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0303030303030303030303030303030303030303030303030303030303030303",
+      "at": 1800000102,
+      "kind": "presence.enter",
+      "note": null,
+      "outcome": "executed",
+      "subject": null,
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "human:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "at": 1800000103,
+      "kind": "visitor.act",
+      "note": null,
+      "outcome": "executed",
+      "subject": "board:work",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "human:b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "at": 1800000103,
+      "kind": "presence.enter",
+      "note": null,
+      "outcome": "executed",
+      "subject": null,
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "owner:spike-owner",
+      "at": 1800000104,
+      "item": null,
+      "kind": "surface.board.define",
+      "outcome": "executed",
+      "surface": {
+        "kind": "board",
+        "name": "work"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "owner:spike-owner",
+      "at": 1800000104,
+      "item": null,
+      "kind": "surface.document.define",
+      "outcome": "executed",
+      "surface": {
+        "kind": "document",
+        "name": "run-notes"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "at": 1800000105,
+      "item": 1,
+      "kind": "surface.item.create",
+      "outcome": "executed",
+      "surface": {
+        "kind": "board",
+        "name": "work"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "assignee": "role:participant",
+      "assigner": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "at": 1800000105,
+      "board": "work",
+      "charged": {
+        "frames": 0,
+        "program_invocations": 0,
+        "tool_calls": 1
+      },
+      "claimant": null,
+      "item": 1,
+      "kind": "task.create",
+      "note": null,
+      "outcome": "executed",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "assignee": "role:participant",
+      "assigner": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "at": 1800000106,
+      "board": "work",
+      "charged": {
+        "frames": 0,
+        "program_invocations": 0,
+        "tool_calls": 1
+      },
+      "claimant": null,
+      "item": 1,
+      "kind": "task.assign",
+      "note": null,
+      "outcome": "executed",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "at": 1800000107,
+      "item": 1,
+      "kind": "surface.item.claim",
+      "outcome": "executed",
+      "surface": {
+        "kind": "board",
+        "name": "work"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "assignee": "role:participant",
+      "assigner": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "at": 1800000107,
+      "board": "work",
+      "charged": {
+        "frames": 0,
+        "program_invocations": 0,
+        "tool_calls": 1
+      },
+      "claimant": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "item": 1,
+      "kind": "task.claim",
+      "note": null,
+      "outcome": "executed",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "at": 1800000108,
+      "item": 1,
+      "kind": "surface.item.move",
+      "outcome": "executed",
+      "surface": {
+        "kind": "board",
+        "name": "work"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "assignee": "role:participant",
+      "assigner": "agent:0101010101010101010101010101010101010101010101010101010101010101/participant",
+      "at": 1800000108,
+      "board": "work",
+      "charged": {
+        "frames": 0,
+        "program_invocations": 0,
+        "tool_calls": 1
+      },
+      "claimant": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "item": 1,
+      "kind": "task.transition",
+      "note": "in-progress",
+      "outcome": "executed",
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0202020202020202020202020202020202020202020202020202020202020202/participant",
+      "at": 1800000109,
+      "item": null,
+      "kind": "surface.document.edit",
+      "outcome": "executed",
+      "surface": {
+        "kind": "document",
+        "name": "run-notes"
+      },
+      "world": "shared-worlds-local-spike"
+    },
+    {
+      "actor": "agent:0303030303030303030303030303030303030303030303030303030303030303/participant",
+      "at": 1800000110,
+      "item": null,
+      "kind": "surface.document.edit",
+      "outcome": "executed",
+      "surface": {
+        "kind": "document",
+        "name": "run-notes"
+      },
+      "world": "shared-worlds-local-spike"
+    }
+  ],
+  "head": "cadd072e8fe7dffc1e6838f4ac3af85566dadf7790b40355455c4706eb5e03a1"
+}

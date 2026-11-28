@@ -1,10 +1,12 @@
 //! The shared content-creation ledger writer for `fleet gh`
-//! (developing-today/code#2227, slice: route the gh-shim bypass
-//! through the shared gate).
+//! (developing-today/code#2227, slice: ledger every `pr review`
+//! submit shape, not just `--comment`).
 //!
 //! Every `fleet gh` content-creating call — `issue create`,
-//! `pr create`, `issue comment`, `pr comment`, `pr review
-//! --comment`, `release create` — reserves a row in
+//! `pr create`, `issue comment`, `pr comment`, the `pr review`
+//! submit shapes (`--comment`/`--approve`/`--request-changes`),
+//! `release create`, `gist create`, and POST-class
+//! `api` calls — reserves a row in
 //! the shared creation ledger
 //! (`~/.local/state/fleet/content-ledger.sqlite`, override with
 //! `CONTENT_LEDGER_PATH`) BEFORE any GitHub write and finalises it
@@ -30,18 +32,24 @@
 //!     circuit breaker, no verify-by-search. Those are the warn-mode
 //!     throttle (hatch#13) and later slices; this slice makes the
 //!     bypass visible in the ledger first.
-//!   - Scope is issues/PRs/comments, plus `pr review --comment`
-//!     (kind `review`, already in the reference vocabulary) and
-//!     `release create` (kind `release`). The reference `KINDS`
-//!     has no `release` entry — the reference filing path files
-//!     no release creates — so `release` extends this writer's
-//!     vocabulary by one kind. The shared read paths do not gate
-//!     on kind (`counts` groups by outcome, `tail` reads kind as
-//!     data), so `release` rows reconcile in the one DB exactly
-//!     like the existing kinds. `gist create`, POST-class `api`
-//!     calls and the non-comment `pr review` shapes (`--approve`,
-//!     `--request-changes`) pass through unledgered as today;
-//!     routing them is the named follow-up slice (see the PR body).
+//!   - Scope is issues/PRs/comments, plus the `pr review`
+//!     submit shapes (`--comment`, `--approve`/`-a`,
+//!     `--request-changes`/`-r`; kind `review`, already in the
+//!     reference vocabulary), `release create` (kind `release`),
+//!     `gist create` (kind `gist`), and `api --method POST`
+//!     (kind `other`, the reference `KINDS` catch-all). The
+//!     reference `KINDS` has neither a `release` nor a `gist`
+//!     entry — the reference filing path files neither shape —
+//!     so both extend this writer's vocabulary by one kind each,
+//!     while `other` is byte-identical to the reference. The
+//!     shared read paths do not gate on kind (`counts` groups by
+//!     outcome, `tail` reads kind as data), so
+//!     `release`/`gist`/`other` rows reconcile in the one DB
+//!     exactly like the existing kinds. Non-POST `api` calls and
+//!     bare `pr review` with no submit flag (interactive-only,
+//!     files nothing non-interactively) pass through unledgered
+//!     as today; pacing budgets, the circuit breaker, and
+//!     verify-by-search stay later slices.
 //!
 //! Oracle: the hatch spec's shared-ledger invariant — every
 //! content-creating call has a reservation row written before the
@@ -81,8 +89,9 @@ CREATE INDEX IF NOT EXISTS events_nonce ON events(nonce);
 ";
 
 /// The create shapes this slice ledgers (reference `KINDS`
-/// subset: issues, PRs, comments, reviews; plus `release`,
-/// which extends the reference vocabulary — see the header).
+/// subset: issues, PRs, comments, reviews, plus the `other`
+/// catch-all; `release` and `gist` extend the reference
+/// vocabulary — see the header).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateKind {
     Issue,
@@ -91,6 +100,8 @@ pub enum CreateKind {
     PrComment,
     PrReview,
     Release,
+    Gist,
+    Other,
 }
 
 impl CreateKind {
@@ -103,6 +114,8 @@ impl CreateKind {
             CreateKind::PrComment => "pr_comment",
             CreateKind::PrReview => "review",
             CreateKind::Release => "release",
+            CreateKind::Gist => "gist",
+            CreateKind::Other => "other",
         }
     }
 }
@@ -121,28 +134,131 @@ pub struct Pending {
     row: i64,
 }
 
+/// A `pr review` submit flag is present: any of `--comment` /
+/// `--approve` / `--request-changes` or their short forms `-c` /
+/// `-a` / `-r` (gh's review flags per `cli/cli`
+/// `pkg/cmd/pr/review/review.go`: `BoolVarP` long+short pairs).
+/// A trailing `=value` suffix is tolerated so `--approve=false`
+/// style spellings still count as a submit shape.
+fn is_review_submit(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let base = a.split('=').next().unwrap_or(a.as_str());
+        matches!(
+            base,
+            "--comment" | "-c" | "--approve" | "-a" | "--request-changes" | "-r"
+        )
+    })
+}
+
 /// Classify `args` (the canonical gh argv, post sync-rewrite) as a
 /// ledgered create or not. Anything unrecognised is not a create —
 /// reads and the deferred shapes pass through untouched.
 pub fn classify(args: &[String]) -> Option<Classified> {
     let verb = args.first().map(|s| s.as_str())?;
     let sub = args.get(1).map(|s| s.as_str())?;
+    // POST-class `gh api` calls file content through the raw
+    // endpoint route (issues, comments, releases, gists — anything
+    // the REST API creates). gh defaults to GET, so only an
+    // explicit POST method is a create; GET reads and the in-place
+    // methods stay unledgered in this slice.
+    if verb == "api" {
+        return api_post_endpoint(args).map(|endpoint| Classified {
+            repo: api_repo(&endpoint).unwrap_or_else(|| repo_of(args)),
+            kind: CreateKind::Other,
+        });
+    }
     let kind = match (verb, sub) {
         ("issue", "create") => CreateKind::Issue,
         ("pr", "create") => CreateKind::Pr,
         ("issue", "comment") => CreateKind::IssueComment,
         ("pr", "comment") => CreateKind::PrComment,
-        // Only the comment-bearing review shape is ledgered: it is
-        // the one that files new content with a body. `--approve`
-        // and `--request-changes` stay unledgered in this slice.
-        ("pr", "review") if args.iter().any(|a| a == "--comment") => CreateKind::PrReview,
+        // Every non-interactive `pr review` submit shape files a
+        // review object (comment, approval, or requested changes —
+        // gh requires one of the three outside interactive mode),
+        // so all three ledger as kind `review`. A bare
+        // `pr review <n>` with no submit flag is interactive-only
+        // and files nothing, so it stays unledgered.
+        ("pr", "review") if is_review_submit(args) => CreateKind::PrReview,
         ("release", "create") => CreateKind::Release,
+        ("gist", "create") => CreateKind::Gist,
         _ => return None,
     };
     Some(Classified {
         kind,
         repo: repo_of(args),
     })
+}
+
+/// The endpoint of a POST-class `gh api` call, if the call is one:
+/// an explicit `--method POST`/`-X POST` plus a first endpoint
+/// (the first non-flag token that is not a data/header flag's
+/// value). Anything else — GET reads, in-place methods, a POST
+/// with no endpoint — is not a create and yields None.
+fn api_post_endpoint(args: &[String]) -> Option<String> {
+    // Flags whose next token is a value, never the endpoint.
+    fn takes_value(a: &str) -> bool {
+        matches!(
+            a,
+            "--method"
+                | "-X"
+                | "-f"
+                | "--field"
+                | "--raw-field"
+                | "--input"
+                | "-H"
+                | "--header"
+                | "--paginate"
+                | "--jq"
+                | "--template"
+        )
+    }
+    let mut method: Option<&str> = None;
+    let mut endpoint: Option<&str> = None;
+    let mut i = 1;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--method" || a == "-X" {
+            method = args.get(i + 1).map(|s| s.as_str());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a
+            .strip_prefix("--method=")
+            .or_else(|| a.strip_prefix("-X="))
+        {
+            method = Some(v);
+        } else if takes_value(a) {
+            i += 2;
+            continue;
+        } else if a.contains('=') && !a.starts_with('-') {
+            // A bare `key=value` field, never the endpoint.
+        } else if !a.starts_with('-') && endpoint.is_none() {
+            endpoint = Some(a);
+        }
+        i += 1;
+    }
+    if method.is_some_and(|m| m.eq_ignore_ascii_case("post")) {
+        endpoint.filter(|e| !e.is_empty()).map(|e| e.to_string())
+    } else {
+        None
+    }
+}
+
+/// The `owner/repo` embedded in a `repos/{owner}/{repo}/...`
+/// endpoint, if that is the endpoint's shape. Other endpoints
+/// (e.g. `user/repos`, `gists`) record no repo in the path and
+/// fall back to the call's `-R`/`--repo` flags.
+fn api_repo(endpoint: &str) -> Option<String> {
+    let mut segs = endpoint.trim_start_matches('/').split('/');
+    if segs.next()? != "repos" {
+        return None;
+    }
+    let owner = segs.next()?;
+    let repo = segs.next()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }
 
 /// The `-R`/`--repo` target of the call, else `"unknown"`. gh
@@ -257,7 +373,7 @@ fn reserve(
 ) -> Result<(i64, String), String> {
     if !matches!(
         kind,
-        "issue" | "issue_comment" | "pr" | "pr_comment" | "review" | "release"
+        "issue" | "issue_comment" | "pr" | "pr_comment" | "review" | "release" | "gist" | "other"
     ) {
         return Err(format!("unknown ledger kind {kind:?}"));
     }
@@ -468,7 +584,7 @@ mod tests {
             .unwrap()
     }
 
-    // oracle: the six ledgered shapes classify with their kind
+    // oracle: the eight ledgered shapes classify with their kind
     // strings; everything else (reads, merges, deferred
     // shapes) is None and passes through untouched.
     #[test]
@@ -482,33 +598,79 @@ mod tests {
         assert_eq!(c.kind.as_ledger_kind(), "issue_comment");
         let c = classify(&args(&["pr", "comment", "12", "--body", "x"])).unwrap();
         assert_eq!(c.kind.as_ledger_kind(), "pr_comment");
-        let c = classify(&args(&[
-            "pr", "review", "12", "--comment", "--body", "x",
-        ]))
-        .unwrap();
+        let c = classify(&args(&["pr", "review", "12", "--comment", "--body", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::PrReview);
         assert_eq!(c.kind.as_ledger_kind(), "review");
+        // All three submit shapes file a review object, so all
+        // three ledger — including the short flags.
+        let c = classify(&args(&["pr", "review", "12", "--approve"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
         let c = classify(&args(&[
-            "release", "create", "v1.0.0", "--title", "x",
+            "pr",
+            "review",
+            "12",
+            "--request-changes",
+            "--body",
+            "x",
         ]))
         .unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-c", "--body", "x"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-a"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-r", "--body", "x"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["release", "create", "v1.0.0", "--title", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::Release);
         assert_eq!(c.kind.as_ledger_kind(), "release");
+        let c = classify(&args(&["gist", "create", "--public", "--desc", "x"])).unwrap();
+        assert_eq!(c.kind, CreateKind::Gist);
+        assert_eq!(c.kind.as_ledger_kind(), "gist");
+        // POST-class `api` calls file content through the raw
+        // endpoint route; the reference `other` kind is the
+        // catch-all for them, and the repo comes from the
+        // `repos/{owner}/{repo}/...` endpoint.
+        let c = classify(&args(&[
+            "api",
+            "repos/o/r/issues",
+            "--method",
+            "POST",
+            "-f",
+            "title=x",
+        ]))
+        .unwrap();
+        assert_eq!(c.kind, CreateKind::Other);
+        assert_eq!(c.kind.as_ledger_kind(), "other");
+        assert_eq!(c.repo, "o/r");
 
         assert!(classify(&args(&["issue", "list"])).is_none());
-        // Non-comment review shapes stay unledgered in this slice.
-        assert!(classify(&args(&["pr", "review", "12", "--approve"])).is_none());
-        assert!(classify(&args(&[
-            "pr", "review", "12", "--request-changes", "--body", "x"
-        ]))
-        .is_none());
+        // A bare review with no submit flag is interactive-only and
+        // files nothing, so it stays unledgered.
         assert!(classify(&args(&["pr", "review", "12"])).is_none());
         assert!(classify(&args(&["issue", "view", "12"])).is_none());
         assert!(classify(&args(&["pr", "merge", "12"])).is_none());
         assert!(classify(&args(&["pr", "status"])).is_none());
         assert!(classify(&args(&["api", "repos/o/r/issues", "-f", "title=x"])).is_none());
+        // Non-POST `api` methods never create: GET reads, PUT/PATCH/DELETE
+        // mutate in place — both stay unledgered in this slice, as does a
+        // POST with no endpoint to file against.
+        assert!(classify(&args(&["api", "repos/o/r/issues"])).is_none());
+        assert!(classify(&args(&["api", "repos/o/r/issues", "--method", "GET"])).is_none());
+        assert!(
+            classify(&args(&[
+                "api",
+                "repos/o/r/issues/1",
+                "--method",
+                "PUT",
+                "-f",
+                "title=x"
+            ]))
+            .is_none()
+        );
+        assert!(classify(&args(&["api", "--method", "POST", "-f", "title=x"])).is_none());
         // Deferred shapes stay unledgered in this slice.
-        assert!(classify(&args(&["gist", "create"])).is_none());
+        assert!(classify(&args(&["gist", "view", "abc123"])).is_none());
         assert!(classify(&args(&["release", "view", "v1.0.0"])).is_none());
         assert!(classify(&args(&["frobnicate", "create"])).is_none());
         assert!(classify(&args(&[])).is_none());
@@ -564,7 +726,7 @@ mod tests {
     #[test]
     fn guarded_vocabulary() {
         let path = temp_ledger("vocab");
-        let err = reserve(&path, "a", "j", "o/r", "gist").unwrap_err();
+        let err = reserve(&path, "a", "j", "o/r", "bogus-kind").unwrap_err();
         assert!(err.contains("unknown ledger kind"), "{err}");
         // `review` is in the reference vocabulary and reserves.
         let (review_row, _) = reserve(&path, "a", "j", "o/r", "review").unwrap();
@@ -572,6 +734,13 @@ mod tests {
         // `release` extends the vocabulary (see the header) and reserves.
         let (release_row, _) = reserve(&path, "a", "j", "o/r", "release").unwrap();
         assert_eq!(row_outcome(&path, release_row).0, "reserved");
+        // `gist` extends the vocabulary (see the header) and reserves.
+        let (gist_row, _) = reserve(&path, "a", "j", "o/r", "gist").unwrap();
+        assert_eq!(row_outcome(&path, gist_row).0, "reserved");
+        // `other` is the reference `KINDS` catch-all for POST-class
+        // `api` calls and reserves.
+        let (other_row, _) = reserve(&path, "a", "j", "o/r", "other").unwrap();
+        assert_eq!(row_outcome(&path, other_row).0, "reserved");
         let (row, _) = reserve(&path, "a", "j", "o/r", "pr").unwrap();
         let err = finalize(&path, row, "maybe", None, None).unwrap_err();
         assert!(err.contains("unknown ledger outcome"), "{err}");

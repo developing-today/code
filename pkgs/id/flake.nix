@@ -103,6 +103,14 @@
           rocCompiler
           pkgs.zig_0_16
         ];
+        # python3 for scripts/variant-features.sh: scripts/build.sh and its
+        # fixture suite (scripts/build-sh-test.sh) resolve the variant
+        # feature set from composition/variants.toml via `python3 -I`
+        # (tomllib). Without it the sandbox fails with
+        # "python3: command not found" (id-release exit 127, #16350).
+        # Kept per-check (same pattern as roc-test) so checks that never
+        # run a Python script keep the lean closure.
+        variantFeaturesNativeBuildInputs = [ pkgs.python3 ];
 
         craneLib =
           if craneInput == null then
@@ -604,8 +612,21 @@
                 }) members
               );
             ciBuildChecks = {
-              build = mkCheck "build" "build";
-              release = mkCheck "release" "release";
+              # python3 via variantFeaturesNativeBuildInputs: just build /
+              # just release run scripts/build.sh, which resolves the
+              # variant feature set with scripts/variant-features.sh
+              # (`python3 -I`, tomllib). The lean sandbox has no python3
+              # otherwise (id-release exit 127, #16350).
+              build = mkCheckWith {
+                name = "build";
+                justCmd = "build";
+                extraNativeBuildInputs = variantFeaturesNativeBuildInputs;
+              };
+              release = mkCheckWith {
+                name = "release";
+                justCmd = "release";
+                extraNativeBuildInputs = variantFeaturesNativeBuildInputs;
+              };
             };
             individualChecks =
               {
@@ -839,6 +860,10 @@
                   installWebDeps = false;
                   buildWebAssets = false;
                   compileRocWorldHost = false;
+                  # python3: the fixture suite runs the web-variant cases
+                  # through scripts/variant-features.sh (`python3 -I`,
+                  # tomllib) — same sandbox failure as id-release (#16350).
+                  extraNativeBuildInputs = variantFeaturesNativeBuildInputs;
                   checkCommand = "bash scripts/build-sh-test.sh";
                 };
 
@@ -1044,7 +1069,9 @@
                   src = ./.;
                   nativeBuildInputs = [ rustToolchain ];
                   buildPhase = ''
-                    find . -name '*.rs' -not -path '*/target/*' \
+                    # Vendored upstream crates: do not reformat code we do not
+                    # own (#702), matching the vendor/** exclude in treefmt.toml.
+                    find . -name '*.rs' -not -path '*/target/*' -not -path './vendor/*' \
                       -exec rustfmt --check --edition 2024 {} +
                   '';
                   installPhase = ''

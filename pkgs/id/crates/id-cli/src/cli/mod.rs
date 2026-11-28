@@ -578,6 +578,17 @@ pub struct ServeArgs {
     /// Most world sessions at once, across every world.
     #[arg(long, default_value_t = 1024, requires = "world")]
     pub world_max_sessions: usize,
+    /// Most worlds one account may hold at once (#1067, F12.10
+    /// per-account quotas). `0` = no per-account bound: accounts share
+    /// the hub-wide ceiling under the existing rules alone.
+    #[arg(long, default_value_t = 0, requires = "world")]
+    pub world_max_per_account: u32,
+    /// Most storage bytes one account may be charged at once (#1067,
+    /// F12.10 per-account quotas). `0` = no per-account bound: the hub
+    /// owns the ledger and the write paths charge it once the
+    /// measurement slice lands.
+    #[arg(long, default_value_t = 0, requires = "world")]
+    pub world_storage_max_per_account: u64,
     /// Close durable worlds that no session used for this many seconds
     /// (they reopen from their journal on demand). Defaults to 600, or to
     /// 900 under `--world-host`. `0` keeps them open, and is refused under

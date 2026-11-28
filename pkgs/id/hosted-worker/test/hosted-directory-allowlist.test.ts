@@ -35,9 +35,7 @@ function freshDirectoryDb(): DatabaseSync {
 
 function tableNames(db: DatabaseSync): string[] {
   const rows = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
-    )
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name")
     .all() as { name: string }[];
   return rows.map((r) => r.name);
 }
@@ -49,9 +47,7 @@ function columnNames(db: DatabaseSync, table: string): string[] {
 
 function assertDirectorySchema(db: DatabaseSync): void {
   assert.deepEqual(tableNames(db), ["hosted_accounts"]);
-  assert.deepEqual(columnNames(db, "hosted_accounts"), [
-    ...HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
-  ]);
+  assert.deepEqual(columnNames(db, "hosted_accounts"), [...HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS]);
 }
 
 // Graph content, journals, blob bytes, and private profile data must
@@ -111,9 +107,7 @@ test("schema allowlist rejects a non-system table with a sqlite-like name", () =
 test("schema allowlist rejects generated columns", () => {
   const db = freshDirectoryDb();
   try {
-    db.exec(
-      "ALTER TABLE hosted_accounts ADD COLUMN private_profile TEXT GENERATED ALWAYS AS (subject_key) VIRTUAL",
-    );
+    db.exec("ALTER TABLE hosted_accounts ADD COLUMN private_profile TEXT GENERATED ALWAYS AS (subject_key) VIRTUAL");
     assert.throws(() => assertDirectorySchema(db));
   } finally {
     db.close();
@@ -123,9 +117,7 @@ test("schema allowlist rejects generated columns", () => {
 test("no graph, journal, blob, or private-profile column in the shared schema", () => {
   const db = freshDirectoryDb();
   try {
-    const columns = tableNames(db).flatMap((t) =>
-      columnNames(db, t).map((c) => [t, c] as [string, string]),
-    );
+    const columns = tableNames(db).flatMap((t) => columnNames(db, t).map((c) => [t, c] as [string, string]));
     assert.deepEqual(neverSharedViolations(columns), []);
   } finally {
     db.close();
@@ -173,10 +165,5 @@ test("record constructors expose exactly the allowlisted fields", () => {
     subjectKey: "subject-1",
     bindingId: "0123456789abcdef0123456789abcdef",
   });
-  assert.deepEqual(Object.keys(legacy).sort(), [
-    "bindingId",
-    "classification",
-    "jurisdiction",
-    "subjectKey",
-  ]);
+  assert.deepEqual(Object.keys(legacy).sort(), ["bindingId", "classification", "jurisdiction", "subjectKey"]);
 });

@@ -4,9 +4,9 @@
     "@cloudflare/vitest-pool-workers": "0.23.0",
     "@cloudflare/workers-types": "^5.20261124.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.0",
-    "wrangler": "4.167.0",
-    "cf": "1.0.0-rc.4"
+    "vitest": "^5.1.1",
+    "wrangler": "4.168.0",
+    "cf": "1.0.0-rc.5"
   },
   "name": "atlas-search-worker",
   "private": true,

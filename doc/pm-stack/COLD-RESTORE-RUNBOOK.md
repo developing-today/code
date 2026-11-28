@@ -19,7 +19,11 @@ reports FENCED, the target's table/row counts equal the source's, and the
 latest backup record is a complete generation with verified local, R2, and
 Drive copies finished within 36 hours (override only for a documented window
 decision). Pass its path with `--backup-record-file`; the receipt records the
-restore-point timestamp without exposing a DSN.
+restore-point timestamp without exposing a DSN. The Grist/Pad file-store
+finals go through the same consumer gate in
+`pm-stack/scripts/grist-pad-sync.sh --mode final --store <store>`
+(plan §4): a fenced writer, a fresh verified backup restore point, and (for
+pad) a clean WAL, before any copy runs.
 
 Failover posture (Drew's #1258 rulings, 2026-11-03): all PM-stack state to
 Supabase `muse-dev2`, nothing laptop-only; **tested cold restore, no warm

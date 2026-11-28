@@ -35,7 +35,7 @@
 // read back.
 
 import type { Json } from "./queue-validate.ts";
-import type { EventRow, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
+import type { EventRow, HealthSnapshot, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
 
 /** The synchronous embedded-SQL surface this store needs: the house
  *  SqlStorageLike shape (pkgs/id/hosted-worker/src/bridge-store.ts).
@@ -75,6 +75,8 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
     ON tasks(queue, dedupe_key) WHERE dedupe_key IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS tasks_claim_scan
     ON tasks(queue, status, priority, created_at)`,
+  `CREATE INDEX IF NOT EXISTS tasks_status_lease
+    ON tasks(status, lease_until)`,
   `CREATE TABLE IF NOT EXISTS leases (
     task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL,
     lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)`,
@@ -343,6 +345,105 @@ export class LibSQLQueueStore implements QueueStore {
       .exec(`SELECT ${TASK_COLS} FROM tasks ORDER BY id ASC`)
       .toArray()
       .map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]> {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    return this.db
+      .exec(
+        `SELECT ${TASK_COLS} FROM tasks WHERE status IN (${placeholders}) AND json_extract(payload, '$.kind') = ? ORDER BY id ASC`,
+        ...statuses,
+        kind,
+      )
+      .toArray()
+      .map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async claimedExpired(nowIso: string): Promise<TaskRow[]> {
+    return this.db
+      .exec(
+        `SELECT ${TASK_COLS} FROM tasks WHERE status = 'claimed' AND lease_until IS NOT NULL AND lease_until < ? ORDER BY id ASC`,
+        nowIso,
+      )
+      .toArray()
+      .map((r) => readTask(r as Record<string, unknown>));
+  }
+
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
+    const qf = queueFilter !== null ? " AND queue = ?" : "";
+    const qArgs = queueFilter !== null ? [queueFilter] : [];
+    const counts = this.db
+      .exec(`SELECT queue, status, COUNT(*) AS n FROM tasks WHERE 1 = 1${qf} GROUP BY queue, status`, ...qArgs)
+      .toArray();
+    const atCap = this.db
+      .exec(
+        `SELECT queue, COUNT(*) AS n FROM tasks WHERE status = 'queued' AND attempts >= max_attempts${qf} GROUP BY queue`,
+        ...qArgs,
+      )
+      .toArray();
+    const oldest = this.db
+      .exec(`SELECT queue, MIN(created_at) AS oldest FROM tasks WHERE status = 'queued'${qf} GROUP BY queue`, ...qArgs)
+      .toArray();
+    const dep = this.db
+      .exec(
+        `SELECT queue, COUNT(*) AS n FROM tasks WHERE status = 'blocked' AND blocked_deps IS NOT NULL${qf} GROUP BY queue`,
+        ...qArgs,
+      )
+      .toArray();
+    const parked = this.db
+      .exec(`SELECT queue, not_before FROM tasks WHERE status = 'parked' AND not_before IS NOT NULL${qf}`, ...qArgs)
+      .toArray();
+    const termArgs = queueFilter !== null ? [since7Iso, queueFilter] : [since7Iso];
+    const t7 = this.db
+      .exec(
+        `SELECT t.queue AS queue, COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?${queueFilter !== null ? " AND t.queue = ?" : ""} GROUP BY t.queue`,
+        ...termArgs,
+      )
+      .toArray();
+    const term24Args = queueFilter !== null ? [since24Iso, queueFilter] : [since24Iso];
+    const t24 = this.db
+      .exec(
+        `SELECT t.queue AS queue, COUNT(*) AS n FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?${queueFilter !== null ? " AND t.queue = ?" : ""} GROUP BY t.queue`,
+        ...term24Args,
+      )
+      .toArray();
+    const num = (v: unknown): number => (typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : 0);
+    const str = (v: unknown): string => (typeof v === "string" ? v : "");
+    return {
+      statusCounts: counts.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        status: str((r as Record<string, unknown>)["status"]),
+        count: num((r as Record<string, unknown>)["n"]),
+      })),
+      atCapQueued: atCap.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        count: num((r as Record<string, unknown>)["n"]),
+      })),
+      oldestQueuedAt: oldest.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        oldest:
+          typeof (r as Record<string, unknown>)["oldest"] === "string"
+            ? ((r as Record<string, unknown>)["oldest"] as string)
+            : null,
+      })),
+      depBlocked: dep.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        count: num((r as Record<string, unknown>)["n"]),
+      })),
+      parkedNotBefore: parked.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        not_before: str((r as Record<string, unknown>)["not_before"]),
+      })),
+      terminal7: t7.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        count: num((r as Record<string, unknown>)["n"]),
+      })),
+      terminal24: t24.map((r) => ({
+        queue: str((r as Record<string, unknown>)["queue"]),
+        count: num((r as Record<string, unknown>)["n"]),
+      })),
+    };
   }
 
   async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {

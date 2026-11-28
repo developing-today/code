@@ -10,6 +10,18 @@ description = "One multicall binary for the fleet's tools: search, queue, dispat
 name = "fleet"
 path = "src/main.rs"
 
+# Library target for the `id` domain modules (fix for #16333): the
+# package was bin-only, so `cargo test -p fleet --lib ...` failed
+# with "no library targets found". The lib exposes the `id` module
+# closure (`id_key`, `id_postcard`, `id_proxy`, `id_serve` — the only
+# modules those reference via `crate::`) so the `id_serve` golden
+# tests also run under `--lib`. The binary keeps its own `mod` tree
+# unchanged; with `--no-default-features` (no `id` feature) the lib
+# target is empty and still compiles.
+[lib]
+name = "fleet"
+path = "src/lib.rs"
+
 [dependencies]
 fleet-registry = { workspace = true }
 fleet-config = { workspace = true }
@@ -78,6 +90,17 @@ getrandom = { version = "0.3", optional = true }
 # The relay-aware ID proxy uses native iroh QUIC and Tokio I/O only in the
 # working-seat id client; connect/serve artifacts do not link this transport.
 iroh = { version = "1.5", optional = true }
+# Slice 3 (#15435, design §4.4): postcard-native framing for the
+# mode-3 initiator. Same major version as id-sync; `alloc` only, no
+# std-dependent features beyond what fleet already links.
+postcard = { version = "1", features = ["alloc"], optional = true }
+# Slice 5 (#15399, design §4.5): BLAKE3 digests on chunked envelope
+# transfers, and SHA-1 for the RFC 6455 Sec-WebSocket-Accept
+# handshake. Both crates are already in this workspace's lock file
+# as transitive dependencies.
+blake3 = { version = "1", optional = true }
+sha1 = { version = "0.11", optional = true }
+serde = { workspace = true, optional = true }
 tokio = { version = "1", features = [
   "io-std",
   "io-util",
@@ -222,8 +245,14 @@ id = [
   "dep:zeroize",
   "dep:getrandom",
   "dep:iroh",
+  "dep:postcard",
+  "dep:serde",
+  "dep:sha2",
   "dep:tokio",
   "dep:url",
+  "dep:blake3",
+  "dep:sha1",
+  "dep:base64",
 ]
 
 [dev-dependencies]

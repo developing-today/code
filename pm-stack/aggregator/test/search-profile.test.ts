@@ -72,9 +72,7 @@ describe("search-profile args — strict contract", () => {
       throw new Error(`exit:${c}`);
     }) as typeof process.exit;
     try {
-      expect(() => parseProfileArgs(["--query", "fleet", "--live", "--large-registry", "28479"])).toThrow(
-        "exit:2",
-      );
+      expect(() => parseProfileArgs(["--query", "fleet", "--live", "--large-registry", "28479"])).toThrow("exit:2");
       expect(() => parseProfileArgs(["--query", "fleet", "--large-registry", "1e3"])).toThrow("exit:2");
     } finally {
       process.exit = exit;

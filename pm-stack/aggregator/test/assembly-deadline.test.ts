@@ -301,7 +301,9 @@ describe("dashboard assembly deadline (#5664)", () => {
       // served fresh and unmarked — the disk copy is only the fallback
       // for an assembly that outlives the grace.
       const after = createDashboardResponseDeadline({ timeoutMs: 60_000, coldStaleGraceMs: 500, persistDir: dir });
-      const fresh = await after(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "new" }));
+      const fresh = await after(new Request("http://localhost/api/program.json"), async () =>
+        Response.json({ v: "new" }),
+      );
       expect(fresh.status).toBe(200);
       expect(fresh.headers.get("x-aggregator-stale")).toBeNull();
       expect(await fresh.json()).toEqual({ v: "new" });

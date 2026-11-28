@@ -33,6 +33,7 @@ updates:
       - "/pkgs/dot-bridge/site"
       - "/pkgs/fleet/hosted-worker"
       - "/pkgs/github-ci/worker"
+      - "/pkgs/hosted-primitives"
       - "/pkgs/id/browser"
       - "/pkgs/identity/web"
       - "/pkgs/id/hosted-worker"

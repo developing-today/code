@@ -24,7 +24,7 @@
 // ready_condition, blocked_deps, ledger platform fields stay text)
 // travel as parsed values, everything else as stored scalars.
 
-import type { Json, JsonObject } from "./queue-validate.ts";
+import { isObj, type Json, type JsonObject } from "./queue-validate.ts";
 
 export interface TaskRow {
   id: number;
@@ -135,14 +135,46 @@ export const NO_DEP_PROBE: QueueDepProbe = {
   probeCi: () => ({ tag: "failed", evidence: "no github probe configured on this broker" }),
 };
 
+export interface HealthSnapshot {
+  /** Per (queue, status) task counts — the GROUP BY core of verbHealth. */
+  statusCounts: Array<{ queue: string; status: string; count: number }>;
+  /** Queued rows at the attempt cap, per queue. */
+  atCapQueued: Array<{ queue: string; count: number }>;
+  /** Oldest queued created_at per queue (null when none). */
+  oldestQueuedAt: Array<{ queue: string; oldest: string | null }>;
+  /** Blocked rows carrying a dep payload, per queue. */
+  depBlocked: Array<{ queue: string; count: number }>;
+  /** Parked rows with a not_before set — the caller validates
+   *  malformed entries (bounded: parked subset only). */
+  parkedNotBefore: Array<{ queue: string; not_before: string }>;
+  /** Terminal events in the 7d window, per task queue (join). */
+  terminal7: Array<{ queue: string; count: number }>;
+  /** Terminal events in the 24h window, per task queue (join). */
+  terminal24: Array<{ queue: string; count: number }>;
+}
+
 export interface QueueStore {
   /** Insert a task row; returns the stored row (id assigned). */
   insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow>;
   getTask(id: number): Promise<TaskRow | null>;
   /** Rows in one queue with this dedupe key, id ASC (enqueue dedupe). */
   tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]>;
-  /** Every task row, id ASC (claim scans, health, identity checks). */
+  /** Every task row, id ASC (claim scans, list verbs). Prefer a
+   *  bounded reader below on large D1 tables: full loads exceed the
+   *  50 MB D1 response cap on production-shaped data (#14987). */
   allTasks(): Promise<TaskRow[]>;
+  /** Bounded enqueue-dedupe scan (#14987 CF-2b): live-status rows
+   *  whose payload kind matches, id ASC — the same rows
+   *  liveIdentityHolder examined via allTasks, without the full
+   *  table load. */
+  liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]>;
+  /** Bounded lease-expiry scan (#14987 CF-2b): claimed rows whose
+   *  lease lapsed before nowIso, id ASC. */
+  claimedExpired(nowIso: string): Promise<TaskRow[]>;
+  /** Bounded health aggregates (#14987 CF-2b): GROUP BY counts and
+   *  joins only — never full task/event loads, never per-task
+   *  getTask. queueFilter null means all queues. */
+  healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot>;
   /**
    * THE conditional update: apply `set` to task `id` only if every
    * `guard` field still equals its expected value; returns whether
@@ -252,6 +284,71 @@ export class FixtureQueueStore implements QueueStore {
 
   async allTasks(): Promise<TaskRow[]> {
     return [...this.tasks.values()].sort((a, b) => a.id - b.id).map((t) => clone(t));
+  }
+
+  async liveIdentityCandidates(kind: string, statuses: string[]): Promise<TaskRow[]> {
+    const live = new Set(statuses);
+    return [...this.tasks.values()]
+      .filter((t) => live.has(t.status))
+      .filter((t) => isObj(t.payload) && (t.payload as Record<string, unknown>)["kind"] === kind)
+      .sort((a, b) => a.id - b.id)
+      .map((t) => clone(t));
+  }
+
+  async claimedExpired(nowIso: string): Promise<TaskRow[]> {
+    return [...this.tasks.values()]
+      .filter((t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < nowIso)
+      .sort((a, b) => a.id - b.id)
+      .map((t) => clone(t));
+  }
+
+  async healthSnapshot(queueFilter: string | null, since24Iso: string, since7Iso: string): Promise<HealthSnapshot> {
+    const tasks = [...this.tasks.values()].filter((t) => queueFilter === null || t.queue === queueFilter);
+    const statusKey = (t: TaskRow) => `${t.queue}\0${t.status}`;
+    const statusMap = new Map<string, { queue: string; status: string; count: number }>();
+    for (const t of tasks) {
+      const k = statusKey(t);
+      const e = statusMap.get(k) ?? { queue: t.queue, status: t.status, count: 0 };
+      e.count += 1;
+      statusMap.set(k, e);
+    }
+    const atCap = new Map<string, number>();
+    const oldest = new Map<string, string>();
+    const dep = new Map<string, number>();
+    const parkedNotBefore: Array<{ queue: string; not_before: string }> = [];
+    for (const t of tasks) {
+      if (t.status === "queued") {
+        if (t.attempts >= t.max_attempts) atCap.set(t.queue, (atCap.get(t.queue) ?? 0) + 1);
+        const o = oldest.get(t.queue);
+        if (o === undefined || t.created_at < o) oldest.set(t.queue, t.created_at);
+      }
+      if (t.status === "blocked" && t.blocked_deps !== null) dep.set(t.queue, (dep.get(t.queue) ?? 0) + 1);
+      if (t.status === "parked" && t.not_before !== null) {
+        parkedNotBefore.push({ queue: t.queue, not_before: t.not_before });
+      }
+    }
+    const taskQueue = new Map<number, string>();
+    for (const t of tasks) taskQueue.set(t.id, t.queue);
+    const t7 = new Map<string, number>();
+    const t24 = new Map<string, number>();
+    for (const e of this.events) {
+      if ((e.kind !== "completed" && e.kind !== "failed") || e.task_id === null) continue;
+      if (!(e.created_at > since7Iso)) continue;
+      const q = taskQueue.get(e.task_id);
+      if (q === undefined) continue;
+      t7.set(q, (t7.get(q) ?? 0) + 1);
+      if (e.created_at > since24Iso) t24.set(q, (t24.get(q) ?? 0) + 1);
+    }
+    const byQueue = (m: Map<string, number>) => [...m.entries()].map(([queue, count]) => ({ queue, count }));
+    return {
+      statusCounts: [...statusMap.values()],
+      atCapQueued: byQueue(atCap),
+      oldestQueuedAt: [...oldest.entries()].map(([queue, oldestTs]) => ({ queue, oldest: oldestTs })),
+      depBlocked: byQueue(dep),
+      parkedNotBefore,
+      terminal7: byQueue(t7),
+      terminal24: byQueue(t24),
+    };
   }
 
   async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {

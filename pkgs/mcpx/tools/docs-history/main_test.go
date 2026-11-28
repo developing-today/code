@@ -458,3 +458,41 @@ func TestTrailingValueFlagsExitWithUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownFlagsExitWithUsage(t *testing.T) {
+	if args := os.Getenv("DOCS_HISTORY_TEST_ARGS"); args != "" {
+		os.Args = append([]string{"docs-history"}, strings.Fields(args)...)
+		main()
+		return
+	}
+
+	// #16402: an unrecognized dash-led token is a usage error naming
+	// the token (exit 2), never a file operand that fails opaquely.
+	for _, tc := range []struct {
+		args string
+		flag string
+	}{
+		{"render --agant docs/foo.md", "--agant"},
+		{"stamp --version 1.2.3 --date 2026-01-01 --bogus docs/foo.md", "--bogus"},
+		{"check --trivail docs/foo.md", "--trivail"},
+	} {
+		t.Run(tc.args, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestUnknownFlagsExitWithUsage$")
+			cmd.Env = append(os.Environ(), "DOCS_HISTORY_TEST_ARGS="+tc.args)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("command %q succeeded; want exit code 2:\n%s", tc.args, output)
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 2 {
+				t.Fatalf("command %q error = %v; want exit code 2:\n%s", tc.args, err, output)
+			}
+			if strings.Contains(string(output), "panic:") {
+				t.Fatalf("command %q panicked:\n%s", tc.args, output)
+			}
+			if !strings.Contains(string(output), tc.flag) || !strings.Contains(string(output), "usage:") {
+				t.Fatalf("command %q did not name the flag and print usage:\n%s", tc.args, output)
+			}
+		})
+	}
+}

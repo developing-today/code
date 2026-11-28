@@ -892,9 +892,9 @@ function payloadNonEmpty(row: TaskRow): boolean {
 async function expireLeases(store: QueueStore, env: QueueEnv): Promise<number> {
   const now = nowIso(env);
   let expired = 0;
-  const rows = (await store.allTasks()).filter(
-    (t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < now,
-  );
+  // Bounded CF-2b scan (#14987): claimed-expired rows only, via the
+  // (status, lease_until) index — never a full task load.
+  const rows = await store.claimedExpired(now);
   for (const row of rows) {
     const toSink = handoffShape(progressOf(row));
     const [progress, cleared] = clearBinding(row.progress, "expire_leases", env);
@@ -1413,6 +1413,7 @@ interface WorkIdentity {
   repo: string;
   issue: number;
   family: string;
+  promptId: string | null;
   key: string;
 }
 
@@ -1452,11 +1453,23 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
   if (payload["dedupe_exempt"] === true) return null;
   const kind = typeof payload["kind"] === "string" ? payload["kind"] : "";
   const family =
-    kind === "small_fix" ? "fix" : kind === "triage" ? "triage" : kind === "pr_shepherd" ? "pr_shepherd" : null;
+    kind === "small_fix"
+      ? "fix"
+      : kind === "triage"
+        ? "triage"
+        : kind === "pr_shepherd"
+          ? "pr_shepherd"
+          : kind === "prompt"
+            ? "prompt"
+            : null;
   if (family === null) return null;
+  const promptObj = payload["prompt"];
+  const promptId =
+    kind === "prompt" && isObj(promptObj) && typeof promptObj["id"] === "string" ? promptObj["id"] : null;
+  if (kind === "prompt" && promptId === null) return null;
   const issueObj = payload["issue"];
-  const issue = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
-  if (issue === null || issue <= 0) return null;
+  const issue = kind === "prompt" ? 0 : isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
+  if (issue === null || (kind !== "prompt" && issue <= 0)) return null;
   const repo = taskRepoIdentity(row);
   if (repo === null) return null;
   let prs: number[] = [];
@@ -1471,8 +1484,11 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
     if (Array.isArray(prsRaw)) for (const el of prsRaw) collect(el);
     prs = [...prs].sort((a, b) => a - b);
   }
-  const key = `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
-  return { kind, repo, issue, family, key };
+  const key =
+    promptId !== null
+      ? `${repo}#${promptId}`
+      : `${repo}#${issue}:${family}` + (prs.length > 0 ? `:pr${prs.join(",")}` : "");
+  return { kind, repo, issue, family, promptId, key };
 }
 
 function dedupeOverride(packet: JsonObject): string | null {
@@ -1491,12 +1507,20 @@ function holdsIdentity(store: QueueStore, env: QueueEnv, row: TaskRow, identity:
 }
 
 async function liveIdentityHolder(store: QueueStore, env: QueueEnv, identity: WorkIdentity): Promise<TaskRow | null> {
-  for (const row of await store.allTasks()) {
+  // Bounded CF-2b scan (#14987): live-status rows of this payload
+  // kind only — never the full 378 MB / 23k-row table that trips
+  // the 50 MB D1 response cap. The store filters by status + the
+  // top-level payload kind; the key + guard checks below stay in JS
+  // (they need the parsed payload and the claim-guard rule).
+  const candidates = await store.liveIdentityCandidates(identity.kind, [...LIVE_STATUSES]);
+  for (const row of candidates) {
     const payload = taskPayload(row);
     if (payload["kind"] !== identity.kind) continue;
-    const issueObj = payload["issue"];
-    const n = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
-    if (n !== identity.issue) continue;
+    if (identity.promptId === null) {
+      const issueObj = payload["issue"];
+      const n = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
+      if (n !== identity.issue) continue;
+    }
     if (holdsIdentity(store, env, row, identity)) return row;
   }
   return null;
@@ -3466,12 +3490,9 @@ async function verbBind(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
   // migration-0026, so error-stopped recovery deleted the session
   // but never cleared the binding.
   const recoveryReasons: Record<string, string> = {
-    "opencode-claimant-recovery:zero-message-deleted":
-      "verified zero-message session deleted before recovery",
-    "opencode-claimant-recovery:gone-session":
-      "bound session verified absent before recovery",
-    "opencode-claimant-recovery:error-stopped":
-      "verified error-stopped session deleted before recovery",
+    "opencode-claimant-recovery:zero-message-deleted": "verified zero-message session deleted before recovery",
+    "opencode-claimant-recovery:gone-session": "bound session verified absent before recovery",
+    "opencode-claimant-recovery:error-stopped": "verified error-stopped session deleted before recovery",
   };
   const recoveryReason = recoveryReasons[launchedBy];
   if (recoveryReason !== undefined) {
@@ -3731,42 +3752,33 @@ async function verbHealth(store: QueueStore, env: QueueEnv, req: Req): Promise<R
     }
     return e;
   };
-  const countKeys = ["queued", "claimed", "parked", "handed_off", "blocked", "done", "cancelled", "failed"] as const;
-  for (const t of await store.allTasks()) {
-    if (queueFilter !== undefined && t.queue !== queueFilter) continue;
-    const e = ensure(t.queue);
-    e.total += 1;
-    if ((countKeys as readonly string[]).includes(t.status)) {
-      e[t.status as (typeof countKeys)[number]] += 1;
-    }
-    if (t.status === "queued") {
-      if (t.attempts >= t.max_attempts) e.at_cap_queued += 1;
-      if (e.oldest_queued_at === null || t.created_at < e.oldest_queued_at) {
-        e.oldest_queued_at = t.created_at;
-      }
-    }
-    if (t.status === "blocked" && t.blocked_deps !== null) e.dep_blocked += 1;
-    if (
-      t.status === "parked" &&
-      t.not_before !== null &&
-      validateNotBeforeAt(t.not_before, "not_before", nowEpoch) !== null
-    ) {
-      e.malformed_parked += 1;
-    }
-  }
+  // Bounded CF-2b aggregates (#14987): GROUP BY counts and indexed
+  // joins only — never a full task/event load, never per-task
+  // getTask — so a production-shaped D1 table stays far under the
+  // 50 MB response cap.
   const since7 = iso(nowEpoch - 7 * 86400);
   const since24 = iso(nowEpoch - 24 * 3600);
-  for (const ev of await store.allEvents()) {
-    if (ev.kind !== "completed" && ev.kind !== "failed") continue;
-    if (ev.task_id === null) continue;
-    if (!(ev.created_at > since7)) continue;
-    const task = await store.getTask(ev.task_id);
-    if (task === null) continue;
-    if (queueFilter !== undefined && task.queue !== queueFilter) continue;
-    const e = ensure(task.queue);
-    e.terminal_events_7d += 1;
-    if (ev.created_at > since24) e.terminal_events_24h += 1;
+  const snap = await store.healthSnapshot(queueFilter ?? null, since24, since7);
+  const countKeys = ["queued", "claimed", "parked", "handed_off", "blocked", "done", "cancelled", "failed"] as const;
+  for (const r of snap.statusCounts) {
+    const e = ensure(r.queue);
+    e.total += r.count;
+    if ((countKeys as readonly string[]).includes(r.status)) {
+      e[r.status as (typeof countKeys)[number]] += r.count;
+    }
   }
+  for (const r of snap.atCapQueued) ensure(r.queue).at_cap_queued += r.count;
+  for (const r of snap.oldestQueuedAt) {
+    if (r.oldest !== null) ensure(r.queue).oldest_queued_at = r.oldest;
+  }
+  for (const r of snap.depBlocked) ensure(r.queue).dep_blocked += r.count;
+  for (const p of snap.parkedNotBefore) {
+    if (validateNotBeforeAt(p.not_before, "not_before", nowEpoch) !== null) {
+      ensure(p.queue).malformed_parked += 1;
+    }
+  }
+  for (const r of snap.terminal7) ensure(r.queue).terminal_events_7d += r.count;
+  for (const r of snap.terminal24) ensure(r.queue).terminal_events_24h += r.count;
   const d = await store.describe();
   return ok({
     project_netloc: d.netloc,

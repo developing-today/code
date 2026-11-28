@@ -7,11 +7,11 @@
   "toolchain": "1.99.1",
   "lockfile": "0000000000000000000000000000000000000000000000000000000000000000",
   "features": [
-    {"name": "dht", "crates": ["id-cli@0.1.0", "id-sync@0.1.0"]},
-    {"name": "directory", "crates": ["id-directory@0.1.0"]},
-    {"name": "sandbox-exec", "crates": ["id-caps@0.1.0", "id-cli@0.1.0", "id-core@0.1.0", "id-worlds@0.1.0"]},
-    {"name": "serve", "crates": []},
-    {"name": "store-turso", "crates": ["id-store@0.1.0"]},
-    {"name": "world-state", "crates": ["id-cli@0.1.0", "id-core@0.1.0"]}
+    { "name": "dht", "crates": ["id-cli@0.1.0", "id-sync@0.1.0"] },
+    { "name": "directory", "crates": ["id-directory@0.1.0"] },
+    { "name": "sandbox-exec", "crates": ["id-caps@0.1.0", "id-cli@0.1.0", "id-core@0.1.0", "id-worlds@0.1.0"] },
+    { "name": "serve", "crates": [] },
+    { "name": "store-turso", "crates": ["id-store@0.1.0"] },
+    { "name": "world-state", "crates": ["id-cli@0.1.0", "id-core@0.1.0"] }
   ]
 }

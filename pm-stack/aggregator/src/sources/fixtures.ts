@@ -1368,19 +1368,22 @@ export function fixtureSource(): Source {
   const largeRegistryCount = rawLargeRegistry && /^\d+$/.test(rawLargeRegistry) ? Number(rawLargeRegistry) : 0;
   const registry =
     Number.isSafeInteger(largeRegistryCount) && largeRegistryCount > 0 && largeRegistryCount <= 100_000
-      ? Array.from({ length: largeRegistryCount }, (_, index): SessionRecord => ({
-          id: `synthetic-session-${index}`,
-          source: "opencode-sandbox",
-          label: index % 10 === 0 ? `Fleet search session ${index}` : `Synthetic session ${index}`,
-          title: `Registry fixture ${index}`,
-          agentId: "opencode:search-profile",
-          agentLabel: "Search profile",
-          parentId: null,
-          status: "complete",
-          model: "fixture-model",
-          directory: `/search-profile/session-${index}`,
-          taskRefs: [],
-        }))
+      ? Array.from(
+          { length: largeRegistryCount },
+          (_, index): SessionRecord => ({
+            id: `synthetic-session-${index}`,
+            source: "opencode-sandbox",
+            label: index % 10 === 0 ? `Fleet search session ${index}` : `Synthetic session ${index}`,
+            title: `Registry fixture ${index}`,
+            agentId: "opencode:search-profile",
+            agentLabel: "Search profile",
+            parentId: null,
+            status: "complete",
+            model: "fixture-model",
+            directory: `/search-profile/session-${index}`,
+            taskRefs: [],
+          }),
+        )
       : FIXTURE_REGISTRY;
   const provenance: Provenance = {
     board: "fixtures",

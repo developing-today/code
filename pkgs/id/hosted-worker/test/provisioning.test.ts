@@ -183,7 +183,11 @@ test("bucket binding must match the authoritative jurisdiction", () => {
 
     const invalidBindings: unknown[] = [
       ...cases.map((c) => c.binding).filter((candidate) => candidate !== binding),
-      "", "BLOBS", "UNKNOWN", undefined, null,
+      "",
+      "BLOBS",
+      "UNKNOWN",
+      undefined,
+      null,
     ];
     for (const invalidBinding of invalidBindings) {
       // Runtime configuration can omit a required TypeScript field.

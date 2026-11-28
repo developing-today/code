@@ -188,9 +188,7 @@ function registryCandidateIndices(query: string, records: SessionRecord[]): numb
     const available = postings as Uint32Array[];
     const seed = available.reduce((smallest, posting) => (posting.length < smallest.length ? posting : smallest));
     const remaining = available.filter((posting) => posting !== seed);
-    indexed = Array.from(seed).filter((candidate) =>
-      remaining.every((posting) => containsSorted(posting, candidate)),
-    );
+    indexed = Array.from(seed).filter((candidate) => remaining.every((posting) => containsSorted(posting, candidate)));
   }
   if (index.overflowRecords.length === 0) return indexed;
   return [...new Set([...indexed, ...index.overflowRecords])].sort((a, b) => a - b);

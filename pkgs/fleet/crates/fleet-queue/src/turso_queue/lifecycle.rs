@@ -138,188 +138,8 @@ pub(crate) fn cleared_session_id(task: &Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
-/// Whether an EXISTING ledger row flips to direct (#8187): only an
-/// opencode row, only when the caller passes --exclusion-reason
-/// (a Muse lane taking a sink/legacy opencode task direct), and
-/// never once a session is bound (session_id set) — a bound row's
-/// assignment is history, not a routing decision. Claimant flows
-/// that pass no exclusion keep their existing assignment.
-pub(crate) fn lane_reassignment_flip(
-    assigned_lane: &str,
-    session_id: Option<&str>,
-    exclusion: Option<&str>,
-) -> bool {
-    assigned_lane == "opencode"
-        && exclusion.is_some()
-        && session_id.map(str::trim).unwrap_or("").is_empty()
-}
-
-/// Whether an EXISTING direct ledger row flips to opencode
-/// (#8210): only a direct row, only when the caller passes
-/// --opencode-reason (a Muse session sending its task to
-/// opencode with a stated reason), and never once a session is
-/// bound — the mirror of lane_reassignment_flip. Before #8210 the
-/// existing-row path of verb_lane only flipped opencode -> direct,
-/// so a lane that had claimed a task (fresh direct ledger row)
-/// had no way to record an opencode assignment on it at all.
-pub(crate) fn lane_flip_to_opencode(
-    assigned_lane: &str,
-    session_id: Option<&str>,
-    opencode_reason: Option<&str>,
-) -> bool {
-    assigned_lane == "direct"
-        && !opencode_reason.map(str::trim).unwrap_or("").is_empty()
-        && session_id.map(str::trim).unwrap_or("").is_empty()
-}
-
-/// Platform limitation validity (#8210 — Drew: a task may be
-/// limited to muse or opencode "but better be good reason"). A
-/// limitation is an EXCEPTION beside the open default: it exists
-/// only with a reason recorded next to it. A stored limitation
-/// whose reason is blank is invalid — never enforced; the
-/// transfer path clears it and records the clearing.
-pub(crate) fn platform_limit_invalid(limit: Option<&str>, reason: Option<&str>) -> bool {
-    !limit.map(str::trim).unwrap_or("").is_empty() && reason.map(str::trim).unwrap_or("").is_empty()
-}
-
-/// Why a requested limitation cannot be recorded, or None when
-/// it can: the family must be a real platform family (#8187's
-/// vocabulary), and the reason must be present and non-blank —
-/// the lane verb refuses the set otherwise. A reason without a
-/// limitation is likewise refused (it would record nothing).
-pub(crate) fn platform_limit_error(limit: Option<&str>, reason: Option<&str>) -> Option<String> {
-    let l = limit.map(str::trim).unwrap_or("");
-    let r = reason.map(str::trim).unwrap_or("");
-    if l.is_empty() {
-        if !r.is_empty() {
-            return Some("platform_limit_reason requires a platform_limit to limit".to_string());
-        }
-        return None;
-    }
-    if let Err(e) = parse_platform(Some(l)) {
-        return Some(e);
-    }
-    if r.is_empty() {
-        return Some(format!(
-            "a platform limitation requires a recorded reason \
-             (--limit-reason): a task is limited to '{l}' only for \
-             a good reason, recorded on the task"
-        ));
-    }
-    None
-}
-
-/// Transfer refusal for a platform limitation (#8210), or None
-/// when the limitation does not bind this claim: no limitation,
-/// an invalid (reason-less) limitation — those are cleared, not
-/// enforced — or a limitation naming the claimer's own family.
-/// A valid limitation refuses every other family, and refuses a
-/// claim that declares no family at all (it cannot show it is
-/// the allowed one). The refusal names the limitation and its
-/// recorded reason.
-pub(crate) fn platform_limit_refusal(
-    limit: Option<&str>,
-    reason: Option<&str>,
-    family: Option<&str>,
-) -> Option<String> {
-    let l = limit.map(str::trim).unwrap_or("");
-    if l.is_empty() || platform_limit_invalid(limit, reason) {
-        return None;
-    }
-    let r = reason.map(str::trim).unwrap_or("");
-    match family {
-        Some(f) if f == l => None,
-        Some(f) => Some(format!(
-            "task is limited to platform '{l}' (reason: {r}); \
-             a '{f}' transfer-claim cannot take it"
-        )),
-        None => Some(format!(
-            "task is limited to platform '{l}' (reason: {r}); \
-             the transfer-claim must declare its platform family to take it"
-        )),
-    }
-}
-
-/// Session-to-session transfer refusal (#8210), or None when the
-/// transfer may proceed. Pure over the gathered marks so the
-/// tests pin every guard without a live store; claim_transfer
-/// runs this BEFORE any mutation, so a refusal leaves the
-/// original claim untouched. Guards, in order:
-/// - the row must be claimed under a live lease — terminal rows,
-///   queued rows and parked rows (genuine broker wait-parks stay
-///   excluded from by-id taking, exactly as by_id_claimable has
-///   them) are not transfer sources;
-/// - from_session must match a holder session mark: the bound
-///   progress.session_id, a progress.from_session the holder
-///   checkpointed, or the session on the task's latest claimed
-///   event — only the current holder can give a task away;
-/// - a row already bound to a session that is neither the passer
-///   nor the claiming session refuses: that binding is a live
-///   launch, not a pass.
-pub(crate) fn transfer_refusal(
-    row: &Value,
-    from_session: &str,
-    claimed_event_session: Option<&str>,
-    ledger_session: Option<&str>,
-    new_session: Option<&str>,
-    now: &str,
-) -> Option<String> {
-    let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    if status != "claimed" {
-        return Some(format!(
-            "task is {status}, not claimed: only a live claim can be transferred"
-        ));
-    }
-    let lease = row
-        .get("lease_until")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if lease <= now {
-        return Some("the holder's lease is not live: no live claim to transfer".to_string());
-    }
-    if from_session.trim().is_empty() {
-        return Some("from_session is empty".to_string());
-    }
-    let progress = row.get("progress").cloned().unwrap_or(json!({}));
-    let bound = progress
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let offered = progress
-        .get("from_session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let marks = [bound, offered, claimed_event_session.unwrap_or("")];
-    if !marks.iter().any(|m| !m.is_empty() && *m == from_session) {
-        return Some(
-            "from_session does not match the current holder's session mark: \
-             only the current holder can give this task away"
-                .to_string(),
-        );
-    }
-    for existing in [bound, ledger_session.unwrap_or("")] {
-        if !existing.is_empty() && existing != from_session && Some(existing) != new_session {
-            return Some(format!(
-                "task is already bound to session {existing}: \
-                 a bound launch is not a transfer"
-            ));
-        }
-    }
-    None
-}
-
-/// The transfer UPDATE (#8210): one conditional statement moves
-/// a live claim holder -> claimer. Status stays 'claimed',
-/// attempts are NOT touched (a transfer is not a new attempt),
-/// and the WHERE re-checks the status and the HOLDER worker read
-/// above, so a competing transition in between loses cleanly
-/// (0 rows -> refusal, original claim intact).
-pub(crate) fn transfer_update_sql() -> &'static str {
-    "UPDATE tasks SET worker_id = ?, claimed_at = ?, lease_until = ?, \
-       lane_id = ?, platform = COALESCE(?, platform), \
-       park_kind = NULL, wait_kind = NULL, not_before = NULL, updated_at = ? \
-     WHERE id = ? AND status = 'claimed' AND worker_id = ?"
-}
+// Lane-assignment flips, platform limitations, and transfer guards live in
+// lifecycle_limits.rs (split for #16255); re-exported through turso_queue.
 
 /// The claim preamble (#8217: shared by the single claim and
 /// the batch claim): validate the caller's lane against the
@@ -415,6 +235,7 @@ pub(crate) fn claim_pick_once(
     lease_seconds: i64,
     family: Option<String>,
     claim_session: Option<String>,
+    resume_fallback: Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
     remaining_budget_minutes: Option<i64>,
@@ -629,23 +450,36 @@ pub(crate) fn claim_pick_once(
     if let Some(old) = &cleared {
         on_binding_cleared(t, &worker, id, old, "claim_repo_task")?;
     }
+    let mut claim_detail = json!({
+        "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
+        "cleared_session_id": cleared, "lane_id": lane,
+        "platform": family, "session_id": claim_session,
+        "model_provider": model.as_ref().map(|m| m.provider.clone()),
+        "model_id": model.as_ref().and_then(|m| m.model.clone()),
+        "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
+        "pick": if handoff_pick { "handed_off" } else { "default" },
+    });
+    // #9178 §1 (FDR-0001), claim-wire slice: same requested/actual
+    // pair as the by-id path, plus the fallback reason (explicit
+    // null when the claim names none); unhinted picks stay
+    // byte-identical.
+    if let Some(requested) = row.get("resume_session_id").and_then(|v| v.as_str()) {
+        claim_detail["resume_requested_session_id"] = json!(requested);
+        claim_detail["resume_actual_session_id"] = claim_session
+            .as_deref()
+            .map(|s| json!(s))
+            .unwrap_or(Value::Null);
+        claim_detail["resume_fallback"] = resume_fallback
+            .as_deref()
+            .map(|f| json!(f))
+            .unwrap_or(Value::Null);
+    }
     event(
         t,
         Some(&worker),
         Some(id),
         "claimed",
-        &with_marks(
-            &json!({
-                "lease_seconds": lease_seconds, "via": "claim_repo_task_turso",
-                "cleared_session_id": cleared, "lane_id": lane,
-                "platform": family, "session_id": claim_session,
-                "model_provider": model.as_ref().map(|m| m.provider.clone()),
-                "model_id": model.as_ref().and_then(|m| m.model.clone()),
-                "model_variant": model.as_ref().and_then(|m| m.variant.clone()),
-                "pick": if handoff_pick { "handed_off" } else { "default" },
-            }),
-            &row,
-        ),
+        &with_marks(&claim_detail, &row),
     )?;
     Ok(Some(row))
 }
@@ -810,6 +644,7 @@ pub(crate) fn verb_claim_batch(
                 lease_seconds,
                 family.clone(),
                 claim_session.clone(),
+                None,
                 model,
                 handoff_pick,
                 remaining_budget_minutes,
@@ -914,6 +749,20 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // The claiming session's own id, when the surface knows it:
     // another mark for the claimed event, never required.
     let claim_session = req_str(req, "session_id").map(str::to_string);
+    // #9178 §1 (FDR-0001): the claimer's recorded reason when the
+    // session actually used is a fallback for the task's resume
+    // hint. Only the two FDR-0001 values exist; anything else is a
+    // caller error, never silently recorded or dropped.
+    let resume_fallback = match req_str(req, "resume_fallback") {
+        None => None,
+        Some(f @ ("missing_session" | "worktree_mismatch")) => Some(f.to_string()),
+        Some(other) => {
+            return fail(
+                2,
+                format!("claim_repo_task: unknown resume_fallback {other:?}"),
+            );
+        }
+    };
     // #8176: the claiming session's own model, stamped on the row
     // the claim returns (claim_provider / claim_model /
     // claim_variant). Absent fields stamp nothing.
@@ -1023,6 +872,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                 family.as_deref(),
                 &model,
                 claim_session.as_deref(),
+                resume_fallback.as_deref(),
                 &pool,
                 req_str(req, "manual_override"),
             );
@@ -1035,6 +885,7 @@ pub(crate) fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             lease_seconds,
             family,
             claim_session,
+            resume_fallback,
             &model,
             handoff_pick,
             remaining_budget_minutes,
@@ -2053,6 +1904,71 @@ pub(crate) fn park_required_budget(
     None
 }
 
+/// #9178 §2 (FDR-0002): the live manual-claim override a park must
+/// honor. Returns the recorded audit when the row carries a
+/// `result.manual_override` bound to the CURRENT claim and the
+/// incoming park's (wait_kind, ready_condition) equals the recorded
+/// previous pair — the owner already overrode exactly this
+/// condition, so a boot-time re-park for it must refuse. Anything
+/// else (no audit, a materially new condition, or a stale marker
+/// from an earlier claim — every claim stamps a fresh claimed_at,
+/// so the audit's claimed_at only matches the live claim) parks as
+/// before.
+pub(crate) fn manual_override_park_cover(
+    row: &Value,
+    wait_kind: &str,
+    condition: &Value,
+) -> Option<Value> {
+    let audit = row.get("result")?.get("manual_override")?;
+    if !audit.is_object() {
+        return None;
+    }
+    if audit.get("claimed_at") != row.get("claimed_at") {
+        return None;
+    }
+    if audit.get("previous_wait_kind").and_then(Value::as_str) != Some(wait_kind) {
+        return None;
+    }
+    let previous = audit
+        .get("previous_ready_condition")
+        .unwrap_or(&Value::Null);
+    if !same_wait_condition(previous, condition, wait_kind) {
+        return None;
+    }
+    Some(audit.clone())
+}
+
+/// #16392: is the incoming park's condition the SAME wait the audit
+/// recorded, for cover purposes? Exact equality is the base case,
+/// but a time condition's `until` is a lapse horizon minted fresh
+/// on every bare park (now + delay) — it is not what makes the wait
+/// the wait (#9179 (c)4's own framing). Two time conditions are
+/// therefore the same wait when everything except `until` matches,
+/// and a recorded NULL condition (older rows parked before a
+/// condition was always stored) matches a bare timer re-park: the
+/// recorded wait carried no explicit condition, so there is no
+/// materially new condition to honor instead.
+fn same_wait_condition(previous: &Value, incoming: &Value, wait_kind: &str) -> bool {
+    if previous == incoming {
+        return true;
+    }
+    if previous.is_null() {
+        return wait_kind == "timer"
+            && incoming.get("kind").and_then(Value::as_str) == Some("time");
+    }
+    let strip_until = |v: &Value| -> Value {
+        let mut obj = match v.as_object() {
+            Some(o) => o.clone(),
+            None => return v.clone(),
+        };
+        obj.remove("until");
+        Value::Object(obj)
+    };
+    previous.get("kind").and_then(Value::as_str) == Some("time")
+        && incoming.get("kind").and_then(Value::as_str) == Some("time")
+        && strip_until(previous) == strip_until(incoming)
+}
+
 pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -2111,6 +2027,41 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     // is later than the park's lapse term raises the lapse term —
     // the park must not resume into the unchanged condition.
     let (not_before, park_kind) = apply_time_condition_floor(&condition, not_before, park_kind);
+    // #9178 §2 (FDR-0002): a worker booting under a manual claim
+    // must not immediately re-park the task for the same unchanged
+    // condition the owner overrode. The cover binds to the live
+    // claim via claimed_at, so a stale marker from an earlier claim
+    // is inert and a materially new condition still parks.
+    if let Some(audit) = manual_override_park_cover(&row, wk, &condition) {
+        let detail = json!({
+            "reason": reason, "status": "claimed",
+            "via": "park_task", "refusal": "manual_override_honored",
+            "wait_kind": wk, "ready_condition": condition,
+            "manual_override": audit,
+        });
+        let _ = event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "park_refused",
+            &with_marks(&detail, &row),
+        );
+        return fail(
+            5,
+            format!(
+                "park_task: task {task_id} keeps its manual-claim override ({} at {}, reason: {}) — the recorded wait condition ({wk}) is unchanged, so the park is refused; a materially new condition may still park it",
+                audit
+                    .get("worker_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                audit
+                    .get("claimed_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                audit.get("reason").and_then(Value::as_str).unwrap_or("?"),
+            ),
+        );
+    }
     // #3418: the budget requirement this park records (explicit in
     // the request, or defaulted from the packet timebox for a
     // capacity wait). A capacity park stays timer-floored as
@@ -4018,6 +3969,171 @@ mod manual_claim_override_audit_tests {
     }
 
     #[test]
+    fn first_boot_honors_manual_override_same_condition_repark_refused_9178() {
+        // Oracle for #9178 §2's remaining criterion (FDR-0002): the
+        // boot trap — a worker booting under a manual claim whose
+        // supervision re-parks for the UNCHANGED recorded condition
+        // must keep the task claimed, with the honored override on
+        // the refusal record. A materially new condition may still
+        // park it, and the new condition is recorded.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91785)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            &t,
+            &json!({"worker": "boot-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        let condition = json!({"kind": "dependency", "on": ["queue:42"]});
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "waiting on dependency", "ready_condition": condition.clone(),
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "boot-worker", "queue": QUEUE, "task_id": id,
+                "session_id": "ses_boot_override",
+                "manual_override": "dependency independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["attempts"], 1);
+        let audit = row["result"]["manual_override"].clone();
+        assert_eq!(audit["previous_wait_kind"], "external");
+        assert_eq!(audit["previous_ready_condition"], condition);
+
+        // First boot: supervision re-evaluates the unchanged
+        // condition and re-parks. The override holds.
+        let boot = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "waiting on dependency", "ready_condition": condition.clone(),
+            }),
+        );
+        assert_eq!(
+            boot["ok"], false,
+            "same-condition re-park under a live manual override must refuse: {boot}"
+        );
+        assert!(
+            boot["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("manual-claim override")),
+            "{boot}"
+        );
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["worker_id"], "boot-worker");
+        assert_eq!(row["attempts"], 1);
+        assert_eq!(row["result"]["manual_override"], audit);
+        let refusals = events_for(&t, id, "park_refused");
+        assert_eq!(refusals.len(), 1, "one recorded refusal");
+        let detail: Value = serde_json::from_str(refusals[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["refusal"], "manual_override_honored");
+        assert_eq!(detail["manual_override"], audit);
+
+        // A materially new condition may still park, and records
+        // itself.
+        let new_condition = json!({"kind": "review", "by": "owner"});
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "boot-worker", "task_id": id,
+                "reason": "needs owner review", "ready_condition": new_condition.clone(),
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+        let row = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["wait_kind"], "review");
+        assert_eq!(row["ready_condition"], new_condition);
+        assert_eq!(row["result"]["park_reason"], "needs owner review");
+    }
+
+    #[test]
+    fn first_boot_honors_manual_override_default_timer_repark_refused_16392() {
+        // Oracle for #16392: a bare (default-timer) park stores
+        // {"kind": "time", "until": T1}; a bare re-park under the
+        // manual override mints a FRESH until (T2), so exact
+        // ready_condition equality can never hold — yet it is the
+        // unchanged wait and the §2 cover must still refuse it.
+        // Fixed explicit not_before values keep the repro
+        // deterministic (no wall-clock dependence).
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91786)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        let claimed = verb_claim(
+            &t,
+            &json!({"worker": "timer-boot-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        let parked = verb_park(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "task_id": id,
+                "reason": "supervision backoff", "not_before": "2027-01-01T00:00:00Z",
+            }),
+        );
+        assert_eq!(parked["ok"], true, "{parked}");
+        let before = get_task(&t, id).unwrap().expect("parked task row");
+        assert_eq!(before["wait_kind"], "timer", "{before}");
+        assert_eq!(before["ready_condition"]["kind"], "time", "{before}");
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "queue": QUEUE, "task_id": id,
+                "session_id": "ses_timer_boot_override",
+                "manual_override": "timer wait independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        let audit = row["result"]["manual_override"].clone();
+        assert_eq!(audit["previous_wait_kind"], "timer");
+        assert_eq!(audit["previous_ready_condition"], before["ready_condition"]);
+
+        // Boot re-parks bare with a later explicit not_before: the
+        // stored condition's until differs from the recorded one,
+        // but the wait is unchanged — the override must hold.
+        let boot = verb_park(
+            &t,
+            &json!({
+                "worker": "timer-boot-worker", "task_id": id,
+                "reason": "supervision backoff", "not_before": "2027-06-01T00:00:00Z",
+            }),
+        );
+        assert_eq!(
+            boot["ok"], false,
+            "default-timer re-park under a live manual override must refuse: {boot}"
+        );
+        assert!(
+            boot["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("manual-claim override")),
+            "{boot}"
+        );
+        let row = get_task(&t, id).unwrap().expect("task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["result"]["manual_override"], audit);
+        let refusals = events_for(&t, id, "park_refused");
+        assert_eq!(refusals.len(), 1, "one recorded refusal");
+        let detail: Value = serde_json::from_str(refusals[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["refusal"], "manual_override_honored");
+    }
+
+    #[test]
     fn ordinary_queued_by_id_claim_keeps_attempt_increment_9178() {
         // Oracle: a normal queued by-ID claim still increments attempts
         // and does not create a manual-override audit record.
@@ -4206,12 +4322,24 @@ mod resume_session_storage_tests {
         assert_eq!(enqueued["ok"], true, "{enqueued}");
         let id = enqueued["row"]["id"].as_i64().expect("task id");
         let row = get_task(&t, id).unwrap().expect("task row");
-        assert_eq!(row["resume_session_id"], json!("ses_resume_target"), "{row}");
-        assert_eq!(enqueued["row"]["resume_session_id"], json!("ses_resume_target"), "{enqueued}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_resume_target"),
+            "{row}"
+        );
+        assert_eq!(
+            enqueued["row"]["resume_session_id"],
+            json!("ses_resume_target"),
+            "{enqueued}"
+        );
         let events = events_for(&t, id, "enqueued");
         assert_eq!(events.len(), 1);
         let detail: Value = serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap();
-        assert_eq!(detail["resume_session_id"], json!("ses_resume_target"), "{detail}");
+        assert_eq!(
+            detail["resume_session_id"],
+            json!("ses_resume_target"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -4278,9 +4406,231 @@ mod resume_session_storage_tests {
         }
         let row = get_task(&t, hinted_id).unwrap().expect("claimed row");
         assert_eq!(row["status"], "claimed");
-        assert_eq!(row["resume_session_id"], json!("ses_not_yet_wired"), "{row}");
+        assert_eq!(
+            row["resume_session_id"],
+            json!("ses_not_yet_wired"),
+            "{row}"
+        );
         let plain_row = get_task(&t, plain_id).unwrap().expect("claimed row");
         assert!(plain_row["resume_session_id"].is_null(), "{plain_row}");
+    }
+}
+
+#[cfg(test)]
+mod claim_resume_event_tests {
+    // #9178 §1 (FDR-0001), claim-wire slice: a hinted claim's
+    // `claimed` event carries both the requested session and the
+    // session actually used (explicit null when the claim names
+    // none); an unhinted claim's event is byte-identical to before
+    // (neither key present). Oracle: the claimed event detail.
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("resume event oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "resume event test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn packet_with_hint(number: i64, hint: &str) -> Value {
+        let mut p = packet(number);
+        p["resume_session_id"] = json!(hint);
+        p
+    }
+
+    fn enqueue(number: i64, hint: Option<&str>) -> (crate::turso_queue::TursoBackend, i64) {
+        let (t, _) = fake_backend();
+        let p = match hint {
+            Some(h) => packet_with_hint(number, h),
+            None => packet(number),
+        };
+        let out = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": p}));
+        assert_eq!(out["ok"], true, "{out}");
+        let id = out["row"]["id"].as_i64().expect("task id");
+        (t, id)
+    }
+
+    fn claimed_detail(t: &crate::turso_queue::TursoBackend, id: i64) -> Value {
+        let events = events_for(t, id, "claimed");
+        assert_eq!(events.len(), 1, "{events:?}");
+        serde_json::from_str(events[0]["detail"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn hinted_by_id_without_session_records_requested_and_null_actual_9178() {
+        let (t, id) = enqueue(91901, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert!(detail.get("resume_actual_session_id").is_some(), "{detail}");
+        assert!(detail["resume_actual_session_id"].is_null(), "{detail}");
+    }
+
+    #[test]
+    fn hinted_by_id_with_session_records_both_9178() {
+        let (t, id) = enqueue(91902, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert_eq!(
+            detail["resume_actual_session_id"],
+            json!("ses_actual"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn unhinted_by_id_carries_neither_key_9178() {
+        let (t, id) = enqueue(91903, None);
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(
+            detail.get("resume_requested_session_id").is_none(),
+            "{detail}"
+        );
+        assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
+    }
+
+    #[test]
+    fn hinted_by_id_with_fallback_records_reason_9178() {
+        let (t, id) = enqueue(91905, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual", "resume_fallback": "missing_session"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_requested"),
+            "{detail}"
+        );
+        assert_eq!(
+            detail["resume_actual_session_id"],
+            json!("ses_actual"),
+            "{detail}"
+        );
+        assert_eq!(
+            detail["resume_fallback"],
+            json!("missing_session"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn hinted_by_id_without_fallback_records_null_9178() {
+        let (t, id) = enqueue(91906, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(detail.get("resume_fallback").is_some(), "{detail}");
+        assert!(detail["resume_fallback"].is_null(), "{detail}");
+    }
+
+    #[test]
+    fn unhinted_by_id_with_fallback_carries_no_resume_keys_9178() {
+        let (t, id) = enqueue(91907, None);
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "session_id": "ses_actual", "resume_fallback": "missing_session"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert!(
+            detail.get("resume_requested_session_id").is_none(),
+            "{detail}"
+        );
+        assert!(detail.get("resume_actual_session_id").is_none(), "{detail}");
+        assert!(detail.get("resume_fallback").is_none(), "{detail}");
+    }
+
+    #[test]
+    fn unknown_resume_fallback_fails_the_claim_9178() {
+        let (t, id) = enqueue(91908, Some("ses_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "task_id": id, "resume_fallback": "bogus_reason"}),
+        );
+        assert_eq!(out["ok"], false, "{out}");
+    }
+
+    #[test]
+    fn hinted_pick_with_fallback_records_reason_9178() {
+        let (t, id) = enqueue(91909, Some("ses_pick_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE, "resume_fallback": "worktree_mismatch"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_fallback"],
+            json!("worktree_mismatch"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn hinted_pick_records_requested_and_null_actual_9178() {
+        let (t, id) = enqueue(91904, Some("ses_pick_requested"));
+        let out = verb_claim(
+            &t,
+            &json!({"worker": "resume-event-worker", "queue": QUEUE}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let detail = claimed_detail(&t, id);
+        assert_eq!(
+            detail["resume_requested_session_id"],
+            json!("ses_pick_requested"),
+            "{detail}"
+        );
+        assert!(detail["resume_actual_session_id"].is_null(), "{detail}");
     }
 }
 

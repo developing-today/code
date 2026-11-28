@@ -86,9 +86,14 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="census --format json document, or - for stdin",
     )
-    parser.add_argument("--run-url", default=None, help="workflow run link for the footer")
     parser.add_argument(
-        "--issue", type=int, default=ISSUE, help="issue the workflow posts to (default 14134)"
+        "--run-url", default=None, help="workflow run link for the footer"
+    )
+    parser.add_argument(
+        "--issue",
+        type=int,
+        default=ISSUE,
+        help="issue the workflow posts to (default 14134)",
     )
     args = parser.parse_args(argv)
 
@@ -99,7 +104,9 @@ def main(argv: list[str] | None = None) -> int:
             with open(args.report, encoding="utf-8") as f:
                 text = f.read()
         except OSError as e:
-            print(f"drift-census-report: cannot read {args.report}: {e}", file=sys.stderr)
+            print(
+                f"drift-census-report: cannot read {args.report}: {e}", file=sys.stderr
+            )
             return 2
     try:
         report = load_report(text)

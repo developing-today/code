@@ -364,259 +364,11 @@ pub fn owner_load_coverage_json(ctx: &Ctx) -> Value {
 }
 
 // ------------------------------------------------------- side-effect surface
-
-/// The boundary between the pure placement logic and the world:
-/// the GitHub API (as the App), the fleet-paperwork token flow, and
-/// the `gh codespace` surface. Production uses [`RealGh`]; tests
-/// substitute a fake.
-pub trait Gh {
-    /// An installation token for the repo's owner via the
-    /// fleet-paperwork helper, or None when the app does not cover
-    /// the repo / the helper is unavailable.
-    fn mint_token(&self, repo: &str) -> Option<String>;
-    /// Like the reference's app_token(): minting is mandatory on the
-    /// dispatch path — a surface the app cannot reach is ineligible,
-    /// loudly.
-    fn app_token(&self, repo: &str) -> R<String> {
-        self.mint_token(repo).ok_or_else(|| {
-            Die(format!(
-                "app token mint failed for {repo} (app does not cover it, \
-                 or the fleet-paperwork helper is unavailable) — surface \
-                 is ineligible for app dispatch until covered"
-            ))
-        })
-    }
-    /// The signed-in user's own token, for a surface whose registry
-    /// entry says `"dispatch_as": "user"`. Dispatching a workflow with
-    /// a token the fleet already holds is a routine operation
-    /// (FDR-0013), so a surface the App is not installed on is still
-    /// usable. None where no user token is available.
-    fn user_token(&self) -> Option<String> {
-        None
-    }
-    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
-    /// `gh codespace list --json name,repository,state`, parsed.
-    fn codespace_list(&self) -> R<Vec<Value>>;
-    /// `gh codespace ssh -c NAME -- COMMAND`; returns the exit code.
-    fn codespace_ssh(&self, name: &str, command: &str) -> R<i32>;
-    /// Like codespace_ssh but also returns trimmed stdout (used to
-    /// validate the reused codespace's checked-out revision).
-    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
-        Ok((self.codespace_ssh(name, command)?, String::new()))
-    }
-    fn sleep_secs(&self, secs: u64) {
-        std::thread::sleep(Duration::from_secs(secs));
-    }
-    fn now_epoch(&self) -> i64 {
-        now_epoch()
-    }
-}
-
-struct RealGh {
-    agent: ureq::Agent,
-    tokens: RefCell<HashMap<String, String>>,
-    /// The user's token, looked up at most once per run: a miss is
-    /// remembered too, so a cascade over several `dispatch_as: user`
-    /// surfaces does not repeat a slow lookup.
-    user: RefCell<Option<Option<String>>>,
-}
-
-/// The fleet-secrets name of the `gh` hosts file (the personal leg
-/// `fleet gh` uses).
-const USER_HOSTS_SECRET: &str = "github-cli.hosts-yml";
-
-/// The `oauth_token` value in gh's hosts.yml content. Line-shaped on
-/// purpose, like `fleet gh`'s own reader: the file is a small
-/// fixed-shape config.
-fn hosts_yml_token(hosts_yml: &str) -> Option<String> {
-    hosts_yml.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("oauth_token:")?;
-        let value = rest.trim().trim_matches('"').trim_matches('\'');
-        (!value.is_empty()).then(|| value.to_string())
-    })
-}
-
-/// The first usable token out of an ordered list of lookups; a
-/// lookup that yields only whitespace counts as a miss.
-fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
-    lookups
-        .iter()
-        .filter_map(|lookup| lookup())
-        .map(|t| t.trim().to_string())
-        .find(|t| !t.is_empty())
-}
-
-impl RealGh {
-    fn new() -> Self {
-        // Platform root store, not webpki-roots alone: hosts
-        // behind a TLS-intercepting egress proxy present the
-        // proxy's CA, which only the platform store carries (the
-        // sandbox seat's dispatch died with UnknownIssuer before
-        // this — code#13122; same fix as fleet's gh.rs App leg).
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(60)))
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .into();
-        RealGh {
-            agent,
-            user: RefCell::new(None),
-            tokens: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-fn paperwork_path() -> String {
-    std::env::var("FLEET_PAPERWORK").unwrap_or_else(|_| {
-        format!(
-            "{}/git/code/infra/fleet-paperwork/fleet_paperwork.py",
-            home_dir()
-        )
-    })
-}
-
-fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_default()
-}
-
-impl Gh for RealGh {
-    /// Where the user's token comes from, cheapest first: the
-    /// environment, the seat's own `gh` login, then the fleet secrets
-    /// chain by name (the same hosts file `fleet gh` reads). The
-    /// value goes into Authorization headers only.
-    fn user_token(&self) -> Option<String> {
-        if let Some(known) = self.user.borrow().as_ref() {
-            return known.clone();
-        }
-        let from_env = || {
-            ["GH_TOKEN", "GITHUB_TOKEN"]
-                .iter()
-                .filter_map(|k| std::env::var(k).ok())
-                .find(|v| !v.trim().is_empty())
-        };
-        let from_gh = || {
-            let out = std::process::Command::new("gh")
-                .args(["auth", "token"])
-                .stderr(std::process::Stdio::null())
-                .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).to_string())
-        };
-        let from_secrets = || {
-            let config = fleet_config::Config::load().unwrap_or_default();
-            let hosts = fleet_secrets::Resolver::default_chain(&config)
-                .resolve(USER_HOSTS_SECRET)
-                .ok()?;
-            hosts_yml_token(hosts.expose())
-        };
-        let found = first_token(&[&from_env, &from_gh, &from_secrets]);
-        *self.user.borrow_mut() = Some(found.clone());
-        found
-    }
-
-    fn mint_token(&self, repo: &str) -> Option<String> {
-        if let Some(tok) = self.tokens.borrow().get(repo) {
-            return Some(tok.clone());
-        }
-        let path = paperwork_path();
-        if !std::path::Path::new(&path).exists() {
-            return None;
-        }
-        let out = std::process::Command::new("python3")
-            .args([&path, "token", "--repo", repo])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if tok.is_empty() {
-            return None;
-        }
-        self.tokens
-            .borrow_mut()
-            .insert(repo.to_string(), tok.clone());
-        Some(tok)
-    }
-
-    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)> {
-        let url = if path.starts_with("http") {
-            path.to_string()
-        } else {
-            format!("https://api.github.com{path}")
-        };
-        let auth = format!("Bearer {token}");
-        let mut resp = if method == "POST" {
-            self.agent
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .header("Authorization", &auth)
-                .send_json(body.cloned().unwrap_or_else(|| json!({})))
-                .map_err(|e| Die(format!("github api {method} {path}: {e}")))?
-        } else {
-            self.agent
-                .get(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .header("Authorization", &auth)
-                .call()
-                .map_err(|e| Die(format!("github api {method} {path}: {e}")))?
-        };
-        let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        let payload = if text.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({ "message": text }))
-        };
-        Ok((status, payload))
-    }
-
-    fn codespace_list(&self) -> R<Vec<Value>> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "list", "--json", "name,repository,state"])
-            .output()
-            .map_err(|e| Die(format!("gh codespace list: {e}")))?;
-        if !out.status.success() {
-            return die(format!(
-                "gh codespace list failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if text.is_empty() {
-            return Ok(vec![]);
-        }
-        serde_json::from_str(&text).map_err(|e| Die(format!("gh codespace list json: {e}")))
-    }
-
-    fn codespace_ssh(&self, name: &str, command: &str) -> R<i32> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "ssh", "-c", name, "--", command])
-            .output()
-            .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
-        Ok(out.status.code().unwrap_or(-1))
-    }
-
-    fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
-        let out = std::process::Command::new("gh")
-            .args(["codespace", "ssh", "-c", name, "--", command])
-            .output()
-            .map_err(|e| Die(format!("gh codespace ssh: {e}")))?;
-        Ok((
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        ))
-    }
-}
+// Live GitHub surface — see placement/gh.rs (split for #16255);
+// `Gh` is re-exported here so `&dyn Gh` paths are unchanged.
+mod gh;
+pub use gh::Gh;
+pub(crate) use gh::{RealGh, first_token, home_dir, hosts_yml_token};
 
 // ---------------------------------------------------------------- registry
 
@@ -4221,5 +3973,172 @@ mod tests {
         let cap = ad.capacity(&job(), &c);
         assert_eq!(cap.free_slots, Some(35));
         assert!(cap.summary.contains("simulated"), "{}", cap.summary);
+    }
+
+    // Oracle (developing-today/code#15651): a dispatch-command input
+    // becomes GitHub run metadata the moment it is POSTed, so a
+    // command carrying a locally-resolvable laptop-tier credential
+    // value must die by secret NAME before the POST — never
+    // forwarding the value, and never echoing the command that
+    // carries it.
+    fn stub_resolver<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_command_carrying_secret_value() {
+        use super::adapters::reject_secrets_in_command;
+        let value = "bearer-value-0123456789abcdef";
+        let pairs = [("desktop-commander.machine-bearer", value)];
+        let resolve = stub_resolver(&pairs);
+        let cmd = format!("fleet commander exec -- echo {value}");
+        let err = match reject_secrets_in_command(&cmd, &resolve) {
+            Ok(()) => panic!("a command carrying the T1 bearer value must die"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("desktop-commander.machine-bearer"),
+            "{}",
+            err.0
+        );
+        assert!(!err.0.contains(value), "the error must not echo the value");
+        assert!(!err.0.contains(&cmd), "the error must not echo the command");
+    }
+
+    #[test]
+    fn dispatch_allows_command_without_secret_values() {
+        use super::adapters::reject_secrets_in_command;
+        let pairs = [(
+            "desktop-commander.machine-bearer",
+            "bearer-value-0123456789abcdef",
+        )];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_skips_secrets_it_cannot_resolve() {
+        // Fail-open on resolution failure: when the broker cannot
+        // answer there is nothing to compare against, and the fleet
+        // stays dispatchable during a secrets-infra outage. A
+        // positive match always fails closed (previous test).
+        use super::adapters::reject_secrets_in_command;
+        let resolve = stub_resolver(&[]);
+        assert!(reject_secrets_in_command("nix build .#mcpx", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_ignores_short_secret_values() {
+        // Short strings match innocent commands by accident (a
+        // port, a single word); real bearers and tokens are far
+        // longer, so values under the floor never trigger.
+        use super::adapters::{embedded_secret_name, reject_secrets_in_command};
+        assert_eq!(
+            embedded_secret_name("run on port 8080 now", &[("s", "8080")]),
+            None
+        );
+        let pairs = [("fleet.laptop-agent-token", "abc")];
+        let resolve = stub_resolver(&pairs);
+        assert!(reject_secrets_in_command("echo abc", &resolve).is_ok());
+    }
+
+    #[test]
+    fn dispatch_refuses_command_carrying_t3_proxy_credential() {
+        // #16368: the T3 credential is the password in the seat's
+        // HTTPS_PROXY userinfo — no broker name covers it, so the
+        // named-secret refusal alone would let it through as
+        // dispatch metadata.
+        use super::adapters::reject_proxy_credential_in_command;
+        let password = "proxy-password-0123456789";
+        let url = format!("http://seat:{password}@proxy.example:3130");
+        for cmd in [
+            format!("HTTPS_PROXY={url} fleet ssh health"),
+            format!("fleet ssh exec -- curl -x http://seat:{password}@proxy.example:3130 ."),
+            format!("echo {password}"),
+        ] {
+            let err = match reject_proxy_credential_in_command(&cmd, Some(&url)) {
+                Ok(()) => panic!("a command carrying the T3 proxy credential must die"),
+                Err(e) => e,
+            };
+            assert!(err.0.contains("HTTPS_PROXY"), "{}", err.0);
+            assert!(
+                !err.0.contains(password),
+                "the error must not echo the credential"
+            );
+            assert!(!err.0.contains(&cmd), "the error must not echo the command");
+        }
+    }
+
+    #[test]
+    fn dispatch_refuses_percent_encoded_t3_proxy_credential() {
+        // The tunnel percent-decodes the userinfo before use, so
+        // the decoded form of an encoded password is the same
+        // credential and must match too.
+        use super::adapters::{embedded_proxy_credential, reject_proxy_credential_in_command};
+        let url = "http://seat:p%40ssword-0123456789@proxy.example:3130";
+        assert!(embedded_proxy_credential("echo p@ssword-0123456789", url));
+        assert!(reject_proxy_credential_in_command("echo p@ssword-0123456789", Some(url)).is_err());
+    }
+
+    #[test]
+    fn dispatch_allows_credential_free_proxy_env() {
+        // The in-job T3 provisioning shape (#16368): join the
+        // tailnet inside the job and export tailscaled's local
+        // CONNECT proxy — a credential-free URL leaks nothing and
+        // must stay dispatchable. Unset proxy likewise.
+        use super::adapters::reject_proxy_credential_in_command;
+        let cmd = "export HTTPS_PROXY=http://127.0.0.1:3130; fleet ssh health";
+        assert!(reject_proxy_credential_in_command(cmd, Some("http://127.0.0.1:3130")).is_ok());
+        assert!(reject_proxy_credential_in_command(cmd, None).is_ok());
+        assert!(
+            reject_proxy_credential_in_command(
+                "nix build .#mcpx",
+                Some("http://seat:proxy-password-0123456789@proxy.example:3130")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn proxy_credential_values_extracts_password_only() {
+        use super::adapters::proxy_credential_values;
+        assert_eq!(
+            proxy_credential_values("http://seat:proxy-password-0123456789@proxy.example:3130"),
+            vec!["proxy-password-0123456789".to_string()]
+        );
+        // No userinfo, userinfo without a password, and a short
+        // password under the shared floor all carry no matchable
+        // credential.
+        assert!(proxy_credential_values("http://127.0.0.1:3130").is_empty());
+        assert!(proxy_credential_values("http://seat@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("http://seat:short@proxy.example:3130").is_empty());
+        assert!(proxy_credential_values("").is_empty());
+    }
+
+    #[test]
+    fn embedded_secret_reports_the_matching_name() {
+        use super::adapters::{DISPATCH_SECRET_NAMES, embedded_secret_name};
+        assert!(DISPATCH_SECRET_NAMES.contains(&"desktop-commander.machine-bearer"));
+        assert!(DISPATCH_SECRET_NAMES.contains(&"fleet.laptop-agent-token"));
+        let found = embedded_secret_name(
+            "curl -H 'X-Agent-Token: agent-token-0123456789abcdef' https://laptop/",
+            &[
+                (
+                    "desktop-commander.machine-bearer",
+                    "bearer-value-0123456789abcdef",
+                ),
+                ("fleet.laptop-agent-token", "agent-token-0123456789abcdef"),
+            ],
+        );
+        assert_eq!(found, Some("fleet.laptop-agent-token"));
+        assert_eq!(
+            embedded_secret_name("nix build .#mcpx", &[("s", "v")]),
+            None
+        );
     }
 }

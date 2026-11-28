@@ -102,7 +102,7 @@ function toast(message, bad, undo) {
 
 /** Ask before acting. Resolves to the typed text ("" when none is asked
  * for), or null when the person backs out. */
-function ask({ title, text, label, okLabel, danger, required, value }) {
+function ask({ title, text, label, okLabel, danger, required, value, trim = true }) {
   const dialog = $("ask");
   const input = $("ask-input");
   const ok = $("ask-ok");
@@ -115,7 +115,7 @@ function ask({ title, text, label, okLabel, danger, required, value }) {
   ok.textContent = okLabel || "Confirm";
   ok.className = danger ? "danger" : "";
   return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? (trim ? input.value.trim() : input.value) : null), {
       once: true,
     });
     // A dialog keeps its last return value: clear it, or Escape after an
@@ -1110,6 +1110,9 @@ let shown = 12;
 const pending = new Map();
 /** Choices ticked on a many-answer question, kept across redraws. */
 const picks = new Map();
+/** Exact submitted words, until the platform or durable outbox accepts
+ * the answer. A refused send must not turn reopening into retyping. */
+const answerDrafts = new Map();
 
 /** Answer after a short pause, so a slip of the thumb can be undone. */
 function later(key, label, send) {
@@ -1136,6 +1139,7 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
+  const draft = answerDrafts.get(key);
   // Out of the list while it is on its way, whatever is read meanwhile.
   sendingAnswers.add(key);
   let out;
@@ -1160,6 +1164,9 @@ async function sendAnswer(kind, args, key, said) {
     else if (out.state === "kept") toast(out.note);
     else if (said) toast(said);
     picks.delete(key);
+    // An older send must not erase words submitted while it was away,
+    // even if the person submitted the same words twice.
+    if (answerDrafts.get(key) === draft) answerDrafts.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
@@ -1249,8 +1256,11 @@ function questionCard(q) {
         {
           class: "small ghost",
           onclick: async () => {
-            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true });
-            if (text) sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true, value: answerDrafts.get(key)?.text, trim: false });
+            if (text?.trim()) {
+              answerDrafts.set(key, { text });
+              sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
+            }
           },
         },
         "Write an answer",
@@ -3113,6 +3123,9 @@ async function viewMachines() {
       card(
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
+        machine.kid ? h("p", { class: "meta" }, `Key ${machine.kid}`) : null,
+        ...held.filter((item) => machine.kid && item.forKid === machine.kid).map((item) =>
+          h("p", { class: "meta" }, `Waiting here: ${Outbox.sayOf(item.kind, item.args)}`)),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
         s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
@@ -3143,6 +3156,7 @@ async function viewMachines() {
       card(
         h("h3", {}, Outbox.sayOf(item.kind, item.args)),
         h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        item.forKid ? h("p", { class: "meta" }, `For ${item.for || "a machine"} · key ${item.forKid}`) : null,
         heldWaitsSaid(item.waits) ? h("p", { class: "meta" }, heldWaitsSaid(item.waits)) : null,
         h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
       ),
@@ -3154,7 +3168,7 @@ async function viewMachines() {
       h(
         "p",
         { class: "meta" },
-        "One machine can be connected today: the one the tunnel leads to, whose key is the only one Cloudflare takes reports under. Connecting others, each under its own key and with what it can do, is not built yet.",
+        "Each enrolled machine reports under its own key. Actions go only to a machine that says it can do them. The tunnel machine can be asked directly; other machines take their waiting actions with their next report.",
       ),
     ),
   );

@@ -9,7 +9,15 @@
     "code": "bin/free-context-probe.mjs (DIRECT_ADAPTERS, resolveDirectAdapter, runDirectProbe, createProbeBudget)",
     "tests": "bin/free-context-probe.test.mjs — 15/15 pass (7 pre-existing + 8 slice-4); fail-closed oracles assert zero mock-fetch calls on unsupported-provider, unsupported-model, missing-credentials, and pre-call output-cap paths",
     "hardBounds": { "maxLiveCallsPerRun": 5, "cliLiveCalls": 1, "maxOutputTokens": 64, "responseBodyMaxBytes": 65536 },
-    "failClosedCodes": ["unsupported-provider", "unsupported-model", "missing-credentials", "output-cap-violation", "fail-cap (reported output beyond cap)", "call-budget-violation", "call-budget-exceeded"]
+    "failClosedCodes": [
+      "unsupported-provider",
+      "unsupported-model",
+      "missing-credentials",
+      "output-cap-violation",
+      "fail-cap (reported output beyond cap)",
+      "call-budget-violation",
+      "call-budget-exceeded"
+    ]
   },
   "matrix": [
     {

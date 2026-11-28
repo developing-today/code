@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::host_snapshots::{
     SNAPSHOT_DIR_NAME, SnapshotPolicy, SnapshotRun, SnapshotSet, is_due, list_sets, prune_plan,
-    remove_sets, set_file_name, usage, world_snapshot_dir,
+    remove_sets, replaces_previous, set_file_name, usage, world_snapshot_dir,
 };
 use crate::world::{Authority, WorldHandle, WorldLimits};
 use crate::world_doctor::{JournalFacts, journal_facts};
@@ -1360,8 +1360,9 @@ pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> 
 /// # Errors
 ///
 /// When the snapshot directory cannot be listed or created, the export
-/// fails, or a set cannot be renamed or removed. What was taken and
-/// removed before the failure is recorded in `run`.
+/// fails, a set cannot be renamed or removed, or the rename cannot be
+/// made durable. What was taken and removed before the failure is
+/// recorded in `run`.
 pub async fn snapshot_live_world(
     service: &WorldService,
     key: &SigningKey,
@@ -1370,6 +1371,60 @@ pub async fn snapshot_live_world(
     snapshot_root: &Path,
     now_secs: u64,
     run: &mut SnapshotRun,
+) -> Result<()> {
+    snapshot_live_world_with_dir_sync(
+        service,
+        key,
+        name,
+        policy,
+        snapshot_root,
+        now_secs,
+        run,
+        &sync_snapshot_parent_dir,
+    )
+    .await
+}
+
+/// Make the rename of a snapshot set file durable by syncing its parent
+/// directory (#16320), mirroring `sync_export_parent_dir` (#16179) and
+/// [`HostFile::save`]: without it, a power loss can lose the renamed set
+/// even though the snapshot pass returned `Ok`. The export's own sync
+/// covers its `partial -> taking` rename, not this `taking -> set` one.
+/// Best-effort no-op off unix, mirroring the `#[cfg(unix)]` shape in
+/// `world_export.rs`.
+///
+/// # Errors
+///
+/// The parent directory cannot be opened, or its sync fails.
+fn sync_snapshot_parent_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("fsync snapshot directory {}", parent.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// [`snapshot_live_world`] with the parent-directory sync step
+/// supplied, split out so tests can fault-inject a sync failure (the
+/// same shape as the #16058/#16131/#16140 durability tests).
+#[allow(clippy::too_many_arguments)]
+async fn snapshot_live_world_with_dir_sync(
+    service: &WorldService,
+    key: &SigningKey,
+    name: &str,
+    policy: &SnapshotPolicy,
+    snapshot_root: &Path,
+    now_secs: u64,
+    run: &mut SnapshotRun,
+    sync_dir: &(dyn Fn(&Path) -> Result<()> + Send + Sync),
 ) -> Result<()> {
     let sets = list_sets(snapshot_root, name)?;
     let previous = sets.last().cloned();
@@ -1384,6 +1439,10 @@ pub async fn snapshot_live_world(
     let path = dir.join(set_file_name(now_secs, manifest.entries));
     std::fs::rename(&taking, &path)
         .with_context(|| format!("renaming {} to {}", taking.display(), path.display()))?;
+    // Make the rename itself durable before recording the take: the
+    // directory entry is synced after the rename, and a sync failure
+    // is propagated rather than acking a non-durable snapshot (#16320).
+    sync_dir(&path)?;
     let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
     let taken = SnapshotSet {
         world: name.to_owned(),
@@ -1394,12 +1453,32 @@ pub async fn snapshot_live_world(
     };
     run.taken.push(taken.clone());
     let mut after = sets;
-    // The journal is append-only, so the same entry count is the same
-    // journal: the new set replaces the newest one.
+    // An unchanged journal: the new set replaces the newest one. Entry
+    // count alone does not prove "unchanged" — checkpoint compaction
+    // rewrites the journal, so a different journal can carry the same
+    // count (#16134). Compare the journal digest recorded in each
+    // set's export manifest; a previous set whose manifest cannot be
+    // read is kept, never deleted on a guess.
     if let Some(previous) = previous.filter(|set| set.entries == manifest.entries) {
-        remove_sets(std::slice::from_ref(&previous))?;
-        after.pop();
-        run.removed.push(previous);
+        let previous_digest = read_export_manifest(&previous.path)
+            .await
+            .map(|previous_manifest| Some(previous_manifest.journal_digest))
+            .unwrap_or(None);
+        // `None` here means the manifest could not be read at all (the
+        // helper's legacy fallback is `Some("")` from a manifest with
+        // no digest field): keep the set rather than delete on a guess.
+        if previous_digest.is_some()
+            && replaces_previous(
+                previous.entries,
+                previous_digest.as_deref(),
+                manifest.entries,
+                &manifest.journal_digest,
+            )
+        {
+            remove_sets(std::slice::from_ref(&previous))?;
+            after.pop();
+            run.removed.push(previous);
+        }
     }
     after.push(taken);
     let plan = prune_plan(&after, policy, now_secs);
@@ -3250,6 +3329,188 @@ mod tests {
         let journal = std::fs::read(root.path().join("alpha").join(JOURNAL_FILE)).unwrap();
         assert!(!journal.is_empty());
         sup.stop_all(actor()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshots_keep_distinct_journals_with_equal_entry_counts() {
+        use crate::world::WorldScopes;
+
+        // Oracle (#16134): distinct restorable world states must remain
+        // distinct retained restore points, even when their journals
+        // have the same entry count — the shape checkpoint compaction
+        // produces. Two worlds built from the same script but different
+        // participants have equal entry counts and different journals.
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let source = *key.verifying_key().as_bytes();
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let mut journals = Vec::new();
+        for (index, participant) in ["ann", "bob"].into_iter().enumerate() {
+            let dir = root.path().join(format!("world-{index}"));
+            let (service, _) = open_world(
+                &dir,
+                "alpha",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                |world| WorldService::new(world, None),
+            )
+            .await
+            .unwrap();
+            let (_, token) = service
+                .world()
+                .issue(participant, WorldScopes::GUEST)
+                .await
+                .unwrap();
+            service.world().chat(token.clone(), "hello").await.unwrap();
+            service.world().chat(token, "again").await.unwrap();
+            let mut run = SnapshotRun::default();
+            snapshot_live_world(
+                &service,
+                &key,
+                "alpha",
+                &policy,
+                &snapshot_root,
+                1_000 + index as u64 * 1_000,
+                &mut run,
+            )
+            .await
+            .unwrap();
+            assert_eq!(run.taken.len(), 1);
+            assert!(run.removed.is_empty(), "{run:?}");
+            service.world().shutdown().await.unwrap();
+            journals.push(std::fs::read(dir.join(JOURNAL_FILE)).unwrap());
+        }
+        assert_ne!(journals[0], journals[1]);
+        let sets = list_sets(&snapshot_root, "alpha").unwrap();
+        assert_eq!(sets.len(), 2, "{sets:?}");
+        assert_eq!(sets[0].entries, sets[1].entries);
+        // Each set restores its own journal, byte for byte.
+        for (set, journal) in sets.iter().zip(&journals) {
+            let scratch = TempDir::new().unwrap();
+            let dest = scratch.path().join("alpha");
+            import_world_from_file(&set.path, &dest, source)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(dest.join(JOURNAL_FILE)).unwrap(), *journal);
+        }
+    }
+
+    // #16320 oracle: the take is recorded only after the snapshot
+    // directory sync runs — the injected sync observes the renamed set
+    // already in place, and is called exactly once with the set path.
+    #[tokio::test]
+    async fn a_snapshot_syncs_the_snapshot_directory_after_the_rename() {
+        use crate::world::WorldScopes;
+
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let dir = root.path().join("world-0");
+        let (service, _) = open_world(
+            &dir,
+            "alpha",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, None),
+        )
+        .await
+        .unwrap();
+        let (_, token) = service
+            .world()
+            .issue("ann", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(token, "hello").await.unwrap();
+        let synced = std::sync::Mutex::new(Vec::new());
+        let recording_sync = |path: &Path| -> Result<()> {
+            assert!(
+                path.exists(),
+                "directory sync ran before the rename landed"
+            );
+            synced.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        };
+        let mut run = SnapshotRun::default();
+        snapshot_live_world_with_dir_sync(
+            &service,
+            &key,
+            "alpha",
+            &policy,
+            &snapshot_root,
+            1_000,
+            &mut run,
+            &recording_sync,
+        )
+        .await
+        .unwrap();
+        service.world().shutdown().await.unwrap();
+        assert_eq!(run.taken.len(), 1);
+        assert_eq!(*synced.lock().unwrap(), vec![run.taken[0].path.clone()]);
+    }
+
+    // #16320 oracle: a snapshot-directory sync failure is propagated,
+    // not an acknowledged take — nothing is recorded in the run.
+    #[tokio::test]
+    async fn a_snapshot_propagates_a_snapshot_directory_sync_failure() {
+        use crate::world::WorldScopes;
+
+        let root = TempDir::new().unwrap();
+        let snapshot_root = root.path().join("snapshots");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let policy = SnapshotPolicy {
+            every_secs: 60,
+            keep: 7,
+            max_age_secs: None,
+        };
+        let dir = root.path().join("world-0");
+        let (service, _) = open_world(
+            &dir,
+            "alpha",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, None),
+        )
+        .await
+        .unwrap();
+        let (_, token) = service
+            .world()
+            .issue("ann", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        service.world().chat(token, "hello").await.unwrap();
+        let failing_sync = |_: &Path| -> Result<()> {
+            bail!("injected directory sync failure")
+        };
+        let mut run = SnapshotRun::default();
+        let error = snapshot_live_world_with_dir_sync(
+            &service,
+            &key,
+            "alpha",
+            &policy,
+            &snapshot_root,
+            1_000,
+            &mut run,
+            &failing_sync,
+        )
+        .await
+        .unwrap_err();
+        service.world().shutdown().await.unwrap();
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "{error:#}"
+        );
+        assert!(run.taken.is_empty(), "{run:?}");
+        assert!(run.removed.is_empty(), "{run:?}");
     }
 
     #[tokio::test]

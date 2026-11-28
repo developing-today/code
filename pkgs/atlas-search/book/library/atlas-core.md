@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 49 public modules, grouped by job
+## The 50 public modules, grouped by job
 
-`lib.rs` declares 49 public modules. Grouped by the job they do:
+`lib.rs` declares 50 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -60,6 +60,7 @@ fixtures recorded from the production Python module.
 | `manifest`        | The classification manifest: schema, validation and loader for the table that declares the filterable dimensions, with the built-in manifest as fallback and validation reference                                                                                           |
 | `occurrences`     | Resolves a canonical content hash back to its chunk occurrences across the shards visible at a caller's sensitivity ceiling                                                                                                                                                 |
 | `cold`            | Verifies a fetched cold-tier shard and reconstructs version bytes from its manifest and occurrence lists                                                                                                                                                                    |
+| `cold_shard`      | The cold-tier shard container format: one immutable object (header, JSON manifest, span and vector sections, checksummed footer) with the writer and reader that pack and unpack it — the write side of the hot → cold mover (#6042)                                        |
 | `memory`          | Registers memory corpora as staging units and parses their read-only exports for Atlas ingestion                                                                                                                                                                            |
 | `notes`           | The zettelkasten connector (#8626): scans a notes vault's Markdown files in sorted tree order and stages them into the `zettelkasten` unit through the registry path, replay-safe — re-scanning an unchanged vault stages zero, an edited note re-stages exactly its chunks |
 | `reports`         | The research-reports connector (#8626): walks a tree of prior fleet research outputs (goal files and briefs) and stages them into the `research-reports` unit with the design's full provenance set, replay-safe — re-staging an unchanged document writes nothing          |

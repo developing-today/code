@@ -20,38 +20,48 @@
       "rules_version": "proposal-1",
       "status": "awaiting-guest-and-host-integration",
       "state_model": "Exactly one ore unit exists, either in the ore cell, the worker pack, or the stockpile. MineEast extracts adjacent ore without moving; MoveWest moves a worker one in-bounds cell; Deposit moves carried ore into a stockpile on the worker's current tile. Adjacent empty space blocks extraction. Stockpile tiles are traversable.",
-      "initial_state": {"board":[4,3],"worker":[1,1],"pack_ore":0,"ore_cells":[[2,1]],"stockpile":[0,1],"stored_ore":0},
+      "initial_state": {
+        "board": [4, 3],
+        "worker": [1, 1],
+        "pack_ore": 0,
+        "ore_cells": [[2, 1]],
+        "stockpile": [0, 1],
+        "stored_ore": 0
+      },
       "cases": [
         {
           "name": "one-ore-conserved",
           "steps": [
-            {"event":"m1","actor":"A","action":"MineEast"},
-            {"event":"w1","actor":"A","action":"MoveWest"},
-            {"event":"d1","actor":"A","action":"Deposit"}
+            { "event": "m1", "actor": "A", "action": "MineEast" },
+            { "event": "w1", "actor": "A", "action": "MoveWest" },
+            { "event": "d1", "actor": "A", "action": "Deposit" }
           ],
-          "expected_state": {"worker":[0,1],"ore_cells":[],"pack_ore":0,"stored_ore":1},
-          "expected_effects": {"successful_extractions":1,"successful_deposits":1},
+          "expected_state": { "worker": [0, 1], "ore_cells": [], "pack_ore": 0, "stored_ore": 1 },
+          "expected_effects": { "successful_extractions": 1, "successful_deposits": 1 },
           "oracle": "The fixture starts with exactly one ore. Extraction puts that unit in the pack. Moving left reaches the stockpile. Deposit transfers the single unit to inventory."
         },
         {
           "name": "redelivered-mine-and-deposit",
           "steps": [
-            {"event":"m1","actor":"A","action":"MineEast"},
-            {"action":"RedeliverCommit","ref":"m1"},
-            {"event":"w1","actor":"A","action":"MoveWest"},
-            {"event":"d1","actor":"A","action":"Deposit"},
-            {"action":"RedeliverCommit","ref":"d1"}
+            { "event": "m1", "actor": "A", "action": "MineEast" },
+            { "action": "RedeliverCommit", "ref": "m1" },
+            { "event": "w1", "actor": "A", "action": "MoveWest" },
+            { "event": "d1", "actor": "A", "action": "Deposit" },
+            { "action": "RedeliverCommit", "ref": "d1" }
           ],
-          "expected_state": {"worker":[0,1],"ore_cells":[],"pack_ore":0,"stored_ore":1},
-          "expected_effects": {"successful_extractions":1,"successful_deposits":1},
+          "expected_state": { "worker": [0, 1], "ore_cells": [], "pack_ore": 0, "stored_ore": 1 },
+          "expected_effects": { "successful_extractions": 1, "successful_deposits": 1 },
           "oracle": "Repeated delivery describes the same two commits. The initial ore inventory is conserved exactly once."
         },
         {
           "name": "cannot-deposit-at-a-distance",
-          "steps":[{"event":"m1","actor":"A","action":"MineEast"},{"event":"d2","actor":"A","action":"Deposit"}],
-          "expected_state":{"worker":[1,1],"ore_cells":[],"pack_ore":1,"stored_ore":0},
-          "expected_effects":{"successful_deposits":0},
-          "oracle":"The worker remains one cell away from the stockpile. The ore stays in the worker's pack."
+          "steps": [
+            { "event": "m1", "actor": "A", "action": "MineEast" },
+            { "event": "d2", "actor": "A", "action": "Deposit" }
+          ],
+          "expected_state": { "worker": [1, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 0 },
+          "expected_effects": { "successful_deposits": 0 },
+          "oracle": "The worker remains one cell away from the stockpile. The ore stays in the worker's pack."
         }
       ]
     },
@@ -60,158 +70,293 @@
       "rules_version": "proposal-1",
       "status": "awaiting-guest-and-host-integration",
       "state_model": "One target stays still through tick 3. Admit input for tick n, spawn its shot at the cannon, advance every shot north one cell including newly spawned shots, then resolve collision. A hit removes target and shot and adds 10 points. A render, resize, or elapsed wall time does not advance a logical tick.",
-      "initial_state":{"board":[7,5],"cannon":[3,4],"targets":[{"id":"T","at":[3,1]}],"shots":[],"score":0,"tick":0,"target_immobile_through_tick":3},
-      "cases":[
+      "initial_state": {
+        "board": [7, 5],
+        "cannon": [3, 4],
+        "targets": [{ "id": "T", "at": [3, 1] }],
+        "shots": [],
+        "score": 0,
+        "tick": 0,
+        "target_immobile_through_tick": 3
+      },
+      "cases": [
         {
-          "name":"first-target-hit",
-          "steps":[
-            {"actor":"A","event":"f1","action":"QueueFire","for_tick":1},
-            {"actor":"world","event":"t1","action":"Tick","tick":1,"check":{"shots":[{"from":"f1","at":[3,3]}],"score":0}},
-            {"actor":"world","event":"t2","action":"Tick","tick":2,"check":{"shots":[{"from":"f1","at":[3,2]}],"score":0}},
-            {"actor":"world","event":"t3","action":"Tick","tick":3}
+          "name": "first-target-hit",
+          "steps": [
+            { "actor": "A", "event": "f1", "action": "QueueFire", "for_tick": 1 },
+            {
+              "actor": "world",
+              "event": "t1",
+              "action": "Tick",
+              "tick": 1,
+              "check": { "shots": [{ "from": "f1", "at": [3, 3] }], "score": 0 }
+            },
+            {
+              "actor": "world",
+              "event": "t2",
+              "action": "Tick",
+              "tick": 2,
+              "check": { "shots": [{ "from": "f1", "at": [3, 2] }], "score": 0 }
+            },
+            { "actor": "world", "event": "t3", "action": "Tick", "tick": 3 }
           ],
-          "expected_state":{"tick":3,"cannon":[3,4],"shots":[],"targets":[],"score":10},
-          "expected_effects":{"hits":["T"],"score_changes":[10]},
-          "oracle":"The projectile advances 4→3→2→1 along y, matching the target's y=1 only on tick 3. Exactly one collision is possible."
+          "expected_state": { "tick": 3, "cannon": [3, 4], "shots": [], "targets": [], "score": 10 },
+          "expected_effects": { "hits": ["T"], "score_changes": [10] },
+          "oracle": "The projectile advances 4→3→2→1 along y, matching the target's y=1 only on tick 3. Exactly one collision is possible."
         },
         {
-          "name":"render-cannot-advance-time",
-          "steps":[
-            {"actor":"A","event":"f1","action":"QueueFire","for_tick":1},
-            {"actor":"world","event":"t1","action":"Tick","tick":1},
-            {"actor":"host","action":"RenderFrames","count":120},
-            {"actor":"host","action":"Resize","viewport_cells":[60,20]},
-            {"action":"RedeliverCommit","ref":"t1"}
+          "name": "render-cannot-advance-time",
+          "steps": [
+            { "actor": "A", "event": "f1", "action": "QueueFire", "for_tick": 1 },
+            { "actor": "world", "event": "t1", "action": "Tick", "tick": 1 },
+            { "actor": "host", "action": "RenderFrames", "count": 120 },
+            { "actor": "host", "action": "Resize", "viewport_cells": [60, 20] },
+            { "action": "RedeliverCommit", "ref": "t1" }
           ],
-          "expected_state":{"tick":1,"shots":[{"from":"f1","at":[3,3]}],"targets":[{"id":"T","at":[3,1]}],"score":0},
-          "expected_effects":{"committed_ticks":1,"hits":[]},
-          "oracle":"There is exactly one logical tick. Replayed presentation and duplicate delivery cannot manufacture another movement or hit."
+          "expected_state": {
+            "tick": 1,
+            "shots": [{ "from": "f1", "at": [3, 3] }],
+            "targets": [{ "id": "T", "at": [3, 1] }],
+            "score": 0
+          },
+          "expected_effects": { "committed_ticks": 1, "hits": [] },
+          "oracle": "There is exactly one logical tick. Replayed presentation and duplicate delivery cannot manufacture another movement or hit."
         }
       ]
     },
     {
-      "id":"burrow",
-      "rules_version":"proposal-1",
-      "status":"awaiting-guest-and-host-integration",
-      "state_model":"DigEast checks the next cell. Soil is cleared and the actor moves into it. A rock or board edge rejects the attempt, preserving position and terrain. Soil and rock lists are coordinate sets.",
-      "initial_state":{"board":[5,3],"digger":[0,1],"soil":[[1,1],[2,1]],"rock":[[3,1]]},
-      "cases":[
+      "id": "burrow",
+      "rules_version": "proposal-1",
+      "status": "awaiting-guest-and-host-integration",
+      "state_model": "DigEast checks the next cell. Soil is cleared and the actor moves into it. A rock or board edge rejects the attempt, preserving position and terrain. Soil and rock lists are coordinate sets.",
+      "initial_state": { "board": [5, 3], "digger": [0, 1], "soil": [[1, 1], [2, 1]], "rock": [[3, 1]] },
+      "cases": [
         {
-          "name":"blocked-east-dig",
-          "steps":[{"actor":"A","event":"e1","action":"DigEast"},{"actor":"A","event":"e2","action":"DigEast"},{"actor":"A","event":"e3","action":"DigEast"}],
-          "expected_state":{"digger":[2,1],"soil":[],"rock":[[3,1]]},
-          "expected_effects":{"dig_results":["cleared","cleared","blocked-rock"],"cleared_cells":[[1,1],[2,1]]},
-          "oracle":"Two consecutive soil cells precede a rock. Only the two soil cells change; the last attempt cannot move into (3,1)."
+          "name": "blocked-east-dig",
+          "steps": [
+            { "actor": "A", "event": "e1", "action": "DigEast" },
+            { "actor": "A", "event": "e2", "action": "DigEast" },
+            { "actor": "A", "event": "e3", "action": "DigEast" }
+          ],
+          "expected_state": { "digger": [2, 1], "soil": [], "rock": [[3, 1]] },
+          "expected_effects": {
+            "dig_results": ["cleared", "cleared", "blocked-rock"],
+            "cleared_cells": [[1, 1], [2, 1]]
+          },
+          "oracle": "Two consecutive soil cells precede a rock. Only the two soil cells change; the last attempt cannot move into (3,1)."
         },
         {
-          "name":"edge-does-not-wrap",
-          "initial_override":{"digger":[4,1]},
-          "steps":[{"actor":"A","event":"e1","action":"DigEast"}],
-          "expected_state":{"digger":[4,1],"soil":[[1,1],[2,1]],"rock":[[3,1]]},
-          "expected_effects":{"dig_results":["blocked-edge"],"cleared_cells":[]},
-          "oracle":"On a width-five board x=5 is outside, so an east dig at x=4 changes no cell and cannot wrap to the left edge."
+          "name": "edge-does-not-wrap",
+          "initial_override": { "digger": [4, 1] },
+          "steps": [{ "actor": "A", "event": "e1", "action": "DigEast" }],
+          "expected_state": { "digger": [4, 1], "soil": [[1, 1], [2, 1]], "rock": [[3, 1]] },
+          "expected_effects": { "dig_results": ["blocked-edge"], "cleared_cells": [] },
+          "oracle": "On a width-five board x=5 is outside, so an east dig at x=4 changes no cell and cannot wrap to the left edge."
         }
       ]
     },
     {
-      "id":"cells",
-      "rules_version":"proposal-1",
-      "status":"awaiting-guest-and-headless-ECS-integration",
-      "state_model":"B3/S23, Moore eight-neighbor counts, dead exterior, synchronous update from the previous whole generation. Live cells form a coordinate set. An accepted manual step advances one generation. A presentation frame and an unauthorized clock request have no effect on generation.",
-      "initial_state":{"board":[3,3],"boundary":"dead-exterior","generation":0,"live":[[1,0],[1,1],[1,2]]},
-      "cases":[
+      "id": "cells",
+      "rules_version": "proposal-1",
+      "status": "awaiting-guest-and-headless-ECS-integration",
+      "state_model": "B3/S23, Moore eight-neighbor counts, dead exterior, synchronous update from the previous whole generation. Live cells form a coordinate set. An accepted manual step advances one generation. A presentation frame and an unauthorized clock request have no effect on generation.",
+      "initial_state": {
+        "board": [3, 3],
+        "boundary": "dead-exterior",
+        "generation": 0,
+        "live": [[1, 0], [1, 1], [1, 2]]
+      },
+      "cases": [
         {
-          "name":"two-generation-blinker",
-          "steps":[
-            {"actor":"A","event":"s1","action":"Step","check":{"generation":1,"live":[[0,1],[1,1],[2,1]]}},
-            {"actor":"host","action":"Snapshot","checkpoint":"g1"},
-            {"actor":"host","action":"RebuildProjection","from":"g1","check":{"generation":1,"live":[[0,1],[1,1],[2,1]]}},
-            {"actor":"A","event":"s2","action":"Step"}
+          "name": "two-generation-blinker",
+          "steps": [
+            {
+              "actor": "A",
+              "event": "s1",
+              "action": "Step",
+              "check": { "generation": 1, "live": [[0, 1], [1, 1], [2, 1]] }
+            },
+            { "actor": "host", "action": "Snapshot", "checkpoint": "g1" },
+            {
+              "actor": "host",
+              "action": "RebuildProjection",
+              "from": "g1",
+              "check": { "generation": 1, "live": [[0, 1], [1, 1], [2, 1]] }
+            },
+            { "actor": "A", "event": "s2", "action": "Step" }
           ],
-          "expected_state":{"generation":2,"live":[[1,0],[1,1],[1,2]]},
-          "oracle":"In the first vertical line, the center has two live neighbors; the vacant sites to its west and east each have three. The horizontal line turns vertical by the same rule. Projecting the saved intermediate state does not advance it."
+          "expected_state": { "generation": 2, "live": [[1, 0], [1, 1], [1, 2]] },
+          "oracle": "In the first vertical line, the center has two live neighbors; the vacant sites to its west and east each have three. The horizontal line turns vertical by the same rule. Projecting the saved intermediate state does not advance it."
         },
         {
-          "name":"clock-denied-manual-step-works",
-          "steps":[{"actor":"host","action":"DenyCapability","capability":"time.tick"},{"actor":"host","action":"RenderFrames","count":25,"check":{"generation":0,"live":[[1,0],[1,1],[1,2]]}},{"actor":"A","event":"s1","action":"Step"}],
-          "expected_state":{"generation":1,"live":[[0,1],[1,1],[2,1]]},
-          "expected_effects":{"admitted_manual_steps":1,"admitted_clock_ticks":0},
-          "oracle":"No time input was granted. The only admitted step is the manual one, producing the horizontal generation exactly once."
+          "name": "clock-denied-manual-step-works",
+          "steps": [
+            { "actor": "host", "action": "DenyCapability", "capability": "time.tick" },
+            {
+              "actor": "host",
+              "action": "RenderFrames",
+              "count": 25,
+              "check": { "generation": 0, "live": [[1, 0], [1, 1], [1, 2]] }
+            },
+            { "actor": "A", "event": "s1", "action": "Step" }
+          ],
+          "expected_state": { "generation": 1, "live": [[0, 1], [1, 1], [2, 1]] },
+          "expected_effects": { "admitted_manual_steps": 1, "admitted_clock_ticks": 0 },
+          "oracle": "No time input was granted. The only admitted step is the manual one, producing the horizontal generation exactly once."
         }
       ]
     },
     {
-      "id":"sketch",
-      "rules_version":"proposal-1",
-      "status":"awaiting-stroke-operation-and-host-integration",
-      "state_model":"Adds carry immutable point sequences in document coordinates and unique stroke IDs. Authorized owners can tombstone their own visible strokes by ID. Local previews are transient; only confirmed non-canceled strokes become durable adds. All replicas start from the same empty head.",
-      "initial_state":{"replicas":["A","B"],"visible_strokes":[],"tombstones":[],"rights":{"A":"contribute-and-undo-own","B":"contribute-and-undo-own"}},
-      "cases":[
+      "id": "sketch",
+      "rules_version": "proposal-1",
+      "status": "awaiting-stroke-operation-and-host-integration",
+      "state_model": "Adds carry immutable point sequences in document coordinates and unique stroke IDs. Authorized owners can tombstone their own visible strokes by ID. Local previews are transient; only confirmed non-canceled strokes become durable adds. All replicas start from the same empty head.",
+      "initial_state": {
+        "replicas": ["A", "B"],
+        "visible_strokes": [],
+        "tombstones": [],
+        "rights": { "A": "contribute-and-undo-own", "B": "contribute-and-undo-own" }
+      },
+      "cases": [
         {
-          "name":"offline-undo",
-          "steps":[
-            {"action":"Partition","replicas":["A","B"]},
-            {"actor":"A","replica":"A","event":"a1","action":"AddStroke","id":"SA","points":[[1,1],[2,1]]},
-            {"actor":"B","replica":"B","event":"b1","action":"AddStroke","id":"SB","points":[[3,1],[3,2],[4,2]]},
-            {"actor":"A","replica":"A","event":"a2","action":"UndoOwnStroke","id":"SA","parents":["a1"]},
-            {"action":"Deliver","to":"A","events":["b1","b1"]},
-            {"action":"Deliver","to":"B","events":["a1","a2"]}
+          "name": "offline-undo",
+          "steps": [
+            { "action": "Partition", "replicas": ["A", "B"] },
+            {
+              "actor": "A",
+              "replica": "A",
+              "event": "a1",
+              "action": "AddStroke",
+              "id": "SA",
+              "points": [[1, 1], [2, 1]]
+            },
+            {
+              "actor": "B",
+              "replica": "B",
+              "event": "b1",
+              "action": "AddStroke",
+              "id": "SB",
+              "points": [[3, 1], [3, 2], [4, 2]]
+            },
+            { "actor": "A", "replica": "A", "event": "a2", "action": "UndoOwnStroke", "id": "SA", "parents": ["a1"] },
+            { "action": "Deliver", "to": "A", "events": ["b1", "b1"] },
+            { "action": "Deliver", "to": "B", "events": ["a1", "a2"] }
           ],
-          "expected_state":{"every_replica":{"visible_strokes":[{"id":"SB","author":"B","points":[[3,1],[3,2],[4,2]]}],"tombstones":["SA"]}},
-          "expected_effects":{"unique_accepted_adds":2,"unique_accepted_tombstones":1},
-          "oracle":"Only A’s stroke is removed. B’s independent point sequence survives exactly once on both sides."
+          "expected_state": {
+            "every_replica": {
+              "visible_strokes": [{ "id": "SB", "author": "B", "points": [[3, 1], [3, 2], [4, 2]] }],
+              "tombstones": ["SA"]
+            }
+          },
+          "expected_effects": { "unique_accepted_adds": 2, "unique_accepted_tombstones": 1 },
+          "oracle": "Only A’s stroke is removed. B’s independent point sequence survives exactly once on both sides."
         },
         {
-          "name":"canceled-preview-and-unauthorized-undo",
-          "steps":[
-            {"actor":"A","replica":"A","action":"BeginPreview","point":[1,1]},
-            {"actor":"A","replica":"A","action":"PredictSample","point":[9,9]},
-            {"actor":"A","replica":"A","action":"CancelPreview"},
-            {"actor":"B","replica":"B","event":"b1","action":"AddStroke","id":"SB","points":[[1,2],[2,2]]},
-            {"action":"Deliver","to":"A","events":["b1"]},
-            {"actor":"A","replica":"A","action":"UndoOwnStroke","id":"SB","expect":"refused-owner-scope"}
+          "name": "canceled-preview-and-unauthorized-undo",
+          "steps": [
+            { "actor": "A", "replica": "A", "action": "BeginPreview", "point": [1, 1] },
+            { "actor": "A", "replica": "A", "action": "PredictSample", "point": [9, 9] },
+            { "actor": "A", "replica": "A", "action": "CancelPreview" },
+            {
+              "actor": "B",
+              "replica": "B",
+              "event": "b1",
+              "action": "AddStroke",
+              "id": "SB",
+              "points": [[1, 2], [2, 2]]
+            },
+            { "action": "Deliver", "to": "A", "events": ["b1"] },
+            { "actor": "A", "replica": "A", "action": "UndoOwnStroke", "id": "SB", "expect": "refused-owner-scope" }
           ],
-          "expected_state":{"every_replica":{"visible_strokes":[{"id":"SB","author":"B","points":[[1,2],[2,2]]}],"tombstones":[]}},
-          "expected_effects":{"unique_accepted_adds":1,"unique_accepted_tombstones":0,"durable_preview_operations":0},
-          "oracle":"No confirmed points belong to A. A cannot undo B’s stroke under the fixture grants."
+          "expected_state": {
+            "every_replica": {
+              "visible_strokes": [{ "id": "SB", "author": "B", "points": [[1, 2], [2, 2]] }],
+              "tombstones": []
+            }
+          },
+          "expected_effects": {
+            "unique_accepted_adds": 1,
+            "unique_accepted_tombstones": 0,
+            "durable_preview_operations": 0
+          },
+          "oracle": "No confirmed points belong to A. A cannot undo B’s stroke under the fixture grants."
         }
       ]
     },
     {
-      "id":"mind-map",
-      "rules_version":"proposal-1",
-      "status":"awaiting-tree-merge-policy-and-host-integration",
-      "state_model":"Exactly one root. Tree parent edges and optional typed cross-links are different relations. Names and local positions do not define identity. Node IDs and directed link endpoints are stable. Child-list display order is outside the state comparison. A committed layout move in this fixture is shared; transient viewport pan is local.",
-      "initial_state":{"root":"A","nodes":{"A":{"name":"World","parent":null,"position":[0,0]}},"cross_links":[]},
-      "cases":[
+      "id": "mind-map",
+      "rules_version": "proposal-1",
+      "status": "awaiting-tree-merge-policy-and-host-integration",
+      "state_model": "Exactly one root. Tree parent edges and optional typed cross-links are different relations. Names and local positions do not define identity. Node IDs and directed link endpoints are stable. Child-list display order is outside the state comparison. A committed layout move in this fixture is shared; transient viewport pan is local.",
+      "initial_state": {
+        "root": "A",
+        "nodes": { "A": { "name": "World", "parent": null, "position": [0, 0] } },
+        "cross_links": []
+      },
+      "cases": [
         {
-          "name":"stable-link-and-root-reparent-refusal",
-          "steps":[
-            {"actor":"X","event":"b1","action":"AddNode","id":"B","parent":"A","name":"Land","position":[1,0]},
-            {"actor":"X","event":"c1","action":"AddNode","id":"C","parent":"A","name":"Sea","position":[0,1]},
-            {"actor":"X","event":"l1","action":"AddCrossLink","from":"B","to":"C"},
-            {"actor":"X","event":"r1","action":"RenameNode","id":"C","name":"Water"},
-            {"actor":"X","event":"m1","action":"MoveLayout","id":"B","position":[2,0]},
-            {"actor":"X","action":"Reparent","id":"A","parent":"B","expect":"refused-root"}
+          "name": "stable-link-and-root-reparent-refusal",
+          "steps": [
+            {
+              "actor": "X",
+              "event": "b1",
+              "action": "AddNode",
+              "id": "B",
+              "parent": "A",
+              "name": "Land",
+              "position": [1, 0]
+            },
+            {
+              "actor": "X",
+              "event": "c1",
+              "action": "AddNode",
+              "id": "C",
+              "parent": "A",
+              "name": "Sea",
+              "position": [0, 1]
+            },
+            { "actor": "X", "event": "l1", "action": "AddCrossLink", "from": "B", "to": "C" },
+            { "actor": "X", "event": "r1", "action": "RenameNode", "id": "C", "name": "Water" },
+            { "actor": "X", "event": "m1", "action": "MoveLayout", "id": "B", "position": [2, 0] },
+            { "actor": "X", "action": "Reparent", "id": "A", "parent": "B", "expect": "refused-root" }
           ],
-          "expected_state":{"root":"A","nodes":{"A":{"name":"World","parent":null,"position":[0,0]},"B":{"name":"Land","parent":"A","position":[2,0]},"C":{"name":"Water","parent":"A","position":[0,1]}},"cross_links":[{"from":"B","to":"C"}]},
-          "expected_effects":{"link_target_label":"Water","accepted_reparents":0},
-          "oracle":"A layout move changes coordinates only. Renaming C changes the link’s displayed label without changing its target. An attempted move of the root leaves the two original parent edges in place."
+          "expected_state": {
+            "root": "A",
+            "nodes": {
+              "A": { "name": "World", "parent": null, "position": [0, 0] },
+              "B": { "name": "Land", "parent": "A", "position": [2, 0] },
+              "C": { "name": "Water", "parent": "A", "position": [0, 1] }
+            },
+            "cross_links": [{ "from": "B", "to": "C" }]
+          },
+          "expected_effects": { "link_target_label": "Water", "accepted_reparents": 0 },
+          "oracle": "A layout move changes coordinates only. Renaming C changes the link’s displayed label without changing its target. An attempted move of the root leaves the two original parent edges in place."
         },
         {
-          "name":"concurrent-crossing-parent-moves",
-          "initial_override":{"nodes":{"A":{"name":"World","parent":null,"position":[0,0]},"B":{"name":"Land","parent":"A","position":[1,0]},"C":{"name":"Water","parent":"A","position":[0,1]}}},
-          "steps":[
-            {"action":"Partition","replicas":["X","Y"]},
-            {"actor":"X","replica":"X","event":"mx","action":"Reparent","id":"B","parent":"C"},
-            {"actor":"Y","replica":"Y","event":"my","action":"Reparent","id":"C","parent":"B"},
-            {"action":"Deliver","to":"Y","events":["mx","mx"]},
-            {"action":"Deliver","to":"X","events":["my"]}
+          "name": "concurrent-crossing-parent-moves",
+          "initial_override": {
+            "nodes": {
+              "A": { "name": "World", "parent": null, "position": [0, 0] },
+              "B": { "name": "Land", "parent": "A", "position": [1, 0] },
+              "C": { "name": "Water", "parent": "A", "position": [0, 1] }
+            }
+          },
+          "steps": [
+            { "action": "Partition", "replicas": ["X", "Y"] },
+            { "actor": "X", "replica": "X", "event": "mx", "action": "Reparent", "id": "B", "parent": "C" },
+            { "actor": "Y", "replica": "Y", "event": "my", "action": "Reparent", "id": "C", "parent": "B" },
+            { "action": "Deliver", "to": "Y", "events": ["mx", "mx"] },
+            { "action": "Deliver", "to": "X", "events": ["my"] }
           ],
-          "expected_state":{"every_replica":{"root":"A","cross_links":[],"node_id_set":["A","B","C"]}},
-          "expected_invariants":["Both replicas agree on all parent edges.","A has no parent; B and C each have exactly one parent and each reaches A in at most two parent steps.","The resolved tree has no directed parent cycle and loses neither child.","Retained operation history identifies both original move intents; duplicate delivery does not append a second logical move."],
-          "decision_pending":"The per-content tree CRDT decision determines the exact winning move or failure disposition. Add a golden expected parent map after that decision; the relational checks are meaningful before then.",
-          "oracle":"Applying both crossing moves literally creates a two-node cycle. Any accepted convergence policy must preserve a connected tree rooted at A, agree at both replicas and retain a way to account for both submitted intents."
+          "expected_state": { "every_replica": { "root": "A", "cross_links": [], "node_id_set": ["A", "B", "C"] } },
+          "expected_invariants": [
+            "Both replicas agree on all parent edges.",
+            "A has no parent; B and C each have exactly one parent and each reaches A in at most two parent steps.",
+            "The resolved tree has no directed parent cycle and loses neither child.",
+            "Retained operation history identifies both original move intents; duplicate delivery does not append a second logical move."
+          ],
+          "decision_pending": "The per-content tree CRDT decision determines the exact winning move or failure disposition. Add a golden expected parent map after that decision; the relational checks are meaningful before then.",
+          "oracle": "Applying both crossing moves literally creates a two-node cycle. Any accepted convergence policy must preserve a connected tree rooted at A, agree at both replicas and retain a way to account for both submitted intents."
         }
       ]
     }

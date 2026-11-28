@@ -163,7 +163,7 @@ test("blobs are jurisdiction-local: same bytes in us and eu land in different bu
   const putEU = await doEU.fetch(routed("/v1/blobs", B, { method: "PUT", body: bytes }, "eu"));
   assert.equal(putEU.status, 200);
   const { hash } = (await putUS.json()) as { hash: string };
-  assert.equal((await putEU.json() as { hash: string }).hash, hash, "content hash is stable across jurisdictions");
+  assert.equal(((await putEU.json()) as { hash: string }).hash, hash, "content hash is stable across jurisdictions");
   assert.equal(usBucket.objects.size, 1);
   assert.equal(euBucket.objects.size, 1, "eu bytes land in the eu bucket, not the us bucket");
 });

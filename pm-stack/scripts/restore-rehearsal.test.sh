@@ -51,24 +51,56 @@ FAKE
 chmod +x "$ROOT/bin/fake"
 for cmd in docker sqlite3 curl tar sleep date; do ln -s fake "$ROOT/bin/$cmd"; done
 failed=0
+make_record() { # $1 = dir, $2 = variant (ok|failed|stale|r2|nodigest)
+  python3 -I - "$1/record-$2.json" "$2" <<'PY'
+import json, sys
+from datetime import datetime, timezone, timedelta
+path, variant = sys.argv[1], sys.argv[2]
+finished = datetime.now(timezone.utc) - timedelta(
+    minutes=5 if variant != "stale" else 37 * 60)
+record = {
+    "date": finished.date().isoformat(),
+    "finishedAt": finished.isoformat(),
+    "result": "complete" if variant != "failed" else "failed",
+    "archiveSha256": "a" * 64 if variant != "nodigest" else None,
+    "destinations": {"local": "ok", "r2": "ok", "drive": "ok"},
+}
+if variant == "r2":
+    record["destinations"]["r2"] = "failed"
+json.dump(record, open(path, "w"))
+PY
+}
 run_case() {
-  local scenario=$1 expected=$2
-  shift 2
+  local scenario=$1 expected=$2 record=$3
+  shift 3
   local home="$ROOT/$scenario" rc=0
   mkdir -p "$home/backups/pm-stack/2026-11-24"
   touch "$home/backups/pm-stack/2026-11-24/pm-stack-2026-11-24.tar.zst"
+  local args=()
+  if [[ -n $record ]]; then
+    if [[ $record != MISSING ]]; then
+      make_record "$home" "$record"
+      args+=(--backup-record-file "$home/record-$record.json")
+    else
+      args+=(--backup-record-file "$home/record-does-not-exist.json")
+    fi
+  fi
   : >"$home/calls"
   HOME="$home" PATH="$ROOT/bin:$PATH" CALLS="$home/calls" SCENARIO="$scenario" \
-    bash "$SCRIPT" "$@" >"$home/output" 2>&1 || rc=$?
+    bash "$SCRIPT" "${args[@]}" "$@" >"$home/output" 2>&1 || rc=$?
   local ok=1
   case "$expected" in
   success) [[ $rc == 0 ]] || ok=0 ;;
   failure) [[ $rc != 0 ]] || ok=0 ;;
+  refused)
+    [[ $rc == 3 && ! -s "$home/calls" && ! -e "$home/restore-rehearsal-6816" ]] || ok=0
+    grep -q 'REFUSED' "$home/output" || ok=0
+    ;;
   usage)
     [[ $rc == 2 && ! -s "$home/calls" && ! -e "$home/restore-rehearsal-6816" ]] || ok=0
     ;;
   esac
-  if [[ $expected != usage ]]; then
+  if [[ $expected == success || $expected == failure ]]; then
     grep -q '^docker rm -f rehearsal-pg rehearsal-grist rehearsal-pad rehearsal-kaneo$' "$home/calls" || ok=0
     grep -q '^docker network rm rehearsal-net$' "$home/calls" || ok=0
   fi
@@ -78,20 +110,29 @@ run_case() {
     failed=$((failed + 1))
   fi
 }
-run_case healthy success 2026-11-24
-run_case default-day success
+run_case healthy success ok 2026-11-24
+run_case default-day success ok
+run_case record-failed refused failed 2026-11-24
+run_case record-stale refused stale 2026-11-24
+run_case record-r2-failed refused r2 2026-11-24
+run_case record-no-digest refused nodigest 2026-11-24
+run_case record-unreadable usage MISSING 2026-11-24
+run_case record-required usage "" 2026-11-24
+run_case bad-max-age-zero usage ok --max-backup-age-hours 0 2026-11-24
+run_case bad-max-age-word usage ok --max-backup-age-hours soon 2026-11-24
+run_case max-age-equals success ok --max-backup-age-hours=36 2026-11-24
 for scenario in restore pg-ready pg-start grist-start pad-start kaneo-start \
   grist-docs-missing \
   grist-sql-error grist-sql-bad pad-sql-error pad-sql-bad \
   grist-http-error grist-http-bad pad-http-error pad-http-bad kaneo-http-error kaneo-http-bad; do
-  run_case "$scenario" failure 2026-11-24
+  run_case "$scenario" failure ok 2026-11-24
 done
-run_case unknown usage --wat
-run_case excess usage 2026-11-24 extra
-run_case invalid-date usage 2026-02-30
-run_case invalid-month usage 2026-13-01
-run_case malformed-date usage 2026-1-01
-run_case empty-date usage ''
-run_case invalid-leap usage 2025-02-29
+run_case unknown usage ok --wat
+run_case excess usage ok 2026-11-24 extra
+run_case invalid-date usage ok 2026-02-30
+run_case invalid-month usage ok 2026-13-01
+run_case malformed-date usage ok 2026-1-01
+run_case empty-date usage ok ''
+run_case invalid-leap usage ok 2025-02-29
 echo "$failed failing cases"
 [[ $failed == 0 ]]

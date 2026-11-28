@@ -579,6 +579,73 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     0
 }
 
+/// #16383: fold one unfiltered /events-list page for a task down
+/// to the caller's history kinds — the client-side half of the
+/// batched show/timeline read. Rows whose raw kind is outside
+/// `kinds` (note writes, heartbeats, every other record the
+/// broker keeps on the task) stay out of the history; surviving
+/// rows normalize through timeline_event exactly as the old
+/// per-kind loop's rows did, and come back in event-id order.
+pub(super) fn fold_task_events(rows: &[Value], kinds: &[&str]) -> Vec<TimelineEvent> {
+    let mut events: Vec<TimelineEvent> = rows
+        .iter()
+        .filter(|row| {
+            row.get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kinds.contains(&kind))
+        })
+        .filter_map(timeline_event)
+        .collect();
+    events.sort_by_key(|event| event.id);
+    events
+}
+
+/// #16383: the per-task event read behind `show` and `timeline`.
+/// The broker's /events-list treats `kind` as an optional filter,
+/// so one unfiltered call replaces the old loop of one call per
+/// kind (19 serialized round trips on main) and the history kinds
+/// fold client-side via fold_task_events — output shape identical.
+/// The broker clamps a per-task read to 1000 rows, so only when
+/// the unfiltered page saturates that cap (a task with at least
+/// 1000 recorded events, where one page cannot prove it saw every
+/// kind's rows) does the read fall back to the legacy per-kind
+/// loop, keeping those rare histories byte-identical too. Returns
+/// None when the broker does not serve /events-list.
+pub(super) fn fetch_task_events(task_id: i64, kinds: &[&str]) -> Option<Vec<TimelineEvent>> {
+    let response = call("/events-list", &json!({"task_id": task_id, "limit": 1000}));
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let rows = response
+        .get("row")
+        .and_then(|r| r.get("rows"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if rows.len() < 1000 {
+        return Some(fold_task_events(&rows, kinds));
+    }
+    let mut events = Vec::new();
+    for kind in kinds {
+        let response = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        if let Some(rows) = response
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(Value::as_array)
+        {
+            events.extend(rows.iter().filter_map(timeline_event));
+        }
+    }
+    events.sort_by_key(|event| event.id);
+    Some(events)
+}
+
 /// Show one task's rich current broker row and the tail of its audit
 /// timeline. The broker's rich /list row is the source of truth for
 /// mutable state; events are intentionally limited only after the
@@ -606,8 +673,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         eprint(&format!("repo-queue show: task {task_id} not found\n"));
         return 1;
     };
-    let mut events = Vec::new();
-    for kind in [
+    let history_kinds = [
         "claimed",
         "staleness_autocomplete",
         "session_bound",
@@ -619,6 +685,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "lease_expired",
         "lease_expired_at_cap",
         "claim_refused",
+        "park_refused",
         "released",
         "parked",
         "reprioritized",
@@ -626,24 +693,11 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "failed",
         "cancelled",
         "suspect_completion",
-    ] {
-        let response = call(
-            "/events-list",
-            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
-        );
-        if response.get("ok").and_then(Value::as_bool) != Some(true) {
-            eprint("repo-queue show: broker does not serve /events-list yet\n");
-            return 3;
-        }
-        if let Some(rows) = response
-            .get("row")
-            .and_then(|r| r.get("rows"))
-            .and_then(Value::as_array)
-        {
-            events.extend(rows.iter().filter_map(timeline_event));
-        }
-    }
-    events.sort_by_key(|event| event.id);
+    ];
+    let Some(events) = fetch_task_events(task_id, &history_kinds) else {
+        eprint("repo-queue show: broker does not serve /events-list yet\n");
+        return 3;
+    };
     let events = collapse_timeline(events);
     let start = events.len().saturating_sub(limit);
     let history = &events[start..];
@@ -1191,8 +1245,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let args = parse_verb_args(verb, rest, &["worker"], &["json"]);
     reject_extra_pos(verb, &args, 1);
     let task_id = args.pos_i64(0, "task_id");
-    let mut events: Vec<TimelineEvent> = Vec::new();
-    for kind in [
+    let timeline_kinds = [
         "claimed",
         "staleness_autocomplete",
         "session_bound",
@@ -1204,6 +1257,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "lease_expired",
         "lease_expired_at_cap",
         "claim_refused",
+        "park_refused",
         "released",
         "parked",
         "reprioritized",
@@ -1211,35 +1265,18 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "failed",
         "cancelled",
         "suspect_completion",
-    ] {
-        let resp = call(
-            "/events-list",
-            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+    ];
+    let Some(events) = fetch_task_events(task_id, &timeline_kinds) else {
+        eprint(
+            "repo-queue timeline: this broker does not serve /events-list yet \
+             — the full timeline activates with the #9046 broker at the \
+             coordinated switch. Interim read (fleet-queue DB): SELECT id, \
+             kind, detail, created_at FROM events WHERE task_id = <id> AND \
+             kind IN ('model_stamp','session_bound','session_unbound',\
+             'lane_session_bound','session_binding_cleared') ORDER BY id;",
         );
-        if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
-            eprint(
-                "repo-queue timeline: this broker does not serve /events-list yet \
-                 — the full timeline activates with the #9046 broker at the \
-                 coordinated switch. Interim read (fleet-queue DB): SELECT id, \
-                 kind, detail, created_at FROM events WHERE task_id = <id> AND \
-                 kind IN ('model_stamp','session_bound','session_unbound',\
-                 'lane_session_bound','session_binding_cleared') ORDER BY id;",
-            );
-            return 3;
-        }
-        if let Some(rows) = resp
-            .get("row")
-            .and_then(|r| r.get("rows"))
-            .and_then(|r| r.as_array())
-        {
-            for row in rows {
-                if let Some(ev) = timeline_event(row) {
-                    events.push(ev);
-                }
-            }
-        }
-    }
-    events.sort_by_key(|e| e.id);
+        return 3;
+    };
     let events = collapse_timeline(events);
     // #14170 Q4: the task's notes interleave with its events into
     // one chronological story. Fail-soft: a broker without

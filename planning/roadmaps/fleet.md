@@ -31,7 +31,6 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 ## Later
 
-| Title                           | Status  | Intent                                                                                     | Links |
-| ------------------------------- | ------- | ------------------------------------------------------------------------------------------ | ----- |
-| Content-creation throttle       | planned | A shared ledger and pacing budgets, with what was filed checked by reading it back.        | #2227 |
-| Shift batching and lane handoff | planned | A lane hands its state to the next as a snapshot, and queue lanes have a supervision mode. | #2140 |
+| Title                     | Status  | Intent                                                                              | Links |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------- | ----- |
+| Content-creation throttle | planned | A shared ledger and pacing budgets, with what was filed checked by reading it back. | #2227 |

@@ -9,13 +9,13 @@
 use crate::algorithm::{self, AlgorithmId};
 use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{CertInfo, TrustSelection, parse_cert};
+use crate::chain::TrustSelection;
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
 use crate::model::{
-    BundleType, CertRecord, IssuerCreateRequest, IssuerPurpose, LeafIssueRequest,
-    RootCreateRequest, SignerSource,
+    BundleType, IssuerCreateRequest, IssuerPurpose, LeafIssueRequest, RootCreateRequest,
+    SignerSource,
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
@@ -36,6 +36,8 @@ Groups and verbs (spec §6.1 tree; status as built):
   issuer   create | renew | rotate | replace | inspect | list
   leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
+  revoke   leaf | issuer | root
+  crl      generate | inspect | verify
   chain    build | test
   bundle   inspect
   format   convert | verify
@@ -58,6 +60,10 @@ Format conversion:
     import: convert --from pkcs12 --in <archive.p12> --password-file <f> --out <new-dir>
             (writes certificate.der, private-key.pk8 owner-only, chain-NN.der)
     verify: verify --in <archive.p12> --password-file <f> (redacts key material)
+  Public JWK (Ed25519 and P-256 only; RSA and ML-DSA are unsupported):
+    export: convert --to jwk --algorithm <id> [--in <key.pk8> | --bundle <dir>] [--out <key.jwk>]
+    import: convert --from jwk --to pem|der --in <key.jwk> [--out <key.pub>]
+    verify: verify --in <key.jwk> --algorithm <id> --key <key.pk8> (proves the JWK matches the DER key)
 
 Common options:
   --json                  Emit one JSON value instead of text.
@@ -77,6 +83,14 @@ Signing operations never discover keys ambiently: issuer/leaf
 creation requires the signer's key directory as an explicit
 argument (spec §24.3). Run `fleet cert explain signer-source`
 for the rule, `fleet cert doctor` for what is built vs not.
+
+CRLs:
+  crl generate --issuer <bundle> --issuer-key-dir <dir> --crl-number <n> --out <file>
+      [--issuer-algorithm <fingerprint|algorithm|subject-DN>] [--revocations <bundle>]...
+      [--at <rfc3339>] [--next-update <rfc3339>] [--previous-crl <file>] [--pem]
+  crl inspect <file> [--json]
+  crl verify --crl <file> --issuer <bundle> [--revocations <bundle>]... [--at <rfc3339>]
+  --previous-crl makes generation reject a CRL number that is not greater than its predecessor.
 ";
 
 pub fn run(args: &[String]) -> i32 {
@@ -93,36 +107,40 @@ pub fn run(args: &[String]) -> i32 {
 
 /// A minimal flag parser in the fleet-agent style: `--flag value`,
 /// `--flag=value`, boolean switches, repeatable value flags.
-struct Parsed {
+pub(crate) struct Parsed {
     positionals: Vec<String>,
     values: BTreeMap<String, Vec<String>>,
     bools: BTreeSet<String>,
 }
 
 impl Parsed {
-    fn get(&self, name: &str) -> Option<&str> {
+    pub(crate) fn get(&self, name: &str) -> Option<&str> {
         self.values
             .get(name)
             .and_then(|v| v.last())
             .map(|s| s.as_str())
     }
-    fn all(&self, name: &str) -> Vec<String> {
+    pub(crate) fn all(&self, name: &str) -> Vec<String> {
         self.values.get(name).cloned().unwrap_or_default()
     }
-    fn has(&self, name: &str) -> bool {
+    pub(crate) fn has(&self, name: &str) -> bool {
         self.bools.contains(name) || self.values.contains_key(name)
     }
-    fn require(&self, name: &str, what: &str) -> Result<String> {
+    pub(crate) fn require(&self, name: &str, what: &str) -> Result<String> {
         self.get(name)
             .map(|s| s.to_string())
             .ok_or_else(|| CertError::usage(format!("{what} requires --{name} <value>")))
     }
-    fn positional(&self, idx: usize) -> Option<&str> {
+    pub(crate) fn positional(&self, idx: usize) -> Option<&str> {
         self.positionals.get(idx).map(|s| s.as_str())
     }
 }
 
-fn parse_args(args: &[String], value_flags: &[&str], bool_flags: &[&str]) -> Result<Parsed> {
+pub(crate) fn parse_args(
+    args: &[String],
+    value_flags: &[&str],
+    bool_flags: &[&str],
+) -> Result<Parsed> {
     let mut parsed = Parsed {
         positionals: Vec::new(),
         values: BTreeMap::new(),
@@ -177,7 +195,7 @@ fn json_mode(args: &[String]) -> bool {
     args.iter().any(|a| a == "--json")
 }
 
-fn emit(json_out: bool, text: String, value: Value) -> i32 {
+pub(crate) fn emit(json_out: bool, text: String, value: Value) -> i32 {
     if json_out {
         println!(
             "{}",
@@ -251,7 +269,9 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "root" => root_cmd(rest, json_out),
         "issuer" => issuer_cmd(rest, json_out),
         "leaf" => leaf_cmd(rest, json_out),
-        "ocsp" => ocsp_cmd(rest, json_out),
+        "ocsp" => crate::cli_ocsp::ocsp_cmd(rest, json_out),
+        "revoke" => revoke_cmd(rest, json_out),
+        "crl" => crl_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
         "format" => format_cmd(rest, json_out),
@@ -1352,6 +1372,217 @@ fn chain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- revoke
+
+/// `fleet cert revoke leaf|issuer|root` (§6.1): append a revocation
+/// record to the target bundle's manifest `revocations/` tree.
+fn revoke_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let target = match args.first().map(|s| s.as_str()) {
+        Some(t) if !t.starts_with('-') => crate::model::RevokeTarget::parse(t)?,
+        _ => {
+            return Err(CertError::usage(
+                "revoke needs a target: leaf | issuer | root (spec §6.1)",
+            ));
+        }
+    };
+    let rest = &args[1.min(args.len())..];
+    let p = parse_args(rest, &["bundle", "reason", "at"], &["json"])?;
+    let dir = p
+        .get("bundle")
+        .map(|s| s.to_string())
+        .or_else(|| p.positional(0).map(|s| s.to_string()))
+        .ok_or_else(|| CertError::usage("revoke needs a bundle directory (--bundle <dir>)"))?;
+    let reason = p.get("reason").unwrap_or("unspecified").to_string();
+    let at = p
+        .get("at")
+        .map(Rfc3339::parse)
+        .transpose()?
+        .unwrap_or_else(Rfc3339::now);
+    let req = crate::revoke::RevokeRequest {
+        bundle: PathBuf::from(&dir),
+        target,
+        reason,
+        revoked_at: at,
+    };
+    let records = crate::revoke::revoke_bundle(&req)?;
+    let mut text = format!(
+        "Revoked {} certificate(s) in {dir} ({}):\n",
+        records.len(),
+        target.as_str()
+    );
+    for r in &records {
+        text.push_str(&format!(
+            "  {:10} {:40} {} at {} — {}\n",
+            r.cert_role, r.subject_dn, r.reason, r.revoked_at, r.path
+        ));
+    }
+    let value = json!({
+        "bundle": dir,
+        "target": target.as_str(),
+        "revocations": records.iter().map(|r| json!({
+            "path": r.path,
+            "cert_role": r.cert_role,
+            "subject_dn": r.subject_dn,
+            "fingerprint_sha256": r.fingerprint_sha256,
+            "serial_hex": r.serial_hex,
+            "algorithm": r.algorithm.name(),
+            "partition": r.partition,
+            "reason": r.reason,
+            "revoked_at": r.revoked_at.to_string_canonical(),
+        })).collect::<Vec<_>>(),
+    });
+    Ok(emit(json_out, text, value))
+}
+
+fn crl_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "generate" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "issuer",
+                    "issuer-algorithm",
+                    "issuer-key-dir",
+                    "out",
+                    "at",
+                    "next-update",
+                    "revocations",
+                    "crl-number",
+                    "previous-crl",
+                ],
+                &["pem", "json"],
+            )?;
+            let issuer = p.require("issuer", "crl generate")?;
+            let key_dir = p.require("issuer-key-dir", "crl generate")?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let next = match p.get("next-update") {
+                Some(value) => Rfc3339::parse(value)?,
+                None => CalendarDuration::days(7).add_to(at)?,
+            };
+            let crl_number = p
+                .require("crl-number", "crl generate")?
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| CertError::usage("--crl-number must be a positive integer"))?;
+            let req = crate::crl::GenerateRequest {
+                issuer_bundle: PathBuf::from(issuer),
+                signer: SignerSource {
+                    key_dir: PathBuf::from(key_dir),
+                },
+                revocation_bundles: p
+                    .all("revocations")
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                this_update: at,
+                next_update: next,
+                crl_number,
+                previous_crl: p.get("previous-crl").map(PathBuf::from),
+            };
+            let der = crate::crl::generate(&req, p.get("issuer-algorithm"))?;
+            let out = p.require("out", "crl generate")?;
+            let bytes = if p.has("pem") {
+                crate::bundle::pem_encode("X509 CRL", &der).into_bytes()
+            } else {
+                der.clone()
+            };
+            std::fs::write(&out, &bytes)?;
+            Ok(emit(
+                json_out,
+                format!(
+                    "CRL written to {out} ({} bytes, {} revoked certificates)\n",
+                    bytes.len(),
+                    crate::crl::inspect(&der)?.revoked.len()
+                ),
+                json!({"out": out, "encoding": if p.has("pem") {"pem"} else {"der"}, "bytes": bytes.len(), "crl": crate::crl::inspect(&der)?}),
+            ))
+        }
+        "inspect" => {
+            let p = parse_args(rest, &["crl"], &["json"])?;
+            let path = p
+                .get("crl")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("crl inspect requires a CRL file"))?;
+            let der = read_crl(PathBuf::from(path).as_path())?;
+            let info = crate::crl::inspect(&der)?;
+            let entries = info
+                .revoked
+                .iter()
+                .map(|r| {
+                    format!(
+                        "    {} {} {}\n",
+                        r.serial_hex,
+                        r.revocation_time,
+                        r.reason.as_deref().unwrap_or("unspecified")
+                    )
+                })
+                .collect::<String>();
+            let text = format!(
+                "CRL: {}\n  number: {}\n  thisUpdate: {}\n  nextUpdate: {}\n  revoked: {}\n{}",
+                info.issuer,
+                info.crl_number.as_deref().unwrap_or("(missing)"),
+                info.this_update,
+                info.next_update.as_deref().unwrap_or("(missing)"),
+                info.revoked.len(),
+                entries
+            );
+            Ok(emit(
+                json_out,
+                text,
+                serde_json::to_value(info).unwrap_or_else(|_| json!({})),
+            ))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["crl", "issuer", "at", "revocations"], &["json"])?;
+            let crl_path = p
+                .get("crl")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("crl verify requires a CRL file (--crl)"))?;
+            let issuer = p.require("issuer", "crl verify")?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let der = read_crl(PathBuf::from(crl_path).as_path())?;
+            let evidence = p
+                .all("revocations")
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let report = crate::crl::verify(&der, &PathBuf::from(issuer), &evidence, at)?;
+            let code = emit(
+                json_out,
+                format!(
+                    "CRL verification: {}\n{}\n",
+                    if report.valid { "VALID" } else { "INVALID" },
+                    report
+                        .checks
+                        .iter()
+                        .map(|c| format!("  - {c}\n"))
+                        .collect::<String>()
+                ),
+                serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+            );
+            Ok(if report.valid { code } else { 1 })
+        }
+        other => Err(CertError::usage(format!(
+            "unknown crl verb '{other}' (generate | inspect | verify)"
+        ))),
+    }
+}
+
+fn read_crl(path: &std::path::Path) -> Result<Vec<u8>> {
+    crate::crl::read_crl(path)
+}
+
 // ---------------------------------------------------------------- bundle/profile inspect+list
 
 fn manifest_text(verb: &str, m: &crate::model::BundleManifest, dir: &str) -> String {
@@ -1925,6 +2156,58 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 &["json"],
             )?;
             if let Some(from) = p.get("from") {
+                if from == "jwk" {
+                    if p.get("bundle").is_some() || p.get("password-file").is_some() {
+                        return Err(CertError::usage(
+                            "format convert --from jwk takes no --bundle or --password-file",
+                        ));
+                    }
+                    let input = p.require("in", "format convert --from jwk")?;
+                    let target = p.require("to", "format convert --from jwk")?;
+                    let to = crate::format::Encoding::parse(&target)?;
+                    let bytes = std::fs::read(&input)
+                        .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+                    let text = std::str::from_utf8(&bytes)
+                        .map_err(|_| CertError::validation("JWK input is not UTF-8 JSON"))?;
+                    let value: Value = serde_json::from_str(text).map_err(|e| {
+                        CertError::validation(format!("JWK input is not a JSON object: {e}"))
+                    })?;
+                    // Strict public-only subset: private members, unknown
+                    // members, RSA, and ML-DSA are rejected here, never
+                    // silently dropped.
+                    let (algorithm, raw) = crate::jwk::public_to_raw(&value)?;
+                    let spki = engine::public_key_spki_der(algorithm, &raw);
+                    let out = match to {
+                        crate::format::Encoding::Pem => {
+                            crate::bundle::pem_encode("PUBLIC KEY", &spki).into_bytes()
+                        }
+                        crate::format::Encoding::Der => spki,
+                    };
+                    let fingerprint = crate::bundle::sha256_hex(&raw);
+                    match p.get("out") {
+                        Some(path) => {
+                            std::fs::write(path, &out).map_err(|e| {
+                                CertError::engine(format!("cannot write {path}: {e}"))
+                            })?;
+                            return Ok(emit(
+                                json_out,
+                                format!(
+                                    "wrote {} public key ({}) from JWK {input} to {path}\n  public-key SHA-256: {fingerprint}\n  private material: not exported\n",
+                                    algorithm.name(),
+                                    to.as_str(),
+                                ),
+                                json!({ "out": path, "kind": "public-key", "algorithm": algorithm.name(), "format": to.as_str(), "from": "jwk", "bytes": out.len(), "public_key_fingerprint_sha256": fingerprint, "private_material_emitted": false }),
+                            ));
+                        }
+                        None => {
+                            use std::io::Write;
+                            std::io::stdout().write_all(&out).map_err(|e| {
+                                CertError::engine(format!("cannot write stdout: {e}"))
+                            })?;
+                            return Ok(0);
+                        }
+                    }
+                }
                 if from != "pkcs12" {
                     return Err(CertError::usage(format!(
                         "unknown format convert --from '{from}' (pkcs12)"
@@ -2030,6 +2313,88 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
             let target = p.require("to", "format convert")?;
             let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
+            if target == "jwk" {
+                if p.get("password-file").is_some() {
+                    return Err(CertError::usage(
+                        "format convert --to jwk takes no --password-file (the JWK holds public material only)",
+                    ));
+                }
+                let algorithm = algorithm.ok_or_else(|| {
+                    CertError::usage("format convert --to jwk requires --algorithm <id>")
+                })?;
+                // Keys in bundles: select by registry algorithm among the
+                // bundle's private-key identities, mirroring the PKCS#12
+                // export's exactly-one-identity rule.
+                let (source, key_der) = match (p.get("in"), p.get("bundle")) {
+                    (Some(input), None) => {
+                        let bytes = std::fs::read(input)
+                            .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+                        (
+                            input.to_string(),
+                            crate::format::private_key_der(&bytes, algorithm)?,
+                        )
+                    }
+                    (None, Some(bundle_dir)) => {
+                        let bundle = load_bundle(&PathBuf::from(bundle_dir))?;
+                        let identities: Vec<_> = bundle
+                            .manifest
+                            .certificates
+                            .iter()
+                            .filter(|c| c.key_path.is_some() && c.algorithm == algorithm)
+                            .collect();
+                        if identities.len() != 1 {
+                            return Err(CertError::validation(format!(
+                                "JWK export requires exactly one {} private-key identity in bundle; found {}",
+                                algorithm.name(),
+                                identities.len()
+                            )));
+                        }
+                        let key_path = identities[0]
+                            .key_path
+                            .as_deref()
+                            .expect("filtered key path");
+                        let key_bytes = read_artifact(&bundle, key_path)?;
+                        (
+                            bundle_dir.to_string(),
+                            crate::format::private_key_der(&key_bytes, algorithm)?,
+                        )
+                    }
+                    _ => {
+                        return Err(CertError::usage(
+                            "format convert --to jwk requires exactly one of --in <key> or --bundle <dir>",
+                        ));
+                    }
+                };
+                let jwk = crate::jwk::public_from_pkcs8(algorithm, &key_der)?;
+                // Re-parse the export through the strict reader: the
+                // bytes on disk must be exactly the public subset.
+                let (_, raw) = crate::jwk::public_to_raw(&jwk)?;
+                let fingerprint = crate::bundle::sha256_hex(&raw);
+                let mut text = serde_json::to_string_pretty(&jwk)
+                    .map_err(|e| CertError::engine(format!("cannot render JWK: {e}")))?;
+                text.push('\n');
+                let bytes = text.into_bytes();
+                match p.get("out") {
+                    Some(path) => {
+                        write_new_file(Path::new(path), &bytes, false, "public JWK")?;
+                        return Ok(emit(
+                            json_out,
+                            format!(
+                                "wrote public JWK for {} key ({source}) to {path}\n  public-key SHA-256: {fingerprint}\n  private material: not exported\n",
+                                algorithm.name(),
+                            ),
+                            json!({ "out": path, "kind": "jwk", "algorithm": algorithm.name(), "format": "jwk", "source": source, "bytes": bytes.len(), "public_key_fingerprint_sha256": fingerprint, "private_material_emitted": false }),
+                        ));
+                    }
+                    None => {
+                        use std::io::Write;
+                        std::io::stdout()
+                            .write_all(&bytes)
+                            .map_err(|e| CertError::engine(format!("cannot write stdout: {e}")))?;
+                        return Ok(0);
+                    }
+                }
+            }
             if target == "pkcs12" {
                 let bundle_dir = p.require("bundle", "format convert --to pkcs12")?;
                 let password_path =
@@ -2135,11 +2500,56 @@ fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
         }
         "verify" => {
-            let p = parse_args(rest, &["in", "password-file", "algorithm"], &["json"])?;
+            let p = parse_args(
+                rest,
+                &["in", "password-file", "algorithm", "key"],
+                &["json"],
+            )?;
             let input = p.require("in", "format verify")?;
             let algorithm = p.get("algorithm").map(parse_algorithm_name).transpose()?;
             let bytes = std::fs::read(&input)
                 .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            if let Some(key_path) = p.get("key") {
+                // JWK verification proves the JWK matches the canonical
+                // DER key material: the JWK alone can only be
+                // well-formedness, never byte-faithfulness.
+                if p.get("password-file").is_some() {
+                    return Err(CertError::usage(
+                        "format verify of a JWK takes no --password-file",
+                    ));
+                }
+                let algorithm = algorithm.ok_or_else(|| {
+                    CertError::usage(
+                        "format verify of a JWK requires --algorithm <id> and --key <pkcs8>",
+                    )
+                })?;
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| CertError::validation("JWK input is not UTF-8 JSON"))?;
+                let value: Value = serde_json::from_str(text).map_err(|e| {
+                    CertError::validation(format!("JWK input is not a JSON object: {e}"))
+                })?;
+                let key_bytes = std::fs::read(key_path)
+                    .map_err(|e| CertError::usage(format!("cannot read {key_path}: {e}")))?;
+                let key_der = crate::format::private_key_der(&key_bytes, algorithm)?;
+                crate::jwk::verify_public_roundtrip(algorithm, &key_der, &value)?;
+                let (_, raw) = crate::jwk::public_to_raw(&value)?;
+                let fingerprint = crate::bundle::sha256_hex(&raw);
+                return Ok(emit(
+                    json_out,
+                    format!(
+                        "{input}: well-formed public JWK ({}) matching {key_path} (public-key SHA-256 {fingerprint}); JWK round trip preserves the DER key\n",
+                        algorithm.name(),
+                    ),
+                    json!({
+                        "in": input,
+                        "kind": "jwk",
+                        "algorithm": algorithm.name(),
+                        "key": key_path,
+                        "public_key_fingerprint_sha256": fingerprint,
+                        "private_material_emitted": false,
+                    }),
+                ));
+            }
             if let Some(password_path) = p.get("password-file") {
                 let password_path = PathBuf::from(password_path);
                 let password = std::fs::read_to_string(&password_path).map_err(|e| {
@@ -2889,10 +3299,6 @@ fn trust_consumer_export(p: &Parsed, json_out: bool) -> Result<i32> {
 
 const NOT_BUILT: &[(&str, &str)] = &[
     (
-        "revoke / crl",
-        "revocation + signed CRLs (spec §13 phase F)",
-    ),
-    (
         "publish status",
         "live AIA/CDP publication status (production-gated; local staging apply is supported)",
     ),
@@ -2900,7 +3306,10 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "key import/export/escrow/restore/rotate",
         "remaining standalone key ceremonies (spec §6.1)",
     ),
-    ("format", "format list/describe/export/convert (spec §7.5)"),
+    (
+        "format",
+        "format list/describe/export (spec §7.5; convert/verify is built)",
+    ),
     (
         "bundle pack/unpack/diff/migrate",
         "bundle packaging verbs (spec §7)",
@@ -2912,7 +3321,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, revoke, crl, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
@@ -2929,6 +3338,14 @@ crate chain code: signature, responder authorization, CertID binding, \
 freshness. ocsp test runs the synthetic end-to-end (good and revoked \
 served and verified locally). No OCSP URL is embedded anywhere by these \
 verbs; serving these responses over HTTP is a deployment of this core."
+            .to_string(),
+        "crl" => "CRLs are generated from checksum-verified revocation bundles and signed by \
+the selected primary CA certificate. `crl generate` requires an explicit --issuer-key-dir and \
+positive --crl-number; use --previous-crl to reject a non-increasing number. `--issuer-algorithm` \
+accepts an issuer fingerprint, algorithm, or subject DN and errors if that selector is ambiguous. \
+Only Ed25519, P-256, RSA-SHA256, and ML-DSA-44 signatures are supported. `crl inspect` parses \
+the CRL; `crl verify` checks issuer, signature, freshness, and supplied revocation evidence. \
+Output is local DER unless --pem is requested. This command does not publish a distribution point."
             .to_string(),
         "signer-source" => "Spec §24.3: a root private key is used only when the operator \
 explicitly provides an authorized root source. In this CLI that is --root-key-dir \
@@ -2981,7 +3398,7 @@ installs trust: live trust-store mutation is production-gated (#9155, spec §44)
             .to_string(),
         other => {
             return Err(CertError::usage(format!(
-                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | trust | profiles)"
+                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | trust | profiles | crl)"
             )));
         }
     };
@@ -3023,7 +3440,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only, apply to local staging), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/rotate/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), format (convert/verify: PEM/DER certificate+key, PKCS#12, JWK), chain, revoke, crl, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only, apply to local staging), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -3031,7 +3448,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/apply-staging/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "format-convert/verify", "chain", "revoke", "crl", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/apply-staging/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
@@ -3448,6 +3865,398 @@ mod key_ceremony_tests {
     }
 
     #[test]
+    fn format_jwk_export_verify_and_import_round_trip_for_supported_algorithms() {
+        // Oracle: `inspect_key` public bytes are the input identity;
+        // JWK export -> strict re-parse -> SPKI import must agree with
+        // the engine's own SPKI encoding, and `verify --key` must pin
+        // the JWK to the canonical DER key material.
+        let dir = scratch_dir("format-jwk-roundtrip");
+        for algorithm in [AlgorithmId::Ed25519, AlgorithmId::P256] {
+            let name = algorithm.name();
+            let key = engine::generate_key(algorithm).expect("generate key");
+            let der = key.serialize_der();
+            let key_path = dir.join(format!("{name}.pk8"));
+            std::fs::write(&key_path, &der).expect("write source key");
+            let key_text = key_path.to_string_lossy().into_owned();
+
+            let jwk_path = dir.join(format!("{name}.jwk"));
+            let jwk_text = jwk_path.to_string_lossy().into_owned();
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--to",
+                    "jwk",
+                    "--algorithm",
+                    name,
+                    "--in",
+                    &key_text,
+                    "--out",
+                    &jwk_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{name} JWK export failed: {error}"));
+
+            // Strict public-only subset: the stored value carries no
+            // private member and re-parses to the engine's own public
+            // bytes.
+            let stored: Value =
+                serde_json::from_slice(&std::fs::read(&jwk_path).expect("read JWK"))
+                    .expect("exported JWK is a JSON object");
+            assert!(stored.get("d").is_none(), "{name} JWK must not carry 'd'");
+            let (parsed_algorithm, raw) =
+                crate::jwk::public_to_raw(&stored).expect("strict JWK re-parse");
+            assert_eq!(parsed_algorithm, algorithm);
+            assert_eq!(raw, engine::inspect_key(algorithm, &der).expect("inspect"));
+
+            // `verify --key` pins the JWK to the canonical DER key.
+            format_cmd(
+                &args(&[
+                    "verify",
+                    "--in",
+                    &jwk_text,
+                    "--algorithm",
+                    name,
+                    "--key",
+                    &key_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{name} JWK verify failed: {error}"));
+
+            // The same JWK verified against a different key is refused.
+            let other = engine::generate_key(algorithm).expect("generate other key");
+            let other_path = dir.join(format!("{name}-other.pk8"));
+            std::fs::write(&other_path, other.serialize_der()).expect("write other key");
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "verify",
+                        "--in",
+                        &jwk_text,
+                        "--algorithm",
+                        name,
+                        "--key",
+                        &other_path.to_string_lossy(),
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "{name} JWK must not verify against a different key"
+            );
+
+            // Import legs: JWK -> SPKI PEM and DER.
+            let expected_spki = engine::public_key_spki_der(algorithm, &raw);
+            let pem_path = dir.join(format!("{name}.pub.pem"));
+            let pem_text = pem_path.to_string_lossy().into_owned();
+            format_cmd(
+                &args(&[
+                    "convert", "--from", "jwk", "--to", "pem", "--in", &jwk_text, "--out",
+                    &pem_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{name} JWK-to-PEM failed: {error}"));
+            let pem_bytes = std::fs::read(&pem_path).expect("read PEM output");
+            assert!(pem_bytes.starts_with(b"-----BEGIN PUBLIC KEY-----"));
+            assert!(!pem_bytes.windows(7).any(|w| w == b"PRIVATE"));
+
+            let der_path = dir.join(format!("{name}.pub.der"));
+            let der_text = der_path.to_string_lossy().into_owned();
+            format_cmd(
+                &args(&[
+                    "convert", "--from", "jwk", "--to", "der", "--in", &jwk_text, "--out",
+                    &der_text,
+                ]),
+                true,
+            )
+            .unwrap_or_else(|error| panic!("{name} JWK-to-DER failed: {error}"));
+            assert_eq!(
+                std::fs::read(&der_path).expect("read DER output"),
+                expected_spki
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_jwk_export_reads_the_bundles_exactly_one_identity() {
+        // Oracle: a single-algorithm root set with no cross-signing
+        // holds exactly one private-key identity (§3.2 arithmetic);
+        // the `--bundle` leg must find it without `--in`, and the
+        // exported JWK must verify against the bundle's own key file.
+        let dir = scratch_dir("format-jwk-bundle");
+        let bundle_dir = dir.join("roots");
+        let manifest = engine::create_root_set(
+            &RootCreateRequest {
+                organization: "Test Org LLC".into(),
+                country: "US".into(),
+                algorithms: vec![AlgorithmId::Ed25519],
+                generation: 1,
+                partition: "A".into(),
+                cross_signing: CrossSigningMode::None,
+                not_before: Rfc3339::parse("2026-01-01T00:00:00Z").expect("not-before"),
+                not_after: Rfc3339::parse("2046-01-01T00:00:00Z").expect("not-after"),
+                allow_legacy_root_strength: false,
+                private_store: None,
+            },
+            &bundle_dir,
+        )
+        .expect("create single-algorithm root set");
+        assert_eq!(manifest.certificates.len(), 1);
+        let bundle_text = bundle_dir.to_string_lossy().into_owned();
+
+        let jwk_path = dir.join("bundle-ed25519.jwk");
+        let jwk_text = jwk_path.to_string_lossy().into_owned();
+        format_cmd(
+            &args(&[
+                "convert",
+                "--to",
+                "jwk",
+                "--algorithm",
+                "ed25519",
+                "--bundle",
+                &bundle_text,
+                "--out",
+                &jwk_text,
+            ]),
+            true,
+        )
+        .expect("bundle JWK export failed");
+        let bundle = load_bundle(&bundle_dir).expect("reload bundle");
+        let key_path = bundle.manifest.certificates[0]
+            .key_path
+            .as_deref()
+            .expect("root identity keeps its key in the bundle");
+        format_cmd(
+            &args(&[
+                "verify",
+                "--in",
+                &jwk_text,
+                "--algorithm",
+                "ed25519",
+                "--key",
+                &bundle_dir.join(key_path).to_string_lossy(),
+            ]),
+            true,
+        )
+        .expect("bundle JWK must verify against the bundle key");
+
+        // No P-256 identity lives in this bundle: the same export
+        // with a non-resident algorithm is refused, not guessed.
+        let missing = dir.join("bundle-p256.jwk");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--to",
+                    "jwk",
+                    "--algorithm",
+                    "p256",
+                    "--bundle",
+                    &bundle_text,
+                    "--out",
+                    &missing.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "bundle JWK export must refuse a non-resident algorithm"
+        );
+        assert!(!missing.exists());
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn format_jwk_rejects_unsupported_algorithms_private_material_and_bad_flags() {
+        let dir = scratch_dir("format-jwk-invalid");
+        // RSA-2048, RSA-4096, and ML-DSA-44 have no registered public
+        // JWK form: export is refused and nothing is written.
+        for algorithm in [
+            AlgorithmId::Rsa2048,
+            AlgorithmId::Rsa4096,
+            AlgorithmId::MlDsa44,
+        ] {
+            let name = algorithm.name();
+            let key = engine::generate_key(algorithm).expect("generate key");
+            let key_path = dir.join(format!("{name}.pk8"));
+            std::fs::write(&key_path, key.serialize_der()).expect("write key");
+            let out = dir.join(format!("{name}.jwk"));
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "convert",
+                        "--to",
+                        "jwk",
+                        "--algorithm",
+                        name,
+                        "--in",
+                        &key_path.to_string_lossy(),
+                        "--out",
+                        &out.to_string_lossy(),
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "{name} JWK export must be refused"
+            );
+            assert!(!out.exists(), "{name} JWK export must write nothing");
+        }
+
+        let ed = engine::generate_key(AlgorithmId::Ed25519).expect("generate key");
+        let ed_der = ed.serialize_der();
+        let ed_path = dir.join("ed25519.pk8");
+        std::fs::write(&ed_path, &ed_der).expect("write key");
+        let ed_text = ed_path.to_string_lossy().into_owned();
+        let jwk_path = dir.join("ed25519.jwk");
+        let jwk_text = jwk_path.to_string_lossy().into_owned();
+        format_cmd(
+            &args(&[
+                "convert",
+                "--to",
+                "jwk",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &ed_text,
+                "--out",
+                &jwk_text,
+            ]),
+            true,
+        )
+        .expect("baseline JWK export");
+
+        // `--algorithm` is required: the key bytes alone do not name
+        // the JWK family.
+        let no_algo = dir.join("no-algo.jwk");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--to",
+                    "jwk",
+                    "--in",
+                    &ed_text,
+                    "--out",
+                    &no_algo.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "JWK export must require --algorithm"
+        );
+        assert!(!no_algo.exists());
+
+        // `--password-file` is meaningless for public-only JWK output.
+        let with_password = dir.join("with-password.jwk");
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--to",
+                    "jwk",
+                    "--algorithm",
+                    "ed25519",
+                    "--in",
+                    &ed_text,
+                    "--out",
+                    &with_password.to_string_lossy(),
+                    "--password-file",
+                    &ed_text,
+                ]),
+                true,
+            )
+            .is_err(),
+            "JWK export must refuse --password-file"
+        );
+        assert!(!with_password.exists());
+
+        // `--from jwk` import takes neither `--bundle` nor
+        // `--password-file`.
+        for flag in ["--bundle", "--password-file"] {
+            assert!(
+                format_cmd(
+                    &args(&[
+                        "convert",
+                        "--from",
+                        "jwk",
+                        "--to",
+                        "pem",
+                        "--in",
+                        &jwk_text,
+                        "--out",
+                        &dir.join("flagged.pem").to_string_lossy(),
+                        flag,
+                        &ed_text,
+                    ]),
+                    true,
+                )
+                .is_err(),
+                "--from jwk must refuse {flag}"
+            );
+        }
+
+        // A JWK carrying the private member `d` is refused at verify
+        // and at import: private material never crosses the JWK legs.
+        let mut smuggled: Value =
+            serde_json::from_slice(&std::fs::read(&jwk_path).expect("read JWK"))
+                .expect("JWK is a JSON object");
+        smuggled["d"] = Value::from("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let smuggled_path = dir.join("smuggled.jwk");
+        std::fs::write(
+            &smuggled_path,
+            serde_json::to_string_pretty(&smuggled).expect("render JWK"),
+        )
+        .expect("write smuggled JWK");
+        let smuggled_text = smuggled_path.to_string_lossy().into_owned();
+        assert!(
+            format_cmd(
+                &args(&[
+                    "verify",
+                    "--in",
+                    &smuggled_text,
+                    "--algorithm",
+                    "ed25519",
+                    "--key",
+                    &ed_text,
+                ]),
+                true,
+            )
+            .is_err(),
+            "verify must refuse a JWK carrying 'd'"
+        );
+        assert!(
+            format_cmd(
+                &args(&[
+                    "convert",
+                    "--from",
+                    "jwk",
+                    "--to",
+                    "pem",
+                    "--in",
+                    &smuggled_text,
+                    "--out",
+                    &dir.join("smuggled.pem").to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err(),
+            "import must refuse a JWK carrying 'd'"
+        );
+
+        // Verifying a JWK without `--key` cannot prove byte-faithfulness.
+        assert!(
+            format_cmd(
+                &args(&["verify", "--in", &jwk_text, "--algorithm", "ed25519"]),
+                true,
+            )
+            .is_err(),
+            "JWK verify must require --key"
+        );
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
     fn rotate_writes_a_fresh_key_and_keeps_the_old_one() {
         let dir = scratch_dir("key-rotate");
         for (name, algorithm) in [
@@ -3672,528 +4481,4 @@ mod key_ceremony_tests {
         }
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
-}
-
-// ---------------------------------------------------------------- ocsp
-
-fn ocsp_cmd(args: &[String], json_out: bool) -> Result<i32> {
-    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
-    let rest = &args[1.min(args.len())..];
-    match verb {
-        "sign" => ocsp_sign_cmd(rest, json_out),
-        "inspect" => ocsp_inspect_cmd(rest, json_out),
-        "test" => ocsp_test_cmd(rest, json_out),
-        other => Err(CertError::usage(format!(
-            "unknown ocsp verb '{other}' (sign | inspect | test)"
-        ))),
-    }
-}
-
-/// Parse the DER of the certificate a bundle record points at.
-fn cert_from_record(bundle: &crate::bundle::Bundle, record: &CertRecord) -> Result<CertInfo> {
-    let pem = read_artifact(bundle, &record.cert_path)?;
-    let blocks = pem_decode_all(
-        std::str::from_utf8(&pem)
-            .map_err(|_| CertError::manifest(format!("{} is not UTF-8 PEM", record.cert_path)))?,
-    )?;
-    let der = blocks
-        .into_iter()
-        .find(|(label, _)| label == "CERTIFICATE")
-        .map(|(_, der)| der)
-        .ok_or_else(|| {
-            CertError::manifest(format!("no CERTIFICATE block in {}", record.cert_path))
-        })?;
-    parse_cert(&der)
-}
-
-/// Select the primary issuer record of an issuer bundle: the one
-/// whose SKI matches the leaf's AKI when a leaf is known, narrowed
-/// by --issuer-algorithm / --issuer-partition when given. Ambiguity
-/// is a usage error, never a guess.
-fn resolve_issuer_record(
-    bundle: &crate::bundle::Bundle,
-    leaf: Option<&CertInfo>,
-    algorithm: Option<AlgorithmId>,
-    partition: Option<&str>,
-) -> Result<CertRecord> {
-    let mut candidates: Vec<&CertRecord> = bundle
-        .manifest
-        .certificates
-        .iter()
-        .filter(|r| r.role == "issuer" && r.primary)
-        .collect();
-    if let Some(algo) = algorithm {
-        candidates.retain(|r| r.algorithm == algo);
-    }
-    if let Some(part) = partition {
-        let part = part.to_ascii_lowercase();
-        candidates.retain(|r| r.partition == part);
-    }
-    if let Some(leaf) = leaf {
-        if let Some(aki) = &leaf.aki {
-            let aki_hex = crate::chain::hex_bytes(aki);
-            let matched: Vec<&CertRecord> = candidates
-                .iter()
-                .filter(|r| r.ski_hex == aki_hex)
-                .copied()
-                .collect();
-            if !matched.is_empty() {
-                candidates = matched;
-            }
-        }
-    }
-    match candidates.len() {
-        1 => Ok(candidates[0].clone()),
-        0 => Err(CertError::usage(
-            "the issuer bundle has no primary issuer record matching the selection",
-        )),
-        n => Err(CertError::usage(format!(
-            "the issuer selection matches {n} primary issuer records; narrow it with \
-             --leaf (AKI match), --issuer-algorithm or --issuer-partition"
-        ))),
-    }
-}
-
-/// The key file name a direct issuer signing uses inside the
-/// signer source (the bundle convention load_ca applies).
-fn issuer_key_file(record: &CertRecord) -> String {
-    record
-        .key_path
-        .as_deref()
-        .and_then(|p| {
-            std::path::Path::new(p)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-        })
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| format!("{}-{}.pk8", record.algorithm.name(), record.partition))
-}
-
-fn parse_algorithm_flag(p: &Parsed, flag: &str) -> Result<Option<AlgorithmId>> {
-    match p.get(flag) {
-        Some(s) => {
-            let (a, w) = AlgorithmId::parse(s)?;
-            if let Some(w) = w {
-                eprintln!("warning: {w}");
-            }
-            Ok(Some(a))
-        }
-        None => Ok(None),
-    }
-}
-
-fn ocsp_sign_cmd(rest: &[String], json_out: bool) -> Result<i32> {
-    let p = parse_args(
-        rest,
-        &[
-            "leaf",
-            "issuer",
-            "serial",
-            "responder",
-            "responder-key-dir",
-            "issuer-key-dir",
-            "issuer-algorithm",
-            "issuer-partition",
-            "status",
-            "revocation-time",
-            "reason",
-            "hash",
-            "this-update",
-            "next-update",
-            "out",
-        ],
-        &["pem", "json"],
-    )?;
-    let issuer_dir = p.require("issuer", "ocsp sign")?;
-    let issuer_bundle = load_bundle(&PathBuf::from(&issuer_dir))?;
-    if issuer_bundle.manifest.bundle_type != BundleType::IssuerSet {
-        return Err(CertError::usage(format!(
-            "{issuer_dir} is a {} bundle, not an issuer set",
-            issuer_bundle.manifest.bundle_type.as_str()
-        )));
-    }
-    // The leaf the response is about: a leaf bundle (serial + AKI
-    // issuer selection) or an explicit --serial.
-    let mut leaf_info: Option<CertInfo> = None;
-    let leaf_serial = if let Some(leaf_dir) = p.get("leaf") {
-        let leaf_bundle = load_bundle(&PathBuf::from(leaf_dir))?;
-        let record = leaf_bundle
-            .manifest
-            .certificates
-            .iter()
-            .find(|r| r.role == "leaf")
-            .ok_or_else(|| CertError::manifest(format!("{leaf_dir} has no leaf record")))?;
-        let info = cert_from_record(&leaf_bundle, record)?;
-        let serial = crate::ocsp::unhex(&info.serial_hex)?;
-        leaf_info = Some(info);
-        serial
-    } else if let Some(serial) = p.get("serial") {
-        crate::ocsp::unhex(serial)?
-    } else {
-        return Err(CertError::usage(
-            "ocsp sign needs the leaf: --leaf <bundle> or --serial <hex>",
-        ));
-    };
-    let issuer_record = resolve_issuer_record(
-        &issuer_bundle,
-        leaf_info.as_ref(),
-        parse_algorithm_flag(&p, "issuer-algorithm")?,
-        p.get("issuer-partition"),
-    )?;
-    let issuer = cert_from_record(&issuer_bundle, &issuer_record)?;
-
-    // The signer (§24.3: always an explicit source).
-    let signer = match (
-        p.get("responder"),
-        p.get("responder-key-dir"),
-        p.get("issuer-key-dir"),
-    ) {
-        (Some(responder_dir), Some(key_dir), _) => {
-            let responder_bundle = load_bundle(&PathBuf::from(responder_dir))?;
-            let record = responder_bundle
-                .manifest
-                .certificates
-                .iter()
-                .find(|r| r.role == "leaf")
-                .ok_or_else(|| {
-                    CertError::manifest(format!("{responder_dir} has no leaf record"))
-                })?;
-            let cert = cert_from_record(&responder_bundle, record)?;
-            if !crate::ocsp::cert_has_ocsp_signing_eku(&cert.der)? {
-                return Err(CertError::policy(format!(
-                    "the responder certificate at {responder_dir} does not carry the \
-                     OCSP-signing EKU; issue one with: fleet cert leaf issue \
-                     --profile ocsp-responder"
-                )));
-            }
-            crate::ocsp::OcspSigner::Delegated {
-                cert,
-                key_file: "leaf.pk8".to_string(),
-                source: SignerSource {
-                    key_dir: PathBuf::from(key_dir),
-                },
-            }
-        }
-        (Some(_), None, _) => {
-            return Err(CertError::usage(
-                "ocsp sign --responder requires --responder-key-dir <dir>",
-            ));
-        }
-        (None, _, Some(key_dir)) => crate::ocsp::OcspSigner::Direct {
-            issuer_record_algorithm: issuer_record.algorithm,
-            key_file: issuer_key_file(&issuer_record),
-            source: SignerSource {
-                key_dir: PathBuf::from(key_dir),
-            },
-        },
-        (None, _, None) => {
-            return Err(CertError::policy(
-                "ocsp sign requires an explicit signer source (spec §24.3): \
-                 --responder <bundle> --responder-key-dir <dir> for a delegated \
-                 responder, or --issuer-key-dir <dir> for direct issuer signing",
-            ));
-        }
-    };
-
-    let this_update = p
-        .get("this-update")
-        .map(Rfc3339::parse)
-        .transpose()?
-        .unwrap_or_else(Rfc3339::now);
-    let next_update = match p.get("next-update") {
-        Some(s) => Some(Rfc3339::parse(s)?),
-        None => Some(CalendarDuration::days(7).add_to(this_update)?),
-    };
-    let status = match p.get("status").unwrap_or("good") {
-        "good" => crate::ocsp::OcspStatus::Good,
-        "unknown" => crate::ocsp::OcspStatus::Unknown,
-        "revoked" => crate::ocsp::OcspStatus::Revoked {
-            revocation_time: p
-                .get("revocation-time")
-                .map(Rfc3339::parse)
-                .transpose()?
-                .unwrap_or(this_update),
-            reason: p.get("reason").map(crate::ocsp::parse_reason).transpose()?,
-        },
-        other => {
-            return Err(CertError::usage(format!(
-                "unknown --status '{other}' (good | revoked | unknown)"
-            )));
-        }
-    };
-    let hash = p
-        .get("hash")
-        .map(crate::ocsp::OcspHash::parse)
-        .transpose()?
-        .unwrap_or(crate::ocsp::OcspHash::Sha1);
-    let req = crate::ocsp::OcspSignRequest {
-        issuer: issuer.clone(),
-        leaf_serial: leaf_serial.clone(),
-        status,
-        hash,
-        produced_at: Rfc3339::now(),
-        this_update,
-        next_update,
-        signer,
-    };
-    let der = crate::ocsp::sign_response(&req)?;
-    let out = p.require("out", "ocsp sign")?;
-    let (bytes, encoding) = if p.has("pem") {
-        (
-            crate::bundle::pem_encode("OCSP RESPONSE", &der).into_bytes(),
-            "pem",
-        )
-    } else {
-        (der.clone(), "der")
-    };
-    std::fs::write(&out, &bytes)?;
-    let signer_desc = match &req.signer {
-        crate::ocsp::OcspSigner::Direct { .. } => {
-            format!("direct (issuer {})", issuer.subject_dn)
-        }
-        crate::ocsp::OcspSigner::Delegated { cert, .. } => {
-            format!("delegated responder {}", cert.subject_dn)
-        }
-    };
-    let text = format!(
-        "OCSP response written: {out} ({encoding}, {} bytes)\n  status: {}\n  leaf serial: {}\n  issuer: {}\n  signer: {signer_desc}\n  cert-id hash: {}\n  this-update: {}\n  next-update: {}\n",
-        bytes.len(),
-        status.label(),
-        crate::ocsp::hex(&leaf_serial),
-        issuer.subject_dn,
-        hash.name(),
-        this_update,
-        next_update
-            .map(|t| t.to_string_canonical())
-            .unwrap_or_else(|| "none".to_string()),
-    );
-    let value = json!({
-        "out": out,
-        "encoding": encoding,
-        "bytes": bytes.len(),
-        "status": status.label(),
-        "leaf_serial": crate::ocsp::hex(&leaf_serial),
-        "issuer": issuer.subject_dn,
-        "signer": signer_desc,
-        "cert_id_hash": hash.name(),
-        "this_update": this_update.to_string_canonical(),
-        "next_update": next_update.map(|t| t.to_string_canonical()),
-    });
-    Ok(emit(json_out, text, value))
-}
-
-fn read_response_bytes(path: &str) -> Result<Vec<u8>> {
-    let raw = std::fs::read(path)?;
-    if raw.starts_with(b"-----") {
-        let text = std::str::from_utf8(&raw)
-            .map_err(|_| CertError::manifest(format!("{path} is not UTF-8 PEM")))?;
-        let blocks = pem_decode_all(text)?;
-        blocks
-            .into_iter()
-            .next()
-            .map(|(_, der)| der)
-            .ok_or_else(|| CertError::manifest(format!("no PEM block in {path}")))
-    } else {
-        Ok(raw)
-    }
-}
-
-fn ocsp_inspect_cmd(rest: &[String], json_out: bool) -> Result<i32> {
-    let p = parse_args(
-        rest,
-        &[
-            "response",
-            "issuer",
-            "leaf",
-            "serial",
-            "issuer-algorithm",
-            "issuer-partition",
-            "at",
-        ],
-        &["json"],
-    )?;
-    let path = p
-        .get("response")
-        .map(|s| s.to_string())
-        .or_else(|| p.positional(0).map(|s| s.to_string()))
-        .ok_or_else(|| CertError::usage("ocsp inspect needs a response file"))?;
-    let der = read_response_bytes(&path)?;
-    let info = crate::ocsp::parse_response(&der)?;
-    if !info.successful {
-        let text = format!("OCSP response: {path}\n  responseStatus: not successful\n");
-        let value = json!({"response": path, "successful": false});
-        let code = emit(json_out, text, value);
-        return Ok(if code == 0 { 1 } else { code });
-    }
-    let mut text = format!(
-        "OCSP response: {path}\n  produced-at: {}\n  signature algorithm: {}\n",
-        info.produced_at, info.signature_algorithm_oid
-    );
-    if let Some(rk) = &info.responder_key_hash {
-        text.push_str(&format!("  responder-id (byKey sha1): {rk}\n"));
-    }
-    let mut embedded_json = Vec::new();
-    for cert_der in &info.embedded_certs {
-        if let Ok(ci) = parse_cert(cert_der) {
-            text.push_str(&format!(
-                "  embedded cert: {} (fingerprint {})\n",
-                ci.subject_dn, ci.fingerprint_sha256
-            ));
-            embedded_json.push(json!({
-                "subject": ci.subject_dn,
-                "fingerprint_sha256": ci.fingerprint_sha256,
-            }));
-        }
-    }
-    let mut singles_json = Vec::new();
-    for s in &info.singles {
-        text.push_str(&format!(
-            "  single: serial {} status {} this-update {} next-update {}\n    cert-id: hash {} issuer-name-hash {} issuer-key-hash {}\n",
-            s.serial_hex,
-            s.status.label(),
-            s.this_update,
-            s.next_update
-                .map(|t| t.to_string_canonical())
-                .unwrap_or_else(|| "none".to_string()),
-            s.hash_algorithm_oid,
-            s.issuer_name_hash,
-            s.issuer_key_hash,
-        ));
-        singles_json.push(json!({
-            "serial": s.serial_hex,
-            "status": s.status.label(),
-            "this_update": s.this_update.to_string_canonical(),
-            "next_update": s.next_update.map(|t| t.to_string_canonical()),
-            "hash_algorithm": s.hash_algorithm_oid,
-            "issuer_name_hash": s.issuer_name_hash,
-            "issuer_key_hash": s.issuer_key_hash,
-        }));
-    }
-    let mut value = json!({
-        "response": path,
-        "successful": true,
-        "produced_at": info.produced_at.to_string_canonical(),
-        "signature_algorithm": info.signature_algorithm_oid,
-        "responder_key_hash": info.responder_key_hash,
-        "embedded_certs": embedded_json,
-        "singles": singles_json,
-    });
-
-    // Optional full verification against an issuer bundle.
-    if let Some(issuer_dir) = p.get("issuer") {
-        let issuer_bundle = load_bundle(&PathBuf::from(issuer_dir))?;
-        let mut leaf_info: Option<CertInfo> = None;
-        let leaf_serial = if let Some(leaf_dir) = p.get("leaf") {
-            let leaf_bundle = load_bundle(&PathBuf::from(leaf_dir))?;
-            let record = leaf_bundle
-                .manifest
-                .certificates
-                .iter()
-                .find(|r| r.role == "leaf")
-                .ok_or_else(|| CertError::manifest(format!("{leaf_dir} has no leaf record")))?;
-            let li = cert_from_record(&leaf_bundle, record)?;
-            let serial = crate::ocsp::unhex(&li.serial_hex)?;
-            leaf_info = Some(li);
-            serial
-        } else if let Some(serial) = p.get("serial") {
-            crate::ocsp::unhex(serial)?
-        } else {
-            return Err(CertError::usage(
-                "ocsp inspect --issuer also needs the expected leaf: --leaf <bundle> \
-                 or --serial <hex> (verification must not trust the response's own serial)",
-            ));
-        };
-        let issuer_record = resolve_issuer_record(
-            &issuer_bundle,
-            leaf_info.as_ref(),
-            parse_algorithm_flag(&p, "issuer-algorithm")?,
-            p.get("issuer-partition"),
-        )?;
-        let issuer = cert_from_record(&issuer_bundle, &issuer_record)?;
-        let at = p
-            .get("at")
-            .map(Rfc3339::parse)
-            .transpose()?
-            .unwrap_or_else(Rfc3339::now);
-        let checks = crate::ocsp::verify_response(&der, &issuer, &leaf_serial, at)?;
-        let all_ok = checks.iter().all(|c| c.ok);
-        text.push_str(&format!(
-            "  verification at {}:\n",
-            at.to_string_canonical()
-        ));
-        for c in &checks {
-            text.push_str(&format!(
-                "    [{}] {} — {}\n",
-                if c.ok { "ok" } else { "FAIL" },
-                c.name,
-                c.detail
-            ));
-        }
-        text.push_str(&format!(
-            "  result: {}\n",
-            if all_ok { "VALID" } else { "INVALID" }
-        ));
-        value["verification"] = json!({
-            "at": at.to_string_canonical(),
-            "valid": all_ok,
-            "checks": checks.iter().map(|c| json!({"name": c.name, "ok": c.ok, "detail": c.detail})).collect::<Vec<_>>(),
-        });
-        let code = emit(json_out, text, value);
-        return Ok(if all_ok { code } else { 1 });
-    }
-    Ok(emit(json_out, text, value))
-}
-
-fn ocsp_test_cmd(rest: &[String], json_out: bool) -> Result<i32> {
-    let p = parse_args(rest, &["dir"], &["json"])?;
-    let (dir, keep) = match p.get("dir") {
-        Some(d) => (PathBuf::from(d), true),
-        None => {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            (
-                std::env::temp_dir().join(format!(
-                    "fleet-cert-ocsp-test-{}-{nanos}",
-                    std::process::id()
-                )),
-                false,
-            )
-        }
-    };
-    std::fs::create_dir_all(&dir)?;
-    let result = crate::ocsp::synthetic_e2e(&dir);
-    if !keep {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    let checks = result?;
-    let all_ok = checks.iter().all(|c| c.ok);
-    let mut text = format!(
-        "OCSP synthetic end-to-end ({}):\n",
-        if keep {
-            dir.display().to_string()
-        } else {
-            "temp dir, removed".to_string()
-        }
-    );
-    for c in &checks {
-        text.push_str(&format!(
-            "  [{}] {} — {}\n",
-            if c.ok { "ok" } else { "FAIL" },
-            c.name,
-            c.detail
-        ));
-    }
-    text.push_str(&format!(
-        "  result: {}\n",
-        if all_ok { "PASS" } else { "FAIL" }
-    ));
-    let value = json!({
-        "valid": all_ok,
-        "kept_dir": if keep { Some(dir.display().to_string()) } else { None },
-        "checks": checks.iter().map(|c| json!({"name": c.name, "ok": c.ok, "detail": c.detail})).collect::<Vec<_>>(),
-    });
-    let code = emit(json_out, text, value);
-    Ok(if all_ok { code } else { 1 })
 }
