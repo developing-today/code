@@ -177,7 +177,7 @@ fn ops_text(ops: &[GrantOp]) -> String {
         .join(",")
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name.starts_with(|c: char| c.is_ascii_alphabetic())
