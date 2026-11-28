@@ -78,6 +78,14 @@ function startStubServe(script) {
         await sleep(10);
       }
     },
+    // #16390: write ONE delimited SSE event whose single `data:`
+    // payload is past the byte cap, in a single write so the whole
+    // block lands in the adapter's framing buffer at once — the
+    // delimited shape the #16226 undelimited-prefix cap cannot see.
+    floodEventStreamDelimited: async (payloadBytes) => {
+      const payload = `data: ${'x'.repeat(payloadBytes)}\n\n`;
+      for (const res of sseClients) res.write(payload);
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -370,6 +378,36 @@ test('an undelimited /api/event flood past the byte cap drops the buffer and rec
     'debug line recording the buffer drop',
   );
   assert.equal(acp.child.exitCode, null, 'adapter still running after the flood');
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'say hello' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+});
+
+test('a single delimited /api/event event past the byte cap drops the stream and reconnects (#16390)', async (t) => {
+  // Oracle: the stub serve sends ONE delimited event whose `data:`
+  // payload alone is well past a small env-set cap (4096). The
+  // #16226 cap only measures the undelimited leftover, so without a
+  // per-block check this block would go straight into JSON.parse
+  // unbounded. The adapter must drop the stream and reconnect
+  // through the existing path — a second GET /api/event — instead of
+  // parsing the giant block; a prompt submitted after the reconnect
+  // still completes via the reconnected stream.
+  const { stub, acp } = await setup(t, textEvents(), {
+    OPENCODE_ACP_EVENT_BUFFER_MAX_BYTES: '4096',
+    OPENCODE_ACP_ADAPTER_DEBUG: '1',
+  });
+  const eventCalls = () => stub.calls.filter((c) => c.method === 'GET' && c.pathname === '/api/event');
+  await acp.waitFor(() => eventCalls().length >= 1, 'initial event stream connect');
+  await stub.controls.floodEventStreamDelimited(16 * 1024);
+  await acp.waitFor(() => eventCalls().length >= 2, 'over-cap delimited event to drop the stream and reconnect');
+  await acp.waitFor(
+    () => acp.stderr().includes('delimited event grew past 4096 bytes'),
+    'debug line recording the delimited-event drop',
+  );
+  assert.equal(acp.child.exitCode, null, 'adapter still running after the giant delimited event');
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
   const result = await acp.request('session/prompt', {
     sessionId: SESSION_ID,
