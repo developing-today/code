@@ -2848,6 +2848,41 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_rejects_image_without_src() {
+        // Oracle: `editor.ts` gives the image node's `src` attr no
+        // default, so an image without a string `src` throws in
+        // `Node.fromJSON` on every client. It is refused before
+        // storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "image"}]}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("src"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string src is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 6, "to": 6,
+            "slice": {"content": [{"type": "image", "attrs": {"src": "https://example.com/x.png"}}]}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
