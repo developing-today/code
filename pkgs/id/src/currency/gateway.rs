@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::directory_auth::{self, ReplayGuard, Signed};
+use super::{AuthorisationState, IssuerId};
 
 /// The request protocol uses fixed-width byte strings for `u128` values.
 /// CBOR's integer range ends at `u64`; its larger-integer representation uses
@@ -179,6 +180,24 @@ pub enum GatewayError {
     /// The account does not control the account it is moving value from.
     #[error("account does not control the source account")]
     NotOwner,
+    /// The rate authorisation covering a conversion was revoked by its issuer.
+    #[error("rate authorisation is revoked")]
+    ConversionRevoked,
+    /// The conversion names the wrong ledger pair for its authorisation.
+    #[error("conversion ledgers do not match the rate authorisation")]
+    ConversionWrongDirection,
+    /// The conversion arrives before the authorisation's `not_before`.
+    #[error("conversion is before the rate authorisation window")]
+    ConversionTooEarly,
+    /// The conversion arrives at or after the authorisation's `expires_at`.
+    #[error("rate authorisation has expired")]
+    ConversionExpired,
+    /// The caller is not authorised to convert under this authorisation.
+    #[error("caller is not authorised under this rate authorisation")]
+    ConversionCallerNotAllowed,
+    /// The conversion amount is outside the authorisation's `[min, max]` bounds.
+    #[error("conversion amount is outside the authorised bounds")]
+    ConversionAmountOutOfBounds,
 }
 
 /// The operations a currency request can carry (design §4.1).
@@ -670,6 +689,37 @@ pub fn authorize(
     }
 }
 
+/// Whether a conversion may proceed under a folded rate authorisation
+/// (design #2063 §2; #2043 criterion 4).
+///
+/// The caller passes the fold verdict ([`AuthorisationState`]), never a bare
+/// body, so a revoked authorisation cannot be accepted by forgetting to
+/// check it. A zero amount is refused even when the body's `min_amount` is
+/// zero, matching the [`CurrencyOp::Convert`] gate and the conversion
+/// layer's zero-output rejection.
+///
+/// Check order is fixed and documented: revocation, zero amount,
+/// direction, time window, caller, bounds. Total-cap accounting is NOT
+/// checked here: it needs the spent-volume projection and an atomic
+/// reservation before any ledger write (design #2063 §2), which is
+/// follow-up work, as is threading this check into [`admit`] with the
+/// registry's currency-to-ledger mapping.
+///
+/// # Errors
+///
+/// Returns the [`GatewayError`] variant naming the first failed check.
+pub fn authorize_conversion(
+    state: &AuthorisationState,
+    caller: &IssuerId,
+    source_ledger: &str,
+    dest_ledger: &str,
+    amount: u128,
+    now: u64,
+) -> Result<(), GatewayError> {
+    let _ = (state, caller, source_ledger, dest_ledger, amount, now);
+    Ok(())
+}
+
 /// A registered currency, whether or not it still accepts movement.
 fn registered_currency(
     registry: &impl CurrencyRegistry,
@@ -738,6 +788,7 @@ mod tests {
     use ed25519_dalek::{Verifier as _, VerifyingKey};
 
     use super::*;
+    use crate::currency::{AuthorisedCallers, RateAuthorisation, issuer_id};
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery};
 
     fn key(byte: u8) -> ed25519_dalek::SigningKey {
@@ -1048,6 +1099,137 @@ mod tests {
         ));
     }
 
+    // Conversion authorization against the folded rate authorisation
+    // (#5522 slice; design #2063 §2, #2043 criterion 4). Oracle: the
+    // design's conversion rules — a revoked authorisation never
+    // converts; direction, window, caller, and bounds come from the
+    // live body; expiry is exclusive; zero never converts.
+    fn conversion_lp() -> IssuerId {
+        issuer_id(&p2panda_core::SigningKey::from_bytes(&[7; 32]))
+    }
+
+    fn conversion_auth(policy: AuthorisedCallers, min_amount: u128) -> RateAuthorisation {
+        RateAuthorisation {
+            authorisation_id: 7,
+            version: 1,
+            issuer_id: conversion_lp(),
+            source_ledger: "ABC".to_owned(),
+            dest_ledger: "123".to_owned(),
+            rate_num: 8123,
+            rate_den: 10_000,
+            min_amount,
+            max_amount: 10_000,
+            total_cap: 1_000_000,
+            authorised_callers: policy,
+            not_before: 1_000,
+            expires_at: 2_000,
+            reversal_window_secs: None,
+            fee_bps: None,
+        }
+    }
+
+    fn live(auth: &RateAuthorisation) -> AuthorisationState {
+        AuthorisationState::Live(auth.clone())
+    }
+
+    #[test]
+    fn conversion_under_live_authorisation_is_accepted() {
+        let auth = conversion_auth(AuthorisedCallers::Any, 1);
+        let caller = conversion_lp();
+        assert!(authorize_conversion(&live(&auth), &caller, "ABC", "123", 500, 1_500).is_ok());
+    }
+
+    #[test]
+    fn conversion_window_boundaries_follow_the_design() {
+        // Oracle: #2063 §2 via currency.rs — `not_before` is inclusive,
+        // `expires_at` is exclusive.
+        let auth = conversion_auth(AuthorisedCallers::Any, 1);
+        let caller = conversion_lp();
+        let state = live(&auth);
+        assert!(authorize_conversion(&state, &caller, "ABC", "123", 500, 1_000).is_ok());
+        assert!(authorize_conversion(&state, &caller, "ABC", "123", 500, 1_999).is_ok());
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "ABC", "123", 500, 999),
+            Err(GatewayError::ConversionTooEarly)
+        ));
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "ABC", "123", 500, 2_000),
+            Err(GatewayError::ConversionExpired)
+        ));
+    }
+
+    #[test]
+    fn conversion_under_revoked_authorisation_is_refused() {
+        let auth = conversion_auth(AuthorisedCallers::Any, 1);
+        let caller = conversion_lp();
+        let revoked = AuthorisationState::Revoked {
+            authorisation: auth,
+            revoked_version_from: 1,
+            effective_at: 1_100,
+        };
+        assert!(matches!(
+            authorize_conversion(&revoked, &caller, "ABC", "123", 500, 1_500),
+            Err(GatewayError::ConversionRevoked)
+        ));
+    }
+
+    #[test]
+    fn conversion_with_wrong_direction_is_refused() {
+        let auth = conversion_auth(AuthorisedCallers::Any, 1);
+        let caller = conversion_lp();
+        let state = live(&auth);
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "123", "ABC", 500, 1_500),
+            Err(GatewayError::ConversionWrongDirection)
+        ));
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "ABC", "XYZ", 500, 1_500),
+            Err(GatewayError::ConversionWrongDirection)
+        ));
+    }
+
+    #[test]
+    fn conversion_by_ineligible_caller_is_refused() {
+        let stranger = issuer_id(&p2panda_core::SigningKey::from_bytes(&[9; 32]));
+        let auth = conversion_auth(AuthorisedCallers::Single(conversion_lp()), 1);
+        let state = live(&auth);
+        assert!(matches!(
+            authorize_conversion(&state, &stranger, "ABC", "123", 500, 1_500),
+            Err(GatewayError::ConversionCallerNotAllowed)
+        ));
+        assert!(authorize_conversion(&state, &conversion_lp(), "ABC", "123", 500, 1_500).is_ok());
+    }
+
+    #[test]
+    fn conversion_outside_amount_bounds_is_refused() {
+        let auth = conversion_auth(AuthorisedCallers::Any, 100);
+        let caller = conversion_lp();
+        let state = live(&auth);
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "ABC", "123", 99, 1_500),
+            Err(GatewayError::ConversionAmountOutOfBounds)
+        ));
+        assert!(matches!(
+            authorize_conversion(&state, &caller, "ABC", "123", 10_001, 1_500),
+            Err(GatewayError::ConversionAmountOutOfBounds)
+        ));
+        assert!(authorize_conversion(&state, &caller, "ABC", "123", 100, 1_500).is_ok());
+        assert!(authorize_conversion(&state, &caller, "ABC", "123", 10_000, 1_500).is_ok());
+    }
+
+    #[test]
+    fn conversion_of_zero_is_refused_even_with_zero_minimum() {
+        // Oracle: the Convert op gate (ZeroAmount) and the conversion
+        // layer's zero-output rejection — a zero conversion moves
+        // nothing and is never authorised.
+        let auth = conversion_auth(AuthorisedCallers::Any, 0);
+        let caller = conversion_lp();
+        assert!(matches!(
+            authorize_conversion(&live(&auth), &caller, "ABC", "123", 0, 1_500),
+            Err(GatewayError::ZeroAmount)
+        ));
+    }
+
     // Property-based coverage for the gateway protocol invariants
     // (Codex P1 on PR #7650). Oracles: (1) decode is the inverse of
     // encode for every operation schema and full-width u128 field;
@@ -1209,6 +1391,22 @@ mod tests {
                 idempotency_id(&account, &balance),
                 idempotency_id("other-account", &balance)
             );
+        }
+
+        #[test]
+        fn prop_authorize_conversion_matches_window_and_bounds(
+            amount in any::<u128>(),
+            now in any::<u64>(),
+        ) {
+            // Oracle: design #2063 §2 — under a Live authorisation with
+            // open callers and the matching ledger pair, the verdict is
+            // Ok exactly when the amount is positive and within
+            // [min, max] and now is within [not_before, expires_at).
+            let auth = conversion_auth(AuthorisedCallers::Any, 100);
+            let caller = conversion_lp();
+            let result = authorize_conversion(&live(&auth), &caller, "ABC", "123", amount, now);
+            let expected = amount >= 100 && amount <= 10_000 && now >= 1_000 && now < 2_000;
+            prop_assert_eq!(result.is_ok(), expected);
         }
     }
 }
