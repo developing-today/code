@@ -121,6 +121,7 @@ import { buildBriefs } from "./brief.ts";
 import { startActionsExecApplier } from "./actions-exec-apply.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
+import { readPushCensus } from "./push-registry.ts";
 import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
 import { recordSwProbe, sendPush, swProbeSummary } from "./push.ts";
 import { renderDigest, esc } from "./render.ts";
@@ -387,6 +388,14 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     });
   },
 });
+
+/** #14084 S2: the census read behind /api/push-census.json and the
+ * /api/health pushCensus field. Null store reads as unavailable. */
+async function readPushCensusForHealth(): Promise<unknown> {
+  const store = await getAlertsStore();
+  if (!store) return { available: false };
+  return readPushCensus(store.registryClient(), store.itemStages());
+}
 
 async function handler(req: Request, remoteAddress?: string): Promise<Response> {
   const url = new URL(req.url);
@@ -1813,8 +1822,27 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     // #3976: push health (journal + reconciler state) reaches the
     // machine surface too, from the same assembly /health renders.
     body.push = view.push;
+    // #14084 S2: the push census (live endpoints by transport/client,
+    // last successful send, needs-user backlog) rides the same machine
+    // surface. Fail-soft: a store failure reports unavailable, never a
+    // 500 for the whole health read.
+    try {
+      body.pushCensus = await readPushCensusForHealth();
+    } catch {
+      body.pushCensus = { available: false };
+    }
     body.degraded = view.degraded;
     return json(body);
+  }
+
+  if (path === "/api/push-census.json") {
+    // #14084 S2: the one census read — endpoints by transport/client,
+    // last successful send, needs-user backlog with blocked-by totals.
+    try {
+      return json(await readPushCensusForHealth());
+    } catch {
+      return json({ available: false, error: "push registry unavailable" }, 503);
+    }
   }
 
   const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);

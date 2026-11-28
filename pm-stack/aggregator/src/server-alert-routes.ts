@@ -357,7 +357,10 @@ export async function handleNotificationsPage(
   path: string,
   prov: () => ReturnType<Source["provenance"]>,
 ): Promise<Response> {
-  // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+  // #14084 S2: the roll-up reads the unified ledger (push_sends) from
+  // cutover. The legacy alerts.notification_sends rows stay as they
+  // are under #14061 (its repair owns them); the rolling window simply
+  // begins at cutover.
   // Same reachability as every dashboard page (the tailnet origin);
   // the only alerts write surface stays the bearer-gated intake.
   const store = await getAlertsStore();
@@ -367,7 +370,7 @@ export async function handleNotificationsPage(
       : json({ error: "alerts store unavailable" }, 503);
   }
   try {
-    const sends = await store.listSends();
+    const sends = await store.listUnifiedSends();
     const rollup = rollupNotificationSends(sends, new Date());
     if (path === "/api/notifications.json") return json(rollup);
     return html(renderNotifications({ available: true, rollup }, prov()));
