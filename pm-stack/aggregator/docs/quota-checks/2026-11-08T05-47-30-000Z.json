@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "mode": "replay",
+  "checkAt": "2026-11-08T05:47:30.000Z",
+  "asOf": "2026-11-08T05:47:30.000Z",
+  "planGeneratedAt": "2026-11-09T05:47:32.336Z",
+  "verdict": "repair",
+  "summary": {
+    "underPace": 0,
+    "overPace": 0,
+    "exhausted": 0,
+    "onTrack": 0,
+    "stale": 7,
+    "noReset": 0,
+    "noData": 0
+  },
+  "escalations": [],
+  "verdictChanges": [
+    {
+      "pool": "anthropic:claude-pro",
+      "from": "over_pace",
+      "to": "stale"
+    }
+  ],
+  "landingDrift": [
+    {
+      "pool": "anthropic:claude-pro",
+      "from": 201.67,
+      "to": 192.42,
+      "delta": -9.2
+    }
+  ],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the anthropic:claude-pro quota reading (latest reading is 6.4h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the cline-pass quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "meta",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the meta quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "openai.alternate",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the openai.alternate quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "openai.main",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the openai.main quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the opencode-go.drewrypope quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "opendesign",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the opendesign quota reading (latest reading is 24h old (stale after 6h)) before the next check can judge it"
+    }
+  ],
+  "firstRun": false,
+  "added": [],
+  "removed": []
+}

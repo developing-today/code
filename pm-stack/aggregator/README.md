@@ -745,6 +745,32 @@ display-only — decision consumption (measured placement, rotation,
 demotion) is the OpenCode-side remainder tracked by
 developing-today-forks/opencode#566.
 
+### The full-quota utilization plan and 4–6h check (#2173)
+
+`scripts/quota-full-utilization-plan.ts` keeps a standing plan for every
+provider pool's largest window — current %, reset instant, the measured
+burn rate, the rate that lands it at ~100% at reset, the landing at the
+reset after next, its cascade position and the spill a successor
+absorbs — and a dated audible for every pool that is under or over pace.
+
+It reads the same quota ledger the gatherer writes (Turso
+`fleet-platform.agent_quota_records`, source `opencode-quota`) for both
+the fresh reading and the burn history; nothing is assumed. Accounting
+is `src/quota-plan.ts` (pure, tested in `test/quota-plan.test.ts`), and
+the plan and every check record live in `docs/` — see
+[`docs/full-quota-check.md`](docs/full-quota-check.md) for the method,
+the verdicts, the audible formats and the integration with the
+`pool-quota-steward` job.
+
+```sh
+bun run scripts/quota-full-utilization-plan.ts --check        # 4–6h check
+bun run scripts/quota-full-utilization-plan.ts --write-plan   # regenerate only
+bun run scripts/quota-full-utilization-plan.ts --replay --replay-hours 48 --step-hours 6
+```
+
+The check self-throttles on its own recorded log, so the hourly steward
+job gains the 4–6h cadence without a schedule change.
+
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
   parent/agent/outcome.

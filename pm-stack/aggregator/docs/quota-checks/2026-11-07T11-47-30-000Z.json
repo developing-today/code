@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "mode": "replay",
+  "checkAt": "2026-11-07T11:47:30.000Z",
+  "asOf": "2026-11-07T11:47:30.000Z",
+  "planGeneratedAt": "2026-11-09T05:47:31.599Z",
+  "verdict": "repair",
+  "summary": {
+    "underPace": 0,
+    "overPace": 0,
+    "exhausted": 0,
+    "onTrack": 0,
+    "stale": 7,
+    "noReset": 0,
+    "noData": 0
+  },
+  "escalations": [],
+  "verdictChanges": [
+    {
+      "pool": "anthropic:claude-pro",
+      "from": "over_pace",
+      "to": "stale"
+    },
+    {
+      "pool": "cline-pass",
+      "from": "under_pace",
+      "to": "stale"
+    },
+    {
+      "pool": "meta",
+      "from": "exhausted",
+      "to": "stale"
+    },
+    {
+      "pool": "openai.alternate",
+      "from": "exhausted",
+      "to": "stale"
+    },
+    {
+      "pool": "openai.main",
+      "from": "exhausted",
+      "to": "stale"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "from": "under_pace",
+      "to": "stale"
+    },
+    {
+      "pool": "opendesign",
+      "from": "exhausted",
+      "to": "stale"
+    }
+  ],
+  "landingDrift": [
+    {
+      "pool": "anthropic:claude-pro",
+      "from": 199.44,
+      "to": 190.18,
+      "delta": -9.3
+    }
+  ],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the anthropic:claude-pro quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the cline-pass quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "meta",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the meta quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "openai.alternate",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the openai.alternate quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "openai.main",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the openai.main quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the opencode-go.drewrypope quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "opendesign",
+      "at": "2026-11-07T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the opendesign quota reading (latest reading is 6h old (stale after 6h)) before the next check can judge it"
+    }
+  ],
+  "firstRun": false,
+  "added": [],
+  "removed": []
+}

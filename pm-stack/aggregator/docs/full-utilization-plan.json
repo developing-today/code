@@ -1,0 +1,469 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-09T05:47:34.480Z",
+  "asOf": "2026-11-09T05:47:33.216Z",
+  "method": {
+    "rateWindowHours": 168,
+    "underPaceTolerance": 10,
+    "overPaceTolerance": 5,
+    "staleHours": 6,
+    "checkIntervalHours": 6
+  },
+  "pools": [
+    {
+      "pool": "_antigravity.claude-gpt",
+      "provider": "Antigravity",
+      "plan": null,
+      "window": "weekly",
+      "windowSeconds": 604800,
+      "currentPercent": 100,
+      "measuredAt": "2026-11-09T05:45:20.164Z",
+      "resetsAt": "2026-11-13T23:43:42.000Z",
+      "hoursToReset": 113.94,
+      "rate": {
+        "perHour": 0,
+        "recentPerHour": 0,
+        "spanHours": 22.08,
+        "samples": 95,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0,
+      "projectedLanding": 100,
+      "projectedLandingNextPeriod": 0,
+      "exhaustionAt": "2026-11-09T05:47:33.216Z",
+      "verdict": "exhausted",
+      "reason": "fully used for this period (100%) with 113.9h to reset",
+      "cascade": {
+        "group": "claude-class",
+        "position": 2,
+        "of": 2,
+        "next": null
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "confirm",
+        "detail": "_antigravity.claude-gpt (weekly) is fully used for this period; until the 2026-11-13T23:43:42.000Z reset, it has no cascade successor — queue nothing for it"
+      },
+      "notes": []
+    },
+    {
+      "pool": "_antigravity.gemini",
+      "provider": "Antigravity",
+      "plan": null,
+      "window": "weekly",
+      "windowSeconds": 604800,
+      "currentPercent": 100,
+      "measuredAt": "2026-11-09T05:45:20.164Z",
+      "resetsAt": "2026-11-13T23:43:42.000Z",
+      "hoursToReset": 113.94,
+      "rate": {
+        "perHour": 3.6549,
+        "recentPerHour": 3.6548919020065758,
+        "spanHours": 22.08,
+        "samples": 95,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0,
+      "projectedLanding": 516.42,
+      "projectedLandingNextPeriod": 614.02,
+      "exhaustionAt": "2026-11-09T05:47:33.216Z",
+      "verdict": "exhausted",
+      "reason": "fully used for this period (100%) with 113.9h to reset",
+      "cascade": {
+        "group": "gemini-class",
+        "position": 1,
+        "of": 1,
+        "next": null
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "confirm",
+        "detail": "_antigravity.gemini (weekly) is fully used for this period; until the 2026-11-13T23:43:42.000Z reset, it has no cascade successor — queue nothing for it"
+      },
+      "notes": [
+        "next period walls at 614% at the measured rate — cascade falls through early in the period after this reset"
+      ]
+    },
+    {
+      "pool": "_commandcode",
+      "provider": "Command Code",
+      "plan": null,
+      "window": "monthly",
+      "windowSeconds": 2592000,
+      "currentPercent": 60.77,
+      "measuredAt": "2026-11-09T05:45:23.591Z",
+      "resetsAt": null,
+      "hoursToReset": null,
+      "rate": {
+        "perHour": 1.1744,
+        "recentPerHour": 1.1744331845918574,
+        "spanHours": 22.08,
+        "samples": 95,
+        "confidence": "ok"
+      },
+      "requiredPerHour": null,
+      "projectedLanding": null,
+      "projectedLandingNextPeriod": 845.59,
+      "exhaustionAt": null,
+      "verdict": "no_reset",
+      "reason": "reading carries no reset instant, so no landing is projectable",
+      "cascade": {
+        "group": "misc-class",
+        "position": 2,
+        "of": 4,
+        "next": "mistral"
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "repair-reading",
+        "detail": "repair the _commandcode quota reading (reading carries no reset instant, so no landing is projectable) before the next check can judge it"
+      },
+      "notes": []
+    },
+    {
+      "pool": "anthropic:claude-pro",
+      "provider": "Claude",
+      "plan": "max",
+      "window": "7d",
+      "windowSeconds": 604800,
+      "currentPercent": 61,
+      "measuredAt": "2026-11-07T23:21:30.537Z",
+      "resetsAt": "2026-11-11T18:59:59.512Z",
+      "hoursToReset": 61.21,
+      "rate": {
+        "perHour": 1.5423,
+        "recentPerHour": 1.5423374852915628,
+        "spanHours": 37.95,
+        "samples": 49,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0.6372,
+      "projectedLanding": 155.4,
+      "projectedLandingNextPeriod": 259.11,
+      "exhaustionAt": "2026-11-10T07:04:43.876Z",
+      "verdict": "stale",
+      "reason": "latest reading is 30.4h old (stale after 6h)",
+      "cascade": {
+        "group": "claude-class",
+        "position": 1,
+        "of": 2,
+        "next": "_antigravity.claude-gpt"
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "repair-reading",
+        "detail": "repair the anthropic:claude-pro quota reading (latest reading is 30.4h old (stale after 6h)) before the next check can judge it"
+      },
+      "notes": []
+    },
+    {
+      "pool": "cline-pass",
+      "provider": "ClinePass",
+      "plan": null,
+      "window": "monthly",
+      "windowSeconds": 2592000,
+      "currentPercent": 50,
+      "measuredAt": "2026-11-09T05:45:20.849Z",
+      "resetsAt": "2026-12-06T14:40:23.796Z",
+      "hoursToReset": 656.88,
+      "rate": {
+        "perHour": 0.784,
+        "recentPerHour": 1.7010159509322793,
+        "spanHours": 63,
+        "samples": 137,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0.0761,
+      "projectedLanding": 564.99,
+      "projectedLandingNextPeriod": 564.47,
+      "exhaustionAt": "2026-11-11T21:34:07.516Z",
+      "verdict": "over_pace",
+      "reason": "projects to 565% at reset — walls 593.1h early",
+      "cascade": {
+        "group": "misc-class",
+        "position": 1,
+        "of": 4,
+        "next": "_commandcode"
+      },
+      "spillPctPoints": 464.99,
+      "audible": {
+        "at": "2026-11-09T05:47:33.216Z",
+        "action": "flag-drew",
+        "detail": "FLAG DREW: cline-pass (monthly) projects to exhaust early at 2026-11-11T21:34:07.516Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to _commandcode)"
+      },
+      "notes": [
+        "burn accelerated: 40.82 pts/day over the trailing 24h vs 18.82 pts/day over the period",
+        "next period walls at 564% at the measured rate — cascade falls through early in the period after this reset",
+        "2 simultaneous monthly readings per tick (multi-credential pool) — the plan tracks the most-constrained credential"
+      ]
+    },
+    {
+      "pool": "meta",
+      "provider": "Meta Model API",
+      "plan": "Muse Code High Usage",
+      "window": "weekly",
+      "windowSeconds": 604800,
+      "currentPercent": 41.41,
+      "measuredAt": "2026-11-09T05:45:37.028Z",
+      "resetsAt": "2026-11-16T00:00:00.000Z",
+      "hoursToReset": 162.21,
+      "rate": {
+        "perHour": 5.0629,
+        "recentPerHour": 5.06292747483249,
+        "spanHours": 1.86,
+        "samples": 11,
+        "confidence": "low"
+      },
+      "requiredPerHour": 0.3612,
+      "projectedLanding": 862.66,
+      "projectedLandingNextPeriod": 850.57,
+      "exhaustionAt": "2026-11-09T17:21:52.379Z",
+      "verdict": "over_pace",
+      "reason": "projects to 863% at reset — walls 150.6h early",
+      "cascade": {
+        "group": "meta-class",
+        "position": 1,
+        "of": 1,
+        "next": null
+      },
+      "spillPctPoints": 762.66,
+      "audible": {
+        "at": "2026-11-09T05:47:33.216Z",
+        "action": "flag-drew",
+        "detail": "FLAG DREW: meta (weekly) projects to exhaust early at 2026-11-09T17:21:52.379Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+      },
+      "notes": [
+        "burn rate from a short sample span — treat as provisional",
+        "next period walls at 851% at the measured rate — cascade falls through early in the period after this reset"
+      ]
+    },
+    {
+      "pool": "openai.alternate",
+      "provider": "OpenAI Alternate (Student - popesdrew)",
+      "plan": null,
+      "window": "weekly",
+      "windowSeconds": 604800,
+      "currentPercent": 100,
+      "measuredAt": "2026-11-09T05:45:24.831Z",
+      "resetsAt": "2026-11-09T17:04:02.000Z",
+      "hoursToReset": 11.27,
+      "rate": {
+        "perHour": 0,
+        "recentPerHour": 0,
+        "spanHours": 92.25,
+        "samples": 267,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0,
+      "projectedLanding": 100,
+      "projectedLandingNextPeriod": 0,
+      "exhaustionAt": "2026-11-09T05:47:33.216Z",
+      "verdict": "exhausted",
+      "reason": "fully used for this period (100%) with 11.3h to reset",
+      "cascade": {
+        "group": "gpt-class",
+        "position": 2,
+        "of": 3,
+        "next": "_antigravity.claude-gpt"
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "confirm",
+        "detail": "openai.alternate (weekly) is fully used for this period; until the 2026-11-09T17:04:02.000Z reset, route its work to _antigravity.claude-gpt"
+      },
+      "notes": []
+    },
+    {
+      "pool": "openai.main",
+      "provider": "OpenAI Alternate (Student - popesdrew)",
+      "plan": null,
+      "window": "weekly",
+      "windowSeconds": 604800,
+      "currentPercent": 100,
+      "measuredAt": "2026-11-09T05:45:21.578Z",
+      "resetsAt": "2026-11-09T17:04:02.000Z",
+      "hoursToReset": 11.27,
+      "rate": {
+        "perHour": 0,
+        "recentPerHour": 0,
+        "spanHours": 9.92,
+        "samples": 30,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0,
+      "projectedLanding": 100,
+      "projectedLandingNextPeriod": 0,
+      "exhaustionAt": "2026-11-09T05:47:33.216Z",
+      "verdict": "exhausted",
+      "reason": "fully used for this period (100%) with 11.3h to reset",
+      "cascade": {
+        "group": "gpt-class",
+        "position": 1,
+        "of": 3,
+        "next": "openai.alternate"
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "confirm",
+        "detail": "openai.main (weekly) is fully used for this period; until the 2026-11-09T17:04:02.000Z reset, route its work to openai.alternate"
+      },
+      "notes": [
+        "a reset inside the recorded series was detected; rate uses the current period only",
+        "3 simultaneous weekly readings per tick (multi-credential pool) — the plan tracks the most-constrained credential"
+      ]
+    },
+    {
+      "pool": "opencode-go.developing-today-0",
+      "provider": "OpenCode Go (developing-today-0)",
+      "plan": null,
+      "window": "monthly",
+      "windowSeconds": 2592000,
+      "currentPercent": 40,
+      "measuredAt": "2026-11-09T05:45:25.110Z",
+      "resetsAt": "2026-12-08T22:09:41.000Z",
+      "hoursToReset": 712.37,
+      "rate": {
+        "perHour": 5.7971,
+        "recentPerHour": 5.797098415367174,
+        "spanHours": 7.17,
+        "samples": 20,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0.0842,
+      "projectedLanding": 4169.67,
+      "projectedLandingNextPeriod": 4173.91,
+      "exhaustionAt": "2026-11-09T16:08:33.235Z",
+      "verdict": "over_pace",
+      "reason": "projects to 4170% at reset — walls 702h early",
+      "cascade": {
+        "group": "deepseek-class",
+        "position": 2,
+        "of": 3,
+        "next": "deepseek"
+      },
+      "spillPctPoints": 4069.67,
+      "audible": {
+        "at": "2026-11-09T05:47:33.216Z",
+        "action": "flag-drew",
+        "detail": "FLAG DREW: opencode-go.developing-today-0 (monthly) projects to exhaust early at 2026-11-09T16:08:33.235Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to deepseek)"
+      },
+      "notes": [
+        "next period walls at 4174% at the measured rate — cascade falls through early in the period after this reset"
+      ]
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "provider": "OpenCode Go (drewrypope)",
+      "plan": null,
+      "window": "monthly",
+      "windowSeconds": 2592000,
+      "currentPercent": 85,
+      "measuredAt": "2026-11-09T05:45:25.001Z",
+      "resetsAt": "2026-12-03T03:02:35.000Z",
+      "hoursToReset": 573.25,
+      "rate": {
+        "perHour": 0.2177,
+        "recentPerHour": 0.9281602724470099,
+        "spanHours": 92.25,
+        "samples": 267,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0.0262,
+      "projectedLanding": 209.8,
+      "projectedLandingNextPeriod": 156.75,
+      "exhaustionAt": "2026-11-12T02:41:25.120Z",
+      "verdict": "over_pace",
+      "reason": "projects to 210% at reset — walls 504.4h early",
+      "cascade": {
+        "group": "deepseek-class",
+        "position": 1,
+        "of": 3,
+        "next": "opencode-go.developing-today-0"
+      },
+      "spillPctPoints": 109.8,
+      "audible": {
+        "at": "2026-11-09T05:47:33.216Z",
+        "action": "flag-drew",
+        "detail": "FLAG DREW: opencode-go.drewrypope (monthly) projects to exhaust early at 2026-11-12T02:41:25.120Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to opencode-go.developing-today-0)"
+      },
+      "notes": [
+        "burn accelerated: 22.28 pts/day over the trailing 24h vs 5.23 pts/day over the period",
+        "next period walls at 157% at the measured rate — cascade falls through early in the period after this reset"
+      ]
+    },
+    {
+      "pool": "opendesign",
+      "provider": "Open Design",
+      "plan": null,
+      "window": "7d",
+      "windowSeconds": 604800,
+      "currentPercent": 100,
+      "measuredAt": "2026-11-09T05:45:24.606Z",
+      "resetsAt": "2026-11-14T10:52:34.231Z",
+      "hoursToReset": 125.08,
+      "rate": {
+        "perHour": 3.6565,
+        "recentPerHour": 3.6564937868052256,
+        "spanHours": 22.08,
+        "samples": 95,
+        "confidence": "ok"
+      },
+      "requiredPerHour": 0,
+      "projectedLanding": 557.37,
+      "projectedLandingNextPeriod": 614.29,
+      "exhaustionAt": "2026-11-09T05:47:33.216Z",
+      "verdict": "exhausted",
+      "reason": "fully used for this period (100%) with 125.1h to reset",
+      "cascade": {
+        "group": "misc-class",
+        "position": 4,
+        "of": 4,
+        "next": null
+      },
+      "spillPctPoints": 0,
+      "audible": {
+        "at": "2026-11-09T11:47:33.216Z",
+        "action": "confirm",
+        "detail": "opendesign (7d) is fully used for this period; until the 2026-11-14T10:52:34.231Z reset, it has no cascade successor — queue nothing for it"
+      },
+      "notes": [
+        "next period walls at 614% at the measured rate — cascade falls through early in the period after this reset",
+        "2 simultaneous 7d readings per tick (multi-credential pool) — the plan tracks the most-constrained credential"
+      ]
+    }
+  ],
+  "resourcePools": [
+    {
+      "pool": "turso",
+      "provider": "Turso",
+      "windows": [
+        "databases",
+        "storage",
+        "rows-read",
+        "rows-written",
+        "sync"
+      ],
+      "note": "Turso database/storage/sync meters — infra capacity, not a model pool."
+    }
+  ],
+  "dataQuality": [
+    "_commandcode: reading carries no reset instant, so no landing is projectable",
+    "anthropic:claude-pro: stale reading (2026-11-07T23:21:30.537Z) — excluded from the burn plan until repaired",
+    "ledger fresh: newest reading 2 min before the check instant"
+  ],
+  "summary": {
+    "underPace": 0,
+    "overPace": 4,
+    "exhausted": 5,
+    "onTrack": 0,
+    "stale": 1,
+    "noReset": 1,
+    "noData": 0
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "mode": "replay",
+  "checkAt": "2026-11-07T05:47:30.000Z",
+  "asOf": "2026-11-07T05:47:30.000Z",
+  "planGeneratedAt": "2026-11-09T05:47:31.338Z",
+  "verdict": "escalate",
+  "summary": {
+    "underPace": 2,
+    "overPace": 1,
+    "exhausted": 4,
+    "onTrack": 0,
+    "stale": 0,
+    "noReset": 0,
+    "noData": 0
+  },
+  "escalations": [],
+  "verdictChanges": [],
+  "landingDrift": [],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-07T05:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: anthropic:claude-pro (7d) projects to exhaust early at 2026-11-09T02:31:44.245Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to _antigravity.claude-gpt)"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-07T11:47:30.000Z",
+      "action": "queue-catch-up",
+      "detail": "queue 99-point catch-up work for ClinePass (monthly) — lift measured burn from 0 to 3.37 points/day by the next check; name the destination queue and the ClinePass model class in the work item"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-07T11:47:30.000Z",
+      "action": "queue-catch-up",
+      "detail": "queue 50-point catch-up work for OpenCode Go (drewrypope) (monthly) — lift measured burn from 0 to 1.93 points/day by the next check; name the destination queue and the OpenCode Go (drewrypope) model class in the work item"
+    }
+  ],
+  "firstRun": true,
+  "added": [
+    "anthropic:claude-pro",
+    "cline-pass",
+    "meta",
+    "openai.alternate",
+    "openai.main",
+    "opencode-go.drewrypope",
+    "opendesign"
+  ],
+  "removed": []
+}

@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "mode": "replay",
+  "checkAt": "2026-11-08T11:47:30.000Z",
+  "asOf": "2026-11-08T11:47:30.000Z",
+  "planGeneratedAt": "2026-11-09T05:47:32.494Z",
+  "verdict": "escalate",
+  "summary": {
+    "underPace": 1,
+    "overPace": 3,
+    "exhausted": 4,
+    "onTrack": 0,
+    "stale": 1,
+    "noReset": 1,
+    "noData": 0
+  },
+  "escalations": [
+    {
+      "pool": "cline-pass",
+      "verdict": "over_pace",
+      "detail": "projects to 583% at reset — walls 597h early"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "verdict": "under_pace",
+      "detail": "no burn measured in the current period (50% used, 591.3h left)"
+    },
+    {
+      "pool": "opendesign",
+      "verdict": "over_pace",
+      "detail": "projects to 1237% at reset — walls 137.2h early"
+    }
+  ],
+  "verdictChanges": [
+    {
+      "pool": "cline-pass",
+      "from": "stale",
+      "to": "over_pace"
+    },
+    {
+      "pool": "meta",
+      "from": "stale",
+      "to": "exhausted"
+    },
+    {
+      "pool": "openai.alternate",
+      "from": "stale",
+      "to": "exhausted"
+    },
+    {
+      "pool": "openai.main",
+      "from": "stale",
+      "to": "exhausted"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "from": "stale",
+      "to": "under_pace"
+    },
+    {
+      "pool": "opendesign",
+      "from": "stale",
+      "to": "over_pace"
+    }
+  ],
+  "landingDrift": [
+    {
+      "pool": "anthropic:claude-pro",
+      "from": 192.42,
+      "to": 183.17,
+      "delta": -9.2
+    },
+    {
+      "pool": "cline-pass",
+      "from": 1,
+      "to": 583.01,
+      "delta": 582
+    },
+    {
+      "pool": "opendesign",
+      "from": 100,
+      "to": 1237.36,
+      "delta": 1137.4
+    }
+  ],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "_antigravity.gemini",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: _antigravity.gemini (weekly) projects to exhaust early at 2026-11-08T15:13:23.879Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+    },
+    {
+      "pool": "_commandcode",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the _commandcode quota reading (reading carries no reset instant, so no landing is projectable) before the next check can judge it"
+    },
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the anthropic:claude-pro quota reading (latest reading is 12.4h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: cline-pass (monthly) projects to exhaust early at 2026-11-11T17:39:39.177Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to _commandcode)"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "queue-catch-up",
+      "detail": "queue 50-point catch-up work for OpenCode Go (drewrypope) (monthly) — lift measured burn from 0 to 2.03 points/day by the next check; name the destination queue and the OpenCode Go (drewrypope) model class in the work item"
+    },
+    {
+      "pool": "opendesign",
+      "at": "2026-11-08T11:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: opendesign (7d) projects to exhaust early at 2026-11-08T17:38:26.283Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+    }
+  ],
+  "firstRun": false,
+  "added": [
+    "_antigravity.claude-gpt",
+    "_antigravity.gemini",
+    "_commandcode"
+  ],
+  "removed": []
+}

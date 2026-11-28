@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "mode": "replay",
+  "checkAt": "2026-11-08T17:47:30.000Z",
+  "asOf": "2026-11-08T17:47:30.000Z",
+  "planGeneratedAt": "2026-11-09T05:47:32.684Z",
+  "verdict": "escalate",
+  "summary": {
+    "underPace": 1,
+    "overPace": 3,
+    "exhausted": 4,
+    "onTrack": 0,
+    "stale": 1,
+    "noReset": 1,
+    "noData": 0
+  },
+  "escalations": [],
+  "verdictChanges": [],
+  "landingDrift": [
+    {
+      "pool": "_antigravity.gemini",
+      "from": 1522.99,
+      "to": 1001.64,
+      "delta": -521.3
+    },
+    {
+      "pool": "anthropic:claude-pro",
+      "from": 183.17,
+      "to": 173.91,
+      "delta": -9.3
+    },
+    {
+      "pool": "cline-pass",
+      "from": 583.01,
+      "to": 699.03,
+      "delta": 116
+    },
+    {
+      "pool": "opendesign",
+      "from": 1237.36,
+      "to": 1067.87,
+      "delta": -169.5
+    }
+  ],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "_antigravity.gemini",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: _antigravity.gemini (weekly) projects to exhaust early at 2026-11-08T19:02:10.760Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+    },
+    {
+      "pool": "_commandcode",
+      "at": "2026-11-08T23:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the _commandcode quota reading (reading carries no reset instant, so no landing is projectable) before the next check can judge it"
+    },
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-08T23:47:30.000Z",
+      "action": "repair-reading",
+      "detail": "repair the anthropic:claude-pro quota reading (latest reading is 18.4h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: cline-pass (monthly) projects to exhaust early at 2026-11-10T21:19:15.827Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to _commandcode)"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-08T23:47:30.000Z",
+      "action": "queue-catch-up",
+      "detail": "queue 50-point catch-up work for OpenCode Go (drewrypope) (monthly) — lift measured burn from 0 to 2.05 points/day by the next check; name the destination queue and the OpenCode Go (drewrypope) model class in the work item"
+    },
+    {
+      "pool": "opendesign",
+      "at": "2026-11-08T17:47:30.000Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: opendesign (7d) projects to exhaust early at 2026-11-08T19:04:51.798Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+    }
+  ],
+  "firstRun": false,
+  "added": [],
+  "removed": []
+}

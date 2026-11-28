@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "mode": "live",
+  "checkAt": "2026-11-09T05:47:33.216Z",
+  "asOf": "2026-11-09T05:47:33.216Z",
+  "planGeneratedAt": "2026-11-09T05:47:34.480Z",
+  "verdict": "escalate",
+  "summary": {
+    "underPace": 0,
+    "overPace": 4,
+    "exhausted": 5,
+    "onTrack": 0,
+    "stale": 1,
+    "noReset": 1,
+    "noData": 0
+  },
+  "escalations": [],
+  "verdictChanges": [],
+  "landingDrift": [],
+  "recovered": [],
+  "audibleActions": [
+    {
+      "pool": "_commandcode",
+      "at": "2026-11-09T11:47:33.216Z",
+      "action": "repair-reading",
+      "detail": "repair the _commandcode quota reading (reading carries no reset instant, so no landing is projectable) before the next check can judge it"
+    },
+    {
+      "pool": "anthropic:claude-pro",
+      "at": "2026-11-09T11:47:33.216Z",
+      "action": "repair-reading",
+      "detail": "repair the anthropic:claude-pro quota reading (latest reading is 30.4h old (stale after 6h)) before the next check can judge it"
+    },
+    {
+      "pool": "cline-pass",
+      "at": "2026-11-09T05:47:33.216Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: cline-pass (monthly) projects to exhaust early at 2026-11-11T21:34:07.516Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to _commandcode)"
+    },
+    {
+      "pool": "meta",
+      "at": "2026-11-09T05:47:33.216Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: meta (weekly) projects to exhaust early at 2026-11-09T17:21:52.379Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to no successor)"
+    },
+    {
+      "pool": "opencode-go.developing-today-0",
+      "at": "2026-11-09T05:47:33.216Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: opencode-go.developing-today-0 (monthly) projects to exhaust early at 2026-11-09T16:08:33.235Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to deepseek)"
+    },
+    {
+      "pool": "opencode-go.drewrypope",
+      "at": "2026-11-09T05:47:33.216Z",
+      "action": "flag-drew",
+      "detail": "FLAG DREW: opencode-go.drewrypope (monthly) projects to exhaust early at 2026-11-12T02:41:25.120Z; ask slow-down or keep-progressing (default bias: keep useful work, then cascade to opencode-go.developing-today-0)"
+    }
+  ],
+  "firstRun": false,
+  "added": [],
+  "removed": []
+}
