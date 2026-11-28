@@ -540,10 +540,12 @@
   # the package (iroh-relay.nix bundles the relay kit's tunnel.toml),
   # so the generic renderer deploys this target from the entry alone.
   # Registration only: activation (unit install, the iroh-relay
-  # user, the tunnel hostname) is a later slice, and it must carry
-  # the kit unit's KillSignal=SIGINT — the rendered unit has no field
-  # for it. No live DNS or secret values are touched here: the relay
-  # holds no keys and sees no plaintext (design §2.4).
+  # user, the tunnel hostname) is a later slice.
+  # Slice 2 carries the kit unit's stop behavior into the rendered
+  # unit: KillSignal=SIGINT (the relay ignores SIGTERM and exits
+  # cleanly on SIGINT) and RestartSec=3. No live DNS or secret values
+  # are touched here: the relay holds no keys and sees no plaintext
+  # (design §2.4).
   iroh-relay = {
     package = irohRelay;
     entryPoint = "bin/iroh-relay";
@@ -558,6 +560,8 @@
       9090 # metrics, loopback (tunnel.toml metrics_bind_addr)
     ];
     restart = "always"; # the kit unit's Restart
+    restartDelaySec = 3; # the kit unit's RestartSec
+    killSignal = "SIGINT"; # the kit unit's KillSignal
     healthCheck = "http://127.0.0.1:3340/ping"; # the relay's own ping route
     targets = [ "laptop" ]; # the 2a pilot's one host (design §2.5)
     class = "systemd";

@@ -158,13 +158,17 @@ FIELDS = {
 # present must carry exactly TIMER_FIELDS. evidenceWorkflow (release
 # slice, #13306) names the app's own test workflow when it sits outside
 # the main-gate watched set, per design §3 part 2 of the release
-# workflow record.
+# workflow record. killSignal (#14719 slice 2) names the systemd signal
+# the manager sends to the main process on stop — the relay kit's unit
+# carries KillSignal=SIGINT because the relay ignores SIGTERM (S11 in
+# the kit: pkgs/id/tests/fixtures/relay/iroh-relay.service).
 OPTIONAL_FIELDS = {
     "healthTimeoutSeconds",
     "timer",
     "evidenceWorkflow",
     "restartDelaySec",
     "startLimitIntervalSec",
+    "killSignal",
 }
 TIMER_FIELDS = {"onCalendar", "persistent", "randomizedDelaySec"}
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 120
@@ -181,6 +185,10 @@ MAX_RESTART_DELAY_SECONDS = 3600
 MAX_START_LIMIT_INTERVAL_SECONDS = 86400
 HEALTH_PROBE_INTERVAL_SECONDS = 0.5
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# systemd KillSignal= takes a signal name (systemd.exec(5)); the shape
+# below keeps the rendered unit to exactly one name — no whitespace,
+# no second directive.
+KILL_SIGNAL_RE = re.compile(r"^SIG[A-Z][A-Z0-9]*$")
 
 # Design §4.1: each systemd target owns a per-service nix profile under
 # this root (system scope); the rendered unit points at the profile's
@@ -347,6 +355,18 @@ def validate(registry):
                 errors.append(
                     f"{where}: startLimitIntervalSec must be an integer in "
                     f"0..{MAX_START_LIMIT_INTERVAL_SECONDS}"
+                )
+        if "killSignal" in defn:
+            # Rendered verbatim into the unit file, so the shape is
+            # strict: exactly a systemd signal name, nothing that can
+            # smuggle in a second directive.
+            ks = defn["killSignal"]
+            if not (
+                isinstance(ks, str) and KILL_SIGNAL_RE.fullmatch(ks)
+            ):
+                errors.append(
+                    f"{where}: killSignal must be a systemd signal name "
+                    "like SIGTERM or SIGINT"
                 )
         if "timer" in defn:
             # Slice 4 (#5770): the timer is rendered verbatim into a
@@ -515,6 +535,10 @@ def render_unit(name, defn, base=None):
     ]
     if "restartDelaySec" in defn:
         lines.append(f"RestartSec={defn['restartDelaySec']}")
+    if "killSignal" in defn:
+        # The kit unit's KillSignal (#14719 slice 2): the manager's
+        # stop signal for this target instead of the SIGTERM default.
+        lines.append(f"KillSignal={defn['killSignal']}")
     for key in sorted(defn["environment"]):
         pair = f"{key}={defn['environment'][key]}"
         lines.append(f"Environment={_systemd_quote(pair)}")
