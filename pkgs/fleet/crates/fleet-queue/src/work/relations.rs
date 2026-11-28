@@ -1764,6 +1764,45 @@ pub fn blocker_state(edge: &Edge) -> BlockerState {
     BlockerState::Unsatisfied
 }
 
+/// One holding edge in the blockers read view (D8): the edge that
+/// holds and why it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldingBlocker {
+    /// `edge_id` of the holding edge (D4 canonical decimal).
+    pub edge_id: String,
+    /// Why the edge holds, per [`blocker_state`].
+    pub state: BlockerState,
+}
+
+/// The blockers read view for one work item (D8): every active hard
+/// `blocks` edge targeting the work, each with its [`blocker_state`],
+/// and whether the work is ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockersView {
+    /// The holding edges, in input order.
+    pub holders: Vec<HoldingBlocker>,
+    /// True only when the evaluation is complete and nothing holds.
+    pub ready: bool,
+}
+
+/// The blockers read view (D8) for `target_key`: every edge that gates
+/// the work's readiness with why it holds, in input order, plus whether
+/// the work is ready. Only active hard `blocks` edges targeting the work
+/// gate (DEP-04 §6.1); hierarchy, soft, resolved, removed and quarantined
+/// edges, and edges targeting other work, appear nowhere in the view.
+pub fn blockers(target_key: &str, edges: &[Edge], complete: bool) -> BlockersView {
+    let holders = edges
+        .iter()
+        .filter(|edge| edge.gates_readiness() && edge.target.key() == target_key)
+        .map(|edge| HoldingBlocker {
+            edge_id: edge.edge_id.clone(),
+            state: blocker_state(edge),
+        })
+        .collect::<Vec<_>>();
+    let ready = blockers_ready(complete, holders.len());
+    BlockersView { holders, ready }
+}
+
 /// The default bound for a hard-`blocks` reachability walk (DEP-03 §5.3).
 /// The SQL insert carries its own `:max_reach`; this constant is the
 /// pure-model default the tests and callers without a measured broker
@@ -3191,6 +3230,59 @@ mod tests {
         overridden.resolution.as_mut().unwrap().override_ = true;
         overridden.validate().unwrap();
         assert_eq!(blocker_state(&overridden), BlockerState::OverrideActive);
+    }
+
+    #[test]
+    fn pmo_dep_blockers_view_lists_each_hold() {
+        // Oracle: D8. The blockers view lists each active hard `blocks`
+        // edge targeting the work with its `blocker_state`, and reports
+        // ready only when the evaluation is complete and nothing holds.
+        let target = work("1").key();
+        let mut plain = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        plain.hardness = Hardness::Hard;
+        plain.validate().unwrap();
+
+        let mut unresolved = edge(Relation::Blocks, issue("a/x", "9", None), work("1"));
+        unresolved.hardness = Hardness::Hard;
+        unresolved.edge_id = "9".to_string();
+        unresolved.reason_code = EdgeOrigin::Imported;
+        unresolved.certainty = Certainty::Uncertain;
+        unresolved.validate().unwrap();
+
+        // Edges that must not appear: a hard blocker for other work, a
+        // soft `blocks` edge, a hierarchy edge, and a resolved edge.
+        let mut other = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("2"));
+        other.hardness = Hardness::Hard;
+        other.edge_id = "11".to_string();
+
+        let soft = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+
+        let hierarchy = edge(Relation::Hierarchy, work("3"), work("1"));
+
+        let mut resolved_edge = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
+        resolved_edge.hardness = Hardness::Hard;
+        resolved_edge.edge_id = "13".to_string();
+        resolved_edge.status = EdgeStatus::Resolved;
+        resolved_edge.resolution = resolved("blocker_satisfied");
+
+        let edges = vec![plain, unresolved, other, soft, hierarchy, resolved_edge];
+
+        // Complete evaluation with two holders: not ready.
+        let view = blockers(&target, &edges, true);
+        assert_eq!(view.holders.len(), 2);
+        assert_eq!(view.holders[0].edge_id, "7");
+        assert_eq!(view.holders[0].state, BlockerState::Unsatisfied);
+        assert_eq!(view.holders[1].edge_id, "9");
+        assert_eq!(view.holders[1].state, BlockerState::UnresolvedExternal);
+        assert!(!view.ready);
+
+        // Nothing holds: ready follows the evaluation flag.
+        let clear = blockers(&target, &edges[2..], true);
+        assert!(clear.holders.is_empty());
+        assert!(clear.ready);
+        let incomplete = blockers(&target, &edges[2..], false);
+        assert!(incomplete.holders.is_empty());
+        assert!(!incomplete.ready);
     }
 
     fn end_strategy() -> impl Strategy<Value = EdgeEnd> {
