@@ -1307,6 +1307,7 @@ pub(crate) fn claim_by_id(
     family: Option<&str>,
     model: &Option<ClaimModel>,
     claim_session: Option<&str>,
+    resume_fallback: Option<&str>,
     pool: &Option<String>,
     manual_override: Option<&str>,
 ) -> Result<Option<Value>, TErr> {
@@ -1562,11 +1563,16 @@ pub(crate) fn claim_by_id(
     // resume hint, the claimed event records both the requested
     // session and the session actually used (explicit null when the
     // claim names none), so a silent substitution is impossible.
-    // Unhinted tasks emit no new keys: their event is byte-identical
-    // to before.
+    // The fallback slice adds the recorded reason: `resume_fallback`
+    // is the claimer-supplied FDR-0001 value (validated in
+    // verb_claim), explicit null when the claim names none — a
+    // substitution with no recorded reason stays distinguishable
+    // from a clean resume. Unhinted tasks emit no new keys: their
+    // event is byte-identical to before.
     if let Some(requested) = row.get("resume_session_id").and_then(|v| v.as_str()) {
         detail["resume_requested_session_id"] = json!(requested);
         detail["resume_actual_session_id"] = claim_session.map(|s| json!(s)).unwrap_or(Value::Null);
+        detail["resume_fallback"] = resume_fallback.map(|f| json!(f)).unwrap_or(Value::Null);
     }
     event(
         t,
