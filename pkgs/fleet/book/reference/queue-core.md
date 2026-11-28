@@ -245,7 +245,7 @@ usage: repo-queue show <task-id> [--limit <n>] [--json]
 | `--limit`                | integer  | 10       | History tail length; validated with the list-limit rule (1..=500), rejected outside, exit 2. |
 | `--json`                 | boolean  | off      | Print the details + history as JSON instead of the rendered form.                            |
 
-**Behaviour.** Shows one task's current details + recent history: the rich `/list` row for the task is the source of truth for mutable state, plus the tail of the same 14-kind event timeline `timeline` reads (see [inspection and admin](queue-admin.md)). Task not found: stderr `repo-queue show: task <id> not found`, exit 1. A broker without `/events-list`: exit 3.
+**Behaviour.** Shows one task's current details + recent history: the rich `/list` row for the task is the source of truth for mutable state, plus the tail of the same 19-kind event timeline `timeline` reads (see [inspection and admin](queue-admin.md)). Task not found: stderr `repo-queue show: task <id> not found`, exit 1. A broker without `/events-list`: exit 3.
 
 Exit codes: 0 ok · 1 task not found · 2 usage · 3 transport / broker does not serve `/events-list` · 4 broker store failure.
 
