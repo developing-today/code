@@ -23,6 +23,13 @@ export default defineConfig({
         worker: workerName,
         exportName: "Handoff",
       }),
+      // The deployed commit the /version route names (#15793). This
+      // config runs at build time: both jobs of the bespoke release
+      // workflow (muse-handoff-upload.yml) build from the checked-out
+      // commit, whose SHA Actions provides as GITHUB_SHA, so each
+      // created version names the commit it was built from; a build
+      // without it answers "unknown", honestly.
+      VERSION: bindings.text(process.env.GITHUB_SHA ?? "unknown"),
       ADMIN_TOKEN: bindings.secret(),
       HANDOFF_ENCRYPTION_KEY: bindings.secret(),
     },
