@@ -30,7 +30,6 @@ use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
-use crate::thread_resolution::{ThreadEvent, check_thread_event, is_thread_event_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
 /// confused with another protocol's.
@@ -158,11 +157,6 @@ pub struct ChainExt {
     /// the anchor's body (#5872/#5870): signed with the header, so an event carries its
     /// whole anchor and sync needs no separate body.
     pub anchor: Option<ChatAnchor>,
-    /// The body of a thread event (`chat.resolution.v1`, `chat.proposal.v1`,
-    /// `chat.proposal-rejection.v1`, `chat.proposal-withdrawal.v1`), and `None` for every
-    /// other kind (#7849, decision record #5874): signed with the header, so an event
-    /// carries its whole resolution or proposal act and sync needs no separate body.
-    pub thread: Option<ThreadEvent>,
 }
 
 #[derive(Serialize)]
@@ -279,8 +273,6 @@ struct Wire {
     chat: Option<HeaderChatMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     anchor: Option<ChatAnchor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    thread: Option<ThreadEvent>,
 }
 
 impl From<ChainExt> for Wire {
@@ -299,7 +291,6 @@ impl From<ChainExt> for Wire {
             rotation: ext.rotation,
             chat: ext.chat.map(HeaderChatMessage),
             anchor: ext.anchor,
-            thread: ext.thread,
         }
     }
 }
@@ -324,7 +315,6 @@ impl TryFrom<Wire> for ChainExt {
             rotation: wire.rotation,
             chat: wire.chat.map(|message| message.0),
             anchor: wire.anchor,
-            thread: wire.thread,
         };
         ext.validate()?;
         Ok(ext)
@@ -350,8 +340,7 @@ impl ChainExt {
     /// A rotation kind must carry an issuer rotation that passes
     /// [`check_rotation`], and any other kind must carry none. A chat-anchor kind
     /// must carry an anchor operation that passes [`check_chat_anchor`], and any
-    /// other kind must carry none. A thread event kind must carry a thread event
-    /// body that passes [`check_thread_event`], and any other kind must carry none.
+    /// other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -536,25 +525,6 @@ impl ChainExt {
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
-        match (is_thread_event_kind(&self.kind), &self.thread) {
-            (false, None) => {}
-            (false, Some(_)) => {
-                return Err(ChainError::Extension(format!(
-                    "kind {:?} carries a thread event body",
-                    self.kind
-                )));
-            }
-            (true, None) => {
-                return Err(ChainError::Extension(format!(
-                    "kind {:?} needs its thread event body",
-                    self.kind
-                )));
-            }
-            (true, Some(thread)) => {
-                check_thread_event(&self.kind, thread)
-                    .map_err(|err| ChainError::Extension(err.to_string()))?;
-            }
-        }
         Ok(())
     }
 }
@@ -716,7 +686,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         }
     }
 
@@ -941,101 +910,6 @@ mod tests {
         let value =
             postcard::to_allocvec(&decoded.header.extensions).expect("an extension encodes");
         assert!(!value.windows(6).any(|window| window == b"anchor"));
-    }
-
-    /// A proposal-withdrawal body on its own kind, for the thread admission tests.
-    fn thread_ext(event: crate::thread_resolution::ThreadEvent) -> ChainExt {
-        let mut ext = ext(event.kind(), Some(hash(3)), vec![]);
-        ext.thread = Some(event);
-        ext
-    }
-
-    fn withdrawal() -> crate::thread_resolution::ThreadEvent {
-        crate::thread_resolution::ThreadEvent::Withdrawal(
-            crate::thread_resolution::ChatProposalWithdrawal { proposal: hash(9) },
-        )
-    }
-
-    #[test]
-    fn test_thread_admission_keeps_kind_and_body_together() {
-        use crate::thread_resolution::{
-            CHAT_PROPOSAL_KIND, CHAT_RESOLUTION_KIND, ChatResolution, ThreadEvent,
-        };
-        // Each kind's body signs and round-trips through the decoder.
-        for body in [
-            withdrawal(),
-            ThreadEvent::Resolution(ChatResolution::no_action(hash(4))),
-        ] {
-            let event = sign(&key(), 0, None, None, thread_ext(body.clone()))
-                .expect("a valid thread event is signed");
-            assert_eq!(decode(&event.bytes).unwrap(), event);
-            assert_eq!(event.header.extensions.thread, Some(body));
-        }
-
-        // A body on another thread kind, on a message kind, or missing, is
-        // refused before anything is signed.
-        let mut wrong_kind = thread_ext(withdrawal());
-        wrong_kind.kind = CHAT_PROPOSAL_KIND.to_owned();
-        assert!(sign(&key(), 0, None, None, wrong_kind).is_err());
-        let mut on_message = thread_ext(withdrawal());
-        on_message.kind = "m".to_owned();
-        assert!(sign(&key(), 0, None, None, on_message).is_err());
-        assert!(
-            sign(
-                &key(),
-                0,
-                None,
-                None,
-                ext(CHAT_RESOLUTION_KIND, None, vec![])
-            )
-            .is_err()
-        );
-
-        // A body that breaks its own rules (an edit resolution with no edit) is
-        // refused too.
-        let mut broken =
-            ChatResolution::edit(hash(4), ObjectRef::new(hash(7), key_bytes(7)), hash(5));
-        broken.edit = None;
-        assert!(
-            sign(
-                &key(),
-                0,
-                None,
-                None,
-                thread_ext(ThreadEvent::Resolution(broken))
-            )
-            .is_err()
-        );
-
-        // A forged body on a non-thread kind is refused at decode.
-        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-        struct ForgedThread {
-            domain: String,
-            kind: String,
-            group: Option<Hash>,
-            after: Vec<Hash>,
-            thread: ThreadEvent,
-        }
-        let forged = sign_raw(ForgedThread {
-            domain: DOMAIN_TAG.to_owned(),
-            kind: "m".to_owned(),
-            group: None,
-            after: Vec::new(),
-            thread: withdrawal(),
-        });
-        assert!(decode(&forged).is_err());
-    }
-
-    #[test]
-    fn test_thread_free_exts_encode_as_before() {
-        let event =
-            sign(&key(), 0, None, None, ext("m", None, vec![])).expect("a plain event is signed");
-        let decoded = decode(&event.bytes).unwrap();
-        assert!(decoded.header.extensions.thread.is_none());
-        assert_eq!(hex(&decoded.bytes), hex(&event.bytes));
-        let value =
-            postcard::to_allocvec(&decoded.header.extensions).expect("an extension encodes");
-        assert!(!value.windows(6).any(|window| window == b"thread"));
     }
 
     #[test]
@@ -1410,7 +1284,6 @@ mod tests {
 
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap()
@@ -1642,7 +1515,6 @@ mod golden {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();
@@ -1665,7 +1537,6 @@ mod golden {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();

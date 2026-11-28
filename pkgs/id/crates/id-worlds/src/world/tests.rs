@@ -305,7 +305,7 @@ mod tests {
         let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
         let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
         assert!(export(&mut actor).await.is_err());
-        assert_eq!(actor.core.handoff_transfers(), []);
+        assert!(actor.core.handoff_transfers().is_empty());
         assert!(
             !journal
                 .entries()
@@ -535,7 +535,7 @@ mod tests {
         );
 
         assert_eq!(journal.entries().len(), before);
-        assert_eq!(actor.core.handoff_transfers(), []);
+        assert!(actor.core.handoff_transfers().is_empty());
         assert!(applied.lock().unwrap().is_empty());
     }
 
@@ -667,10 +667,7 @@ mod tests {
             })
             .await;
         assert!(response.await.unwrap().is_ok());
-        assert_eq!(
-            actor.pending_transfer_replays,
-            [] as [HandoffTransferState; 0]
-        );
+        assert!(actor.pending_transfer_replays.is_empty());
         assert!(actor.program_healthy);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
@@ -697,10 +694,7 @@ mod tests {
             *applied_first.lock().unwrap(),
             vec!["add-entity".to_owned()]
         );
-        assert_eq!(
-            actor.pending_transfer_replays,
-            [] as [HandoffTransferState; 0]
-        );
+        assert!(actor.pending_transfer_replays.is_empty());
         assert!(actor.program_healthy);
 
         // A live reinstall of the same module must hand the replacement
@@ -730,10 +724,7 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert_eq!(
-            actor.pending_transfer_replays,
-            [] as [HandoffTransferState; 0]
-        );
+        assert!(actor.pending_transfer_replays.is_empty());
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()],
@@ -915,10 +906,7 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert_eq!(
-            actor.pending_transfer_replays,
-            [] as [HandoffTransferState; 0]
-        );
+        assert!(actor.pending_transfer_replays.is_empty());
     }
 
     #[tokio::test]
@@ -1751,9 +1739,8 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062). Version 16 (#13711) stamps lease positions, and
-        // version 17 (#14731) records the presentation policy.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        // (all #1062). Version 16 (#13711) stamps lease positions.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         // A checkpoint whose lease history carries stamped positions
@@ -1949,7 +1936,7 @@ mod tests {
         assert_eq!(lease.rejections().count(), 1);
         assert_eq!(lease.rejections().next().unwrap().operation_id, "op-1");
         assert_eq!(restored.core.current_sequence(), 0);
-        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
+        assert!(restored.replay.is_empty());
 
         // A second audit of the same attempt is a duplicate.
         let error = WorldCore::restore(
@@ -3247,7 +3234,6 @@ mod tests {
     /// (#1067, Codex review on #12557): exhausting the budget must not
     /// mark the program unhealthy, so the same input succeeds once the
     /// window rolls instead of requiring a program replacement.
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
         use crate::sandbox::{Sandbox, SandboxLimits};
@@ -3451,7 +3437,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
-        assert_eq!(chat_history(&core.events, 0), [] as [serde_json::Value; 0]);
+        assert!(chat_history(&core.events, 0).is_empty());
     }
 
     /// Asks the bounded-read questions of #796 item 9-5 once each and
@@ -4000,7 +3986,7 @@ mod tests {
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
         assert!(report.granted.contains(&"time.now".to_owned()));
-        assert_eq!(report.missing, [] as [String; 0]);
+        assert!(report.missing.is_empty());
     }
 
     #[test]
@@ -4838,7 +4824,7 @@ mod tests {
         ));
         let restored =
             WorldCore::restore("empty-presence", WorldLimits::default(), entries).unwrap();
-        assert_eq!(restored.replay, [] as [WorldEvent; 0]);
+        assert!(restored.replay.is_empty());
         assert!(restored.core.open_presence.is_empty());
     }
 
@@ -7059,7 +7045,7 @@ mod tests {
         }
         let page = core.events_after(&token, 0).unwrap();
         assert!(page.needs_snapshot);
-        assert_eq!(page.events, [] as [WorldEvent; 0]);
+        assert!(page.events.is_empty());
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 3);
         assert_eq!(snapshot.oldest_retained_sequence, 2);
@@ -7127,10 +7113,7 @@ mod tests {
         revoked.sort_unstable();
         assert_eq!(revoked, vec![owner.id, child.id]);
         // Revoking a revoked capability again changes no recorded time.
-        assert_eq!(
-            core.revoke_tree_at(owner.id, None, Some(9_999)),
-            [] as [u64; 0]
-        );
+        assert!(core.revoke_tree_at(owner.id, None, Some(9_999)).is_empty());
 
         let expected = vec![
             (owner.id, Some(1_000), Some(4_000)),
@@ -7260,9 +7243,9 @@ mod tests {
         assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
         // A second revoke of a revoked capability changes nothing, the
         // recorded actor included.
-        assert_eq!(
-            core.revoke_tree_by(moderated.id, Some(by_admin.id)),
-            [] as [u64; 0]
+        assert!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id))
+                .is_empty()
         );
 
         let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
@@ -7283,7 +7266,7 @@ mod tests {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
         assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
-        assert_eq!(core.revoke_tree(participant.id), [] as [u64; 0]);
+        assert!(core.revoke_tree(participant.id).is_empty());
         assert!(core.snapshot(&token).is_err());
         assert!(core.chat(&token, "hello").is_err());
     }
@@ -7764,7 +7747,7 @@ mod tests {
         // Only chat so far: nothing to show, yet the cursor moves to the end
         // and retention is judged on the world, not the viewer.
         let page = core.events_after(&watcher, 0).unwrap();
-        assert_eq!(page.events, [] as [WorldEvent; 0]);
+        assert!(page.events.is_empty());
         assert!(!page.needs_snapshot);
         assert_eq!(page.current_sequence, 2);
         assert_eq!(page.oldest_retained_sequence, 1);
@@ -7802,7 +7785,7 @@ mod tests {
         assert!(page.needs_snapshot, "the cursor fell behind retention");
         assert_eq!(page.oldest_retained_sequence, 2);
         let snapshot = core.snapshot(&watcher).unwrap();
-        assert_eq!(snapshot.events, [] as [WorldEvent; 0]);
+        assert!(snapshot.events.is_empty());
         assert_eq!(snapshot.current_sequence, 4);
         assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
     }
@@ -8014,10 +7997,7 @@ mod tests {
             chat_texts(&core.snapshot(&reader).unwrap().events),
             ["hello"]
         );
-        assert_eq!(
-            chat_texts(&core.snapshot(&watcher).unwrap().events),
-            [] as [String; 0]
-        );
+        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
         assert!(core.chat(&reader, "hi").is_err());
     }
 
@@ -8312,7 +8292,7 @@ mod tests {
         }
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.current_sequence, 20);
-        assert_ne!(snapshot.events, [] as [WorldEvent; 0]);
+        assert!(!snapshot.events.is_empty());
         assert!(
             serde_json::to_vec(&snapshot.events).unwrap().len() <= 1024,
             "events fit the budget"
@@ -8326,11 +8306,11 @@ mod tests {
         assert_eq!(snapshot.events.last().unwrap().sequence, 20);
         // The snapshot is a valid rebase point: continuing from its cursor
         // yields only new events.
-        assert_eq!(
+        assert!(
             core.events_after(&token, snapshot.current_sequence)
                 .unwrap()
-                .events,
-            [] as [WorldEvent; 0]
+                .events
+                .is_empty()
         );
     }
 
@@ -9350,319 +9330,6 @@ mod tests {
             lease_error(&refused.unwrap_err()),
             Some(LeaseRejectionReason::NotHolder)
         );
-    }
-
-    #[tokio::test]
-    async fn failover_measurements_match_the_q2_design_bounds() {
-        // Q2 measurements (design #5787 Q2, #7572): the §7
-        // holder-death walkthrough on the authority clock with the
-        // standing defaults (30 s term, 10 s renewal), measuring
-        // detection, grant, and replay-to-ready instead of only the
-        // outcome. The clock starts at 1_000; the holder's term is
-        // stamped to expire at 31_000 and the holder dies at the
-        // stamp — the worst case for detection.
-        let w = lease_world().await;
-        w.handle
-            .handoff_write_lease("native-1", 1, Some(31_000))
-            .await
-            .unwrap();
-
-        // native-2 has served as a reader at the tip for the full
-        // observation window; the grantor's tip for this grant is 2.
-        let mut pool = spill_pool::SpillPool::default();
-        pool.configure("native-2");
-        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
-            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
-        }
-
-        // Detection: one millisecond before expiry the failover is
-        // still refused — no fence can exist before the term lapses,
-        // and the refused attempt journals nothing (the successful
-        // failover below still lands at positions 2 and 3). At
-        // expiry it proceeds. Measured detection latency for a death
-        // at the stamp: 31_000 - 1_000 = 30_000 ms — exactly one
-        // term, the design's stated worst-case bound.
-        w.clock.advance(29_999);
-        assert!(
-            w.handle
-                .failover_write_lease(pool.clone(), 2, 0, 30_000)
-                .await
-                .is_err()
-        );
-        w.clock.advance(1);
-        let execution = w
-            .handle
-            .failover_write_lease(pool, 2, 0, 30_000)
-            .await
-            .unwrap();
-
-        // Grant: the fence and the grant are two consecutive journal
-        // appends (positions 2 and 3) — the grant lands one append
-        // after the fence, at the same authority instant.
-        assert_eq!(execution.entries().len(), 2);
-        assert_eq!(execution.grant_position(), 3);
-        assert_eq!(execution.grant_epoch(), 3);
-
-        // Replay-to-ready: the caught-up successor, observed at
-        // position 2, replays exactly one entry — far less than a
-        // cold replay — before it may write: the grant record
-        // itself is its barrier.
-        assert!(!execution.resume_ready(2));
-        assert!(execution.resume_ready(3));
-
-        // The successor's fresh term runs a full 30 s from the
-        // failover instant.
-        assert_eq!(execution.resulting_lease().expires_at_ms, Some(61_000));
-    }
-
-    #[tokio::test]
-    async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
-        let w = lease_world().await;
-        w.handle
-            .handoff_write_lease("native-1", 1, Some(31_000))
-            .await
-            .unwrap();
-        let mut pool = spill_pool::SpillPool::default();
-        pool.configure("native-2");
-        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
-            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
-        }
-        w.clock.advance(60_000);
-        let execution = w
-            .handle
-            .failover_write_lease(pool, 2, 0, 30_000)
-            .await
-            .unwrap();
-        assert_eq!(execution.successor(), "native-2");
-        assert_eq!(execution.grant_epoch(), 3);
-
-        let stale_replay = w
-            .handle
-            .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
-            .await;
-        assert!(
-            stale_replay
-                .unwrap_err()
-                .to_string()
-                .contains("ReplayPending")
-        );
-        assert_eq!(
-            w.handle
-                .dispatch_spill_copy(
-                    "native-2",
-                    3,
-                    execution.grant_position(),
-                    b"journal-copy".to_vec()
-                )
-                .await
-                .unwrap(),
-            b"journal-copy"
-        );
-
-        w.handle
-            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
-            .await
-            .unwrap();
-        assert!(
-            w.handle
-                .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"stale".to_vec())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn spill_controller_dispatches_only_an_authenticated_cursor_at_the_boundary() {
-        // Oracle: #7572 successor slice (design #5787 §1 step 4) — the
-        // production host/controller path must send journal bytes only
-        // for a cursor that (a) authenticates for its exact
-        // holder/epoch/position triple, (b) passes the residency gate,
-        // and (c) still passes the actor's serialized live
-        // holder/epoch/term/replay check at dispatch time. Every
-        // refusal sends zero bytes.
-        use id_core::residency::{
-            Evidence, EvidenceVerifier, Hop, Jurisdiction, Plane, Policy, ResourceId, Scope,
-        };
-        use spill_controller::{CursorAuthenticator, SpillController, SpillDispatchRefusal};
-        use std::cell::RefCell;
-
-        struct MintingAuthenticator;
-        fn minted_proof(holder: &str, epoch: u64, position: u64) -> Vec<u8> {
-            format!("proof:{holder}:{epoch}:{position}").into_bytes()
-        }
-        impl CursorAuthenticator for MintingAuthenticator {
-            fn authenticate_cursor(
-                &self,
-                holder: &str,
-                epoch: u64,
-                replayed_position: u64,
-                proof: &[u8],
-            ) -> bool {
-                proof == minted_proof(holder, epoch, replayed_position).as_slice()
-            }
-        }
-        struct AcceptingVerifier;
-        impl EvidenceVerifier for AcceptingVerifier {
-            fn signature_valid(&self, _evidence: &Evidence) -> bool {
-                true
-            }
-            fn revoked(&self, _evidence: &Evidence) -> bool {
-                false
-            }
-        }
-
-        let w = lease_world().await;
-        w.handle
-            .handoff_write_lease("native-1", 1, Some(31_000))
-            .await
-            .unwrap();
-        let mut pool = spill_pool::SpillPool::default();
-        pool.configure("native-2");
-        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
-            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
-        }
-        w.clock.advance(60_000);
-        let execution = w
-            .handle
-            .failover_write_lease(pool, 2, 0, 30_000)
-            .await
-            .unwrap();
-        assert_eq!(execution.successor(), "native-2");
-        assert_eq!(execution.grant_epoch(), 3);
-        let boundary = execution.grant_position();
-
-        let controller = SpillController::new(&MintingAuthenticator);
-        let verifier = AcceptingVerifier;
-        let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        macro_rules! dispatch {
-            ($holder:expr, $epoch:expr, $position:expr, $proof:expr, $scope:expr, $hops:expr) => {
-                controller
-                    .dispatch_presented_copy(
-                        &w.handle,
-                        $scope,
-                        $hops,
-                        1_000_000,
-                        &verifier,
-                        $holder,
-                        $epoch,
-                        $position,
-                        $proof,
-                        b"journal-copy".to_vec(),
-                        |copy| sent.borrow_mut().push(copy.to_vec()),
-                    )
-                    .await
-            };
-        }
-
-        // Forged proof at the boundary position: no cursor, no bytes.
-        let forged = dispatch!(
-            "native-2",
-            3,
-            boundary,
-            b"forged".as_slice(),
-            &Scope::Unscoped,
-            &[]
-        );
-        assert!(matches!(
-            forged,
-            Err(SpillDispatchRefusal::UnauthenticatedCursor { .. })
-        ));
-        assert!(sent.borrow().is_empty());
-
-        // Authenticated but stale cursor (below the ownership
-        // boundary): the actor's final gate refuses, no bytes.
-        let stale = dispatch!(
-            "native-2",
-            3,
-            2,
-            &minted_proof("native-2", 3, 2),
-            &Scope::Unscoped,
-            &[]
-        );
-        assert!(
-            matches!(&stale, Err(SpillDispatchRefusal::Authority(reason)) if reason.contains("ReplayPending")),
-            "stale cursor must hit the replay gate, got {stale:?}"
-        );
-        assert!(sent.borrow().is_empty());
-
-        // Authenticated cursor for the wrong epoch: no bytes.
-        let wrong_epoch = dispatch!(
-            "native-2",
-            2,
-            boundary,
-            &minted_proof("native-2", 2, boundary),
-            &Scope::Unscoped,
-            &[]
-        );
-        assert!(matches!(
-            wrong_epoch,
-            Err(SpillDispatchRefusal::Authority(_))
-        ));
-        assert!(sent.borrow().is_empty());
-
-        // Authenticated cursor at the boundary, but the residency gate
-        // denies the path (expired host evidence): no bytes.
-        let policy = Policy::new(["operator-ca".to_string()])
-            .allow(Plane::Processing, &["eu"], &["spill-eu"])
-            .trust_evidence_source(Plane::Processing, "provider-control-plane");
-        let expired = Evidence {
-            issuer: "operator-ca".to_string(),
-            resource: ResourceId("spill-eu".to_string()),
-            plane: Plane::Processing,
-            jurisdiction: Jurisdiction("eu".to_string()),
-            source: "provider-control-plane".to_string(),
-            expires_at: 999_999,
-            serial: "spill-eu-1".to_string(),
-            signature: vec![1],
-        };
-        let hops = [Hop {
-            plane: Plane::Processing,
-            resource: ResourceId("spill-eu".to_string()),
-            evidence: Some(&expired),
-        }];
-        let residency = dispatch!(
-            "native-2",
-            3,
-            boundary,
-            &minted_proof("native-2", 3, boundary),
-            &Scope::Scoped(policy),
-            &hops
-        );
-        assert!(matches!(residency, Err(SpillDispatchRefusal::Residency(_))));
-        assert!(sent.borrow().is_empty());
-
-        // The cursor at the current ownership boundary dispatches:
-        // exactly one send, with the actor-released bytes.
-        let dispatched = dispatch!(
-            "native-2",
-            3,
-            boundary,
-            &minted_proof("native-2", 3, boundary),
-            &Scope::Unscoped,
-            &[]
-        );
-        assert_eq!(dispatched, Ok(()));
-        assert_eq!(sent.borrow().as_slice(), [b"journal-copy".to_vec()]);
-
-        // After handback, the previously valid epoch-3 cursor is stale
-        // at the actor's serialized gate: no further bytes.
-        w.handle
-            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
-            .await
-            .unwrap();
-        let after_handback = dispatch!(
-            "native-2",
-            3,
-            boundary,
-            &minted_proof("native-2", 3, boundary),
-            &Scope::Unscoped,
-            &[]
-        );
-        assert!(matches!(
-            after_handback,
-            Err(SpillDispatchRefusal::Authority(_))
-        ));
-        assert_eq!(sent.borrow().len(), 1);
     }
 
     #[tokio::test]
@@ -10792,9 +10459,12 @@ mod schedule_tests {
     async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
         let journal = Recorded::for_world("system-fuel-rate");
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
-        let mut core =
-            WorldCore::new_with_clock("system-fuel-rate", WorldLimits::default(), clock.clone())
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "system-fuel-rate",
+            WorldLimits::default(),
+            clock.clone(),
+        )
+        .unwrap();
         let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
@@ -10805,10 +10475,7 @@ mod schedule_tests {
             Box::new(FuelLimitedSystemProgram),
             Some(Box::new(journal.clone())),
         );
-        actor
-            .core
-            .schedules
-            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
         actor.fire_schedules().await;
         assert!(actor.program_healthy);
         assert!(actor.core.schedules.contains_key("tick"));
@@ -10972,7 +10639,9 @@ mod schedule_tests {
                 JournalEntry::System { event } => match &event.kind {
                     WorldEventKind::System { event: text } => {
                         serde_json::from_str::<serde_json::Value>(text)
-                            .is_ok_and(|value| value["cap"] == "result" && value["id"] == id)
+                            .is_ok_and(|value| {
+                                value["cap"] == "result" && value["id"] == id
+                            })
                     }
                     _ => false,
                 },
@@ -11839,68 +11508,6 @@ mod schedule_tests {
                 .count(),
             1,
             "deleting an absent blob journals nothing"
-        );
-    }
-
-    struct DenyBlobGate;
-
-    impl id_directory::directory::BoundaryGate for DenyBlobGate {
-        fn check(
-            &self,
-            point: id_core::boundary::EnforcementPoint,
-            _: &str,
-        ) -> id_core::boundary_surfaces::FrameworkOutcome {
-            if point == id_core::boundary::EnforcementPoint::BlobStorage {
-                id_core::boundary_surfaces::FrameworkOutcome::Deny {
-                    placement: Vec::new(),
-                    assurance: Vec::new(),
-                }
-            } else {
-                id_core::boundary_surfaces::FrameworkOutcome::Allow
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn blob_boundary_denial_blocks_put_get_and_delete_before_effects() {
-        // Oracle: a denied BlobStorage outcome refuses all three actor
-        // operations and leaves both the in-memory blob set and journal intact.
-        let (mut actor, _clock, token, journal) = scheduling_actor(
-            "blob-boundary-denied",
-            &["blob.put", "blob.get", "blob.delete"],
-            false,
-        );
-        let bytes = b"protected blob".to_vec();
-        let hash = blob_id(&bytes);
-        actor.core.blobs.insert(hash.clone(), bytes.clone());
-        actor.core.set_world_boundary_gate(Arc::new(DenyBlobGate));
-
-        ask(
-            &mut actor,
-            &token,
-            serde_json::json!({"requests": [
-                {"id": "put", "cap": "blob.put", "args": {"data": blob_encode(b"new blob")}},
-                {"id": "get", "cap": "blob.get", "args": {"hash": hash}},
-                {"id": "delete", "cap": "blob.delete", "args": {"hash": hash}},
-            ]}),
-        )
-        .await;
-
-        for id in ["put", "get", "delete"] {
-            assert_eq!(schedule_result(&actor, id).unwrap()["error"], "bad_args");
-        }
-        assert_eq!(actor.core.blobs.get(&hash), Some(&bytes));
-        assert_eq!(
-            journal
-                .entries()
-                .iter()
-                .filter(|entry| matches!(
-                    entry,
-                    JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. }
-                ))
-                .count(),
-            0,
-            "refused blob operations have no journal effects"
         );
     }
 
@@ -12904,9 +12511,9 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        // Version 17 (#14731, the presentation policy) is the newest
+        // Version 16 (#13711, stamped lease positions) is the newest
         // version this binary reads.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
     }
 
     #[tokio::test]
@@ -14257,8 +13864,8 @@ mod schedule_tests {
         assert_eq!(delivers.len(), 1);
         assert_eq!(delivers[0].outcome, "accepted");
         assert_eq!(delivers[0].parameters, sends[0].parameters);
-        assert_eq!(portal_audit(&b, "portal.send"), [] as [AuditRecord; 0]);
-        assert_eq!(portal_audit(&a, "portal.deliver"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&b, "portal.send").is_empty());
+        assert!(portal_audit(&a, "portal.deliver").is_empty());
 
         for handle in [&a, &b] {
             let grants = portal_audit(handle, "AdminSetPortalGrant");
@@ -14292,7 +13899,7 @@ mod schedule_tests {
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].outcome, "refused");
         assert_eq!(sends[0].parameters["refusal"], "portal.sender_not_granted");
-        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14317,7 +13924,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.peer_not_granted");
-        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
@@ -14387,7 +13994,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "unreadable peer book must be Unavailable, got {error:?}"
         );
-        assert_eq!(portal_audit(&a, "portal.send"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&a, "portal.send").is_empty());
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a granted send
@@ -14409,7 +14016,7 @@ mod schedule_tests {
             matches!(error, PortalSendError::Unavailable(_)),
             "sinkless send must be Unavailable, got {error:?}"
         );
-        assert_eq!(portal_audit(&handle, "portal.send"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&handle, "portal.send").is_empty());
     }
 
     /// Oracle (PR #10840 CodeRabbit regression): a message at the
@@ -14438,7 +14045,7 @@ mod schedule_tests {
         let sends = portal_audit(&a, "portal.send");
         assert_eq!(sends.len(), 1);
         assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
-        assert_eq!(portal_audit(&b, "portal.deliver"), [] as [AuditRecord; 0]);
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
         assert!(seen_b.lock().unwrap().is_empty());
     }
     /// Oracle: revoking mid-conversation refuses the next message as
@@ -15052,12 +14659,6 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::PolicyInfo { reply }).await;
             let _policy = response.await.unwrap();
-
-            let (reply, response) = tokio::sync::oneshot::channel();
-            actor
-                .handle(WorldCommand::PresentationPolicyInfo { reply })
-                .await;
-            let _presentation = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
@@ -15460,235 +15061,4 @@ fn presence_change_refuses_a_duplicated_key() {
     // A lenient parse keeps the last "event" and reads a join (#8794).
     let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
     assert_eq!(presence_change(&duplicated), None);
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod presentation_policy_tests {
-    //! The world's stored presentation policy (#14731 slice 2b): the
-    //! journal entry, its version requirement, restore and compaction,
-    //! and the actor's set and read commands.
-    use super::*;
-    use id_core::presentation_policy::{MAX_POLICY_ENTRIES, PresentationPolicy};
-
-    fn world() -> WorldCore {
-        WorldCore::new("test-world", WorldLimits::default()).unwrap()
-    }
-
-    fn opted_in() -> PresentationPolicy {
-        PresentationPolicy::from_json(
-            r#"{"assets":{"user_uploads":"deny","max_rung":"static"},
-                "filters":{"allowed":["tint@1","fx/*"],"denied":["fx/strobe"],"disguise":"allow"},
-                "shaders":{"enabled":true,"formats":["shadertoy.glsl.fragment/v1"]},
-                "fallback":{"world_glyphs":{"tree":"T"}}}"#,
-        )
-        .unwrap()
-    }
-
-    /// A policy past its size bounds, built without the parser's check.
-    fn oversized() -> PresentationPolicy {
-        let many: Vec<String> = (0..=MAX_POLICY_ENTRIES)
-            .map(|i| format!("\"f{i}\""))
-            .collect();
-        let text = format!(r#"{{"filters":{{"denied":[{}]}}}}"#, many.join(","));
-        let policy: PresentationPolicy = serde_json::from_str(&text).unwrap();
-        assert!(policy.validate().is_err());
-        policy
-    }
-
-    fn header(version: u32) -> JournalEntry {
-        JournalEntry::Created {
-            world_id: "w".to_owned(),
-            version,
-        }
-    }
-
-    #[test]
-    fn the_entry_requires_version_17_and_it_is_the_newest() {
-        for policy in [PresentationPolicy::default(), opted_in()] {
-            assert_eq!(
-                journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
-                JOURNAL_VERSION_PRESENTATION_POLICY
-            );
-        }
-        assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
-    }
-
-    #[test]
-    fn the_entry_round_trips_in_its_wire_shape() {
-        let entry = JournalEntry::PresentationPolicy { policy: opted_in() };
-        let json = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["entry"], "presentation_policy");
-        assert_eq!(json["policy"]["shaders"]["enabled"], true);
-        let back: JournalEntry = serde_json::from_value(json).unwrap();
-        assert_eq!(back, entry);
-    }
-
-    #[test]
-    fn a_new_world_holds_the_default_policy() {
-        assert_eq!(world().presentation, PresentationPolicy::default());
-        let restored = WorldCore::restore("w", WorldLimits::default(), [header(1)]).unwrap();
-        assert_eq!(restored.core.presentation, PresentationPolicy::default());
-    }
-
-    #[test]
-    fn restore_applies_the_last_entry() {
-        let entries = [
-            header(JOURNAL_VERSION_PRESENTATION_POLICY),
-            JournalEntry::PresentationPolicy { policy: opted_in() },
-            JournalEntry::PresentationPolicy {
-                policy: PresentationPolicy::default(),
-            },
-            JournalEntry::PresentationPolicy { policy: opted_in() },
-        ];
-        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
-        assert_eq!(restored.core.presentation, opted_in());
-    }
-
-    #[test]
-    fn restore_refuses_an_oversized_policy() {
-        let entries = [
-            header(JOURNAL_VERSION_PRESENTATION_POLICY),
-            JournalEntry::PresentationPolicy {
-                policy: oversized(),
-            },
-        ];
-        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("invalid presentation policy"),
-            "{error:#}"
-        );
-    }
-
-    #[test]
-    fn compaction_keeps_a_set_policy_and_raises_the_header() {
-        let mut core = world();
-        core.presentation = opted_in();
-        core.active_module_hash = Some("h".to_owned());
-        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
-        assert!(matches!(
-            entries[0],
-            JournalEntry::Created {
-                version: JOURNAL_VERSION_PRESENTATION_POLICY,
-                ..
-            }
-        ));
-        assert_eq!(
-            entries
-                .iter()
-                .filter(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
-                .count(),
-            1
-        );
-        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
-        assert_eq!(restored.core.presentation, opted_in());
-    }
-
-    #[test]
-    fn compaction_omits_the_default_policy() {
-        let mut core = world();
-        core.active_module_hash = Some("h".to_owned());
-        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
-        assert!(
-            !entries
-                .iter()
-                .any(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
-        );
-        let JournalEntry::Created { version, .. } = entries[0] else {
-            panic!("a checkpoint journal starts with its header");
-        };
-        assert!(version < JOURNAL_VERSION_PRESENTATION_POLICY);
-    }
-
-    #[tokio::test]
-    async fn the_actor_sets_and_reads_the_policy() {
-        let handle = WorldHandle::spawn(world());
-        assert_eq!(
-            handle.presentation_policy().await.unwrap(),
-            PresentationPolicy::default()
-        );
-        assert_eq!(
-            handle.set_presentation_policy(opted_in()).await.unwrap(),
-            opted_in()
-        );
-        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
-    }
-
-    #[tokio::test]
-    async fn the_actor_refuses_an_oversized_policy_and_keeps_the_old_one() {
-        let handle = WorldHandle::spawn(world());
-        handle.set_presentation_policy(opted_in()).await.unwrap();
-        let error = handle
-            .set_presentation_policy(oversized())
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("invalid presentation policy"),
-            "{error:#}"
-        );
-        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
-    }
-    /// The largest policy the parser accepts: every list and map full,
-    /// every name and key at its longest, and keys and glyphs made of
-    /// quotes so JSON escaping doubles them.
-    fn largest() -> PresentationPolicy {
-        use id_core::presentation_asset::MAX_NAME_LEN;
-        use id_core::presentation_policy::{MAX_CELL_KIND_BYTES, MAX_GLYPH_BYTES};
-        let name = |i: usize| format!("{i:03}{}", "n".repeat(MAX_NAME_LEN - 3));
-        let reference = |i: usize| format!("{}@{}", name(i), u32::MAX);
-        let refs: Vec<String> = (0..MAX_POLICY_ENTRIES).map(reference).collect();
-        let glyphs: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
-            .map(|i| {
-                let kind = format!("{i:03}{}", "\"".repeat(MAX_CELL_KIND_BYTES - 3));
-                (kind, "\"".repeat(MAX_GLYPH_BYTES).into())
-            })
-            .collect();
-        let substitutes: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
-            .map(|i| (name(i), reference(i).into()))
-            .collect();
-        let policy: PresentationPolicy = serde_json::from_value(serde_json::json!({
-            "filters": {"allowed": refs, "denied": refs, "disguise": "allow"},
-            "shaders": {
-                "enabled": true,
-                "formats": vec!["shadertoy.glsl.fragment/v1"; MAX_POLICY_ENTRIES],
-            },
-            "fallback": {
-                "world_glyphs": glyphs,
-                "world_substitutes": substitutes,
-                "tileset": reference(0),
-            },
-        }))
-        .unwrap();
-        policy.validate().unwrap();
-        policy
-    }
-
-    #[test]
-    fn the_largest_valid_policy_fits_one_replication_payload() {
-        let entry = JournalEntry::PresentationPolicy { policy: largest() };
-        let line = serde_json::to_vec(&entry).unwrap().len() + 1;
-        assert!(
-            line <= crate::world::replication::MAX_REPLICATION_PAYLOAD_BYTES,
-            "the largest policy's journal line is {line} bytes"
-        );
-    }
-
-    #[test]
-    fn restore_refuses_a_policy_with_an_overlong_cell_kind() {
-        let kind = "k".repeat(id_core::presentation_policy::MAX_CELL_KIND_BYTES + 1);
-        let policy: PresentationPolicy = serde_json::from_value(
-            serde_json::json!({"fallback": {"world_glyphs": {(kind): "T"}}}),
-        )
-        .unwrap();
-        let entries = [
-            header(JOURNAL_VERSION_PRESENTATION_POLICY),
-            JournalEntry::PresentationPolicy { policy },
-        ];
-        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("invalid presentation policy"),
-            "{error:#}"
-        );
-    }
 }

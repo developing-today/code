@@ -14,6 +14,7 @@
 //   node install.mjs ...           (same; no dependencies)
 import fs from "node:fs";
 import { readFile, writeFile, rename, copyFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,24 +26,11 @@ export const PROVIDER_ID = "opencode-route";
 export const MODEL_ID = "workhorse";
 export const AGENT = "build";
 
-/** The default OpenChamber project store, under HOME. Resolved only when
- * --store is not given (#8220): an unset or empty HOME is a usage error,
- * never os.homedir's silent passwd fallback (home-resolution contract
- * #5762); a set HOME gives the same path as before. */
-export function defaultStore(env = process.env) {
-  const home = env.HOME;
-  if (home === undefined || home.trim() === "") {
-    throw new UsageError(
-      `HOME is ${home === undefined ? "unset" : "empty"}, so the default store path cannot be derived; ` +
-        "set HOME or pass --store (home-resolution contract #5762: no passwd fallback)",
-    );
-  }
-  return join(
-    home,
-    ".config", "openchamber", "projects",
-    "path_L2hvbWUvdXNlci9naXQvY29kZQ.json", // /home/user/git/code
-  );
-}
+export const DEFAULT_STORE = join(
+  homedir(),
+  ".config", "openchamber", "projects",
+  "path_L2hvbWUvdXNlci9naXQvY29kZQ.json", // /home/user/git/code
+);
 
 export class UsageError extends Error {
   constructor(message) {
@@ -52,7 +40,7 @@ export class UsageError extends Error {
 }
 
 export function parseArgs(argv) {
-  const parsed = { storePath: null, dryRun: false, enable: false };
+  const parsed = { storePath: DEFAULT_STORE, dryRun: false, enable: false };
   let storeSeen = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -77,7 +65,6 @@ export function parseArgs(argv) {
     }
   }
 
-  parsed.storePath ??= defaultStore();
   return parsed;
 }
 

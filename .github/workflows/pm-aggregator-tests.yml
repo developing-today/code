@@ -89,25 +89,6 @@ jobs:
       - name: Run projector tests
         run: bun test
 
-  notify-relay:
-    # The pm-notify edge relay (#8569 Phase 2) had no workflow running
-    # its suite; it sits beside the aggregator it talks to.
-    name: notify-relay tests and typecheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: pm-stack/notify-relay
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - name: Run notify-relay tests
-        run: bun test
-      - name: Install type-check tools
-        run: bun install
-      - name: Typecheck
-        run: bunx tsc --noEmit
-
   browser:
     name: browser acceptance (MOB-00)
     runs-on: ubuntu-latest

@@ -523,10 +523,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if argv.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "atlas-github-comments {}",
-            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
-        );
+        println!("atlas-github-comments {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     match run() {

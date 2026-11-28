@@ -208,7 +208,7 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
     }
   });
 
-  test("board() is unavailable, not fixtures, when every Kaneo task read fails (503) (#14065)", async () => {
+  test("board() serves fixtures when every Kaneo task read fails (503), not a live empty board", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-done-filter-"));
     const feedFile = join(dir, "fleet-feed.json");
     await writeFile(
@@ -246,13 +246,9 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
       });
       const src = liveSource(cfg);
       const board = await src.board();
-      // #14065: a failed read is an outage, named in provenance; live
-      // mode never renders the demo board in its place.
-      expect(src.provenance().board).toContain("unavailable (kaneo unreachable");
+      expect(src.provenance().board).toContain("fixtures (kaneo unreachable");
       expect(src.provenance().board).toContain("kaneo task reads failed for every project");
-      expect(src.provenance().board).toContain("fixtures withheld in live mode");
-      expect(board).toEqual([]);
-      expect(src.provenanceDetail!().board.state).toBe("unavailable");
+      expect(board.length).toBeGreaterThan(0); // the fixture board, not an empty live board
     } finally {
       globalThis.fetch = realFetch;
     }

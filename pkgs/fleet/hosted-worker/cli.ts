@@ -17,9 +17,9 @@
 // (package.json's "cli" script and "bin" entry point here.)
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { callerTokenFile, resolveCallerToken, runCli, type CliDeps } from "./src/cli.ts";
+import { resolveCallerToken, runCli, type CliDeps } from "./src/cli.ts";
 import type { SessionStateStore } from "./src/session-resolution.ts";
 
 class FileSessionStateStore implements SessionStateStore {
@@ -37,7 +37,7 @@ class FileSessionStateStore implements SessionStateStore {
 
 const env = (name: string): string | null => process.env[name] ?? null;
 
-const tokenFile = callerTokenFile(process.env);
+const tokenFile = process.env["FLEET_HOSTED_TOKEN_FILE"] ?? join(homedir(), ".config", "fleet-hosted", "token");
 
 const deps: CliDeps = {
   serviceUrl: (process.env["FLEET_HOSTED_URL"] ?? "http://localhost:8787").replace(/\/+$/, ""),

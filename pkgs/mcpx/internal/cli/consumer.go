@@ -115,10 +115,7 @@ type Resolution struct {
 	Generated  bool                `json:"generated,omitempty"`
 	Model      string              `json:"model,omitempty"`
 	Message    string              `json:"message,omitempty"`
-	// Reason is the machine-readable cause when Model is "none": today
-	// provider_payment_required for a provider's HTTP 402 (#13610).
-	Reason string `json:"reason,omitempty"`
-	Save   *struct {
+	Save       *struct {
 		SuggestedName string `json:"suggestedName"`
 		How           string `json:"how"`
 	} `json:"save,omitempty"`

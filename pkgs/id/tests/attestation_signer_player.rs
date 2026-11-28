@@ -25,7 +25,6 @@ fn setup() -> (SigningKey, SigningKey, GenesisAgreement, ResultClaim) {
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
-        witness_terms: None,
     };
     let claim = ResultClaim {
         agreement: agreement.agreement_hash().unwrap(),

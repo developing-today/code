@@ -587,9 +587,9 @@ fn local_tombstone_propagates_and_content_never_does() {
     let remote = vec![live("x", "x1", 10)];
     let policy = both_ops_policy();
     let plan = plan_exchange(&cfg(), &local, &remote, Some(&policy), &all_pass(), NOW);
-    assert_eq!(plan.push_content, [] as [String; 0]);
+    assert!(plan.push_content.is_empty());
     assert_eq!(plan.push_tombstones, vec!["x"]);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
+    assert!(plan.pull_content.is_empty());
     assert_eq!(
         plan.divergence,
         vec![Divergence {
@@ -606,8 +606,8 @@ fn remote_tombstone_retires_local_content() {
     let remote = vec![tomb("y", 10)];
     let policy = both_ops_policy();
     let plan = plan_exchange(&cfg(), &local, &remote, Some(&policy), &all_pass(), NOW);
-    assert_eq!(plan.push_content, [] as [String; 0]);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
+    assert!(plan.push_content.is_empty());
+    assert!(plan.pull_content.is_empty());
     assert_eq!(plan.retire_local, vec!["y"]);
     assert_eq!(
         plan.divergence,
@@ -632,7 +632,7 @@ fn both_tombstones_are_converged() {
         NOW,
     );
     assert!(plan.is_empty());
-    assert_eq!(plan.divergence, [] as [Divergence; 0]);
+    assert!(plan.divergence.is_empty());
     check_against_reference(
         &cfg(),
         &local,
@@ -687,7 +687,7 @@ fn capacity_bounds_what_the_receiving_side_adds() {
     ];
     let policy = both_ops_policy();
     let plan = plan_exchange(&cfg, &local, &remote, Some(&policy), &all_pass(), NOW);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
+    assert!(plan.pull_content.is_empty());
     assert!(
         plan.divergence
             .iter()
@@ -706,7 +706,7 @@ fn capacity_bounds_what_the_receiving_side_adds() {
         &all_pass(),
         NOW,
     );
-    assert_eq!(plan.push_content, [] as [String; 0]);
+    assert!(plan.push_content.is_empty());
     assert!(
         plan.divergence
             .iter()
@@ -745,11 +745,11 @@ fn unknown_peer_link_crosses_nothing() {
     let local = vec![live("a", "a1", 10), tomb("b", 10)];
     let remote = vec![live("c", "c1", 10)];
     let plan = plan_exchange(&cfg(), &local, &remote, None, &all_pass(), NOW);
-    assert_eq!(plan.push_content, [] as [String; 0]);
-    assert_eq!(plan.push_tombstones, [] as [String; 0]);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
-    assert_eq!(plan.pull_tombstones, [] as [String; 0]);
-    assert_eq!(plan.retire_local, [] as [String; 0]);
+    assert!(plan.push_content.is_empty());
+    assert!(plan.push_tombstones.is_empty());
+    assert!(plan.pull_content.is_empty());
+    assert!(plan.pull_tombstones.is_empty());
+    assert!(plan.retire_local.is_empty());
     assert!(plan.has_pending_transfer() == false);
     assert!(
         plan.divergence
@@ -768,7 +768,7 @@ fn send_only_peer_sends_but_never_accepts() {
     let remote = vec![live("c", "c1", 10)];
     let plan = plan_exchange(&cfg(), &local, &remote, Some(&policy), &all_pass(), NOW);
     assert_eq!(plan.push_content, vec!["a"]);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
+    assert!(plan.pull_content.is_empty());
     assert!(
         plan.divergence
             .iter()
@@ -788,7 +788,7 @@ fn gate_failure_blocks_accept_even_for_fully_trusted() {
         scope_authorized: false,
     };
     let plan = plan_exchange(&cfg(), &[], &remote, Some(&policy), &failing, NOW);
-    assert_eq!(plan.pull_content, [] as [String; 0]);
+    assert!(plan.pull_content.is_empty());
     assert!(
         plan.divergence
             .iter()
@@ -803,7 +803,7 @@ fn expired_peer_policy_crosses_nothing() {
     policy.expires_at = Some(NOW);
     let local = vec![live("a", "a1", 10)];
     let plan = plan_exchange(&cfg(), &local, &[], Some(&policy), &all_pass(), NOW);
-    assert_eq!(plan.push_content, [] as [String; 0]);
+    assert!(plan.push_content.is_empty());
     assert!(
         plan.divergence
             .iter()
@@ -912,8 +912,8 @@ fn golden_scenario_pins_the_contract() {
     assert_eq!(plan.push_content, vec!["A"]);
     assert_eq!(plan.push_tombstones, vec!["D"]);
     assert_eq!(plan.pull_content, vec!["E", "F", "G", "H"]);
-    assert_eq!(plan.pull_tombstones, [] as [String; 0]);
-    assert_eq!(plan.retire_local, [] as [String; 0]);
+    assert!(plan.pull_tombstones.is_empty());
+    assert!(plan.retire_local.is_empty());
 
     let expected_divergence = vec![
         Divergence {

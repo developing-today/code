@@ -1,4 +1,3 @@
-import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView, ServiceHealth } from "./health.ts";
 import type { SloJournalLine } from "./slo-journal.ts";
 
@@ -8,9 +7,7 @@ const MINUTE = 60_000;
  * design note. Age facets are bad past their threshold; up facets are bad
  * when a probed service answers not-ok. A facet with no probe or no age
  * source records bad: null so it is excluded, never called good. */
-// #14062: the same bound as the health page's feed staleness, so a minute
-// the page calls fresh is never a bad SLO minute and the other way round.
-const FEED_BAD_AGE_MS = FEED_STALE_MS;
+const FEED_BAD_AGE_MS = 10 * MINUTE;
 const QUOTA_BAD_AGE_MS = 75 * MINUTE;
 const ORCHESTRATION_BAD_AGE_MS = 90 * MINUTE;
 
@@ -40,7 +37,7 @@ export function sampleSloFacets(view: HealthView, atMs: number): SloJournalLine[
       facet: "feed-age",
       atMs,
       value: feedAgeMs,
-      bad: feedAgeMs === null ? null : feedAgeMs >= FEED_BAD_AGE_MS,
+      bad: feedAgeMs === null ? null : feedAgeMs > FEED_BAD_AGE_MS,
     },
     {
       facet: "quota-age",

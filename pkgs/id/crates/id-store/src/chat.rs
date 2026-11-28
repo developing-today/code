@@ -543,10 +543,7 @@ mod tests {
         assert_eq!(texts, vec!["after the join", "chained"]);
 
         // With no join event known, a from-join reader sees nothing.
-        assert_eq!(
-            visible_history(timeline, &History::FromJoin, None, &parents),
-            [] as [ChatRecord; 0]
-        );
+        assert!(visible_history(timeline, &History::FromJoin, None, &parents).is_empty());
     }
 
     #[test]
@@ -749,7 +746,6 @@ mod tests {
             rotation: None,
             chat: Some(message),
             anchor: None,
-            thread: None,
         }
     }
 

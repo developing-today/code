@@ -117,9 +117,6 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@v23
-      # The deploy application is pkgs/queue-transport-alert/worker/deploy.nix: it runs that
-      # directory's deploy.sh, which uploads through the cf versions flow with wrangler as
-      # cf's build bridge (pm-stack/platform/workers.json lists this Worker by that path).
       - name: Build pinned deploy application from verified source
         run: nix build .#queue-transport-alert-deploy
       - name: Upload code-only Worker version

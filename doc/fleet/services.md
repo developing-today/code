@@ -16,35 +16,6 @@ Note (2026-11-03, #1388): the `mcpx-src` input no longer exists; mcpx
 now arrives through the openchamber -> opencode chain. The 2026-10-19
 pins above are kept as the record of what this page was written against.
 
-## Stable deploy entrypoints (Linux, systemd user units)
-
-Note (2026-11-25, code#14187): on Linux the OpenChamber and mcpx
-systemd user units no longer exec a store path. Their executable
-fields name fixed paths under the state home —
-
-- `openchamber.service`: `%h/.local/state/openchamber/start`
-- `mcpx.service`: `%h/.local/state/mcpx/bin/mcpx daemon --config <the rendered config>`
-  (ExecReload names the same path, with `reload`)
-
-Each stable path is a symlink to the current generation's real
-program — OpenChamber's start wrapper, the mcpx package — created
-and validated by Home Manager activation
-(`nixos/home/stable-entrypoints.nix`, wired for the laptop user in
-`nixos/hosts/default.nix`): a switch repoints a link whose target
-changed, leaves an unchanged link untouched, and fails when a
-target is missing or not executable. A switch that changes only a
-service's build therefore does not change its unit file and does
-not bounce the service (mcpx's keyed handover still applies on
-top).
-
-The point of the fixed paths: an option-(c) deploy app can update a
-service without writing Home Manager's unit files. It atomically
-repoints the stable link, restarts the service and health-checks
-it; the generated unit files stay Home Manager-owned. The
-coordinated consumer is dezren39/darwin-nix#1393, whose Darwin side
-already names the same `~/.local/state/openchamber/start` link in
-its plist (below).
-
 ## What runs
 
 | Service                                | launchd label                                                                                         | Program                                                                                                                                                                                                                                                                                    | Listens                                                                           | Logs                                                                                                               |

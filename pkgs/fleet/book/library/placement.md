@@ -87,7 +87,7 @@ consumes each:
 | `public_targets_only`    | bool, optional    | Only `fleet-forks` (`true`). Eligibility does a live `GET /repos/{target}` and requires `"private": false`                                                                                                                                                                                                      |
 | `host_surface`           | string, optional  | Only `fleet-org-blacksmith` (`"fleet-org"`): records which github-actions surface hosts this Blacksmith variant. Documentation-level linkage; the Blacksmith adapter dispatches its own surface's repo/workflow directly                                                                                        |
 | `budget`                 | object, optional  | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}`                                                                                                                                                                                                      |
-| `max_live`               | integer, optional | Only `codespace-overflow` (`3`). **Advisory**: printed in the capacity summary only, never enforced                                                                                                                                                                                                             |
+| `max_live`               | integer, optional | Only `codespace-overflow` (`3`). Printed in the capacity summary only; **never enforced**                                                                                                                                                                                                                       |
 
 ### The seven shipped surfaces
 
@@ -118,7 +118,7 @@ From the shipped `owners` object:
 Only `concurrent_jobs_cap` is read as the cap: an owner missing from
 `owners`, or a missing field, yields cap **0** — zero free slots, so the
 surface is unusable in Tier 1. `plan` and `private_minutes_monthly` are
-never read by the placement code; they are advisory registry documentation.
+never read by the placement code; they are registry documentation.
 For a macOS job the effective cap is
 `min(concurrent_jobs_cap, concurrent_macos_cap)` — 5 for every shipped
 owner — and the adapter deliberately counts _all_ of the owner's active
@@ -151,8 +151,7 @@ spending cap, not a workflow input, not persisted.
 
 By contrast, the codespace budget numbers (`core_hours_monthly: 180`,
 `max_live: 3`) appear only in a capacity _summary string_. Neither is
-measured or enforced anywhere (both are advisory); dispatch does not count
-live codespaces.
+measured or enforced anywhere; dispatch does not count live codespaces.
 
 ## Reading and extending the registry
 
@@ -267,7 +266,7 @@ A session record (dispatched case):
 ```json
 {
   "handle": "fp_…",
-  "job": { "repo": "…", "command": "…", "ref": "…", "runner": "…", "platform": "…", "container": "…", "surface_pin": "…", "preferred_surface": "…", "previous_run_id": "…", "previous_run_repo": "…", "push_nix_cache": false, "actions_cache": "…", "actions_cache_restore_keys": [], "allow_paid_blacksmith": 0.0, "timeout_minutes": null },
+  "job": { "repo": "…", "command": "…", "ref": "…", "runner": "…", "platform": "…", "container": "…", "surface_pin": "…", "preferred_surface": "…", "previous_run_id": "…", "previous_run_repo": "…", "push_nix_cache": false, "actions_cache": "…", "actions_cache_restore_keys": [], "allow_paid_blacksmith": 0.0 },
   "surface": "fleet-org",
   "surface_kind": "github-actions",
   "runner_repo": "developing-today/fleet",
@@ -277,7 +276,7 @@ A session record (dispatched case):
   "run_url": "https://github.com/developing-today/fleet/actions/runs/45146933211",
   "state": "queued|dispatched|running|succeeded|failed|cancelled",
   "submitted_by": "<USER>@<hostname>",
-  "actor": "user token (dispatch_as: user)",
+  "actor": "developing-today[bot] (GitHub App dispatch)",
   "created_at": "YYYY-MM-DDTHH:MM:SSZ",
   "updated_at": "YYYY-MM-DDTHH:MM:SSZ",
   "note": "…",
@@ -298,14 +297,9 @@ Field notes an embedder must know:
 - Initial state: the adapter's `terminal_state` if set (codespace
   dispatches are created already-terminal), else `queued` if a run was
   correlated, else `dispatched`.
-- `actor` names the chosen surface's auth route:
-  `developing-today[bot] (GitHub App dispatch)`, `user token
-(dispatch_as: user)`, `user gh CLI credentials (codespace)`, `laptop
-handoff (no remote dispatch)`, or `none (no surface dispatched)`. A
-  coordinator grant rewrites it for the granted surface.
-- `job.timeout_minutes` is the `--timeout-minutes` value (5–120) or null;
-  it is sent as the workflow's `timeout_minutes` input only to
-  `fleet-command.yml` surfaces, and null leaves the workflow default (60).
+- `actor` is hardcoded to the App string even for `dispatch_as: "user"`
+  surfaces — a known inaccuracy in the record for the majority of
+  shipped surfaces. Do not build attribution on it.
 - `blacksmith_dispatches` entries are `{handle, month, minutes,
 run_id, note, reconciled}`: appended with `minutes: 0.0` at dispatch,
   then reconciled to the run's real duration (rounded to 2 dp) when the

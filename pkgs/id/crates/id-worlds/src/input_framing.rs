@@ -477,7 +477,7 @@ mod tests {
     fn incomplete_token_completes_before_the_deadline() {
         let now = Instant::now();
         let mut assembler = InputAssembler::default();
-        assert_eq!(assembler.push(&[0xc3], now).unwrap(), [] as [Vec<u8>; 0]);
+        assert!(assembler.push(&[0xc3], now).unwrap().is_empty());
         assert_eq!(assembler.pending_len(), 1);
         let output = assembler
             .push(&[0xa9], now + Duration::from_millis(4999))
@@ -489,7 +489,7 @@ mod tests {
     fn incomplete_token_at_the_deadline_is_fatal() {
         let now = Instant::now();
         let mut assembler = InputAssembler::default();
-        assert_eq!(assembler.push(b"\x1b[1;", now).unwrap(), [] as [Vec<u8>; 0]);
+        assert!(assembler.push(b"\x1b[1;", now).unwrap().is_empty());
         let error = assembler
             .push(b"", now + INCOMPLETE_TOKEN_DEADLINE)
             .unwrap_err();
@@ -507,7 +507,7 @@ mod tests {
     fn lone_escape_is_incomplete_until_the_deadline() {
         let now = Instant::now();
         let mut assembler = InputAssembler::default();
-        assert_eq!(assembler.push(b"\x1b", now).unwrap(), [] as [Vec<u8>; 0]);
+        assert!(assembler.push(b"\x1b", now).unwrap().is_empty());
         assert!(
             assembler
                 .check_deadline(now + Duration::from_secs(4))
@@ -631,8 +631,8 @@ mod tests {
         let now = Instant::now();
         let mut first = InputAssembler::default();
         let mut second = InputAssembler::default();
-        assert_eq!(first.push(&[0xc3], now).unwrap(), [] as [Vec<u8>; 0]);
-        assert_eq!(second.push(b"\x1b", now).unwrap(), [] as [Vec<u8>; 0]);
+        assert!(first.push(&[0xc3], now).unwrap().is_empty());
+        assert!(second.push(b"\x1b", now).unwrap().is_empty());
         assert_eq!(
             first.push(&[0xa9], now).unwrap(),
             vec!["é".as_bytes().to_vec()]
@@ -685,9 +685,11 @@ mod tests {
     #[test]
     fn queue_loss_is_a_fatal_signal() {
         let mut assembler = InputAssembler::default();
-        assert_eq!(
-            assembler.push(b"\x1b[1", Instant::now()).unwrap(),
-            [] as [Vec<u8>; 0]
+        assert!(
+            assembler
+                .push(b"\x1b[1", Instant::now())
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(assembler.queue_lost(), AssemblyError::QueueLoss);
         assert!(assembler.is_empty());

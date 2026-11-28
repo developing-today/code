@@ -204,42 +204,6 @@ pub(crate) fn done_identity_holder(
         .find(|row| holds_completed_identity(row, identity)))
 }
 
-/// The machine-readable report when an enqueue's dedupe key already
-/// names the returned row (#10627, fleet-monitor ask 2026-11-25): the
-/// filing was absorbed and nothing was created, and the reply must
-/// say so in a field of its own — a bare row reads as a successful
-/// filing, and a completed row returned this way left `queue/queued`
-/// issues holding no live task and no signal (the monitor sampled
-/// tasks 18037, 22316, 22051, 23610 returned for fresh filings).
-/// `terminal` separates the completed predecessor (the caller
-/// suffixes the key and re-files in the same pass) from a live hit
-/// (the caller attaches follow-ups to the holder).
-pub fn dedupe_match_detail(row: &Value, terminal: bool) -> Value {
-    let (rule, hint) = if terminal {
-        (
-            "dedupe_key_terminal",
-            "the dedupe key already belongs to a completed task; no new task was \
-             filed — suffix the dedupe key to file this work again, or file with \
-             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
-        )
-    } else {
-        (
-            "dedupe_key_live",
-            "the dedupe key already has a live task; no new task was filed — \
-             attach follow-ups to the existing task, or file with \
-             payload.dedupe_override=\"<reason>\" for a deliberate parallel",
-        )
-    };
-    json!({
-        "rule": rule,
-        "task_id": row.get("id").cloned().unwrap_or(Value::Null),
-        "status": row.get("status").cloned().unwrap_or(Value::Null),
-        "queue": row.get("queue").cloned().unwrap_or(Value::Null),
-        "dedupe_key": row.get("dedupe_key").cloned().unwrap_or(Value::Null),
-        "hint": hint,
-    })
-}
-
 /// The machine-readable collision a deduped enqueue reports.
 pub fn collision_detail(holder: &Value, identity: &WorkIdentity) -> Value {
     json!({
@@ -369,21 +333,6 @@ mod tests {
         assert_eq!(c["status"], "claimed");
         assert_eq!(c["identity"], "developing-today/code#5:fix");
         assert_eq!(c["rule"], "open_work_identity");
-    }
-
-    #[test]
-    fn dedupe_match_is_machine_readable() {
-        let done = json!({"id": 7, "status": "done", "queue": "q", "dedupe_key": "k"});
-        let m = dedupe_match_detail(&done, true);
-        assert_eq!(m["rule"], "dedupe_key_terminal");
-        assert_eq!(m["task_id"], 7);
-        assert_eq!(m["status"], "done");
-        assert_eq!(m["dedupe_key"], "k");
-        let live = json!({"id": 8, "status": "claimed", "queue": "q", "dedupe_key": "k"});
-        let m = dedupe_match_detail(&live, false);
-        assert_eq!(m["rule"], "dedupe_key_live");
-        assert_eq!(m["task_id"], 8);
-        assert_eq!(m["status"], "claimed");
     }
 
     #[test]

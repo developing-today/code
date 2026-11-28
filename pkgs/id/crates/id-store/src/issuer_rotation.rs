@@ -775,7 +775,6 @@ pub fn sign_rotation(
 
             chat: None,
             anchor: None,
-            thread: None,
         },
     )?)
 }
@@ -922,7 +921,7 @@ mod tests {
         assert_eq!(chain.active_generation(), 1);
         assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));
         assert_eq!(chain.key_for_generation(0), Some(&issuer_id(&gen0_key())));
-        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
+        assert!(chain.recoveries.is_empty());
     }
 
     #[test]
@@ -1234,7 +1233,7 @@ mod tests {
             &[(issuer_id(&gen0_key()), event(1), recovery)],
         );
         assert_eq!(chain.active_generation(), 0);
-        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
+        assert!(chain.recoveries.is_empty());
     }
 
     #[test]
@@ -1276,7 +1275,7 @@ mod tests {
             &[(issuer_id(&recovery_key()), event(1), recovery)],
         );
         assert_eq!(chain.active_generation(), 0);
-        assert_eq!(chain.recoveries, [] as [RecoveryStep; 0]);
+        assert!(chain.recoveries.is_empty());
         assert_eq!(chain.status, ChainStatus::Settled);
     }
 
@@ -1385,7 +1384,7 @@ mod tests {
         );
         assert_eq!(chain.active_generation(), 0);
         assert!(matches!(chain.status, ChainStatus::Conflicted { .. }));
-        assert_eq!(chain.voided_transitions, [] as [Hash; 0]);
+        assert!(chain.voided_transitions.is_empty());
     }
 
     #[test]
@@ -1486,81 +1485,6 @@ mod tests {
         match sign_rotation(&recovery, 0, None, &rotation, vec![]) {
             Ok(_) => {}
             Err(err) => panic!("recovery self-install refused at sign time: {err}"),
-        }
-    }
-
-    // #6487: whatever sign_rotation signs, the receiving side accepts.
-    // A run of routine rotations, each signed by the current generation
-    // key at that key's own next log position, decodes to the same
-    // body, validates against its verified author, and advances the
-    // folded chain by exactly one generation. sign_rotation's only
-    // routine refusal (a self-rotation) is one validate refuses too,
-    // so signer and receiver never disagree. Key seeds are drawn from
-    // a small set so self-rotations and reused keys occur often.
-    proptest::proptest! {
-        #[test]
-        fn every_signed_routine_rotation_is_accepted_by_the_fold(
-            seeds in proptest::collection::vec(0u8..4, 2..7),
-        ) {
-            let keys: Vec<SigningKey> = seeds
-                .iter()
-                .map(|seed| SigningKey::from_bytes(&[seed + 1; 32]))
-                .collect();
-            let issuer = issuer_id(&keys[0]);
-            let mut logs: std::collections::HashMap<IssuerId, (SeqNum, Hash)> =
-                std::collections::HashMap::new();
-            let mut folded: Vec<(IssuerId, Hash, IssuerRotation)> = Vec::new();
-            let mut current = 0usize;
-            for next in 1..keys.len() {
-                let author = &keys[current];
-                let generation = folded.len() as u64;
-                let previous = folded.last().map(|(_, id, _)| *id);
-                let mut body = IssuerRotation::unsigned(
-                    RotationMode::Routine,
-                    issuer,
-                    currency(),
-                    generation,
-                    previous,
-                    issuer_id(&keys[next]),
-                    None,
-                );
-                body.prove_successor(&keys[next]).expect("prove successor");
-                let (seq_num, backlink) = match logs.get(&issuer_id(author)) {
-                    Some((seq, last)) => (seq + 1, Some(*last)),
-                    None => (0, None),
-                };
-                match sign_rotation(author, seq_num, backlink, &body, vec![]) {
-                    Ok(signed) => {
-                        let decoded = chain::decode(&signed.bytes).expect("decode rotation");
-                        proptest::prop_assert_eq!(author_id(&decoded), issuer_id(author));
-                        let carried = decoded
-                            .header
-                            .extensions
-                            .rotation
-                            .clone()
-                            .expect("rotation in extension");
-                        proptest::prop_assert_eq!(&carried, &body);
-                        proptest::prop_assert_eq!(carried.validate(&author_id(&decoded), None), Ok(()));
-                        logs.insert(issuer_id(author), (seq_num, signed.id));
-                        folded.push((author_id(&decoded), signed.id, carried));
-                        let chain = fold_rotation_chain(&issuer, &currency(), None, &folded);
-                        proptest::prop_assert_eq!(chain.status.clone(), ChainStatus::Settled);
-                        proptest::prop_assert_eq!(chain.active_generation(), folded.len() as u64);
-                        proptest::prop_assert_eq!(chain.active_key(), &issuer_id(&keys[next]));
-                        current = next;
-                    }
-                    Err(SignError::Rotation(RotationError::RoutineSuccessorIsAuthor)) => {
-                        proptest::prop_assert_eq!(issuer_id(&keys[next]), issuer_id(author));
-                        proptest::prop_assert_eq!(
-                            body.validate(&issuer_id(author), None),
-                            Err(RotationError::RoutineSuccessorIsAuthor)
-                        );
-                    }
-                    Err(other) => {
-                        proptest::prop_assert!(false, "unexpected sign refusal: {other}");
-                    }
-                }
-            }
         }
     }
 }

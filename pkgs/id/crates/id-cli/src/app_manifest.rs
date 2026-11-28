@@ -31,8 +31,6 @@
 //! | `interfaces.web.mode` | Gated (parse): exactly `adapter` or `direct`. |
 //! | `interfaces.web.route` | Gated (parse): the web-path shape rule (`is_safe_web_path`); a manifest whose route equals its own socket is rejected (route and socket both bind the path). Gated (discovery): unique across the discovered set in the single route/socket namespace — a route colliding with a registered app's route or socket (and vice versa) is rejected; first folder in sort order wins, the loser is a named error. Host-table collisions are gated at the binding layer (disposition 6). |
 //! | `interfaces.web.socket` | Gated (parse): the web-path shape rule when present; a manifest whose socket equals its own route is rejected (route and socket both bind the path). Gated (discovery): unique across the discovered set in the single route/socket namespace — a socket colliding with a registered app's socket or route (and vice versa) is rejected, same first-wins rule. |
-//! | `interfaces.web.assets` | Gated (parse): the one entry rule plus folder confinement (`is_confined_relative_path`), as `resources.files`. Served (#14228) only as declared, resolved inside the canonical app folder, so a symlink out of the folder is refused at read time. |
-//! | `interfaces.web.pages` | Gated (parse): exactly `multi` or `single` when present; absent means `multi`. |
 //! | `capabilities.request` | Gated (parse): the one entry rule. Vocabulary deliberately ungated: capability names are an open vocabulary; the gate guarantees only the exact-match shape (non-blank, unpadded, distinct). |
 //! | `resources.files` | Gated (parse): the one entry rule plus folder confinement: non-empty, relative, every component a plain name, no empty/`.`/`..` segment (`is_confined_relative_path`); glob segments are ordinary names. Empty `files = []` is deliberately legal (required disposition 2): the section is optional and packages nothing, and no consumer in this crate reads the list as a defect. |
 //! | Unknown fields, any level | Gated (parse): `deny_unknown_fields` on every struct; missing required fields fail the TOML parse. |
@@ -180,13 +178,6 @@ pub struct WebInterface {
     /// `app` opts this app's own surface into taking over the browser menu.
     #[serde(default)]
     pub context_menu: Option<String>,
-    /// Client-side presentation assets the web surface serves from the app
-    /// folder (#10392 §4.6), the HTML pages first.
-    #[serde(default)]
-    pub assets: Vec<String>,
-    /// How the app's pages reach the client: `multi` (default) or `single`.
-    #[serde(default)]
-    pub pages: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,19 +318,6 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
                 .map_or(true, |mode| mode == "app"),
             "interfaces.web.context_menu must be app when present"
         );
-        ensure!(
-            web.pages
-                .as_deref()
-                .is_none_or(|pages| matches!(pages, "multi" | "single")),
-            "interfaces.web.pages must be multi or single when present"
-        );
-        ensure_distinct_entries(&web.assets, "interfaces.web.assets")?;
-        for entry in &web.assets {
-            ensure!(
-                is_confined_relative_path(entry),
-                "interfaces.web.assets entry {entry:?} must be a relative path inside the app folder"
-            );
-        }
         ensure!(
             is_safe_web_path(&web.route),
             "interfaces.web.route must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
@@ -498,54 +476,6 @@ impl WebBindingIndex {
     fn lookup_count(&self) -> usize {
         self.lookups.get()
     }
-}
-
-/// The run manifests (#10392 §4.5, #14226) of discovered apps, keyed by app id.
-///
-/// The web surface's run loader reads them. An app's `capabilities.request`
-/// becomes its required capabilities: the manifest declares no optional
-/// ones, so the loader never starts an app without every capability it
-/// asks for. `interfaces.web.assets` and `pages` become the presentation
-/// assets (#14228) served from the app folder.
-#[cfg(feature = "web")]
-#[must_use]
-pub fn run_apps(apps: &[DiscoveredApp]) -> id_web::RunApps {
-    std::sync::Arc::new(
-        apps.iter()
-            .map(|app| {
-                let manifest = &app.manifest;
-                let run = id_web::RunManifest {
-                    app: manifest.app.id.clone(),
-                    version: manifest.app.version.clone(),
-                    client_side: manifest
-                        .interfaces
-                        .web
-                        .as_ref()
-                        .map(|web| web.assets.clone())
-                        .unwrap_or_default(),
-                    capabilities: id_web::runs::ManifestCapabilities {
-                        required: manifest
-                            .capabilities
-                            .as_ref()
-                            .map(|caps| caps.request.clone())
-                            .unwrap_or_default(),
-                        optional: Vec::new(),
-                    },
-                    pages: match manifest
-                        .interfaces
-                        .web
-                        .as_ref()
-                        .and_then(|web| web.pages.as_deref())
-                    {
-                        Some("single") => id_web::presentation::Pages::Single,
-                        _ => id_web::presentation::Pages::Multi,
-                    },
-                    root: Some(app.path.clone()),
-                };
-                (manifest.app.id.clone(), run)
-            })
-            .collect(),
-    )
 }
 
 /// Scan immediate child folders for `app.toml`, isolating errors to each app.
@@ -839,54 +769,6 @@ route = "/tic-tac-toe"
     }
 
     #[test]
-    fn web_assets_and_pages_are_gated() {
-        let with = |extra: &str| {
-            MANIFEST.replace(
-                "route = \"/tic-tac-toe\"",
-                &format!("route = \"/tic-tac-toe\"\n{extra}"),
-            )
-        };
-        let manifest = parse_app_manifest(
-            &with("assets = [\"index.html\", \"assets/app.js\"]\npages = \"single\""),
-            "tic-tac-toe",
-        )
-        .unwrap();
-        let web = manifest.interfaces.web.unwrap();
-        assert_eq!(web.assets, ["index.html", "assets/app.js"]);
-        assert_eq!(web.pages.as_deref(), Some("single"));
-        for (extra, needle) in [
-            ("pages = \"spa\"", "interfaces.web.pages"),
-            ("assets = [\"../secret\"]", "interfaces.web.assets"),
-            ("assets = [\"/etc/passwd\"]", "interfaces.web.assets"),
-            ("assets = [\"a.js\", \"a.js\"]", "interfaces.web.assets"),
-            ("assets = [\"a/./b.js\"]", "interfaces.web.assets"),
-        ] {
-            let error = parse_app_manifest(&with(extra), "tic-tac-toe")
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains(needle), "{extra}: {error}");
-        }
-    }
-
-    #[cfg(feature = "web")]
-    #[test]
-    fn run_apps_carry_presentation_assets_and_folder() {
-        let source = MANIFEST.replace(
-            "route = \"/tic-tac-toe\"",
-            "route = \"/tic-tac-toe\"\nassets = [\"index.html\"]\npages = \"single\"",
-        );
-        let app = DiscoveredApp {
-            path: PathBuf::from("/apps/tic-tac-toe"),
-            manifest: parse_app_manifest(&source, "tic-tac-toe").unwrap(),
-        };
-        let apps = run_apps(&[app]);
-        let run = &apps["tic-tac-toe"];
-        assert_eq!(run.client_side, ["index.html"]);
-        assert_eq!(run.pages, id_web::presentation::Pages::Single);
-        assert_eq!(run.root.as_deref(), Some(Path::new("/apps/tic-tac-toe")));
-    }
-
-    #[test]
     fn missing_input_interface_keeps_existing_keyboard_only_manifest_valid() {
         let manifest = parse_app_manifest(MANIFEST, "tic-tac-toe").unwrap();
         assert!(manifest.interfaces.input.is_none());
@@ -1111,8 +993,6 @@ route = "/tic-tac-toe"
                 route: format!("/apps/{owner_index}"),
                 socket: Some(format!("/ws/{owner_index}")),
                 context_menu: None,
-                assets: Vec::new(),
-                pages: None,
             };
             index.register(&web, owner_index);
         }
@@ -1122,8 +1002,6 @@ route = "/tic-tac-toe"
             route: "/apps/candidate".to_owned(),
             socket: Some("/ws/candidate".to_owned()),
             context_menu: None,
-            assets: Vec::new(),
-            pages: None,
         };
         assert_eq!(index.first_conflict(&candidate), None);
         // Oracle: each checked map access increments the test-only counter.
@@ -1253,7 +1131,7 @@ route = "/tic-tac-toe"
         let discovery = discover_apps(root.path());
 
         assert_eq!(discovery.apps.len(), 2);
-        assert_eq!(discovery.errors, [] as [String; 0]);
+        assert!(discovery.errors.is_empty());
     }
 
     #[test]
@@ -1451,7 +1329,7 @@ commands = ["play"]
 
         let discovery = discover_apps(&missing_root);
 
-        assert_eq!(discovery.apps, [] as [DiscoveredApp; 0]);
+        assert!(discovery.apps.is_empty());
         assert_eq!(discovery.errors.len(), 1);
         assert!(discovery.errors[0].contains(&missing_root.display().to_string()));
     }

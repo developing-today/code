@@ -69,20 +69,14 @@ pub struct Compiler {
 /// tests cover.
 pub const ADMIN_CACHE_AUTHOR: &str = "server-admin";
 
-/// True when `dir` holds a built world platform: `platform.roc` and the
-/// compiled `targets/wasm32/host.wasm`.
-#[must_use]
-pub fn is_platform_dir(dir: &std::path::Path) -> bool {
-    dir.join("platform.roc").is_file() && dir.join("targets/wasm32/host.wasm").is_file()
-}
-
 impl Compiler {
     /// # Errors
     ///
     /// Fails when the platform directory does not look like one.
     pub fn new(platform_dir: PathBuf, roc_bin: String) -> Result<Self> {
         ensure!(
-            is_platform_dir(&platform_dir),
+            platform_dir.join("platform.roc").is_file()
+                && platform_dir.join("targets/wasm32/host.wasm").is_file(),
             "{} is not a world platform directory (need platform.roc and targets/wasm32/host.wasm)",
             platform_dir.display()
         );
@@ -264,7 +258,7 @@ fn stable_arguments(target: &str) -> Vec<String> {
     arguments
 }
 
-/// Per-function compile scope (design #5964 §1.1 to §1.3, §2.2 steps 1–5).
+/// Per-function compile scope (design #5964 §1.1, §2.2 steps 1–4; S1).
 ///
 /// A user function is a per-function core-Wasm module compiled against a
 /// function platform the world declares — the narrowing of the
@@ -273,16 +267,10 @@ fn stable_arguments(target: &str) -> Vec<String> {
 /// import outside the granted set is a compile/install rejection here,
 /// never a runtime surprise (§1.1).
 ///
-/// Identity is the binding name (§1.2) with the module hash, the compile
-/// provenance triple, and the interface hash over the canonical interface
-/// descriptor ([`FunctionInterface`]). The §1.3 activation verdict is the
-/// pure [`check_activation`]: a candidate whose interface differs from the
-/// binding's expectation is refused and the published version keeps
-/// running. The persistent compile cache (§2.2 step 6) is
-/// [`compile_function_cached`], keyed by the provenance triple, target and
-/// interface hash. Version assignment and publish/swap bookkeeping are
-/// placement concerns and live in [`crate::world_functions`]; per-function
-/// instances arrive with the later slices.
+/// Identity at this slice is name plus content address: the binding name
+/// (§1.2) with the module hash and the compile provenance triple. Version
+/// assignment, the interface hash, and publish/swap bookkeeping are
+/// placement concerns and arrive with the later slices.
 
 /// The world-declared function platform a user function compiles against
 /// (design #5964 §2.2 step 2): a platform tree in the same shape the world
@@ -330,156 +318,6 @@ pub struct FunctionSpec {
     pub seed: u64,
     /// Platform capabilities the world author granted this function.
     pub granted: Vec<String>,
-    /// The call signature and state schema the function declares.
-    pub shape: FunctionShape,
-}
-
-impl FunctionSpec {
-    /// The canonical interface descriptor this request declares (design
-    /// #5964 §1.2): its binding name, shape, and granted capability set.
-    #[must_use]
-    pub fn interface(&self) -> FunctionInterface {
-        FunctionInterface::new(
-            self.function.clone(),
-            self.shape.clone(),
-            self.granted.clone(),
-        )
-    }
-}
-
-/// The call signature and state schema a function declares (design #5964
-/// §1.2): the shapes of its call input and output in the platform's
-/// canonical encoding, and the identifier of its state-blob schema. Each is
-/// an identifier the world's function platform defines; this layer compares
-/// them byte for byte and never interprets them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionShape {
-    /// Shape identifier of the call input.
-    pub input: String,
-    /// Shape identifier of the call output.
-    pub output: String,
-    /// Identifier of the state-blob schema the host snapshots and restores.
-    pub state_schema: String,
-}
-
-/// Longest shape or state-schema identifier, in bytes.
-pub const MAX_FUNCTION_SHAPE_BYTES: usize = 256;
-
-/// A shape identifier is 1 to [`MAX_FUNCTION_SHAPE_BYTES`] bytes with no
-/// control characters, so it reads back the way it was declared.
-fn validate_function_shape(function: &str, shape: &FunctionShape) -> Result<()> {
-    for (part, value) in [
-        ("input shape", shape.input.as_str()),
-        ("output shape", shape.output.as_str()),
-        ("state schema", shape.state_schema.as_str()),
-    ] {
-        ensure!(
-            !value.is_empty()
-                && value.len() <= MAX_FUNCTION_SHAPE_BYTES
-                && !value.chars().any(char::is_control),
-            "function {function:?}: {part} {value:?} is not a valid identifier (1 to {MAX_FUNCTION_SHAPE_BYTES} bytes, no control characters)"
-        );
-    }
-    Ok(())
-}
-
-/// Domain tag that opens a canonical interface descriptor. A change to the
-/// encoding is a new tag, never a silent re-meaning of recorded hashes.
-pub const FUNCTION_INTERFACE_DOMAIN: &[u8] = b"id-function-interface-v1\0";
-
-/// The canonical interface descriptor of a user function (design #5964
-/// §1.2): its binding name, its signature (call input and output shapes),
-/// its state-blob schema identifier, and the capability set the world
-/// author granted it. The grant is part of the descriptor (§5 point 3), so
-/// widening or narrowing it is a visible interface change, never a silent
-/// privilege drift.
-///
-/// # Canonical form
-///
-/// [`FunctionInterface::canonical_bytes`] is the one byte form, and the
-/// interface hash is BLAKE3 over it, as lowercase hex like the crate's
-/// other digests:
-///
-/// 1. the domain tag [`FUNCTION_INTERFACE_DOMAIN`]
-///    (`id-function-interface-v1` and a NUL byte);
-/// 2. the binding name, the input shape, the output shape and the
-///    state-schema identifier, in that order, each as its byte length
-///    (`u64`, little-endian) followed by its UTF-8 bytes;
-/// 3. the number of granted capabilities (`u64`, little-endian), then each
-///    capability in ascending byte order, each as its byte length (`u64`,
-///    little-endian) followed by its UTF-8 bytes.
-///
-/// The granted set is sorted and deduplicated when the descriptor is built,
-/// so the order in which grants were listed, and any repeats, never reach
-/// the bytes. Every field is length-prefixed, so two different descriptors
-/// never share a byte form. The grant is the effective list (with `*`
-/// expanded), the same list the import check uses.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionInterface {
-    function: String,
-    shape: FunctionShape,
-    granted: Vec<String>,
-}
-
-impl FunctionInterface {
-    /// Build the descriptor, sorting and deduplicating the granted set.
-    #[must_use]
-    pub fn new(function: String, shape: FunctionShape, mut granted: Vec<String>) -> Self {
-        granted.sort_unstable();
-        granted.dedup();
-        Self {
-            function,
-            shape,
-            granted,
-        }
-    }
-
-    /// The binding name.
-    #[must_use]
-    pub fn function(&self) -> &str {
-        &self.function
-    }
-
-    /// The call signature and state schema.
-    #[must_use]
-    pub const fn shape(&self) -> &FunctionShape {
-        &self.shape
-    }
-
-    /// The granted capability set, sorted and deduplicated.
-    #[must_use]
-    pub fn granted(&self) -> &[String] {
-        &self.granted
-    }
-
-    /// The canonical byte form described on [`FunctionInterface`].
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        fn push_field(bytes: &mut Vec<u8>, field: &str) {
-            bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(field.as_bytes());
-        }
-        let mut bytes = FUNCTION_INTERFACE_DOMAIN.to_vec();
-        for field in [
-            self.function.as_str(),
-            self.shape.input.as_str(),
-            self.shape.output.as_str(),
-            self.shape.state_schema.as_str(),
-        ] {
-            push_field(&mut bytes, field);
-        }
-        bytes.extend_from_slice(&(self.granted.len() as u64).to_le_bytes());
-        for capability in &self.granted {
-            push_field(&mut bytes, capability);
-        }
-        bytes
-    }
-
-    /// The interface hash (§1.2): BLAKE3 over [`Self::canonical_bytes`].
-    #[must_use]
-    pub fn interface_hash(&self) -> String {
-        blake3::hash(&self.canonical_bytes()).to_hex().to_string()
-    }
 }
 
 /// A function name is a binding name: one safe component, never a path.
@@ -499,7 +337,7 @@ fn validate_function_name(function: &str) -> Result<()> {
 /// What a successful per-function compile produces: the validated Wasm
 /// module with the §2.2 step-4 identity — module hash plus the compile
 /// provenance triple (source, platform, compiler digests) — keyed under
-/// the binding name, and the step-5 interface hash over its descriptor.
+/// the binding name.
 #[derive(Clone, Debug)]
 pub struct FunctionArtifact {
     /// Binding name from the request.
@@ -512,136 +350,16 @@ pub struct FunctionArtifact {
     pub provenance: crate::world::ModuleProvenance,
     /// BLAKE3 of the module bytes: the artifact's content address.
     pub module_hash: String,
-    /// The canonical interface descriptor the function was compiled under.
-    pub interface: FunctionInterface,
-    /// [`FunctionInterface::interface_hash`] of `interface`.
-    pub interface_hash: String,
-}
-
-/// What a binding expects of the function version it activates (design
-/// #5964 §1.3): the binding name and the interface hash of record. A world
-/// that wants a new interface publishes a new expectation first (a
-/// versioned mapping change, #5967); only then can a candidate carrying the
-/// new hash activate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionBinding {
-    /// Binding name in the per-user function mapping (#5967).
-    pub function: String,
-    /// The interface hash a candidate must carry to activate.
-    pub interface_hash: String,
-}
-
-impl FunctionBinding {
-    /// The expectation that admits exactly `interface`.
-    #[must_use]
-    pub fn expecting(interface: &FunctionInterface) -> Self {
-        Self {
-            function: interface.function.clone(),
-            interface_hash: interface.interface_hash(),
-        }
-    }
-}
-
-/// Why a candidate function version was refused activation (design #5964
-/// §1.3). Every refusal means the same to the caller: the candidate is
-/// discarded and the previously published version keeps running, with
-/// nothing about the live world changed. Each variant carries what the
-/// publisher needs to see exactly what diverged.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ActivationRefusal {
-    /// The candidate was compiled for another binding name.
-    #[error(
-        "candidate function {candidate:?} cannot activate on binding {expected:?}; the published version keeps running"
-    )]
-    WrongFunction {
-        /// The binding's name.
-        expected: String,
-        /// The candidate's name.
-        candidate: String,
-    },
-    /// The candidate's recorded interface hash is not the hash of its own
-    /// descriptor, so its interface cannot be trusted.
-    #[error(
-        "function {function:?}: candidate records interface hash {recorded} but its descriptor hashes to {computed}; activation refused, the published version keeps running"
-    )]
-    InconsistentInterface {
-        /// The binding name.
-        function: String,
-        /// The hash the artifact records.
-        recorded: String,
-        /// The hash of the artifact's descriptor.
-        computed: String,
-    },
-    /// The candidate's interface differs from the binding's expectation.
-    #[error(
-        "function {function:?}: candidate interface {candidate} does not match the expected interface {expected}; activation refused, the published version keeps running"
-    )]
-    InterfaceMismatch {
-        /// The binding name.
-        function: String,
-        /// The interface hash the binding expects.
-        expected: String,
-        /// The candidate's interface hash.
-        candidate: String,
-    },
-}
-
-/// The §1.3 activation verdict for a candidate function version: `Ok` when
-/// it may activate on `binding`, otherwise the reason it may not. A pure
-/// decision with no coercion, adapter, or partial activation; the caller
-/// that holds publish/swap state discards a refused candidate and keeps the
-/// published version running.
-///
-/// The candidate's interface hash is recomputed from its descriptor, so an
-/// artifact whose recorded hash and descriptor disagree is refused rather
-/// than trusted.
-///
-/// # Errors
-///
-/// [`ActivationRefusal`]: another binding name, a recorded hash that does
-/// not match the descriptor, or an interface hash other than the binding
-/// expects.
-pub fn check_activation(
-    binding: &FunctionBinding,
-    candidate: &FunctionArtifact,
-) -> Result<(), ActivationRefusal> {
-    if candidate.function != binding.function {
-        return Err(ActivationRefusal::WrongFunction {
-            expected: binding.function.clone(),
-            candidate: candidate.function.clone(),
-        });
-    }
-    let computed = candidate.interface.interface_hash();
-    if candidate.interface_hash != computed {
-        return Err(ActivationRefusal::InconsistentInterface {
-            function: binding.function.clone(),
-            recorded: candidate.interface_hash.clone(),
-            computed,
-        });
-    }
-    if computed != binding.interface_hash {
-        return Err(ActivationRefusal::InterfaceMismatch {
-            function: binding.function.clone(),
-            expected: binding.interface_hash.clone(),
-            candidate: computed,
-        });
-    }
-    Ok(())
 }
 
 /// Compile one function against the world's declared function platform and
 /// return its module with identity. Runs the §2.2 pipeline at function
 /// scope: intake limits, compile, import check against the function's
-/// granted set, identity, and the interface hash over the descriptor the
-/// spec declares (step 5; the check against the binding is
-/// [`check_activation`], run where the binding is known). The shape
-/// identifiers and the import check run before the compiler ever spawns, so
-/// an ungranted capability is an install-time rejection with the running
-/// version untouched. This path always runs the compiler and touches no
-/// cache; [`compile_function_cached`] is the same pipeline behind the
-/// persistent compile cache (§2.2 step 6), and it compiles through this
-/// function on a miss. Function cache keys are domain-separated from world
-/// keys, so a function compile can neither warm nor poison world builds.
+/// granted set, identity. The import check runs before the compiler ever
+/// spawns, so an ungranted capability is an install-time rejection with
+/// the running version untouched. S1 carries no shared cache (that is the
+/// S2 slice): the pipeline runs directly, so a function compile can
+/// neither warm nor poison world builds.
 ///
 /// `granted` must be the effective list for this function (granted and
 /// within the server and world ceilings, with `*` expanded), not the raw
@@ -649,10 +367,9 @@ pub fn check_activation(
 ///
 /// # Errors
 ///
-/// A bad binding name, a shape identifier outside its bounds, anything
-/// outside the intake bounds, an import the function was not granted, a
-/// compiler failure (with its diagnostics), or output the sandbox refuses.
-/// Every error names the function.
+/// A bad binding name, anything outside the intake bounds, an import the
+/// function was not granted, a compiler failure (with its diagnostics),
+/// or output the sandbox refuses. Every error names the function.
 pub async fn compile_function(
     spec: &FunctionSpec,
     platform: &FunctionPlatform,
@@ -660,7 +377,6 @@ pub async fn compile_function(
     timeout: Duration,
 ) -> Result<FunctionArtifact> {
     validate_function_name(&spec.function)?;
-    validate_function_shape(&spec.function, &spec.shape)?;
     let inner = CompileSpec {
         files: spec.files.clone(),
         seed: spec.seed,
@@ -677,204 +393,13 @@ pub async fn compile_function(
             .await
             .with_context(|| format!("compile function {:?}", spec.function))?;
     let module_hash = crate::world_cache::artifact_hash(&module);
-    let interface = spec.interface();
-    let interface_hash = interface.interface_hash();
     Ok(FunctionArtifact {
         function: spec.function.clone(),
         module,
         diagnostics,
         provenance,
         module_hash,
-        interface,
-        interface_hash,
     })
-}
-
-/// The persistent-cache key of a per-function compile (design #5964 §2.2
-/// step 6): the provenance inputs a fresh compile records — the function
-/// platform's tree hash, the source closure hash, the (empty) DLL closure
-/// hash and the compiler digest — the `wasm32` target every function
-/// compiles for (§2.1), and the interface hash of the descriptor `spec`
-/// declares. The interface hash makes it a function key, domain-separated
-/// from every world key (see [`crate::world_cache::cache_key`]).
-///
-/// # Errors
-///
-/// The compiler cannot be resolved or read, or the platform tree or the
-/// sources cannot be digested.
-fn function_cache_key_input(
-    spec: &FunctionSpec,
-    platform: &FunctionPlatform,
-    roc_bin: &str,
-) -> Result<crate::world_cache::CacheKeyInput> {
-    let roc_bin = std::fs::canonicalize(resolve_program(roc_bin))
-        .context("resolve Roc compiler executable")?;
-    Ok(crate::world_cache::CacheKeyInput {
-        platform_tree_hash: digest_platform_tree(&platform.dir)?,
-        source_closure_hash: digest_sources(&spec.files)?,
-        dll_closure_hash: crate::world_cache::dll_closure_hash(&[]),
-        compiler_blake3: digest_file(&roc_bin)?,
-        target: "wasm32".to_owned(),
-        interface_hash: Some(spec.interface().interface_hash()),
-    })
-}
-
-/// Compile one function through the persistent, content-addressed compile
-/// cache (design #5964 §2.2 step 6): the cache entry is keyed by the
-/// provenance triple, the target and the interface descriptor: the
-/// function platform's tree hash, the source closure hash, the (empty) DLL
-/// closure hash, the compiler digest, `wasm32`, and the interface hash of
-/// the descriptor `spec` declares. A verified hit returns the artifact
-/// without spawning the compiler, with the same provenance a fresh compile
-/// records and the interface and interface hash recomputed from `spec`. A
-/// miss compiles through [`compile_function`] and stores the module at
-/// `scope` under `author`. A stored entry whose digest check fails is never
-/// served: [`crate::world_cache::WorldCache::lookup`] re-verifies the bytes
-/// against the entry's content hash, evicts a mismatch and reports a miss,
-/// so the function is recompiled. The seed is not part of the key, so a
-/// hit serves every seed.
-///
-/// Intake runs before the cache is consulted, exactly as before a compile:
-/// the binding name, the shape identifiers, the request bounds and the
-/// import check against the granted set. A cached module therefore never
-/// bypasses intake, and a hit's bytes pass the same output policy as a
-/// fresh module before they are returned. Metering is logged only, on the
-/// `world_compile_cache` tracing target (compiler cost 0 on a hit).
-///
-/// # Errors
-///
-/// The same failures as [`compile_function`], plus a compiler that cannot
-/// be resolved or read to key the lookup, or a cached artifact the output
-/// policy refuses. A cache that cannot store its entry never fails a
-/// compile that succeeded. Every error names the function.
-pub async fn compile_function_cached(
-    spec: &FunctionSpec,
-    platform: &FunctionPlatform,
-    roc_bin: &str,
-    timeout: Duration,
-    cache: &crate::world_cache::WorldCache,
-    author: &str,
-    scope: crate::world_cache::CacheScope,
-) -> Result<FunctionArtifact> {
-    validate_function_name(&spec.function)?;
-    validate_function_shape(&spec.function, &spec.shape)?;
-    let named = || format!("compile function {:?}", spec.function);
-    let inner = CompileSpec {
-        files: spec.files.clone(),
-        seed: spec.seed,
-        native: false,
-    };
-    validate_spec(&inner).with_context(named)?;
-    // The grant is part of the interface hash, hence of the key: a module
-    // cached under another grant (wider or narrower) sits under another key
-    // and is never looked up here. The import check still runs first, so
-    // these sources are admitted under this grant before any cached bytes
-    // can be returned.
-    check_imports(&inner, &platform.modules, &spec.granted).with_context(named)?;
-    let input = function_cache_key_input(spec, platform, roc_bin).with_context(named)?;
-    if let crate::world_cache::Lookup::Hit { artifact, entry } = cache.lookup(&input, author)? {
-        tracing::info!(
-            target: "world_compile_cache",
-            outcome = "hit",
-            key = %entry.key,
-            function = %spec.function,
-            author,
-            compiler_cost_ms = 0_u64,
-            "function compile cache hit; compiler not invoked"
-        );
-        validate_artifact(&artifact, false).with_context(named)?;
-        let target = input.target;
-        let provenance =
-            crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
-                schema_version: 1,
-                compiler_blake3: input.compiler_blake3,
-                compiler_version: entry.compiler_version,
-                platform_blake3: input.platform_tree_hash,
-                source_blake3: input.source_closure_hash,
-                arguments: stable_arguments(&target),
-                target,
-            });
-        let interface = spec.interface();
-        let interface_hash = interface.interface_hash();
-        return Ok(FunctionArtifact {
-            function: spec.function.clone(),
-            module_hash: crate::world_cache::artifact_hash(&artifact),
-            module: artifact,
-            diagnostics: format!("served from the shared compile cache (key {})", entry.key),
-            provenance,
-            interface,
-            interface_hash,
-        });
-    }
-    let started = std::time::Instant::now();
-    let artifact = compile_function(spec, platform, roc_bin, timeout).await?;
-    let compiler_cost_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    store_function_artifact(cache, &input, author, scope, &artifact, compiler_cost_ms);
-    Ok(artifact)
-}
-
-/// Store a freshly compiled function module after a cache miss, under the
-/// key it was looked up by. Mirrors the whole-world path: the entry is
-/// stored only when the provenance of record agrees with the key
-/// components (otherwise it could never be looked up), and a failed store
-/// is logged, never a compile failure.
-fn store_function_artifact(
-    cache: &crate::world_cache::WorldCache,
-    input: &crate::world_cache::CacheKeyInput,
-    author: &str,
-    scope: crate::world_cache::CacheScope,
-    artifact: &FunctionArtifact,
-    compiler_cost_ms: u64,
-) {
-    let crate::world::ModuleProvenance::SourceBuild(build) = &artifact.provenance else {
-        return;
-    };
-    let function = artifact.function.as_str();
-    if build.platform_blake3 != input.platform_tree_hash
-        || build.compiler_blake3 != input.compiler_blake3
-        || build.source_blake3 != input.source_closure_hash
-        || build.target != input.target
-        || input.interface_hash.as_deref() != Some(artifact.interface_hash.as_str())
-    {
-        tracing::warn!(
-            target: "world_compile_cache",
-            outcome = "miss",
-            function,
-            author,
-            compiler_cost_ms,
-            "function compile cache store skipped: key components diverged from provenance"
-        );
-        return;
-    }
-    match cache.store(
-        input,
-        author,
-        scope,
-        &artifact.module,
-        &build.compiler_version,
-    ) {
-        Ok(outcome) => {
-            tracing::info!(
-                target: "world_compile_cache",
-                outcome = "miss",
-                store = ?outcome,
-                function,
-                author,
-                compiler_cost_ms,
-                "function compile cache miss; artifact stored"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                target: "world_compile_cache",
-                outcome = "miss",
-                function,
-                author,
-                compiler_cost_ms,
-                "function compile cache store failed: {error:#}"
-            );
-        }
-    }
 }
 
 /// Compile `spec` and return the validated Wasm module plus compiler
@@ -930,7 +455,6 @@ pub async fn compile_with_cache(
         dll_closure_hash: crate::world_cache::dll_closure_hash(&[]),
         compiler_blake3: digest_file(&roc_bin)?,
         target: target.to_owned(),
-        interface_hash: None,
     };
     if let Lookup::Hit { artifact, entry } = cache.lookup(&input, author)? {
         tracing::info!(
@@ -1691,8 +1215,8 @@ mod tests {
         // unset and empty HOME both yield no probe candidate (never a
         // root-anchored "" or a hardcoded user), and a set HOME yields
         // exactly itself, so the pinned-roc path is unchanged.
-        assert_eq!(roc_home_candidates(None), [] as [String; 0]);
-        assert_eq!(roc_home_candidates(Some(String::new())), [] as [String; 0]);
+        assert!(roc_home_candidates(None).is_empty());
+        assert!(roc_home_candidates(Some(String::new())).is_empty());
         assert_eq!(
             roc_home_candidates(Some("/home/someone".to_owned())),
             vec!["/home/someone".to_owned()]
@@ -1988,10 +1512,7 @@ mod tests {
             b"error: nope\n"
         );
         let mut empty = std::io::Cursor::new(Vec::new());
-        assert_eq!(
-            read_capture_tail(&mut empty, MAX_CAPTURE_BYTES),
-            [] as [u8; 0]
-        );
+        assert!(read_capture_tail(&mut empty, MAX_CAPTURE_BYTES).is_empty());
     }
 
     /// A reader whose first read fails with `Interrupted`, then yields
@@ -2896,220 +2417,6 @@ restore = |text| match U64.from_str(text) {
                 .collect(),
             seed: 1,
             granted: granted.into_iter().map(str::to_owned).collect(),
-            shape: text_shape(),
-        }
-    }
-
-    fn text_shape() -> FunctionShape {
-        FunctionShape {
-            input: "Str".to_owned(),
-            output: "Str".to_owned(),
-            state_schema: "echo-state-v1".to_owned(),
-        }
-    }
-
-    fn interface(function: &str, shape: FunctionShape, granted: &[&str]) -> FunctionInterface {
-        FunctionInterface::new(
-            function.to_owned(),
-            shape,
-            granted.iter().map(|grant| (*grant).to_owned()).collect(),
-        )
-    }
-
-    /// A candidate artifact under `interface`, built without the compiler:
-    /// the activation check reads only the name and the interface.
-    fn candidate(interface: FunctionInterface) -> FunctionArtifact {
-        FunctionArtifact {
-            function: interface.function().to_owned(),
-            module: b"\0asm".to_vec(),
-            diagnostics: String::new(),
-            provenance: crate::world::ModuleProvenance::Artifact,
-            module_hash: crate::world_cache::artifact_hash(b"\0asm"),
-            interface_hash: interface.interface_hash(),
-            interface,
-        }
-    }
-
-    #[test]
-    fn function_interface_canonical_form_ignores_grant_order_and_repeats() {
-        // Oracle: design #5964 §1.2 — the interface hash is over one
-        // canonical descriptor, so the order grants were listed in and any
-        // repeats never reach the bytes; the layout is the documented one.
-        let forward = interface("echo", text_shape(), &["Cap", "Clock"]);
-        let shuffled = interface("echo", text_shape(), &["Clock", "Cap", "Clock", "Cap"]);
-        assert_eq!(forward, shuffled);
-        assert_eq!(shuffled.granted(), &["Cap".to_owned(), "Clock".to_owned()]);
-        assert_eq!(forward.canonical_bytes(), shuffled.canonical_bytes());
-        assert_eq!(forward.interface_hash(), shuffled.interface_hash());
-
-        let mut expected = b"id-function-interface-v1\0".to_vec();
-        for field in ["echo", "Str", "Str", "echo-state-v1"] {
-            expected.extend_from_slice(&(field.len() as u64).to_le_bytes());
-            expected.extend_from_slice(field.as_bytes());
-        }
-        expected.extend_from_slice(&2_u64.to_le_bytes());
-        for grant in ["Cap", "Clock"] {
-            expected.extend_from_slice(&(grant.len() as u64).to_le_bytes());
-            expected.extend_from_slice(grant.as_bytes());
-        }
-        assert_eq!(forward.canonical_bytes(), expected);
-        assert_eq!(
-            forward.interface_hash(),
-            blake3::hash(&expected).to_hex().to_string()
-        );
-        assert_eq!(forward.interface_hash().len(), 64);
-
-        // The spec's own descriptor is the same canonical value.
-        let spec = function_spec(
-            "echo",
-            vec![("main.roc", "app")],
-            vec!["Clock", "Cap", "Cap"],
-        );
-        assert_eq!(spec.interface(), forward);
-    }
-
-    #[test]
-    fn function_interface_hash_changes_with_name_shape_or_any_grant() {
-        // Oracle: design #5964 §1.2 and §5 point 3 — the name, both call
-        // shapes, the state schema and every granted capability are part
-        // of the interface hash, so changing any one of them is a visible
-        // interface change. Length prefixes keep a shifted boundary
-        // between fields from colliding.
-        let base = interface("echo", text_shape(), &["Cap"]);
-        let shape = |input: &str, output: &str, state_schema: &str| FunctionShape {
-            input: input.to_owned(),
-            output: output.to_owned(),
-            state_schema: state_schema.to_owned(),
-        };
-        let variants = [
-            interface("echo2", text_shape(), &["Cap"]),
-            interface("echo", shape("Bytes", "Str", "echo-state-v1"), &["Cap"]),
-            interface("echo", shape("Str", "Bytes", "echo-state-v1"), &["Cap"]),
-            interface("echo", shape("Str", "Str", "echo-state-v2"), &["Cap"]),
-            interface("echo", shape("StrS", "tr", "echo-state-v1"), &["Cap"]),
-            interface("echo", text_shape(), &[]),
-            interface("echo", text_shape(), &["Cap", "Clock"]),
-            interface("echo", text_shape(), &["Clock"]),
-            interface("echo", text_shape(), &["CapClock"]),
-        ];
-        let mut hashes = std::collections::HashSet::new();
-        assert!(hashes.insert(base.interface_hash()));
-        for variant in &variants {
-            assert!(
-                hashes.insert(variant.interface_hash()),
-                "{variant:?} must hash apart from every other descriptor"
-            );
-        }
-    }
-
-    #[test]
-    fn activation_accepts_the_expected_interface_and_refuses_a_mismatch() {
-        // Oracle: design #5964 §1.3 — a candidate whose interface hash is
-        // the binding's expectation may activate; any other is refused
-        // with both hashes, and the refusal says the published version
-        // keeps running. A widened grant is a mismatch (§5 point 3).
-        let published = interface("echo", text_shape(), &["Cap"]);
-        let binding = FunctionBinding::expecting(&published);
-        assert_eq!(binding.function, "echo");
-        assert_eq!(binding.interface_hash, published.interface_hash());
-
-        let same = candidate(interface("echo", text_shape(), &["Cap", "Cap"]));
-        assert_eq!(check_activation(&binding, &same), Ok(()));
-
-        let widened = interface("echo", text_shape(), &["Cap", "Clock"]);
-        let refusal = check_activation(&binding, &candidate(widened.clone())).unwrap_err();
-        assert_eq!(
-            refusal,
-            ActivationRefusal::InterfaceMismatch {
-                function: "echo".to_owned(),
-                expected: published.interface_hash(),
-                candidate: widened.interface_hash(),
-            }
-        );
-        let text = refusal.to_string();
-        assert!(text.contains(&published.interface_hash()), "{text}");
-        assert!(text.contains(&widened.interface_hash()), "{text}");
-        assert!(text.contains("published version keeps running"), "{text}");
-
-        let reshaped = FunctionShape {
-            output: "Bytes".to_owned(),
-            ..text_shape()
-        };
-        assert!(matches!(
-            check_activation(&binding, &candidate(interface("echo", reshaped, &["Cap"]))),
-            Err(ActivationRefusal::InterfaceMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn activation_refuses_another_binding_and_an_inconsistent_artifact() {
-        // Oracle: design #5964 §1.3 — a candidate for another binding name
-        // never activates here, and an artifact whose recorded interface
-        // hash is not its descriptor's hash is refused, not trusted.
-        let published = interface("echo", text_shape(), &["Cap"]);
-        let binding = FunctionBinding::expecting(&published);
-
-        let other = candidate(interface("shout", text_shape(), &["Cap"]));
-        assert_eq!(
-            check_activation(&binding, &other),
-            Err(ActivationRefusal::WrongFunction {
-                expected: "echo".to_owned(),
-                candidate: "shout".to_owned(),
-            })
-        );
-
-        let mut forged = candidate(interface("echo", text_shape(), &["Cap", "Clock"]));
-        forged.interface_hash = published.interface_hash();
-        assert_eq!(
-            check_activation(&binding, &forged),
-            Err(ActivationRefusal::InconsistentInterface {
-                function: "echo".to_owned(),
-                recorded: published.interface_hash(),
-                computed: forged.interface.interface_hash(),
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn function_compile_refuses_a_bad_shape_before_the_compiler_runs() {
-        // Oracle: design #5964 §2.2 step 1 — the declared shape is intake:
-        // an empty, oversized or control-character identifier is refused
-        // naming the function and the part, before the (nonexistent)
-        // compiler is reached.
-        let (_root, platform) = staged_function_platform();
-        let long = "S".repeat(MAX_FUNCTION_SHAPE_BYTES + 1);
-        for (bad, part) in [
-            (
-                FunctionShape {
-                    input: String::new(),
-                    ..text_shape()
-                },
-                "input shape",
-            ),
-            (
-                FunctionShape {
-                    output: long,
-                    ..text_shape()
-                },
-                "output shape",
-            ),
-            (
-                FunctionShape {
-                    state_schema: "state\nv1".to_owned(),
-                    ..text_shape()
-                },
-                "state schema",
-            ),
-        ] {
-            let mut spec = function_spec("echo", vec![("main.roc", "app")], vec![]);
-            spec.shape = bad;
-            let error = compile_function(&spec, &platform, "/nonexistent/roc", COMPILE_TIMEOUT)
-                .await
-                .unwrap_err();
-            let text = format!("{error:#}");
-            assert!(text.contains("\"echo\""), "{text}");
-            assert!(text.contains(part), "{text}");
-            assert!(!text.contains("resolve Roc compiler executable"), "{text}");
         }
     }
 
@@ -3189,299 +2496,6 @@ restore = |text| match U64.from_str(text) {
         );
     }
 
-    /// A function source that imports the staged platform's `Cap` module.
-    const CAP_FUNCTION: &str = "app [program] { pf: platform \"platform.roc\" }\nimport pf.Cap\n";
-
-    /// A stand-in compiler for the cache tests: a real file, so the key's
-    /// compiler digest can be taken, but not executable, so any attempt to
-    /// run it fails at spawn ("spawn the Roc compiler") — a hit must never
-    /// get that far, and a miss always does.
-    fn stub_compiler() -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("roc");
-        std::fs::write(&path, b"stub compiler: never run by a cache hit\n").unwrap();
-        let path = path.to_str().unwrap().to_owned();
-        (dir, path)
-    }
-
-    /// A module the sandbox's output policy admits, standing in for a
-    /// previously compiled function.
-    fn cached_module() -> Vec<u8> {
-        wat::parse_str(
-            r#"(module
-                 (memory (export "memory") 1 1)
-                 (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
-                 (func (export "plaza_free") (param i32 i32))
-                 (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
-                 (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
-                   (i32.const 0))
-                 (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
-                 (func (export "plaza_out_len") (result i32) (i32.const 0)))"#,
-        )
-        .unwrap()
-    }
-
-    fn function_cache() -> (tempfile::TempDir, crate::world_cache::WorldCache) {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = crate::world_cache::WorldCache::open(
-            dir.path().join("cache"),
-            crate::world_cache::DEFAULT_LRU_BYTES,
-        )
-        .unwrap();
-        (dir, cache)
-    }
-
-    #[tokio::test]
-    async fn function_cache_hit_returns_the_artifact_without_the_compiler() {
-        // Oracle: design #5964 §2.2 step 6 — a function entry keyed by
-        // (provenance triple, target, interface descriptor) is served on a
-        // hit without the compiler ever running (the stub here cannot run),
-        // with the provenance of record, the module hash of its bytes, and
-        // the interface and interface hash recomputed from the spec, so it
-        // activates on the binding that expects that interface.
-        let (_root, platform) = staged_function_platform();
-        let (_bin, roc) = stub_compiler();
-        let (_dir, cache) = function_cache();
-        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
-        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
-        assert_eq!(input.target, "wasm32");
-        assert_eq!(
-            input.interface_hash.as_deref(),
-            Some(spec.interface().interface_hash().as_str())
-        );
-        let module = cached_module();
-        cache
-            .store(
-                &input,
-                "alice",
-                crate::world_cache::CacheScope::Author,
-                &module,
-                "roc test-1",
-            )
-            .unwrap();
-
-        let artifact = compile_function_cached(
-            &spec,
-            &platform,
-            &roc,
-            COMPILE_TIMEOUT,
-            &cache,
-            "alice",
-            crate::world_cache::CacheScope::Author,
-        )
-        .await
-        .unwrap();
-        assert_eq!(artifact.function, "echo");
-        assert_eq!(artifact.module, module);
-        assert_eq!(
-            artifact.module_hash,
-            crate::world_cache::artifact_hash(&module)
-        );
-        assert!(
-            artifact
-                .diagnostics
-                .contains("served from the shared compile cache"),
-            "{}",
-            artifact.diagnostics
-        );
-        let crate::world::ModuleProvenance::SourceBuild(build) = &artifact.provenance else {
-            panic!("a cached function records source-build provenance");
-        };
-        assert_eq!(build.target, "wasm32");
-        assert_eq!(build.compiler_version, "roc test-1");
-        assert_eq!(build.compiler_blake3, input.compiler_blake3);
-        assert_eq!(build.platform_blake3, input.platform_tree_hash);
-        assert_eq!(build.source_blake3, input.source_closure_hash);
-        assert_eq!(build.arguments, stable_arguments("wasm32"));
-        assert_eq!(artifact.interface, spec.interface());
-        assert_eq!(artifact.interface_hash, spec.interface().interface_hash());
-        assert_eq!(
-            check_activation(&FunctionBinding::expecting(&spec.interface()), &artifact),
-            Ok(())
-        );
-        assert_eq!(cache.stats().hits, 1);
-        assert_eq!(cache.stats().misses, 0);
-
-        // The seed is not a key component: another seed is the same hit.
-        let mut reseeded = spec;
-        reseeded.seed = 99;
-        let again = compile_function_cached(
-            &reseeded,
-            &platform,
-            &roc,
-            COMPILE_TIMEOUT,
-            &cache,
-            "alice",
-            crate::world_cache::CacheScope::Author,
-        )
-        .await
-        .unwrap();
-        assert_eq!(again.module, module);
-        assert_eq!(cache.stats().hits, 2);
-    }
-
-    #[tokio::test]
-    async fn function_cache_never_serves_an_entry_whose_digest_check_fails() {
-        // Oracle: design #5964 §2.2 step 6 — "a cache entry whose digest
-        // check fails is recompiled, never trusted": tampered bytes under
-        // the stored content hash are evicted on lookup and the call falls
-        // through to the compiler (here a stub that cannot run, so the
-        // recompile fails at spawn) instead of returning the bad bytes.
-        let (_root, platform) = staged_function_platform();
-        let (_bin, roc) = stub_compiler();
-        let (dir, cache) = function_cache();
-        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
-        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
-        let module = cached_module();
-        cache
-            .store(
-                &input,
-                "alice",
-                crate::world_cache::CacheScope::Author,
-                &module,
-                "roc test-1",
-            )
-            .unwrap();
-        let stored = dir
-            .path()
-            .join("cache/artifacts")
-            .join(crate::world_cache::artifact_hash(&module));
-        let mut tampered = module;
-        tampered.push(0);
-        std::fs::write(&stored, &tampered).unwrap();
-
-        let error = compile_function_cached(
-            &spec,
-            &platform,
-            &roc,
-            COMPILE_TIMEOUT,
-            &cache,
-            "alice",
-            crate::world_cache::CacheScope::Author,
-        )
-        .await
-        .unwrap_err();
-        let text = format!("{error:#}");
-        assert!(text.contains("\"echo\""), "{text}");
-        assert!(text.contains("spawn the Roc compiler"), "{text}");
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 0);
-        assert_eq!(stats.corrupt_evictions, 1);
-        assert_eq!(cache.entry_count(), 0, "the bad entry is evicted");
-    }
-
-    #[tokio::test]
-    async fn function_cache_misses_when_the_grant_or_shape_changes() {
-        // Oracle: design #5964 §2.2 step 6 — the interface descriptor is a
-        // key component: the same sources under a changed grant or a
-        // changed shape miss the entry stored for the original interface
-        // and go to the compiler (the stub fails at spawn), and the original
-        // entry stays put. Nor does a function entry answer the world key
-        // of the same provenance.
-        let (_root, platform) = staged_function_platform();
-        let (_bin, roc) = stub_compiler();
-        let (_dir, cache) = function_cache();
-        let spec = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
-        let input = function_cache_key_input(&spec, &platform, &roc).unwrap();
-        cache
-            .store(
-                &input,
-                "alice",
-                crate::world_cache::CacheScope::Author,
-                &cached_module(),
-                "roc test-1",
-            )
-            .unwrap();
-
-        let mut widened = spec.clone();
-        widened.granted.push("Clock".to_owned());
-        let mut reshaped = spec.clone();
-        reshaped.shape.output = "Json".to_owned();
-        let mut renamed = spec;
-        renamed.function = "echo2".to_owned();
-        for changed in [&widened, &reshaped, &renamed] {
-            let changed_input = function_cache_key_input(changed, &platform, &roc).unwrap();
-            assert_ne!(
-                crate::world_cache::cache_key(&changed_input),
-                crate::world_cache::cache_key(&input)
-            );
-            let error = compile_function_cached(
-                changed,
-                &platform,
-                &roc,
-                COMPILE_TIMEOUT,
-                &cache,
-                "alice",
-                crate::world_cache::CacheScope::Author,
-            )
-            .await
-            .unwrap_err();
-            assert!(
-                format!("{error:#}").contains("spawn the Roc compiler"),
-                "{error:#}"
-            );
-        }
-        assert_eq!(cache.stats().hits, 0);
-        assert_eq!(cache.stats().misses, 3);
-        assert_eq!(cache.entry_count(), 1, "the original entry is kept");
-
-        let world = crate::world_cache::CacheKeyInput {
-            interface_hash: None,
-            ..input
-        };
-        assert_eq!(
-            cache.lookup(&world, "alice").unwrap(),
-            crate::world_cache::Lookup::Miss
-        );
-    }
-
-    #[tokio::test]
-    async fn function_cache_hit_never_bypasses_intake() {
-        // Oracle: design #5964 §2.2 step 6 with §1.1 — intake (binding
-        // name, shape, import check against the grant) runs before any
-        // lookup: even with an entry stored under the very key the request
-        // would hash to, an ungranted import or a bad shape is refused by
-        // name and the cache is never consulted.
-        let (_root, platform) = staged_function_platform();
-        let (_bin, roc) = stub_compiler();
-        let (_dir, cache) = function_cache();
-        let ungranted = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec![]);
-        let mut bad_shape = function_spec("echo", vec![("main.roc", CAP_FUNCTION)], vec!["Cap"]);
-        bad_shape.shape.input = String::new();
-        for (spec, refusal) in [
-            (&ungranted, "main.roc imports Cap"),
-            (&bad_shape, "input shape"),
-        ] {
-            let input = function_cache_key_input(spec, &platform, &roc).unwrap();
-            cache
-                .store(
-                    &input,
-                    "alice",
-                    crate::world_cache::CacheScope::Author,
-                    &cached_module(),
-                    "roc test-1",
-                )
-                .unwrap();
-            let error = compile_function_cached(
-                spec,
-                &platform,
-                &roc,
-                COMPILE_TIMEOUT,
-                &cache,
-                "alice",
-                crate::world_cache::CacheScope::Author,
-            )
-            .await
-            .unwrap_err();
-            let text = format!("{error:#}");
-            assert!(text.contains("\"echo\""), "{text}");
-            assert!(text.contains(refusal), "{text}");
-        }
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 0, "a refused request never reaches a hit");
-        assert_eq!(stats.misses, 0, "nor any lookup at all");
-    }
-
     #[tokio::test]
     async fn function_fixture_compiles_to_a_per_function_module() {
         // Oracle: design #5964 §2.2 steps 1–4 — a fixture user source
@@ -3544,7 +2558,7 @@ restore = |text| text
             .await
             .unwrap();
         assert_eq!(artifact.function, "echo");
-        assert_ne!(artifact.module, [] as [u8; 0]);
+        assert!(!artifact.module.is_empty());
         assert_eq!(
             artifact.module_hash,
             crate::world_cache::artifact_hash(&artifact.module)
@@ -3553,11 +2567,5 @@ restore = |text| text
             panic!("a function compile records source-build provenance");
         };
         assert_eq!(build.target, "wasm32");
-        assert_eq!(artifact.interface, spec.interface());
-        assert_eq!(artifact.interface_hash, spec.interface().interface_hash());
-        assert_eq!(
-            check_activation(&FunctionBinding::expecting(&spec.interface()), &artifact),
-            Ok(())
-        );
     }
 }

@@ -793,7 +793,7 @@ mod tests {
             .unwrap();
         let entry = outbox.entry("e1").unwrap();
         assert_eq!((entry.attempts, entry.next_at), (1, NOW + MINUTE));
-        assert_eq!(outbox.due(NOW + MINUTE - 1), [] as [String; 0]);
+        assert!(outbox.due(NOW + MINUTE - 1).is_empty());
         assert_eq!(outbox.due(NOW + MINUTE), vec!["e1".to_owned()]);
 
         for attempt in 2..=MAX_ATTEMPTS {
@@ -804,7 +804,7 @@ mod tests {
         }
         let entry = outbox.entry("e1").unwrap();
         assert_eq!(entry.finish, Some(Finish::GaveUp));
-        assert_eq!(outbox.due(u64::MAX), [] as [String; 0]);
+        assert!(outbox.due(u64::MAX).is_empty());
 
         let reopened = Outbox::open(path(&dir)).unwrap();
         assert_eq!(reopened.entry("e1").unwrap().finish, Some(Finish::GaveUp));
@@ -821,7 +821,7 @@ mod tests {
         let entry = outbox.entry("e1").unwrap();
         assert_eq!(entry.finish, Some(Finish::Refused));
         assert_eq!(entry.last_error.as_deref(), Some("bad signature"));
-        assert_eq!(outbox.due(u64::MAX), [] as [String; 0]);
+        assert!(outbox.due(u64::MAX).is_empty());
         assert!(outbox.record("e1", NOW, Outcome::Delivered).is_err());
         drop(outbox);
 
@@ -955,7 +955,7 @@ mod tests {
         outbox.enqueue(&target(), envelope("e1")).unwrap();
         outbox.withdraw("e1").unwrap();
         assert!(outbox.entry("e1").is_none());
-        assert_eq!(outbox.due(u64::MAX), [] as [String; 0]);
+        assert!(outbox.due(u64::MAX).is_empty());
         assert!(outbox.withdraw("e1").is_err());
         drop(outbox);
 
@@ -1202,10 +1202,10 @@ mod tests {
         let evidence_expires_at = NOW + MINUTE;
         let (admitted, denied) = outbox.due_checked(NOW, |_| NOW < evidence_expires_at);
         assert_eq!(admitted, vec!["e1".to_owned()]);
-        assert_eq!(denied, [] as [String; 0]);
+        assert!(denied.is_empty());
         let retry_at = NOW + 2 * MINUTE;
         let (admitted, denied) = outbox.due_checked(retry_at, |_| retry_at < evidence_expires_at);
-        assert_eq!(admitted, [] as [String; 0]);
+        assert!(admitted.is_empty());
         assert_eq!(denied, vec!["e1".to_owned()]);
         // Denied, not finished: the entry is still queued and due.
         assert_eq!(outbox.due(retry_at), vec!["e1".to_owned()]);

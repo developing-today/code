@@ -395,7 +395,7 @@ mod tests {
 
         let snapshot = replica.snapshot(spectator_token.clone()).await.unwrap();
         assert_eq!(snapshot.current_sequence, 0);
-        assert_eq!(snapshot.events, [] as [WorldEvent; 0]);
+        assert!(snapshot.events.is_empty());
         assert!(
             replica
                 .chat(spectator_token.clone(), "must not commit")

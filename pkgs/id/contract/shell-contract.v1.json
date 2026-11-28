@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 17,
+  "revision": 16,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -126,12 +126,6 @@
       "opens": "closed",
       "fields": { "admin_token": "string?", "capability": "string?" }
     },
-    "presentation_policy_info": {
-      "class": "query",
-      "phases": ["opening", "joined"],
-      "opens": "closed",
-      "fields": {}
-    },
     "invite": {
       "class": "admin",
       "phases": ["opening"],
@@ -227,12 +221,6 @@
       "phases": ["opening", "joined"],
       "opens": "closed",
       "fields": { "admin_token": "string", "profile": "object" }
-    },
-    "set_presentation_policy": {
-      "class": "admin",
-      "phases": ["opening", "joined"],
-      "opens": "closed",
-      "fields": { "admin_token": "string", "policy": "object" }
     },
     "set_schedule": {
       "class": "admin",
@@ -532,10 +520,6 @@
     "execution_profile": {
       "class": "reply",
       "fields": { "update": "object", "message": "string" }
-    },
-    "presentation_policy": {
-      "class": "reply",
-      "fields": { "policy": "object", "message": "string" }
     },
     "schedules": {
       "class": "reply",

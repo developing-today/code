@@ -82,7 +82,6 @@ fn message_ext() -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     }
 }
 

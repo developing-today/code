@@ -40,10 +40,7 @@ Request handling, in order:
 2. Strip every client-supplied internal header.
 3. Re-set the internal headers itself: `x-hosted-binding-id`, `x-hosted-jurisdiction`, `x-hosted-routed: restricted`, `x-hosted-iroh-id`.
 4. Enforce the front-door body limit (see `USER_CEILING_BYTES` below; the cap is 100 MiB).
-5. When `HOSTED_DIRECTORY` (below) is configured, read and validate a stable `hosted_accounts` row for the binding before any namespace access. A missing row, a jurisdiction mismatch, migration/pending metadata, or an unreadable directory fails closed; only then:
-6. Forward to the per-user Durable Object through the jurisdiction-restricted namespace only.
-
-The optional directory guard is a read of a persisted snapshot, not authentication, migration coordination, signup, or a routing lease; unset, the front door keeps consuming the upstream resolved context as a local-only scaffold and performs no directory authorization.
+5. Forward to the per-user Durable Object through the jurisdiction-restricted namespace only.
 
 Routing rules in `src/routing.ts` — the only module that touches the raw `USERS` namespace:
 
@@ -63,8 +60,7 @@ From `wrangler.toml`: Worker name `id-hosted-worker`, `compatibility_date` `2025
 | `USER_CEILING_BYTES`        | String var, optional                | Per-user storage ceiling. Absent or empty means no ceiling. A malformed value fails writes closed. Also read by the front door for the body limit: `MAX_BODY_BYTES` is a 100 MiB cap. |
 | `BRIDGE_WAITING_PER_AUTHOR` | String var, optional                | Bridge waiting-pool bound, per author. Absent means the native default in `bridge-store.ts`. A malformed value fails bridge writes closed.                                            |
 | `BRIDGE_WAITING_TOTAL`      | String var, optional                | Bridge waiting-pool bound, total. Same default and failure rule.                                                                                                                      |
-| `BRIDGE_WAITING_MAX_AGE_MS` | String var, optional                | Bridge waiting-pool bound, maximum age in milliseconds. Same default and failure rule.                                                                                                 |
-| `HOSTED_DIRECTORY`          | Optional structural adapter         | Presence enables the persisted read guard; absence preserves local-scaffold behaviour. Not a raw D1 binding: D1's `.all()` returns `{ results }` and needs an adapting statement. No production binding is provisioned. |
+| `BRIDGE_WAITING_MAX_AGE_MS` | String var, optional                | Bridge waiting-pool bound, maximum age in milliseconds. Same default and failure rule.                                                                                                |
 
 Test harness: `wrangler.test.toml` defines a separate Worker, name `id-hosted-worker-test`, main `src/test-harness.ts`, with binding `TEST_USERS` → `UserDO`, bucket `id-hosted-blobs-test`, and `USER_CEILING_BYTES = "1073741824"`. It is test-only and is never an application entry point.
 

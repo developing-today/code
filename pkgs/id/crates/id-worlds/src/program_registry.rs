@@ -647,10 +647,7 @@ mod tests {
         let chess = bundle(b"chess", "chess", 1, &alice());
         registry.publish(&chess.to_bytes()).unwrap();
         registry.remove(&chess.manifest().content_hash).unwrap();
-        assert_eq!(
-            registry.list(&ListQuery::default()),
-            [] as [BundleRecord; 0]
-        );
+        assert!(registry.list(&ListQuery::default()).is_empty());
         registry
             .publish(&chess.to_bytes())
             .expect("the author may publish again after an operator removal");

@@ -3108,37 +3108,6 @@ func (r *Registry) ReleaseCaller(callID string) int {
 	return n
 }
 
-// KillCaller ends the instances created for a caller, even when they are
-// busy (#1931 slice 2). ReleaseCaller detaches the caller and stops only
-// the owned instances that are already idle; KillCaller is the force path:
-// every owned instance is ended and the caller is detached either way. The
-// address in both cases is the caller session handle (the lease key): kill
-// ends what that session created, not one instance by id. The second result
-// reports whether the handle was known at all, so the route can refuse an
-// unknown handle instead of answering an empty success.
-func (r *Registry) KillCaller(callID string) (int, bool) {
-	if callID == "" {
-		return 0, false
-	}
-	r.sessMu.Lock()
-	st := r.leases[callID]
-	delete(r.leases, callID)
-	r.sessMu.Unlock()
-	if st == nil {
-		return 0, false
-	}
-	n := 0
-	for server, key := range st.owned {
-		if p, ok := r.Pool(server); ok {
-			n += p.KillKey(key)
-		}
-	}
-	if n > 0 {
-		r.logf("killed %d instance(s) for caller %s", n, callID)
-	}
-	return n, true
-}
-
 // Reap drops idle instances and abandoned sessions. Called on a timer.
 func (r *Registry) Reap() {
 	now := time.Now()

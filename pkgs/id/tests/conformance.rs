@@ -535,7 +535,7 @@ fn declared_scope_agrees_with_commit_gate() {
 fn conformance_vectors_match_reference_model() {
     let fixture = fixture();
     let vectors = fixture["vectors"].as_array().unwrap();
-    assert_ne!(*vectors, [] as [serde_json::Value; 0]);
+    assert!(!vectors.is_empty());
     for profile in [redb_profile(), turso_profile()] {
         let resource_id = profile.descriptor().resource_id.clone();
         // Determinism: the same script against a fresh adapter and

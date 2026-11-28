@@ -24,23 +24,6 @@ interface PipelineResult {
   };
 }
 
-/**
- * The d1-gateway Worker's service-binding entrypoint (Turso -> D1 move,
- * 2026-11-25). A URL of the form `d1gw://<database>` sends the same
- * pipeline body to env.D1GW.pipeline(<database>, body) instead of
- * fetching a Turso host.
- */
-export interface D1Gateway {
-  pipeline(db: string, body: unknown): Promise<{ results?: PipelineResult[] }>;
-}
-
-let gateway: D1Gateway | undefined;
-
-/** Called once per request with the Worker env. */
-export function configureTursoGateway(binding: D1Gateway | undefined): void {
-  gateway = binding;
-}
-
 export class Turso {
   constructor(
     private url: string,
@@ -49,27 +32,6 @@ export class Turso {
 
   /** Run statements in one pipeline; throws on any error result. */
   async batch(stmts: { sql: string; args?: TursoArg[] }[]): Promise<PipelineResult[]> {
-    if (this.url?.startsWith("d1gw://")) {
-      if (!gateway) throw new Error("turso pipeline failed: d1gw URL but no D1GW binding");
-      const body = {
-        requests: [
-          ...stmts.map((s) => ({
-            type: "execute",
-            stmt: s.args ? { sql: s.sql, args: s.args } : { sql: s.sql },
-          })),
-          { type: "close" },
-        ],
-      };
-      const out = await gateway.pipeline(this.url.slice("d1gw://".length), body);
-      if (!out || typeof out !== "object" || !Array.isArray(out.results)) {
-        throw new Error("turso pipeline failed: malformed response (missing results)");
-      }
-      const failed = out.results.find((r) => r?.type === "error");
-      if (failed) {
-        throw new Error(`turso pipeline failed: ${failed.error?.message ?? "pipeline error"}`);
-      }
-      return out.results;
-    }
     if (!this.url || !this.token) throw new Error("turso url/token unset");
     const res = await fetch(`${this.url}/v2/pipeline`, {
       method: "POST",

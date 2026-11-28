@@ -6,9 +6,7 @@
 //!
 //!   * `client` — `fleet search` / `fleet search get-chunk`: the
 //!     atlas-search client surface over the live Atlas service's job
-//!     protocol (step 5, #5433). See [`cli`]. The client feature
-//!     also carries `fleet search backup`, the atlas-backup
-//!     routine (#14129) — see [`backup`].
+//!     protocol (step 5, #5433). See [`cli`].
 //!   * `serve` — `fleet serve search`: the Atlas service itself, the
 //!     atlas-search bin crate's serve half rehomed (#5604). See
 //!     [`serve`]. atlas-core / atlas-embed / atlas-proto are consumed
@@ -27,9 +25,6 @@ mod render;
 
 #[cfg(feature = "client")]
 pub use cli::{SEARCH_USAGE, run};
-
-#[cfg(feature = "client")]
-pub mod backup;
 
 // Copy of atlas-search's server.rs under the #5920 parity guard:
 // byte-identical outside the pinned parity header and the one

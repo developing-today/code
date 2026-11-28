@@ -13,8 +13,8 @@
 // aggregator, and nothing here invents a state: an absent or corrupt
 // snapshot reads as null and the watchdog says so, out loud.
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { requireHome } from "./home.ts";
 
 /** Collector cadence is 5 min; 3 missed cycles (15 min) = stale. */
 export const HOST_HEALTH_STALE_MS = 15 * 60_000;
@@ -74,7 +74,7 @@ export interface HostBackupRecord {
 /** Default snapshot path (mirrors src/config.ts hostHealthFile). */
 export function defaultHostHealthFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_HOST_HEALTH_FILE?.trim();
-  return v ? v : join(requireHome("PM_AGG_HOST_HEALTH_FILE"), ".local", "state", "pm-aggregator", "host-health.json");
+  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "host-health.json");
 }
 
 const CLAIMANT_STATES: readonly string[] = ["live", "shadow", "missing", "unreadable", "invalid", "unknown"];

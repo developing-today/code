@@ -776,22 +776,6 @@ const done = (kind: string, result: unknown) => ({
   touch: [] as string[],
   audit: () => ({}),
 });
-/** The one canned action that changes what the demo shows. On a real
- * host an answer is written in the ledger the questions are read
- * from, so the answered question leaves the list the app is shown;
- * the offline check's last step is exactly that it is gone when the
- * app is reopened. A demo that only said "ok" would keep showing it,
- * and the check would fail on the demo, not on the app (run
- * 45584721031, whose answer arrived once and was still listed). */
-const answerQuestion = (args: unknown) => {
-  const a = (args ?? {}) as { set?: string; ledger?: string; qid?: string };
-  const open = state.questions.open;
-  const at = open.findIndex((q) => q.set === a.set && q.ledger === a.ledger && q.qid === a.qid);
-  if (at < 0) return;
-  open.splice(at, 1);
-  state.questions.total = open.length;
-  state.questionCount.total = open.length;
-};
 // Linking a phone is the real thing, kept in a file under /tmp.
 const devices = new Devices(fileStore("/tmp/pm-console-demo-devices.json"));
 const phones = { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) };
@@ -802,29 +786,17 @@ const demoWork = new Work(demoOps);
 const demoPlan = new Plan(demoOps, demoWork);
 const real = realActions(demoOps, demoWork, undefined, devices, demoPlan);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
-  get: (_t, kind) => {
-    if (typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send"))
-      return real[kind];
-    const name = typeof kind === "string" ? kind : String(kind);
-    const canned = done(
-      name,
-      name === "ask.send"
-        ? { issue: 12503, queued: true }
-        : name === "questions.accept"
-          ? { applied: 2, refused: [] }
-          : { ok: true },
-    );
-    if (name !== "question.answer") return canned;
-    return {
-      ...canned,
-      touch: ["questions", "questionCount"],
-      run: async (args: unknown) => {
-        const out = await canned.run(args);
-        answerQuestion(args);
-        return out;
-      },
-    };
-  },
+  get: (_t, kind) =>
+    typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send")
+      ? real[kind]
+      : done(
+          typeof kind === "string" ? kind : String(kind),
+          kind === "ask.send"
+            ? { issue: 12503, queued: true }
+            : kind === "questions.accept"
+              ? { applied: 2, refused: [] }
+              : { ok: true },
+        ),
   has: () => true,
   // The kinds a real machine has, for where what it can do is listed.
   ownKeys: () => Object.keys(real),

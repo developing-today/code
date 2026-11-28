@@ -45,23 +45,6 @@
 # expression this parser cannot fully read — is a failure too; a guard that silently
 # passes on empty input is the failure this script exists to prevent.
 #
-# The same script also guards the #2875 secrets condition (PR #10777):
-# home/openclaw is imported for `user` on every host, but the gateway's
-# tokens are sops secrets materialized to /run/secrets/openclaw/* only on
-# hosts whose block in nixos/hosts/default.nix imports a
-# *-openclaw-secrets.nix module (today: amd only). The gateway unit
-# therefore carries
-#   ConditionPathExists = "/run/secrets/openclaw/gateway-token"
-# so an unprovisioned host skips it quietly instead of crash-looping on
-# a credential file that can never exist there. Dropping that one line
-# in a clean merge would silently resurrect the broken unit — the same
-# failure mode as the Wants resurrection — so while any live host block
-# lacks the secrets import, the guard requires the condition, and
-# requires a secrets module under nixos/hosts/ to still declare the
-# gateway-token secret the condition points at. Once every host block
-# imports the secrets, the condition may be retired (the module comment
-# says exactly that) and the check stands down on its own.
-#
 # Usage: check-openclaw-unit-wants.sh [repo-root]
 set -euo pipefail
 
@@ -254,99 +237,8 @@ for consumer_entry in "${consumers[@]}"; do
   done
 done
 
-# --- the #2875 secrets condition -------------------------------------------
-hosts_nix="$repo_root/nixos/hosts/default.nix"
-openclaw_nix="$repo_root/home/openclaw/default.nix"
-gateway_token_secret="openclaw/gateway-token"
-gateway_token_path="/run/secrets/${gateway_token_secret}"
-
-[[ -f $hosts_nix ]] ||
-  fail "$hosts_nix not found — cannot tell which hosts provision the openclaw secrets."
-[[ -f $openclaw_nix ]] ||
-  fail "$openclaw_nix not found — cannot check the gateway's secrets condition."
-
-# One line per live host block in nixos/hosts/default.nix:
-# "<name> <1 if the block imports an openclaw secrets module, else 0>".
-# Commented-out host blocks never match the anchored marker. Brace
-# depth counting mirrors unit_block (strings stripped first).
-host_blocks() {
-  awk '
-    {
-      line = $0
-      gsub(/"[^"]*"/, "", line)
-      opens = gsub(/\{/, "{", line)
-      closes = gsub(/\}/, "}", line)
-    }
-    !inblock && $0 ~ /^  [A-Za-z0-9_-]+ = host [{]/ {
-      inblock = 1
-      name = $1
-      secrets = 0
-      depth = 0
-    }
-    inblock {
-      if (index($0, "openclaw-secrets.nix")) secrets = 1
-      depth += opens - closes
-      if (depth <= 0) {
-        print name, secrets
-        inblock = 0
-      }
-    }
-    END { if (inblock) print "__HOST_BLOCK_PARSE_DRIFT__" }
-  ' "$1"
-}
-
-mapfile -t host_lines < <(host_blocks "$hosts_nix")
-[[ ${#host_lines[@]} -gt 0 ]] ||
-  fail "no live host blocks parsed from ${hosts_nix#"$repo_root"/} — parse drift."
-total_hosts=0
-provisioned_hosts=0
-unprovisioned=()
-for line in "${host_lines[@]}"; do
-  [[ $line == __HOST_BLOCK_PARSE_DRIFT__ ]] &&
-    fail "a host block in ${hosts_nix#"$repo_root"/} never closes — parse drift."
-  read -r hname hsecrets <<<"$line"
-  total_hosts=$((total_hosts + 1))
-  if [[ $hsecrets -eq 1 ]]; then
-    provisioned_hosts=$((provisioned_hosts + 1))
-  else
-    unprovisioned+=("$hname")
-  fi
-done
-
-# The condition is only meaningful while a secrets module still
-# declares the token it points at; if that declaration goes, the
-# gateway is dead on the provisioned hosts too.
-token_declared=0
-for secrets_file in "$repo_root"/nixos/hosts/*openclaw-secrets.nix; do
-  [[ -f $secrets_file ]] || continue
-  if grep -qF "\"${gateway_token_secret}\"" "$secrets_file"; then
-    token_declared=1
-  fi
-done
-[[ $token_declared -eq 1 ]] ||
-  fail "no nixos/hosts/*openclaw-secrets.nix declares the \"${gateway_token_secret}\" sops secret — the gateway's ConditionPathExists would point at a file nothing provisions."
-
-gateway_block="$(unit_block "$openclaw_nix" openclaw-gateway)"
-[[ -n $gateway_block ]] ||
-  fail "found no readable openclaw-gateway block in ${openclaw_nix#"$repo_root"/} — parse drift."
-condition_present=0
-if grep -qF "ConditionPathExists = \"${gateway_token_path}\"" <<<"$gateway_block"; then
-  condition_present=1
-fi
-
-if [[ $provisioned_hosts -lt $total_hosts ]]; then
-  secrets_verdict="condition required by ${#unprovisioned[@]} unprovisioned host(s): ${unprovisioned[*]}"
-  if [[ $condition_present -eq 0 ]]; then
-    echo "::error::openclaw-gateway in home/openclaw/default.nix lost ConditionPathExists = \"${gateway_token_path}\" while host(s) ${unprovisioned[*]} do not import an openclaw secrets module — on those hosts the gateway's tokens never materialize and the unit can only fail (#2875, PR #10777). Restore the condition, or provision the secrets on every host block in nixos/hosts/default.nix."
-    failed=1
-  fi
-else
-  secrets_verdict="all ${total_hosts} host(s) provision the openclaw secrets; condition not required"
-fi
-
 if [[ $failed -ne 0 ]]; then
   exit 1
 fi
 
 echo "openclaw proxy Wants guard: ${#consumers[@]} consumers, ${checked} proxy dependencies, all sanctioned (${#proxy_units[@]} proxy units in the universe)."
-echo "openclaw secrets condition guard (#2875): ${secrets_verdict}."

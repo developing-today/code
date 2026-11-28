@@ -13,7 +13,7 @@
     },
     {
       "name": "browser",
-      "session": "sessions/browser.jsonl",
+      "session": null,
       "statement": {
         "presents": ["compiled", "error", "event", "records", "snapshot", "view"],
         "providers": [],
@@ -44,12 +44,12 @@
     },
     {
       "name": "hardware",
-      "session": "sessions/hardware.jsonl",
+      "session": null,
       "statement": {
-        "presents": ["error", "event", "form_result_status", "snapshot", "view"],
+        "presents": ["snapshot", "view"],
         "providers": [],
-        "sends": ["form_result", "join"],
-        "workflow": ["form_result", "join"]
+        "sends": ["input", "join"],
+        "workflow": ["input", "join"]
       }
     }
   ],

@@ -1,5 +1,5 @@
 {
-  "comment": "Fleet placement registry. Targets accept exact owner/repo names, owner/* patterns, or * for all valid owner/repo paths. The fleet-command.yml workflow is dispatch-only; the fleet-queue placement adapter selects a host and provider from live capacity and local session history. Add a surface by adding a registry entry and a compatible workflow. Advisory fields (documentation only, never enforced by placement): owners.*.plan, owners.*.private_minutes_monthly, the codespace budget.core_hours_monthly, and max_live.",
+  "comment": "Fleet placement registry. Targets accept exact owner/repo names, owner/* patterns, or * for all valid owner/repo paths. The fleet-command.yml workflow is dispatch-only; the fleet-queue placement adapter selects a host and provider from live capacity and local session history. Add a surface by adding a registry entry and a compatible workflow.",
   "laptop": {
     "busy": false,
     "busy_source": "manual-flag",

@@ -471,16 +471,11 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
-// The collector is scheduled every five minutes, so a healthy feed is up to
-// one cadence old plus the run's own time and scheduler jitter. #14062: a
-// threshold of one cadence was crossed on nearly every read (the page's
-// degraded banner never cleared), so the feed is stale only once a whole
-// write has been missed: two cadences, which is also the feed-age SLO's
-// "bad minute" bound (slo-sampler.ts), so the health page and the SLO table
-// agree. A stopped collector still shows within two cadences of its last
-// write. This is evaluated on request, not pushed to an already-open browser.
-export const FEED_COLLECTOR_CADENCE_MS = 5 * 60_000;
-export const FEED_STALE_MS = 2 * FEED_COLLECTOR_CADENCE_MS;
+// The collector is scheduled every five minutes. No grace is possible if a
+// stop just after a write must be visible by the next interval: slow runs,
+// scheduler jitter and transport delays can therefore cause transient alarms.
+// This is evaluated on request, not pushed to an already-open browser.
+export const FEED_STALE_MS = 5 * 60_000;
 
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;

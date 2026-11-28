@@ -996,16 +996,6 @@ func (c *Client) ReleaseCaller(ctx context.Context, callID string) error {
 	return err
 }
 
-// KillCaller ends the instances a session created, even when they are busy
-// (#1931 slice 2). Release detaches and stops only what is already idle;
-// kill is the force path for the same session handle. The operation is
-// declared destructive, so MCP clients scope it through destructiveHint and
-// the caller's confirmation policy like every other destructive operation.
-func (c *Client) KillCaller(ctx context.Context, callID string) error {
-	_, err := c.do(ctx, http.MethodPost, "/v1/session/kill", map[string]string{"session": callID})
-	return err
-}
-
 // Status returns the daemon status document.
 func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	b, err := c.do(ctx, http.MethodGet, "/v1/status", nil)

@@ -79,6 +79,7 @@ import {
 } from "../quota-current.ts";
 import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
+import { fixtureSource } from "./fixtures.ts";
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
@@ -126,6 +127,7 @@ import type { Source } from "../source.ts";
 import { getJson } from "./http.ts";
 import {
   LatestCommentsCache,
+  latestPerRef,
   mergeLinks,
   projectorComments,
   projectorItems,
@@ -563,48 +565,8 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
  * unchanged. Sibling sections are element-filtered the same way
  * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
  */
-/** #14065: the quota view with nothing in it — what live mode serves
- * when no source can say how much headroom there is. */
-export function emptyQuotaView(): QuotaView {
-  return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
-}
-
 export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
   return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
-}
-
-/** #14065: the suffix every live-mode "no source" provenance carries. */
-const FIXTURES_WITHHELD = "fixtures withheld in live mode";
-const COMMENTS_UNCONFIGURED = `unavailable (no projector configured; ${FIXTURES_WITHHELD})`;
-const COMMENTS_UNREACHABLE = `unavailable (projector unreachable; ${FIXTURES_WITHHELD})`;
-
-/** #14065: a provenance string that says the facet's source is gone,
- * wholly ("unavailable (...)") or for the refs outside the pool. */
-export function isUnavailableProvenance(text: string): boolean {
-  return text.startsWith("unavailable") || /\+ unavailable for \d+ ref\(s\) outside the pool/.test(text);
-}
-
-/** #14065: wrap a Provenance record so each facet remembers when its
- * string turned unavailable, and forgets when it stops being so. A
- * string that stays unavailable keeps its first time. */
-export function trackUnavailable(
-  since: Partial<Record<keyof Provenance, number>>,
-  initial: Provenance,
-  now: () => number = Date.now,
-): Provenance {
-  for (const key of Object.keys(initial) as (keyof Provenance)[]) {
-    if (isUnavailableProvenance(initial[key])) since[key] = now();
-  }
-  return new Proxy(initial, {
-    set(target, prop, value) {
-      const key = prop as keyof Provenance;
-      if (typeof value === "string" && key in target) {
-        if (!isUnavailableProvenance(value)) delete since[key];
-        else if (since[key] === undefined) since[key] = now();
-      }
-      return Reflect.set(target, prop, value);
-    },
-  });
 }
 
 export function liveSource(
@@ -649,11 +611,8 @@ export function liveSource(
     snapshotRemote?: SnapshotsRemote;
   },
 ): Source {
-  // #14065: when each facet's string last turned unavailable. Recorded
-  // where the string is assigned (the proxy below), so the time is the
-  // read that failed, not the first page that happened to look.
-  const unavailableSince: Partial<Record<keyof Provenance, number>> = {};
-  const provenance: Provenance = trackUnavailable(unavailableSince, {
+  const fix = fixtureSource();
+  const provenance: Provenance = {
     board: "fixtures",
     roadmap: "fixtures",
     items: "fixtures",
@@ -665,7 +624,7 @@ export function liveSource(
     dns: "fixtures",
     registry: "fixtures",
     aa: "fixtures",
-  });
+  };
 
   // #1139/#1140: the last orchestration diagnosis, recomputed on every
   // orchestration() read from the raw feed value — the honesty
@@ -688,12 +647,7 @@ export function liveSource(
       if (live) provenance.comments = "live (projector)";
       return live;
     },
-    // #14065 slice 3: a never-seen ref whose projector read failed
-    // gets no comment at all in live mode, never a fixture comment.
-    async () => {
-      provenance.comments = COMMENTS_UNREACHABLE;
-      return [];
-    },
+    async (refs) => latestPerRef(await fix.comments(refs)),
   );
   async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
     if (!opts?.onFreshness) return;
@@ -1294,9 +1248,6 @@ export function liveSource(
   // when nothing good exists yet — never a throw into a page.
   let queueCache: { value: QueueSnapshot; at: number } | null = null;
   let queueInFlight: Promise<QueueSnapshot> | null = null;
-  // Q8: the queue history cursor is process-local and monotonic. A
-  // restart safely replays from zero because history rows are immutable.
-  let queueHistoryCursor = 0;
   async function queueSnapshot(): Promise<QueueSnapshot> {
     if (queueCache && Date.now() - queueCache.at < 60_000) {
       const v = queueCache.value;
@@ -1307,15 +1258,7 @@ export function liveSource(
         try {
           const token = await readBrokerToken(cfg.queueBrokerTokenFile);
           if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
-          const snap = await fetchQueueSnapshot(
-            cfg.queueBrokerUrl,
-            token,
-            undefined,
-            undefined,
-            200,
-            queueHistoryCursor,
-          );
-          if (snap.history?.available) queueHistoryCursor = snap.history.cursor;
+          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
           queueCache = { value: snap, at: Date.now() };
           return snap;
         } catch (err) {
@@ -1471,15 +1414,9 @@ export function liveSource(
         }
         return merged;
       } catch (err) {
-        // #14065: live mode never renders the demo board as if it were
-        // real work. A failed Kaneo read is an outage state, not
-        // content: serve an empty board with the cause named in
-        // provenance (the attention path's #1116 contract).
-        const reason = err instanceof Error ? err.message : String(err);
-        console.error(`[board] kaneo unreachable (${reason}) — serving empty, NOT fixtures`);
-        provenance.board = `unavailable (kaneo unreachable: ${reason}; fixtures withheld in live mode)`;
+        provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
       }
-      return [];
+      return fix.board();
     },
     async roadmap() {
       try {
@@ -1495,9 +1432,7 @@ export function liveSource(
             );
             merged = entries;
             // #8570: same degraded-links honesty as the board path above.
-            label = linksDegraded
-              ? "live (Grist + projector links unavailable (registry unreachable))"
-              : "live (Grist + projector links)";
+            label = linksDegraded ? "live (Grist + projector links unavailable (registry unreachable))" : "live (Grist + projector links)";
           }
           // #1738: merge the repos' own roadmap files in alongside the
           // Grist rows. The repo-file read never throws (its failures
@@ -1516,17 +1451,10 @@ export function liveSource(
           provenance.roadmap = label;
           return merged;
         }
-        // #14065: Grist answered with no rows. That is not a reason to
-        // show invented roadmap rows: name it and serve nothing.
-        provenance.roadmap = "unavailable (grist returned no roadmap rows; fixtures withheld in live mode)";
       } catch (err) {
-        // #14065: as on the board path, a failed read is an outage
-        // state, never fixture content in live mode.
-        const reason = err instanceof Error ? err.message : String(err);
-        console.error(`[roadmap] grist unreachable (${reason}) — serving empty, NOT fixtures`);
-        provenance.roadmap = `unavailable (grist unreachable: ${reason}; fixtures withheld in live mode)`;
+        provenance.roadmap = `fixtures (grist unreachable: ${err instanceof Error ? err.message : err})`;
       }
-      return [];
+      return fix.roadmap();
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
@@ -1558,29 +1486,22 @@ export function liveSource(
         // #1141: every served item carries its resolution source, so
         // fixture state can render as unverified and health can publish
         // the live-vs-fixture coverage ratio from the same pass.
-        // #14065 slice 3: live mode never fills the gap with fixture
-        // items. A ref neither the pool nor the projector resolves is
-        // left out of the map, so pages count it as unresolved and the
-        // provenance names why.
-        if (rest && rest.size > 0) {
-          for (const [k, v] of rest) out.set(k, { ...v, resolution: "projector" as ItemResolution });
+        let restSource: ItemResolution = "projector";
+        if (!rest || rest.size === 0) {
+          rest = await fix.items(remaining);
+          restSource = "fixture";
         }
+        for (const [k, v] of rest) out.set(k, { ...v, resolution: restSource });
       }
       const poolServed = refs.length - remaining.length;
-      const unresolved = refs.filter((r) => !out.has(r)).length;
-      const projectorCause = cfg.projector.baseUrl ? "projector unreachable" : "no projector configured";
       if (poolServed > 0 && feed) {
         provenance.items =
           `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})` +
           (remaining.length
-            ? projectorServed
-              ? ` + projector for ${remaining.length} ref(s) outside the pool`
-              : ` + unavailable for ${unresolved} ref(s) outside the pool (${projectorCause}; ${FIXTURES_WITHHELD})`
+            ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool`
             : "");
       } else if (projectorServed) {
         provenance.items = "live (projector)";
-      } else if (refs.length > 0 && unresolved > 0) {
-        provenance.items = `unavailable (${pool.length > 0 ? "refs outside the project pool" : "no project pool in the fleet feed"} and ${projectorCause}; ${FIXTURES_WITHHELD})`;
       } else if (pool.length > 0 && feed) {
         // No refs were resolved this call (e.g. the /api/health
         // provenance prime, #1267): the facet is pool-backed all the
@@ -1640,17 +1561,12 @@ export function liveSource(
           provenance.comments = "live (projector)";
           return live;
         }
-        provenance.comments = COMMENTS_UNREACHABLE;
-        return [];
       }
-      // #14065 slice 3: no fixture comments in live mode.
-      provenance.comments = COMMENTS_UNCONFIGURED;
-      return [];
+      return fix.comments(refs);
     },
     async latestComments(refs) {
       if (!cfg.projector.baseUrl) {
-        provenance.comments = COMMENTS_UNCONFIGURED;
-        return [];
+        return latestPerRef(await fix.comments(refs));
       }
       // #9781: ride the per-ref SWR cache (see LatestCommentsCache) —
       // the uncached fan-out made /program and /board pay an ~8.2 s
@@ -1691,12 +1607,8 @@ export function liveSource(
             `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
-        // #14065 slice 2: with no feed there are no quota numbers to
-        // show. Fixture pools would read as real headroom, so serve an
-        // empty view with the cause named (the board/roadmap contract).
-        console.error("[quota] no fleet feed file — serving no pools, NOT fixtures");
-        provenance.quota = "unavailable (no fleet feed file yet; fixtures withheld in live mode)";
-        view = emptyQuotaView();
+        provenance.quota = "fixtures (no fleet feed file yet)";
+        view = await fix.quota();
       }
       const standalone = await readQuotaHeartbeatFile(cfg.quotaHeartbeatFile);
       try {
@@ -1857,8 +1769,7 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
-        // #14065 slice 2: flags come from real quota or none at all.
-        const quotaForFlags = await overlayCurrent(feed?.quota ?? emptyQuotaView());
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -1872,30 +1783,19 @@ export function liveSource(
           domains,
           history,
         };
-      } catch (err) {
-        // #14065 slice 2: neither the feed's hub sections nor the quota
-        // view could be read. Invented services, PAYG lines and
-        // subscriptions would read as real spend, so the missing
-        // sections stay empty with the cause named. What did arrive is
-        // kept (#3124): the feed's charge evidence and its flags, the
-        // tracker rows, the domains summary and the local history.
-        const reason = err instanceof Error ? err.message : String(err);
-        console.error(`[usage] quota view unreadable (${reason}) — serving empty sections, NOT fixtures`);
-        provenance.usage =
-          "unavailable (no fleet feed hub sections and quota view unreadable; fixtures withheld in live mode)" +
-          feedSanitizationNotes;
+      } catch {
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + feedSanitizationNotes;
+        const fallback = await fix.usage();
+        // #3124: even the fixtures fallback keeps the feed's charge
+        // evidence when a feed exists — fixtures stand in for the
+        // sections that are missing, not for the ones that arrived.
         return {
-          services: [],
+          ...fallback,
           uninstrumentedServices,
-          payg: [],
-          charges: feedCharges,
-          chargesNote: feedCharges.length
-            ? undefined
-            : "Usage sources are unreadable (no feed hub sections, no quota view), so no charge evidence is shown.",
-          attention: feedChargeFlags,
-          domains,
-          subscriptions: [],
-          history,
+          charges: feedCharges.length ? feedCharges : fallback.charges,
+          chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
+          attention: [...fallback.attention, ...feedChargeFlags],
+          history: Object.keys(history).length ? history : fallback.history,
         };
       }
     },
@@ -2053,7 +1953,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped orchestration collection"
             : feed
               ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
-              : "unavailable (no fleet feed file yet)";
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async dns(): Promise<DnsSection | null> {
@@ -2076,7 +1976,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped DNS collection"
             : feed
               ? "not collected yet — the collector has not embedded a register section"
-              : "unavailable (no fleet feed file yet)";
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async aa(batch?: string | null): Promise<AaFeedSection | null> {
@@ -2179,7 +2079,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped AA collection"
             : feed
               ? "not collected yet — the collector has not embedded an AA section"
-              : "unavailable (no fleet feed file yet)";
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
@@ -2271,7 +2171,6 @@ export function liveSource(
         const text = provenance[key];
         let state: ProvenanceFacet["state"];
         if (text.startsWith("error")) state = "error";
-        else if (text.startsWith("unavailable")) state = "unavailable";
         else if (text.startsWith("live")) state = "live";
         else if (text.startsWith("invalid")) state = "invalid";
         else if (text.startsWith("none yet") || text.startsWith("not collected yet") || text.startsWith("skipped"))
@@ -2285,20 +2184,11 @@ export function liveSource(
         if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
           state = "partial-fixtures";
         }
-        // #14065 slice 3: the same mixed pass in live mode now leaves
-        // the outside refs unresolved instead of inventing them.
-        if (key === "items" && state === "live" && /\+ unavailable for \d+ ref\(s\) outside the pool/.test(text)) {
-          state = "partial-unavailable";
-        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
-        const since = unavailableSince[key];
-        if ((state === "unavailable" || state === "partial-unavailable") && since !== undefined) {
-          out.unavailableSince = new Date(since).toISOString();
-        }
         if (key === "orchestration") {
           if (lastOrchestrationDiagnosis.state === "stale" && state === "live") out.state = "stale";
           if (lastOrchestrationDiagnosis.state === "invalid") out.state = "invalid";

@@ -6,14 +6,14 @@ artifact `validation/report.json`. Regenerate and diff to review:
     python3 -I validation/report.py
 
 - Artifact schema: `pmo-offline-experiment/v1`
-- Artifact SHA-256 (result digest): `6674fbadf7a361275f8b93b3decf297357121b386a000c772ac19d1ffd23e595`
+- Artifact SHA-256 (result digest): `818b94c4ab780d10399f6f160472c55b3f01f47cd3594afa482030173e87f006`
 - Run ID: `MISSING — see Missing measurements`
 
 ## External source facts
 
 Verbatim from the artifact; the writer adds nothing here.
 
-- Fixture SHA-256 (provenance): `83015852ff40bcb14c13d39f2ba76aee788fafe656660b4b2d69490088874d26`
+- Fixture SHA-256 (provenance): `4dbab02808888bb399f87e427bf2d2187c7fdd939e575d707c8b20ebaaa79096`
 - PRNG: SHA-256 counter, pmo-experiment-v1 domain separator, 53-bit uniform grid; algorithm independent of Python random module
 - Limit: Design experiment only; no imports from Fleet and no production implementation tests.
 - Limit: Synthetic fixtures do not establish production benefit, calibration, starvation bounds, or workload representativeness.

@@ -710,7 +710,7 @@ mod tests {
             dropped.end(),
             Some(&StreamEnd::Discarded("disconnect".to_owned()))
         );
-        assert_eq!(dropped.buffered_bytes(), [] as [u8; 0]);
+        assert!(dropped.buffered_bytes().is_empty());
     }
 
     #[test]

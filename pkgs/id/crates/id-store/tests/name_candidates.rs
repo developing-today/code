@@ -106,10 +106,10 @@ fn exact_profile_does_not_fold_names() {
 
     let mut authorized = BTreeSet::new();
     authorized.insert(signer.verifying_key().to_bytes());
-    assert_eq!(
+    assert!(
         store
             .query(&NamePath::new(["docs"], exact).unwrap(), &authorized)
-            .unwrap(),
-        [] as [NameCandidate; 0]
+            .unwrap()
+            .is_empty()
     );
 }

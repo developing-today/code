@@ -364,10 +364,7 @@ mod tests {
             );
 
             assert_eq!(names(&node).await, vec!["source.txt".to_owned()]);
-            assert_eq!(
-                tags_of(&node, invalid).await,
-                [] as [id_sync::protocol::WireTag; 0]
-            );
+            assert!(tags_of(&node, invalid).await.is_empty());
             assert!(matches!(
                 node.request(MetaRequest::Get {
                     filename: "source.txt".to_owned(),
@@ -735,10 +732,7 @@ mod tests {
             matches!(resp, MetaResponse::Delete { success: true }),
             "{resp:?}"
         );
-        assert_eq!(
-            tags_of(&node, "doomed2.txt").await,
-            [] as [id_sync::protocol::WireTag; 0]
-        );
+        assert!(tags_of(&node, "doomed2.txt").await.is_empty());
         let resp = node
             .request(MetaRequest::Delete {
                 filename: "doomed2.txt".to_owned(),

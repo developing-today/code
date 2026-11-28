@@ -23,7 +23,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
-use p2panda_auth::traits::AuthorizationActor;
 use p2panda_core::Hash;
 use thiserror::Error;
 
@@ -53,8 +52,6 @@ pub enum Role {
     Auth {
         /// The key that signed the event.
         author: [u8; 32],
-        /// A caller-verified authorization basis for delegated operations.
-        authorization_actor: Option<AuthorizationActor<AuthId>>,
         /// The group the event names, if any.
         group: Option<Hash>,
         /// The membership change.
@@ -202,7 +199,6 @@ impl Membership {
         let CausalEvent { id, after, role } = event;
         let Role::Auth {
             author,
-            authorization_actor,
             group,
             action,
         } = role
@@ -229,7 +225,6 @@ impl Membership {
         let op = AuthOperation {
             id,
             author: AuthId::Key(author),
-            authorization_actor,
             dependencies,
             group_id: AuthId::Group(group),
             action,
@@ -425,15 +420,8 @@ impl Membership {
         if leaves {
             return self.access_at(&deps, op.group_id, op.author).is_some();
         }
-        match op.authorization_actor {
-            Some(AuthorizationActor::Verified) => true,
-            Some(AuthorizationActor::Member(actor)) => self
-                .access_at(&deps, op.group_id, actor)
-                .is_some_and(|access| access.is_manage()),
-            None => self
-                .access_at(&deps, op.group_id, op.author)
-                .is_some_and(|access| access.is_manage()),
-        }
+        self.access_at(&deps, op.group_id, op.author)
+            .is_some_and(|access| access.is_manage())
     }
 
     /// Whether `author` is a member of `group`, with any access, at the causal position that
@@ -700,7 +688,6 @@ mod tests {
             after: after.iter().map(|a| id(*a)).collect(),
             role: Role::Auth {
                 author: key(author),
-                authorization_actor: None,
                 group: group.map(id),
                 action,
             },
@@ -946,7 +933,6 @@ mod tests {
             after: vec![],
             role: Role::Auth {
                 author: key(1),
-                authorization_actor: None,
                 group: Some(friendship),
                 action: GroupAction::Create { initial_members },
             },
@@ -1012,7 +998,6 @@ mod tests {
                 after: vec![id(10)],
                 role: Role::Auth {
                     author: key(1),
-                    authorization_actor: None,
                     group: None,
                     action: remove(2),
                 },

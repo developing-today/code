@@ -301,7 +301,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             };
             let event = sign(&self.key, self.next, self.head, None, ext).unwrap();
             assert!(
@@ -368,9 +367,11 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            store.author_events(&alice.author(), None, Some(0), 0).unwrap(),
-            [] as [AuthorEvent; 0]
+        assert!(
+            store
+                .author_events(&alice.author(), None, Some(0), 0)
+                .unwrap()
+                .is_empty()
         );
     }
 

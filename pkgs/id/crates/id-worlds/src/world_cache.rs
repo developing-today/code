@@ -14,21 +14,6 @@
 //! at install time, not the compiled bytes — and neither are the
 //! compile limits, which bound a job without changing its output.
 //!
-//! Per-function compiles (design #5964 §2.2 step 6) share this store.
-//! Their key is the same provenance components plus the function's
-//! interface hash (the canonical descriptor: binding name, shape,
-//! state schema and granted capability set), carried in
-//! [`CacheKeyInput::interface_hash`]. Only a `Some` interface hash
-//! changes the derivation: it switches the domain tag to
-//! `id-compiled-function-cache-key-v1` and appends the hash as a sixth
-//! length-prefixed component. A whole-world input leaves it `None` and
-//! hashes exactly as it always has (a test pins the old derivation),
-//! and because the domain tags differ a function key can never equal a
-//! world key, so a function compile can neither warm nor poison a
-//! world build. Function entries are otherwise ordinary entries:
-//! the same scopes, determinism gate, LRU, invalidation and digest
-//! re-verification on every hit apply.
-//!
 //! Sharing scopes (§2.3): an entry is stored at `author` scope (the
 //! default for unpublished source) or `server` scope. `public` is
 //! stubbed at `server` behaviour until P3, as the P1 issue allows.
@@ -94,22 +79,7 @@ pub struct CacheKeyInput {
     pub compiler_blake3: String,
     /// Compile target: `wasm32` or `x64musl`.
     pub target: String,
-    /// The function interface hash (design #5964 §2.2 step 6), set only
-    /// for a per-function compile. `Some` keys the entry by the canonical
-    /// interface descriptor too, under the function domain tag, so a
-    /// function key never equals a world key; `None` (a whole-world
-    /// build) leaves the key exactly as it was before functions existed.
-    pub interface_hash: Option<String>,
 }
-
-/// Domain tag of a whole-world key. Unchanged since P1, so every
-/// recorded world key still names its entry.
-const WORLD_KEY_DOMAIN: &[u8] = b"id-compiled-world-cache-key-v1\0";
-
-/// Domain tag of a per-function key (design #5964 §2.2 step 6). Distinct
-/// from [`WORLD_KEY_DOMAIN`], so a function key and a world key never
-/// share a preimage.
-const FUNCTION_KEY_DOMAIN: &[u8] = b"id-compiled-function-cache-key-v1\0";
 
 /// The DLL closure component of the key (§2.1, §3): BLAKE3 over the
 /// sorted content hashes of the linked DLL artifacts. No DLL linking
@@ -129,26 +99,12 @@ pub fn dll_closure_hash(artifact_hashes: &[String]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Derive the cache key from its components (§2.1).
-///
-/// The seed and the compile limits are deliberately not inputs. A
-/// whole-world input (`interface_hash` is `None`) hashes under the world
-/// domain tag exactly as before; a per-function input hashes under the
-/// function domain tag with its interface hash appended (design #5964
-/// §2.2 step 6), so the two key spaces never meet.
+/// Derive the cache key from its components (§2.1). The seed and the
+/// compile limits are deliberately not inputs.
 #[must_use]
 pub fn cache_key(input: &CacheKeyInput) -> String {
-    fn push(hasher: &mut blake3::Hasher, component: &str) {
-        let bytes = component.as_bytes();
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
-    }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(if input.interface_hash.is_some() {
-        FUNCTION_KEY_DOMAIN
-    } else {
-        WORLD_KEY_DOMAIN
-    });
+    hasher.update(b"id-compiled-world-cache-key-v1\0");
     for component in [
         input.platform_tree_hash.as_str(),
         input.source_closure_hash.as_str(),
@@ -156,10 +112,9 @@ pub fn cache_key(input: &CacheKeyInput) -> String {
         input.compiler_blake3.as_str(),
         input.target.as_str(),
     ] {
-        push(&mut hasher, component);
-    }
-    if let Some(interface_hash) = &input.interface_hash {
-        push(&mut hasher, interface_hash);
+        let bytes = component.as_bytes();
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -751,7 +706,6 @@ mod tests {
             dll_closure_hash: dll_closure_hash(&[]),
             compiler_blake3: "compiler-a".to_owned(),
             target: "wasm32".to_owned(),
-            interface_hash: None,
         }
     }
 
@@ -789,72 +743,6 @@ mod tests {
         );
         // The seed is not a component at all: two inputs that differ
         // only by seed are the same input here by construction.
-    }
-
-    /// The P1 world-key derivation, reproduced verbatim from before the
-    /// function key existed: the oracle the world key must still match.
-    fn p1_world_key(input: &CacheKeyInput) -> String {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"id-compiled-world-cache-key-v1\0");
-        for component in [
-            input.platform_tree_hash.as_str(),
-            input.source_closure_hash.as_str(),
-            input.dll_closure_hash.as_str(),
-            input.compiler_blake3.as_str(),
-            input.target.as_str(),
-        ] {
-            let bytes = component.as_bytes();
-            hasher.update(&(bytes.len() as u64).to_le_bytes());
-            hasher.update(bytes);
-        }
-        hasher.finalize().to_hex().to_string()
-    }
-
-    #[test]
-    fn world_keys_hash_exactly_as_before_the_function_key() {
-        // Oracle: design #5964 §2.2 step 6 — adding the interface
-        // component must not move any whole-world key: with no interface
-        // hash the key equals the P1 derivation, so every recorded world
-        // entry is still found under its key.
-        for source in ["source-a", "source-b", ""] {
-            let world = input(source);
-            assert_eq!(cache_key(&world), p1_world_key(&world));
-        }
-        let mut native = input("source-a");
-        native.target = "x64musl".to_owned();
-        native.dll_closure_hash = dll_closure_hash(&["lib".to_owned()]);
-        assert_eq!(cache_key(&native), p1_world_key(&native));
-    }
-
-    #[test]
-    fn function_keys_are_domain_separated_and_track_the_interface() {
-        // Oracle: design #5964 §2.2 step 6 — a function entry is keyed by
-        // (provenance triple, target, interface descriptor): the same
-        // provenance with an interface hash never shares a world key, and
-        // a different interface hash is a different key.
-        let world = input("source-a");
-        let mut function = world.clone();
-        function.interface_hash = Some("interface-a".to_owned());
-        let function_key = cache_key(&function);
-        assert_ne!(function_key, cache_key(&world), "function vs world key");
-        let mut other = function.clone();
-        other.interface_hash = Some("interface-b".to_owned());
-        assert_ne!(function_key, cache_key(&other), "interface is in the key");
-        // Even an empty interface hash is a function key, not a world key.
-        let mut empty = world.clone();
-        empty.interface_hash = Some(String::new());
-        assert_ne!(cache_key(&empty), cache_key(&world));
-        // And a function entry is an ordinary entry: stored and served by
-        // its own key only, never by the world key of the same sources.
-        let (_dir, cache) = cache(1 << 20);
-        cache
-            .store(&function, "alice", CacheScope::Author, b"module", "roc 1")
-            .unwrap();
-        assert_eq!(cache.lookup(&world, "alice").unwrap(), Lookup::Miss);
-        assert!(matches!(
-            cache.lookup(&function, "alice").unwrap(),
-            Lookup::Hit { .. }
-        ));
     }
 
     #[test]
@@ -1253,7 +1141,6 @@ mod tests {
             dll_closure_hash: dll_closure_hash(&[]),
             compiler_blake3: format!("compiler-{compiler}"),
             target: "wasm32".to_owned(),
-            interface_hash: None,
         }
     }
 

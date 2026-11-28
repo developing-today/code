@@ -215,60 +215,6 @@ func (r *Registry) AdoptSupervised(ctx context.Context) {
 	}
 }
 
-// AdoptSupervisedAfterTakeover is the takeover-commit adoption scan with a
-// bounded retry for the transient already-attached window. The predecessor
-// closes its supervisor socket on commit, but the supervisor clears the
-// attachment asynchronously on EOF, so an immediate scan can be refused
-// while the detach is still in flight. Only that refusal is retried, for
-// ~2s at 50ms intervals (well under limits.takeoverTimeout=15s); every
-// other quiet no-op stays quiet, and a persistent already-attached
-// refusal expires to the same quiet no-op the startup scan would do.
-func (r *Registry) AdoptSupervisedAfterTakeover(ctx context.Context) {
-	r.mu.RLock()
-	seen := map[*pool.Pool]bool{}
-	var pools []*pool.Pool
-	for _, name := range r.order {
-		if p := r.pools[name]; !seen[p] {
-			seen[p] = true
-			pools = append(pools, p)
-		}
-	}
-	r.mu.RUnlock()
-	for _, p := range pools {
-		adoptSupervisedWithDetachRetry(ctx, p.AdoptRunningSupervisedDetailed)
-	}
-}
-
-// adoptDetachRetryBudget caps the transient-detach retry; the interval
-// sets the poll cadence. Both stay well under takeoverTimeout.
-const (
-	adoptDetachRetryBudget   = 2 * time.Second
-	adoptDetachRetryInterval = 50 * time.Millisecond
-)
-
-// adoptSupervisedWithDetachRetry runs adopt once, retrying only the
-// transient already-attached refusal until budget expiry or ctx done.
-// It reports whether the pool was adopted.
-func adoptSupervisedWithDetachRetry(ctx context.Context, adopt func(context.Context) (bool, bool)) bool {
-	adopted, alreadyAttached := adopt(ctx)
-	if adopted || !alreadyAttached {
-		return adopted
-	}
-	deadline := time.Now().Add(adoptDetachRetryBudget)
-	for alreadyAttached && time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(adoptDetachRetryInterval):
-		}
-		adopted, alreadyAttached = adopt(ctx)
-		if adopted || !alreadyAttached {
-			return adopted
-		}
-	}
-	return false
-}
-
 // ReapOrphanedSupervisors runs the reap half of the #9963
 // adopt-or-reap scan at daemon startup: a supervisor socket no
 // configured supervised server maps to belongs to a server that

@@ -176,83 +176,6 @@ export type Resolution = {
 };
 
 /**
- * The top-level shape a caller dereferences in a daemon answer.
- *
- * `array` reads a JSON null as an empty list, because the daemon is Go and a
- * nil slice encodes as null; anything else that is not the named shape is
- * refused, so a wrong answer fails at the boundary with the route in the
- * message rather than later as a property read on undefined (#7983).
- */
-export type AnswerShape = "object" | "array";
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
-/** Check a parsed answer against its shape; throws naming the route. */
-export function checkAnswer(path: string, value: unknown, shape?: AnswerShape): unknown {
-  if (shape === "array") {
-    if (value === null) return [];
-    if (Array.isArray(value)) return value;
-    throw new Error(`mcpx ${path}: expected a JSON array from the daemon, got ${describeJson(value)}`);
-  }
-  if (shape === "object" && !isRecord(value)) {
-    throw new Error(`mcpx ${path}: expected a JSON object from the daemon, got ${describeJson(value)}`);
-  }
-  return value;
-}
-
-const describeJson = (v: unknown): string => (v === null ? "null" : Array.isArray(v) ? "an array" : typeof v);
-
-const optional = (v: Record<string, unknown>, key: string, type: "string" | "number" | "boolean"): boolean =>
-  v[key] === undefined || typeof v[key] === type;
-
-/**
- * A /v1/resolve answer, or undefined when it is not one.
- *
- * Discovery acts on `socket` and `running`, so both must be there with the
- * right types. The other strings are read as empty when absent, and refused
- * when present with another type. `sources` is a Go slice, so null is absent.
- */
-export function parseResolution(value: unknown): Resolution | undefined {
-  if (!isRecord(value)) return undefined;
-  if (typeof value.socket !== "string" || typeof value.running !== "boolean") return undefined;
-  for (const key of ["endpoint", "configPath", "configHash"]) {
-    if (!optional(value, key, "string")) return undefined;
-  }
-  const sources = value.sources;
-  if (sources !== undefined && sources !== null) {
-    if (!Array.isArray(sources) || !sources.every((s) => typeof s === "string")) return undefined;
-  }
-  return {
-    socket: value.socket,
-    endpoint: (value.endpoint as string | undefined) ?? "",
-    configPath: (value.configPath as string | undefined) ?? "",
-    configHash: (value.configHash as string | undefined) ?? "",
-    running: value.running,
-    ...(Array.isArray(sources) ? { sources: sources as string[] } : {}),
-  };
-}
-
-/** What GET /v1/health answers. */
-export type Health = {
-  status: string;
-  version?: string;
-  pid?: number;
-  uptime?: string;
-  endpoint?: string;
-  operationFingerprint?: string;
-};
-
-/** A /v1/health answer, or undefined when it is not one. */
-export function parseHealth(value: unknown): Health | undefined {
-  if (!isRecord(value) || typeof value.status !== "string") return undefined;
-  if (!optional(value, "pid", "number")) return undefined;
-  for (const key of ["version", "uptime", "endpoint", "operationFingerprint"]) {
-    if (!optional(value, key, "string")) return undefined;
-  }
-  return value as Health;
-}
-
-/**
  * What POST /v1/exec answers with `output: "structured"` -- the daemon's own
  * `execsvc.Result`, field for field.
  *
@@ -560,10 +483,10 @@ export class DaemonClient {
     return fetch(this.url(path), this.init(withDaemonAuth(init)));
   }
 
-  async get<T>(path: string, timeoutMs?: number, shape?: AnswerShape): Promise<T> {
+  async get<T>(path: string, timeoutMs?: number): Promise<T> {
     const res = await this.raw(path, timeoutMs ? withTimeout(timeoutMs) : {});
     if (!res.ok) throw new Error(`mcpx ${path}: ${res.status} ${res.statusText}`);
-    return checkAnswer(path, await res.json(), shape) as T;
+    return (await res.json()) as T;
   }
 
   /** A text/plain endpoint: /v1/types, /v1/catalog, /v1/client.ts. */
@@ -573,10 +496,10 @@ export class DaemonClient {
     return await res.text();
   }
 
-  async post<T>(path: string, body: unknown, timeoutMs?: number, shape?: AnswerShape): Promise<T> {
+  async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
     const res = await this.postRaw(path, body, timeoutMs);
     if (!res.ok) throw new Error(`mcpx ${path}: ${res.status} ${res.statusText}`);
-    return checkAnswer(path, await res.json(), shape) as T;
+    return (await res.json()) as T;
   }
 
   /** POST without throwing on status, so a 404 can be handled as a fact. */
@@ -604,9 +527,19 @@ export class DaemonClient {
    *
    * @op health
    */
-  async health(timeoutMs = TUNING.healthTimeoutMs): Promise<Health | undefined> {
+  async health(timeoutMs = TUNING.healthTimeoutMs): Promise<
+    | {
+        status: string;
+        version?: string;
+        pid?: number;
+        uptime?: string;
+        endpoint?: string;
+        operationFingerprint?: string;
+      }
+    | undefined
+  > {
     try {
-      return parseHealth(await this.get("/v1/health", timeoutMs));
+      return await this.get("/v1/health", timeoutMs);
     } catch {
       return undefined;
     }
@@ -623,7 +556,7 @@ export class DaemonClient {
    * @op status
    */
   status(): Promise<DaemonStatus> {
-    return this.get("/v1/status", undefined, "object");
+    return this.get("/v1/status");
   }
 
   /**
@@ -635,7 +568,7 @@ export class DaemonClient {
     try {
       const res = await this.raw(`/v1/resolve?dir=${encodeURIComponent(dir)}`, withTimeout(TUNING.resolveTimeoutMs));
       if (!res.ok) return undefined;
-      return parseResolution(await res.json());
+      return (await res.json()) as Resolution;
     } catch {
       return undefined;
     }
@@ -647,7 +580,7 @@ export class DaemonClient {
    * @op namespaces
    */
   namespaces(): Promise<Array<{ namespace: string; tools: number; description?: string }>> {
-    return this.get("/v1/namespaces?_", undefined, "array");
+    return this.get("/v1/namespaces?_");
   }
 
   /**
@@ -717,7 +650,7 @@ export class DaemonClient {
    */
   pendingElicitations(session?: string): Promise<unknown[]> {
     const q = session ? `?session=${encodeURIComponent(session)}` : "";
-    return this.get(`/v1/elicit${q}`, undefined, "array");
+    return this.get(`/v1/elicit${q}`);
   }
 
   /**
@@ -743,7 +676,7 @@ export class DaemonClient {
    * @op log_query
    */
   logQuery(filter: LogFilter = {}): Promise<{ records: LogRecord[]; chain?: LogChainLevel[] }> {
-    return this.get(`/v1/log${query(filter)}`, undefined, "object");
+    return this.get(`/v1/log${query(filter)}`);
   }
 
   /**
@@ -752,7 +685,7 @@ export class DaemonClient {
    * @op stats_query
    */
   stats(opts: StatsQuery = {}): Promise<{ dimension: string; rows: unknown }> {
-    return this.get(`/v1/stats${query(opts)}`, undefined, "object");
+    return this.get(`/v1/stats${query(opts)}`);
   }
 
   /**
@@ -762,7 +695,7 @@ export class DaemonClient {
    * @op registry_search
    */
   registrySearch(q: string, limit?: number): Promise<{ servers: RegistryEntry[]; truncated: boolean }> {
-    return this.get(`/v1/registry/search${query({ q, limit })}`, undefined, "object");
+    return this.get(`/v1/registry/search${query({ q, limit })}`);
   }
 
   /**
@@ -776,7 +709,7 @@ export class DaemonClient {
    * @op complete
    */
   complete(req: CompleteRequest): Promise<{ completion: Completion; upstream: boolean }> {
-    return this.post("/v1/complete", req, undefined, "object");
+    return this.post("/v1/complete", req);
   }
 
   /**
@@ -793,18 +726,13 @@ export class DaemonClient {
     args: Record<string, unknown>,
     opts: { ttl?: number; session?: string } = {},
   ): Promise<{ task: Task }> {
-    return this.post(
-      "/v1/call",
-      {
-        server: namespace,
-        tool,
-        args,
-        session: opts.session,
-        task: { ttl: opts.ttl },
-      },
-      undefined,
-      "object",
-    );
+    return this.post("/v1/call", {
+      server: namespace,
+      tool,
+      args,
+      session: opts.session,
+      task: { ttl: opts.ttl },
+    });
   }
 
   /**
@@ -813,7 +741,7 @@ export class DaemonClient {
    * @op tasks_list
    */
   tasks(): Promise<{ tasks: Task[] }> {
-    return this.get("/v1/tasks", undefined, "object");
+    return this.get("/v1/tasks");
   }
 
   /**
@@ -822,7 +750,7 @@ export class DaemonClient {
    * @op task_get
    */
   task(id: string): Promise<Task> {
-    return this.get(`/v1/tasks/${encodeURIComponent(id)}`, undefined, "object");
+    return this.get(`/v1/tasks/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -831,7 +759,7 @@ export class DaemonClient {
    * @op task_result
    */
   taskResult(id: string, waitMs?: number): Promise<{ result: unknown }> {
-    return this.get(`/v1/tasks/${encodeURIComponent(id)}/result${query({ waitMs })}`, undefined, "object");
+    return this.get(`/v1/tasks/${encodeURIComponent(id)}/result${query({ waitMs })}`);
   }
 
   /**
@@ -840,7 +768,7 @@ export class DaemonClient {
    * @op task_cancel
    */
   cancelTask(id: string): Promise<Task> {
-    return this.post(`/v1/tasks/${encodeURIComponent(id)}/cancel`, {}, undefined, "object");
+    return this.post(`/v1/tasks/${encodeURIComponent(id)}/cancel`, {});
   }
 
   /**

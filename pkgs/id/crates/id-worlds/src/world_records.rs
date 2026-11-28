@@ -36,7 +36,6 @@ use iroh_docs::{
 };
 use tokio::task::JoinHandle;
 
-use crate::program_publish_state::ProgramPublishFact;
 use crate::world::{
     MAX_RECORD_KEY_BYTES, MAX_RECORD_VALUE_BYTES, MAX_RECORDS, Records, WorldHandle,
 };
@@ -282,30 +281,6 @@ pub async fn read_records(doc: &Doc, blobs: &Store) -> Result<Records> {
         records.insert(key.to_owned(), value);
     }
     Ok(records)
-}
-
-/// Every program publish-state fact carried in `records` (#13742):
-/// the values under
-/// [`crate::program_publish_state::RECORD_KEY_PREFIX`], parsed and
-/// validated. This is the receipt-side companion of
-/// [`crate::program_publish_state::record_fact`]: a replicated records
-/// set yields its facts under the same checks the writer applied, so
-/// a peer reads exactly the states the owning world recorded — and a
-/// malformed or forged fact is an error here, not a guessed state.
-///
-/// # Errors
-///
-/// A value under the publish prefix is not a well-formed, valid fact.
-pub fn program_publish_facts(records: &Records) -> Result<Vec<ProgramPublishFact>> {
-    let mut facts = Vec::new();
-    for (key, value) in records {
-        if key.starts_with(crate::program_publish_state::RECORD_KEY_PREFIX) {
-            let fact = crate::program_publish_state::parse_fact(value)
-                .with_context(|| format!("publish-state record {key:?}"))?;
-            facts.push(fact);
-        }
-    }
-    Ok(facts)
 }
 
 /// Replicate a records doc from its read ticket into `docs` and return its

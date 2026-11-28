@@ -67,14 +67,14 @@ parity and evaluation instrument, not the install path.
 One package installs exactly six binaries, all version `0.1.0`,
 each with a `--version` surface:
 
-| Binary                  | What it is                                                                                                                                                                                  |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atlas-search`          | The access layer: `search`, `get-chunk`, `serve`, `init`, `fetch-model`, `traces`, and `feedback`. The package's `mainProgram`. `--version` prints `atlas-search 0.1.0+g<source revision>`. |
-| `atlas-stage`           | Staging units and the staging registry: `provision`, `lookup`, `ingest`, `items`, `promote`, `units`. `--version` prints `atlas-stage 0.1.0+g<source revision>`.                            |
-| `atlas-classify`        | The classification operating procedure: `run`, `schema-review`, `schema-apply` against a corpus database.                                                                                   |
-| `atlas-eval`            | The offline ranking-evaluation runner: two positional arguments, an eval document and a `dev` or `test` split.                                                                              |
-| `atlas-sweep`           | The ingestion sweep runner: pause/resume a source class, run one sweep request, manage dead letters, report. It creates no schedule; cadence is an operator decision.                       |
-| `atlas-github-comments` | The GitHub-comments extraction feed: incremental, watermark-based extraction of the estate's issue and review comments into corpus records.                                                 |
+| Binary                  | What it is                                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `atlas-search`          | The access layer: `search`, `get-chunk`, `serve`, `init`, `fetch-model`, `traces`, and `feedback`. The package's `mainProgram`. `--version` prints `atlas-search 0.1.0`. |
+| `atlas-stage`           | Staging units and the staging registry: `provision`, `lookup`, `ingest`, `items`, `promote`, `units`. `--version` prints `atlas-stage 0.1.0`.                            |
+| `atlas-classify`        | The classification operating procedure: `run`, `schema-review`, `schema-apply` against a corpus database.                                                                |
+| `atlas-eval`            | The offline ranking-evaluation runner: two positional arguments, an eval document and a `dev` or `test` split.                                                           |
+| `atlas-sweep`           | The ingestion sweep runner: pause/resume a source class, run one sweep request, manage dead letters, report. It creates no schedule; cadence is an operator decision.    |
+| `atlas-github-comments` | The GitHub-comments extraction feed: incremental, watermark-based extraction of the estate's issue and review comments into corpus records.                              |
 
 The package build runs the test suite in its check phase and an install
 check afterwards: `fixtures/smoke_check.py` runs one full-text-only query

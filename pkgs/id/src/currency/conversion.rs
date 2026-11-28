@@ -66,23 +66,16 @@
 //! a quote pays exactly the quoted `computed_y` and fee.
 //! Issuance commits no usage: a quote is not a posting, and
 //! the cap is re-checked by the submission's own live-state
-//! checks. Quotes are intentionally multi-use within their
-//! lifetime (#13864): each execution re-checks the cap, so
-//! one `quote_id` backing repeated executions is bounded by
-//! the 60-second lifetime and the authorisation cap. Expired
-//! quotes never accumulate: every entry past
-//! `quote_expires_at` is evicted on
-//! [`ConversionVerifier::issue_quote`] and
-//! [`ConversionVerifier::verify_quoted`].
+//! checks.
 //!
 //! Scope boundary: this module verifies and quotes; it does
-//! not settle. The gateway service composes a verified
-//! conversion into the linked transfer chain and executes it
-//! (#14393, `GatewayService::handle_convert`); because the F3
-//! `Convert` op carries no authorisation reference, the
-//! request presents the chain objects alongside the signed
-//! envelope, as the issue and transfer ops present their
-//! graph objects.
+//! not settle. Composing the verified conversion into the
+//! linked transfer chain and wiring this flow into the
+//! gateway service's request pipeline is the execution
+//! programme beyond #3802 — the F3 `Convert` op carries no
+//! authorisation reference, so the submission shape here
+//! (presented chain objects plus named liquidity accounts)
+//! is the input that work will adapt.
 
 use std::collections::BTreeMap;
 
@@ -163,14 +156,6 @@ pub struct BindingRecord {
     pub owner_id: String,
     /// The factory derivation salt the account was created with.
     pub salt: String,
-    /// The factory account kind the binding re-derives under:
-    /// [`AccountKind::Liquidity`] for an LP's shared liquidity
-    /// account, or [`AccountKind::Holder`] where the control
-    /// plane binds the LP's constrained holder account as its
-    /// conversion inventory (#2063 §2.3; the gateway service's
-    /// production binding does, see
-    /// [`super::gateway_service::GatewayConversionControl`]).
-    pub kind: AccountKind,
     /// The account's control-plane lifecycle status.
     pub status: AccountStatus,
 }
@@ -600,18 +585,6 @@ impl ConversionUsage {
         self.posted
             .insert((*issuer, authorisation_id), used.saturating_add(amount));
     }
-
-    /// Return `amount` of volume to `authorisation_id` of
-    /// `issuer`. The gateway service commits volume when it
-    /// writes a conversion's intent ahead of submission (the cap
-    /// reservation of #2063 §2.4) and calls this when the
-    /// cluster definitely refuses the chain, so a failed
-    /// conversion never consumes the cap.
-    pub fn release(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
-        let used = self.used_volume(issuer, authorisation_id);
-        self.posted
-            .insert((*issuer, authorisation_id), used.saturating_sub(amount));
-    }
 }
 
 /// The gateway's conversion verifier: the verification flow
@@ -643,23 +616,10 @@ impl ConversionVerifier {
         self.quotes.get(&quote_id)
     }
 
-    /// Drop every quote past its expiry at `now`
-    /// (#13864): the book holds only live quotes, so a
-    /// long-lived gateway cannot accumulate dead weight.
-    fn evict_expired(&mut self, now: u64) {
-        self.quotes.retain(|_, quote| !quote.is_expired(now));
-    }
-
     /// Commit posted volume (execution layer only; see
     /// [`ConversionUsage::record_posted`]).
     pub fn record_posted(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
         self.usage.record_posted(issuer, authorisation_id, amount);
-    }
-
-    /// Return reserved volume (execution layer only; see
-    /// [`ConversionUsage::release`]).
-    pub fn release(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
-        self.usage.release(issuer, authorisation_id, amount);
     }
 
     /// Verify one conversion submission, composing the checks
@@ -801,9 +761,7 @@ impl ConversionVerifier {
                 max_amount: authorisation.max_amount,
             });
         }
-        let used = self
-            .usage
-            .used_volume(&submission.issuer, submission.authorisation_id);
+        let used = self.usage.used_volume(&submission.issuer, submission.authorisation_id);
         let remaining_volume = authorisation.total_cap.saturating_sub(used);
         if submission.amount > remaining_volume {
             return Err(FailedPreSubmit::CapExhausted { remaining_volume });
@@ -868,9 +826,6 @@ impl ConversionVerifier {
         source_scale: u32,
         dest_scale: u32,
     ) -> Result<ConversionQuote, FailedPreSubmit> {
-        // #13864: sweep dead entries first — even a refused
-        // issuance leaves no expired weight behind.
-        self.evict_expired(submission.now);
         let folded = self.verify_folded(control, submission)?;
         let authorisation = &folded.verified.authorisation;
         let computed_y = convert_amount(
@@ -930,42 +885,26 @@ impl ConversionVerifier {
     /// pins. The returned conversion executes with exactly
     /// the quoted `computed_y` and fee.
     ///
-    /// Expired quotes never accumulate (#13864): every entry
-    /// past `quote_expires_at` is evicted, and an expired
-    /// quote under verification is evicted as it is refused
-    /// — the typed [`FailedPreSubmit::QuoteExpired`] keeps
-    /// its contract. Takes `&mut self` for that eviction;
-    /// verification itself still never commits usage.
-    ///
     /// # Errors
     ///
     /// Returns the typed [`FailedPreSubmit`] for the first
     /// check the submission fails; every variant is a
     /// pre-flight refusal with zero ledger writes.
     pub fn verify_quoted(
-        &mut self,
+        &self,
         control: &impl ConversionControl,
         submission: &ConversionSubmission,
         quote_id: u128,
     ) -> Result<VerifiedQuotedConversion, FailedPreSubmit> {
-        // #13864: remember whether the quote under
-        // verification is already dead, sweep the book,
-        // then refuse the dead quote with the typed expiry
-        // error — evicted as refused, contract preserved.
-        let expired_at = match self.quotes.get(&quote_id) {
-            Some(quote) if quote.is_expired(submission.now) => Some(quote.quote_expires_at),
-            _ => None,
-        };
-        self.evict_expired(submission.now);
-        if let Some(quote_expires_at) = expired_at {
-            return Err(FailedPreSubmit::QuoteExpired { quote_expires_at });
-        }
         let quote = self
             .quotes
             .get(&quote_id)
             .ok_or(FailedPreSubmit::UnknownQuote)?;
-        // The sweep above removed every expired entry, so a
-        // quote found here is live by construction.
+        if quote.is_expired(submission.now) {
+            return Err(FailedPreSubmit::QuoteExpired {
+                quote_expires_at: quote.quote_expires_at,
+            });
+        }
         if quote.authorisation_id != submission.authorisation_id || quote.x != submission.amount {
             return Err(FailedPreSubmit::QuoteMismatch);
         }
@@ -1018,7 +957,7 @@ fn check_binding(
         .ok_or(FailedPreSubmit::UnboundAccount { side })?;
     let factory = account_spec(
         binding.ledger_id,
-        binding.kind,
+        AccountKind::Liquidity,
         &binding.owner_id,
         &binding.salt,
     );
@@ -1112,7 +1051,6 @@ mod tests {
             ledger_id,
             owner_id: owner,
             salt: String::new(),
-            kind: AccountKind::Liquidity,
             status: AccountStatus::Open,
         }
     }
@@ -1156,9 +1094,7 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier
-            .usage()
-            .used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify(control, submission)
             .expect_err("submission must be refused pre-flight");
@@ -1169,9 +1105,7 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier
-                .usage()
-                .used_volume(&submission.issuer, submission.authorisation_id),
+            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1202,12 +1136,7 @@ mod tests {
         assert_eq!(verified.dest_amount, 81);
         assert_eq!(verified.remaining_volume, 1_000_000 - 100);
         // Verification alone commits no usage.
-        assert_eq!(
-            verifier
-                .usage()
-                .used_volume(&super::super::issuer_id(&lp_key()), 7),
-            0
-        );
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 
     #[test]
@@ -1277,7 +1206,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();
@@ -1523,16 +1451,14 @@ mod tests {
     /// variant, FAILED_PRE_SUBMIT disposition, usage
     /// untouched, and zero ledger writes.
     fn assert_quoted_pre_submit(
-        verifier: &mut ConversionVerifier,
+        verifier: &ConversionVerifier,
         control: &impl ConversionControl,
         submission: &ConversionSubmission,
         quote_id: u128,
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier
-            .usage()
-            .used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify_quoted(control, submission, quote_id)
             .expect_err("quoted submission must be refused pre-flight");
@@ -1543,9 +1469,7 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier
-                .usage()
-                .used_volume(&submission.issuer, submission.authorisation_id),
+            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1593,12 +1517,7 @@ mod tests {
         // The gateway's book holds the issued quote; issuance
         // committed no usage.
         assert_eq!(verifier.quote(42), Some(&quote));
-        assert_eq!(
-            verifier
-                .usage()
-                .used_volume(&super::super::issuer_id(&lp_key()), 7),
-            0
-        );
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 
     #[test]
@@ -1700,7 +1619,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.now = quote.quote_expires_at;
         assert_quoted_pre_submit(
-            &mut verifier,
+            &verifier,
             &eligible_control(),
             &submission,
             44,
@@ -1726,7 +1645,7 @@ mod tests {
             reason: None,
         })];
         assert_quoted_pre_submit(
-            &mut verifier,
+            &verifier,
             &eligible_control(),
             &submission,
             45,
@@ -1757,7 +1676,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.authorisations = vec![v1, v2_event];
         assert_quoted_pre_submit(
-            &mut verifier,
+            &verifier,
             &eligible_control(),
             &submission,
             46,
@@ -1774,7 +1693,7 @@ mod tests {
         // reference an issued quote; an id this gateway never
         // issued binds to nothing.
         assert_quoted_pre_submit(
-            &mut ConversionVerifier::new(),
+            &ConversionVerifier::new(),
             &eligible_control(),
             &valid_submission(),
             999,
@@ -1792,7 +1711,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.amount = 200;
         assert_quoted_pre_submit(
-            &mut verifier,
+            &verifier,
             &eligible_control(),
             &submission,
             48,
@@ -1824,54 +1743,6 @@ mod tests {
         assert_eq!(executed.fee(), 1);
         assert_eq!(executed.remaining_volume, 1_000_000 - 100);
         // Execution verification alone commits no usage.
-        assert_eq!(
-            verifier
-                .usage()
-                .used_volume(&super::super::issuer_id(&lp_key()), 7),
-            0
-        );
-    }
-
-    #[test]
-    fn expired_quotes_are_evicted_on_issuance_not_accumulated() {
-        // Oracle: #13864 acceptance — expired quotes must
-        // not accumulate: issuing past their expiry sweeps
-        // the dead entries, so the book holds only the new
-        // live quote.
-        let mut verifier = ConversionVerifier::new();
-        issue_valid_quote(&mut verifier, 60);
-        issue_valid_quote(&mut verifier, 61);
-        assert_eq!(verifier.quotes.len(), 2);
-        let mut submission = valid_submission();
-        submission.now += QUOTE_LIFETIME_SECS;
-        let quote = verifier
-            .issue_quote(&eligible_control(), &submission, 62, 0, 0)
-            .unwrap();
-        assert_eq!(verifier.quote(60), None);
-        assert_eq!(verifier.quote(61), None);
-        assert_eq!(verifier.quote(62), Some(&quote));
-        assert_eq!(verifier.quotes.len(), 1);
-    }
-
-    #[test]
-    fn expired_quote_is_evicted_as_it_is_refused() {
-        // Oracle: #13864 acceptance — verifying under an
-        // expired quote keeps the typed QuoteExpired refusal
-        // and evicts the dead entry instead of leaving it in
-        // the book.
-        let mut verifier = ConversionVerifier::new();
-        let quote = issue_valid_quote(&mut verifier, 63);
-        let mut submission = valid_submission();
-        submission.now = quote.quote_expires_at;
-        assert_quoted_pre_submit(
-            &mut verifier,
-            &eligible_control(),
-            &submission,
-            63,
-            &FailedPreSubmit::QuoteExpired {
-                quote_expires_at: quote.quote_expires_at,
-            },
-        );
-        assert_eq!(verifier.quote(63), None);
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 }

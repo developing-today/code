@@ -31,10 +31,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::cap_class::{
-    CLASS_DEVICE_MICROPHONE, CLASS_DEVICE_MICROPHONE_CAPTURE, CLASS_FS_READ_ARBITRARY,
-    CLASS_FS_SANDBOX, CLASS_NET_OUT, CLASS_NONE,
-};
+use crate::cap_class::{CLASS_FS_READ_ARBITRARY, CLASS_FS_SANDBOX, CLASS_NET_OUT, CLASS_NONE};
 use crate::world_caps::{ProviderRegistry, is_sensor_cap};
 
 /// The subsumption order of #5999 §3.1: `subsumes(covering, covered)`
@@ -49,9 +46,6 @@ use crate::world_caps::{ProviderRegistry, is_sensor_cap};
 ///   message sets before the comparison; the relation is stated for
 ///   completeness of the lattice);
 /// - `fs.sandbox ≼ fs.read.arbitrary`;
-/// - `device.microphone ≼ device.microphone.capture` (#13004 §5 —
-///   accepting raw audio out covers on-device transcription, never the
-///   reverse);
 /// - `net.host.<name> ≼ net.out` for every per-host class.
 ///
 /// In particular `unknown` is subsumed by nothing but itself and
@@ -69,8 +63,7 @@ pub fn subsumes(covering: &str, covered: &str) -> bool {
         return true;
     }
     match (covered, covering) {
-        (CLASS_FS_SANDBOX, CLASS_FS_READ_ARBITRARY)
-        | (CLASS_DEVICE_MICROPHONE, CLASS_DEVICE_MICROPHONE_CAPTURE) => true,
+        (CLASS_FS_SANDBOX, CLASS_FS_READ_ARBITRARY) => true,
         (narrow, CLASS_NET_OUT) => {
             narrow.len() > "net.host.".len() && narrow.starts_with("net.host.")
         }
@@ -194,10 +187,9 @@ pub fn uncomputable_diff() -> CapDiff {
 mod tests {
     use super::*;
     use crate::cap_class::{
-        CLASS_CHAT_READ, CLASS_CHAT_WRITE, CLASS_DEVICE_FORM, CLASS_DEVICE_KEYBOARD,
-        CLASS_DEVICE_LOCATION, CLASS_DEVICE_NOTIFY, CLASS_DEVICE_SCREEN, CLASS_DEVICE_SPEAKER,
-        CLASS_FS_READ_SELECTED, CLASS_UNKNOWN, CLASS_WORLD_NOTIFY, CLASS_WORLD_PRESENCE,
-        CLASS_WORLD_RECORDS, CLASS_WORLD_SCHEDULE, CLASS_WORLD_STORAGE,
+        CLASS_CHAT_READ, CLASS_CHAT_WRITE, CLASS_DEVICE_KEYBOARD, CLASS_DEVICE_LOCATION,
+        CLASS_DEVICE_SCREEN, CLASS_UNKNOWN, CLASS_WORLD_PRESENCE, CLASS_WORLD_RECORDS,
+        CLASS_WORLD_SCHEDULE,
     };
     use crate::world_caps::PROVIDER_REGISTRY;
 
@@ -230,30 +222,6 @@ mod tests {
         assert!(subsumes(CLASS_NET_OUT, "net.host.example.com"));
         assert!(!subsumes("net.host.example.com", CLASS_NET_OUT));
         assert!(!subsumes(CLASS_NET_OUT, "net.host."));
-        // #13004 §5: raw audio out covers on-device transcription.
-        assert!(subsumes(
-            CLASS_DEVICE_MICROPHONE_CAPTURE,
-            CLASS_DEVICE_MICROPHONE
-        ));
-        assert!(!subsumes(
-            CLASS_DEVICE_MICROPHONE,
-            CLASS_DEVICE_MICROPHONE_CAPTURE
-        ));
-        // #13004 §7: every other pair among the new classes and their
-        // neighbours is incomparable, in both directions.
-        for (a, b) in [
-            (CLASS_WORLD_STORAGE, CLASS_WORLD_RECORDS),
-            (CLASS_WORLD_NOTIFY, CLASS_CHAT_WRITE),
-            (CLASS_DEVICE_FORM, CLASS_DEVICE_SCREEN),
-            (CLASS_DEVICE_SPEAKER, CLASS_DEVICE_SCREEN),
-            (CLASS_DEVICE_SPEAKER, CLASS_DEVICE_NOTIFY),
-            (CLASS_DEVICE_NOTIFY, CLASS_WORLD_NOTIFY),
-            (CLASS_FS_READ_SELECTED, CLASS_FS_READ_ARBITRARY),
-            (CLASS_FS_READ_SELECTED, CLASS_FS_SANDBOX),
-        ] {
-            assert!(!subsumes(a, b), "{a} must not cover {b}");
-            assert!(!subsumes(b, a), "{b} must not cover {a}");
-        }
         // Incomparable pairs: no collapse from a shared prefix.
         assert!(!subsumes(CLASS_CHAT_WRITE, CLASS_CHAT_READ));
         assert!(!subsumes(CLASS_CHAT_READ, CLASS_CHAT_WRITE));
@@ -325,9 +293,8 @@ mod tests {
     fn message_set_expands_star_as_the_ledger_would() {
         let set = message_set(&PROVIDER_REGISTRY, &names(&["*"]), &BTreeSet::new());
         // Every non-sensor catalog class is reached, including
-        // net.out via http.fetch and the #13004 classes. Since #13004
-        // assigned every registered name a class, `*` no longer
-        // reaches `unknown`.
+        // net.out via http.fetch and `unknown` via the names whose
+        // class assignment is still undesigned.
         for expected in [
             CLASS_CHAT_READ,
             CLASS_CHAT_WRITE,
@@ -337,22 +304,13 @@ mod tests {
             CLASS_DEVICE_SCREEN,
             CLASS_DEVICE_KEYBOARD,
             CLASS_NET_OUT,
-            CLASS_WORLD_STORAGE,
-            CLASS_WORLD_NOTIFY,
-            CLASS_DEVICE_FORM,
-            CLASS_DEVICE_SPEAKER,
-            CLASS_FS_READ_SELECTED,
-            CLASS_DEVICE_NOTIFY,
+            CLASS_UNKNOWN,
         ] {
             assert!(set.contains(expected), "{expected}");
         }
-        assert!(!set.contains(CLASS_UNKNOWN));
-        // Sensor caps are not reached by `*`: device.location and the
-        // two microphone classes need an explicit entry, exactly as in
-        // the ledger.
+        // Sensor caps are not reached by `*`: device.location needs
+        // an explicit entry, exactly as in the ledger.
         assert!(!set.contains(CLASS_DEVICE_LOCATION));
-        assert!(!set.contains(CLASS_DEVICE_MICROPHONE));
-        assert!(!set.contains(CLASS_DEVICE_MICROPHONE_CAPTURE));
     }
 
     #[test]
@@ -364,56 +322,6 @@ mod tests {
         // (§3.2 rule 2); only chat.write is new.
         assert!(diff.triggers());
         assert_eq!(diff.new_classes, [CLASS_CHAT_WRITE]);
-    }
-
-    #[test]
-    fn microphone_capture_covers_transcription_never_the_reverse() {
-        // #13004 §5: adding speech.capture to a baseline that accepted
-        // transcription is the text → raw-audio escalation and must
-        // trigger; adding transcription under accepted capture is
-        // silent.
-        let set = message_set(
-            &PROVIDER_REGISTRY,
-            &names(&["speech.transcribe", "speech.capture"]),
-            &BTreeSet::new(),
-        );
-        assert_eq!(set, classes(&[CLASS_DEVICE_MICROPHONE_CAPTURE]));
-        let escalation = compare(
-            &classes(&[CLASS_DEVICE_MICROPHONE]),
-            &classes(&[CLASS_DEVICE_MICROPHONE_CAPTURE]),
-        );
-        assert!(escalation.triggers());
-        assert_eq!(escalation.new_classes, [CLASS_DEVICE_MICROPHONE_CAPTURE]);
-        let narrowing = compare(
-            &classes(&[CLASS_DEVICE_MICROPHONE_CAPTURE]),
-            &classes(&[CLASS_DEVICE_MICROPHONE]),
-        );
-        assert!(!narrowing.triggers());
-    }
-
-    #[test]
-    fn storage_writes_are_new_under_a_records_baseline() {
-        // #13004 §1: a baseline that accepted world.records (reads)
-        // does not silently gain write authority.
-        let baseline = message_set(
-            &PROVIDER_REGISTRY,
-            &names(&["records.read"]),
-            &BTreeSet::new(),
-        );
-        let reads = message_set(
-            &PROVIDER_REGISTRY,
-            &names(&["records.read", "kv.get", "blob.get"]),
-            &BTreeSet::new(),
-        );
-        assert!(!compare(&baseline, &reads).triggers());
-        let writes = message_set(
-            &PROVIDER_REGISTRY,
-            &names(&["records.read", "kv.set"]),
-            &BTreeSet::new(),
-        );
-        let diff = compare(&baseline, &writes);
-        assert!(diff.triggers());
-        assert_eq!(diff.new_classes, [CLASS_WORLD_STORAGE]);
     }
 
     #[test]

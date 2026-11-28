@@ -37,7 +37,6 @@ fn ext(kind: &str) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     }
 }
 
@@ -213,11 +212,11 @@ fn test_discovery_finds_sets_by_scope_with_their_expansions() {
     assert!(public_hit.expanded.contains(&key_author(CAROL)));
 
     // A scope nothing published matches nothing.
-    assert_eq!(
+    assert!(
         store
             .discover_writer_sets(Some("nope"), &resolution)
-            .unwrap(),
-        [] as [id::event_store::DiscoveredWriterSet; 0]
+            .unwrap()
+            .is_empty()
     );
 }
 

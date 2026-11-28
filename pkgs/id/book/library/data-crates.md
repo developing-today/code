@@ -4,7 +4,7 @@ Source: primary sources are the `lib.rs` and `Cargo.toml` files of [pkgs/id/crat
 
 Six crates hold the data layer under the world runtime: `id-core` (foundation leaves), `id-store` (blobs, chains, documents, tags, search), `id-events` (the event store and the group projection), `id-sync` (log sync, the meta protocol, envelopes, artifacts), `id-directory` (the home-server directory), and `id-groups` (group policy and enforcement). All six are reachable through the facade at `id::` paths (see [The id facade crate](facade.md) and the map in [The crates](crates.md)). The on-disk formats these crates own are inventoried in [Data stores and schemas](../reference/data-stores.md).
 
-## id-core — 68 public modules
+## id-core — 58 public modules
 
 Purpose (from its `Cargo.toml`): "Foundation leaf modules of the id crate (Phase 1 of the pkgs/id crate split, #3447)". Its `lib.rs` states the layering rule directly: the modules here are the crate's leaves — everything in the binary crate depends on them, and they depended on almost nothing in it. At 79 `.rs` files it is the largest leaf crate by file count after `id-worlds` and `id-cli`.
 
@@ -18,7 +18,7 @@ Features: `default = ["world", "sandbox"]`; `world` adds `rmp-serde` and gates `
 
 Embedding example: the facade binary calls this crate by its direct path at `pkgs/id/src/main.rs:195` — `let provenance = id_core::discovery::defaults_provenance();` — and the integration suite reaches the same modules through facade paths, for example `id::waiting::WaitingLimits` in `pkgs/id/tests/first_app_poc.rs`.
 
-## id-store — 32 public modules
+## id-store — 26 public modules
 
 Purpose (from its `Cargo.toml`): "Store layer of the id crate: store traits, blob store, event headers, documents, tags and search (pkgs/id crate split step 2a, #4405)". Its `lib.rs` records two vocabularies it owns for layering reasons: the event store's own types (`event_types`, `range`) sit below the event-store implementation in `id-events`, and the op vocabularies the signed header embeds (`chat`, `notes`, `note_links`, `session_checkpoint`, `issuer_rotation`, `policy`) live with `chain::ChainExt`, which carries them as fields.
 
@@ -42,7 +42,7 @@ Features: `default = []` only. Dependents: the facade, `id-cli`, `id-directory`,
 
 Embedding example: `pkgs/id/tests/first_app_poc.rs:33-45` imports `event_store::{EventStore, Ingest}` and the `idset` projection through facade paths in the same import block as the `id-store` modules, and the worked example in `pkgs/id/examples/first-app-poc/README.md` records that the PoC's counted did-it view is an `id-events` / `id-store` composition, not new protocol code.
 
-## id-sync — 27 public modules
+## id-sync — 21 public modules
 
 Purpose (from its `Cargo.toml`): "Sync layer of the id crate: log sync, the meta protocol, file operations and the meta client wire half (pkgs/id crate split step 3, #4406)". Step 3c added the friend-envelope and artifact family (`envelope`, `envelope_net`, `envelope_outbox`, `artifact`), seamed to worlds and the directory through `host::SessionHost` and `artifact::ArtifactSink`.
 

@@ -47,7 +47,6 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
-pub mod spill_controller;
 pub mod spill_gate;
 pub mod spill_pool;
 mod upgrade;
@@ -87,12 +86,11 @@ pub use journal::{
     JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
     JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV, JOURNAL_VERSION_LEASE_POSITION,
     JOURNAL_VERSION_NOTIFY, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
-    JOURNAL_VERSION_PRESENTATION_POLICY, JOURNAL_VERSION_PROGRAM_BUNDLE,
-    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
-    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
-    journal_version_required_by,
+    JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY,
+    JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE, JournalAckMode,
+    JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource,
+    MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -1709,9 +1707,7 @@ pub(crate) fn next_schedule_wake(
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
     let wake = now_instant + wait;
     Some(if wait.is_zero() {
-        not_before
-            .filter(|deadline| *deadline > wake)
-            .unwrap_or(wake)
+        not_before.filter(|deadline| *deadline > wake).unwrap_or(wake)
     } else {
         wake
     })

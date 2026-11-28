@@ -46,20 +46,6 @@ use super::*;
 /// the dedupe check itself, at repair time (#13191).
 pub(crate) const REPAIR_DEDUPE_BASIS: &str = "fleet queue repair: dedupe re-checked live at repair time; no other live task holds this work identity or dedupe key";
 
-const QUARANTINE_PREFIX: &str = "quarantined by claim path";
-
-/// #13579: an independent hold on a blocked row. A lane or manual
-/// block records its blocker and reason in progress/result, and a
-/// dependency block keeps a live dep record; any of these must
-/// survive a payload repair.
-fn repair_hold_active(row: &Value) -> bool {
-    let progress = row.get("progress").cloned().unwrap_or(json!({}));
-    dep_block_active(row)
-        || progress.get("blocked_via").is_some()
-        || progress.get("blocker").is_some()
-        || progress.get("reason_class").is_some()
-}
-
 /// Another live, valid task holding this row's dedupe key in the
 /// same queue, if any. The key half of the dedupe re-check: a
 /// quarantined (invalid) row never counts as a holder — it
@@ -105,68 +91,6 @@ pub(crate) fn verb_repair(t: &TursoBackend, req: &Value) -> Value {
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let op_id = format!("repair:{task_id}:{}:{worker}", now_iso());
-    let work = if dry_run {
-        repair_in(t, task_id, &worker, &reason, true, &op_id)
-    } else {
-        match t.begin_stream() {
-            Err(e) => Err(e),
-            Ok(tx) => match repair_in(&tx, task_id, &worker, &reason, false, &op_id) {
-                Ok(report) => match tx.end_stream(true) {
-                    Ok(()) => Ok(report),
-                    Err(e) => reconcile_commit(t, task_id, &op_id, report, e),
-                },
-                Err(e) => {
-                    let _ = tx.end_stream(false);
-                    Err(e)
-                }
-            },
-        }
-    };
-    match work {
-        Ok(report) => ok(json!({"row": report})),
-        Err(e) if e.starts_with("repair_task:") => fail(5, e),
-        Err(e) => terr(e),
-    }
-}
-
-/// #13579: a COMMIT whose response was lost may still have
-/// landed. The repair event carries the operation id, so a
-/// committed repair is found by that id and reported as the
-/// repair; a repair that never committed reports the failure.
-fn reconcile_commit(
-    t: &TursoBackend,
-    task_id: i64,
-    op_id: &str,
-    report: Value,
-    err: TErr,
-) -> Result<Value, TErr> {
-    let found = t.query_objs(
-        "SELECT id FROM events WHERE task_id = ? AND kind = 'repaired' AND detail LIKE ?",
-        &[Arg::Int(task_id), Arg::Text(format!("%{op_id}%"))],
-        &[],
-    );
-    match found {
-        Ok(rows) if !rows.is_empty() => Ok(report),
-        _ => Err(format!(
-            "repair_task: task {task_id}: commit outcome unknown ({err}); \
-             operation {op_id} is not in the store, so nothing was committed"
-        )),
-    }
-}
-
-/// #13579: one repair, run on `t`. A non-dry run passes a stream
-/// backend, so every read and write here is one transaction.
-fn repair_in(
-    t: &TursoBackend,
-    task_id: i64,
-    worker: &str,
-    reason: &str,
-    dry_run: bool,
-    op_id: &str,
-) -> Result<Value, String> {
-    let worker = worker.to_string();
-    let reason = reason.to_string();
     let work = (|| -> Result<Value, String> {
         let Some(row) = get_task(t, task_id)? else {
             return Err(format!("repair_task: task {task_id} does not exist"));
@@ -352,32 +276,24 @@ fn repair_in(
         // error is discarded — the packet it named is fixed. A
         // non-blocked task keeps its state and any unrelated
         // recorded error.
-        // #13579: a blocked row is released only on positive
-        // claim-quarantine provenance with no independent hold
-        // (lane/manual block metadata, or a live dep block). Any
-        // other blocked row keeps its status, error and metadata.
+        let restore_status = if status == "blocked" && !dep_block_active(&row) {
+            "queued"
+        } else {
+            status.as_str()
+        };
         let recorded_error = row
             .get("last_error")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let quarantined = recorded_error.starts_with(QUARANTINE_PREFIX);
-        let restore_status = if status == "blocked" {
-            if quarantined && !repair_hold_active(&row) {
-                "queued"
+        let new_error: Option<&str> =
+            if status == "blocked" || recorded_error.starts_with("quarantined by claim path") {
+                None
+            } else if recorded_error.is_empty() {
+                None
             } else {
-                "blocked"
-            }
-        } else {
-            status.as_str()
-        };
-        let new_error: Option<&str> = if restore_status == "blocked" {
-            (!recorded_error.is_empty()).then_some(recorded_error.as_str())
-        } else if quarantined || recorded_error.is_empty() {
-            None
-        } else {
-            Some(recorded_error.as_str())
-        };
+                Some(recorded_error.as_str())
+            };
         if dry_run {
             return Ok(json!({
                 "task_id": task_id, "outcome": "dry_run",
@@ -419,7 +335,6 @@ fn repair_in(
                     "status_before": status,
                     "status_after": restore_status,
                     "discarded_error": recorded_error,
-                    "operation_id": op_id,
                 }),
                 &row,
             ),
@@ -432,7 +347,11 @@ fn repair_in(
             "status_after": restore_status, "row": after,
         }))
     })();
-    work
+    match work {
+        Ok(report) => ok(json!({"row": report})),
+        Err(e) if e.starts_with("repair_task:") => fail(5, e),
+        Err(e) => terr(e),
+    }
 }
 
 #[cfg(test)]
@@ -515,10 +434,6 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the stub replies.
-    /// Cells are keyed by column name and emitted in TASK_COLS
-    /// order, so a column added to TASK_COLS cannot silently shift
-    /// the row again (#14873: manual_only, metadata and the
-    /// resolution block did exactly that to the positional row).
     fn task_row(
         id: i64,
         status: &str,
@@ -532,35 +447,44 @@ mod tests {
             Some(s) => cell_text(s),
             None => nullc.clone(),
         };
-        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
-        cells.insert("id", cell_int(id));
-        cells.insert("queue", cell_text("repo-health-code-pilot"));
-        cells.insert("manual_only", cell_int(0));
-        cells.insert("title", cell_text("probe"));
-        cells.insert("payload", cell_text(&payload.to_string()));
-        cells.insert("dedupe_key", cell_text(dedupe_key));
-        cells.insert("priority", cell_int(30));
-        cells.insert("status", cell_text(status));
-        cells.insert("attempts", cell_int(1));
-        cells.insert("max_attempts", cell_int(1000));
-        cells.insert("progress", cell_text("{}"));
-        cells.insert("result", cell_text("{}"));
-        cells.insert("last_error", opt(last_error));
-        cells.insert("created_at", cell_text("2026-11-20T00:00:00Z"));
-        cells.insert("updated_at", cell_text("2026-11-21T00:00:00Z"));
-        cells.insert("blocked_deps", opt(blocked_deps));
-        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
-        for key in cells.keys() {
-            assert!(
-                cols.iter().any(|c| c == key),
-                "stub cell {key} is not a task column"
-            );
-        }
-        Value::Array(
-            cols.iter()
-                .map(|c| cells.get(c).cloned().unwrap_or_else(|| nullc.clone()))
-                .collect(),
-        )
+        json!([
+            cell_int(id),
+            cell_text("repo-health-code-pilot"),
+            cell_text("probe"),
+            nullc.clone(),
+            cell_text(&payload.to_string()),
+            cell_text(dedupe_key),
+            cell_int(30),
+            cell_text(status),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            cell_int(1),
+            cell_int(1000),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            cell_text("{}"),
+            cell_text("{}"),
+            opt(last_error),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone(),
+            cell_text("2026-11-20T00:00:00Z"),
+            cell_text("2026-11-21T00:00:00Z"),
+            nullc.clone(),
+            opt(blocked_deps),
+            nullc.clone(),
+            nullc.clone(),
+            nullc.clone()
+        ])
     }
 
     fn select_reply(rows: Vec<Value>) -> String {
@@ -650,14 +574,12 @@ mod tests {
         // missing checked_at/basis, no duplicate live task —
         // repairs, re-validates clean, and becomes claimable.
         let (url, captured) = stub_pipeline_seq(vec![
-            exec_ok(0),
             select_reply(vec![candidate_row()]),
             select_reply(vec![]),
             select_reply(vec![]),
             exec_ok(1),
             exec_ok(1),
             select_reply(vec![repaired_row()]),
-            exec_ok(0),
         ]);
         let out = verb_repair(
             &backend(url),
@@ -676,12 +598,10 @@ mod tests {
         // guard — the same oracle the claim path runs.
         assert!(claim_guard_reason(&report["row"]).is_none(), "{out}");
         let bodies = captured.lock().unwrap();
-        assert_eq!(bodies.len(), 8, "{bodies:?}");
-        assert!(bodies[0].contains("BEGIN IMMEDIATE"), "{bodies:?}");
-        assert!(bodies[4].contains("UPDATE tasks SET payload"), "{bodies:?}");
-        assert!(bodies[4].contains("checked_at"), "{bodies:?}");
-        assert!(bodies[4].contains(REPAIR_DEDUPE_BASIS), "{bodies:?}");
-        assert!(bodies[7].contains("COMMIT"), "{bodies:?}");
+        assert_eq!(bodies.len(), 6, "{bodies:?}");
+        assert!(bodies[3].contains("UPDATE tasks SET payload"), "{bodies:?}");
+        assert!(bodies[3].contains("checked_at"), "{bodies:?}");
+        assert!(bodies[3].contains(REPAIR_DEDUPE_BASIS), "{bodies:?}");
     }
 
     #[test]
@@ -723,7 +643,6 @@ mod tests {
         // row is unchanged.
         let holder = task_row(77002, "queued", &valid_payload(7709), KEY_7709, None, None);
         let (url, captured) = stub_pipeline_seq(vec![
-            exec_ok(0),
             select_reply(vec![candidate_row()]),
             select_reply(vec![holder]),
         ]);
@@ -751,8 +670,7 @@ mod tests {
         let mut p = valid_payload(7709);
         p.as_object_mut().unwrap().remove("risk");
         let row = task_row(77001, "blocked", &p, KEY_7709, Some(QUARANTINE_7709), None);
-        let (url, captured) =
-            stub_pipeline_seq(vec![exec_ok(0), select_reply(vec![row]), exec_ok(0)]);
+        let (url, captured) = stub_pipeline_seq(vec![select_reply(vec![row])]);
         let out = verb_repair(
             &backend(url),
             &json!({"task_id": 77001, "worker": "archer", "dry_run": false}),
@@ -763,8 +681,7 @@ mod tests {
         assert!(err.contains("payload.risk.level"), "{out}");
         assert!(err.contains("nothing was changed"), "{out}");
         let bodies = captured.lock().unwrap();
-        assert_eq!(bodies.len(), 3, "{bodies:?}");
-        assert!(bodies[2].contains("ROLLBACK"), "{bodies:?}");
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
     }
 
     #[test]
@@ -772,14 +689,12 @@ mod tests {
         // Oracle (#13191): a repaired task's timeline carries the
         // repair entry — verb, operator, defects, repairs.
         let (url, captured) = stub_pipeline_seq(vec![
-            exec_ok(0),
             select_reply(vec![candidate_row()]),
             select_reply(vec![]),
             select_reply(vec![]),
             exec_ok(1),
             exec_ok(1),
             select_reply(vec![repaired_row()]),
-            exec_ok(0),
         ]);
         let out = verb_repair(
             &backend(url),
@@ -787,7 +702,7 @@ mod tests {
         );
         assert_eq!(out["ok"], true, "{out}");
         let bodies = captured.lock().unwrap();
-        let event_body = &bodies[5];
+        let event_body = &bodies[4];
         assert!(event_body.contains("INSERT INTO events"), "{event_body}");
         assert!(event_body.contains("repaired"), "{event_body}");
         assert!(event_body.contains("repair_task_turso"), "{event_body}");
@@ -817,19 +732,6 @@ mod tests {
         assert!(err.contains("fleet queue repair 77001"), "{out}");
         let bodies = captured.lock().unwrap();
         assert_eq!(bodies.len(), 1, "{bodies:?}");
-    }
-
-    #[test]
-    fn lane_hold_blocks_quarantine_release_13579() {
-        // #13579 fault row 2: a lane or manual block's metadata
-        // is an independent hold, so a repair must not release it.
-        let lane =
-            json!({"status": "blocked", "progress": {"blocked_via": "lane", "blocker": "x"}});
-        assert!(repair_hold_active(&lane));
-        let manual = json!({"status": "blocked", "progress": {"reason_class": "manual"}});
-        assert!(repair_hold_active(&manual));
-        let plain = json!({"status": "blocked", "progress": {}, "blocked_deps": null});
-        assert!(!repair_hold_active(&plain));
     }
 
     #[test]

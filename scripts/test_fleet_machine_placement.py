@@ -33,11 +33,7 @@ _spec.loader.exec_module(placement)
 REGISTRY = HERE.parent / "doc" / "fleet-machine-registry.yaml"
 NOW = datetime(2026, 11, 22, 19, 30, 0, tzinfo=timezone.utc)
 FRESH = "2026-11-22T19:20:00Z"  # 10 minutes before NOW: inside 2 cadences
-# One second past the watchdog's own staleness window (two cadences), so
-# the fixture follows the cadence instead of pinning an old one.
-STALE = (NOW - timedelta(seconds=placement.watchdog.STALE_AFTER_SECONDS + 1)).strftime(
-    "%Y-%m-%dT%H:%M:%SZ"
-)
+STALE = "2026-11-22T18:59:59Z"  # 30 minutes + 1 second before NOW: stale
 
 
 def health(status, last_seen=FRESH, failed=()):
@@ -258,9 +254,8 @@ class CommittedRegistryTests(unittest.TestCase):
 
     Self-adjusting: whatever the watchdog last wrote, reading at
     last_seen + 1 minute must reproduce the recorded status (or `left`
-    when the machine has never been seen), and one minute past the
-    watchdog's staleness window (two cadences) must read as left.
-    Oracle: §1.5's staleness rule.
+    when the machine has never been seen), and last_seen + 31 minutes
+    must read as left. Oracle: §1.5's staleness rule.
     """
 
     def test_committed_registry_view_matches_its_cache(self):
@@ -276,10 +271,7 @@ class CommittedRegistryTests(unittest.TestCase):
             return
         fresh_view = placement.machine_view(rec, last_seen + timedelta(minutes=1))
         self.assertEqual(fresh_view["view"], health_block["status"])
-        stale_after = timedelta(seconds=placement.watchdog.STALE_AFTER_SECONDS)
-        stale_view = placement.machine_view(
-            rec, last_seen + stale_after + timedelta(minutes=1)
-        )
+        stale_view = placement.machine_view(rec, last_seen + timedelta(minutes=31))
         self.assertEqual(stale_view["view"], "left")
         self.assertFalse(stale_view["eligible"])
 

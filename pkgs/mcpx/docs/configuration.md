@@ -793,7 +793,7 @@ skipped launcher phases).
 | `embeddings.backend` | string | `auto` | daemon | yes | `--embeddings-backend` | `MCPX_EMBEDDINGS_BACKEND` | which embedding engine to use (auto, local, remote, wasm) | `TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint` |
 | `embeddings.model` | string | `text-embedding-3-small` | daemon | yes | `--embeddings-model` | `MCPX_EMBEDDINGS_MODEL` | model name for remote embeddings endpoint | `TestEmbeddingsModelNamesTheRequestedModel` |
 | `embeddings.url` | string | *(empty)* | daemon | yes | `--embeddings-url` | `MCPX_EMBEDDINGS_URL` | OpenAI-compatible embeddings endpoint URL | `TestEmbeddingsURLSendsSemanticSearchToTheEndpoint` |
-| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model | `TestEmbeddingsWasmPathLoadsTheModel` |
+| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model | Exempt — embeddings backend: needs a compiled wasm model fixture the harness does not provide; the Go wasm runtime (wazero) can compile a module but no embed-exporting model ships with the repo, so the setting's effect (wasm embedder availability) is not observable end to end |
 
 ### events
 

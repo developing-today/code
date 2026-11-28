@@ -161,12 +161,6 @@ impl BoundaryGate for ServerBoundaryGate {
     }
 }
 
-impl id_sync::relay_ingest::RelayBoundaryGate for ServerBoundaryGate {
-    fn check_relay(&self, subject: &str) -> FrameworkOutcome {
-        <Self as BoundaryGate>::check(self, EnforcementPoint::RelayTransit, subject)
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

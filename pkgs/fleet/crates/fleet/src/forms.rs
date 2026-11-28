@@ -96,13 +96,11 @@ pub const T7: Form = Form {
 /// All eight codified forms, tier 0 first.
 pub const FORMS: [Form; 8] = [T0, T1, T2, T3, T4, T5, T6, T7];
 
-/// The fleet subcommand tiers tier 0 walks are T1, T2 and T3,
-/// declared as `fleet-pool` members (in that order) by the walker
-/// in `laptop.rs` (#14722); the walker's own ladder constant that
-/// used to live here is removed — selection goes through the pool.
-/// The wrapper (T7) is deliberately NOT a walk member: it is the
-/// agent's own final step after tier 0 and the individual forms,
-/// never something tier 0 papers over.
+/// The fleet subcommand tiers tier 0 walks, in order. The wrapper
+/// (T7) is deliberately NOT in this list: it is the agent's own
+/// final step after tier 0 and the individual forms, never
+/// something tier 0 papers over.
+pub const WALK_ORDER: [Form; 3] = [T1, T2, T3];
 
 impl Form {
     /// The label every result and log line names: `T2 http/fleet`.

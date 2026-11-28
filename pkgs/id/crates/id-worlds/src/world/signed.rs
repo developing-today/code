@@ -103,7 +103,6 @@ pub fn sign_move(
 
             chat: None,
             anchor: None,
-            thread: None,
         },
     )
 }
@@ -291,7 +290,6 @@ impl MoveChain {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
@@ -346,62 +344,6 @@ mod tests {
             );
         }
         assert!(chain.verify(&event.bytes, "ttt", b"", &author).is_err());
-    }
-
-    // #6487 acceptance: sign-accept implies receipt-accept for generated
-    // objects. Every move `sign_move` signs at the author's expected
-    // position verifies (live and journaled) and advances the chain, and
-    // the only moves it refuses there are the ones `verify` refuses on
-    // its intrinsic domain (blank world ID, empty input).
-    fn world_id_strategy() -> impl Strategy<Value = String> {
-        prop_oneof![
-            "[ \t\n]{0,3}",
-            "[a-z0-9_-]{1,8}",
-            "[ ]{0,2}[a-z0-9]{1,6}[ ]{0,2}",
-        ]
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(128))]
-
-        #[test]
-        fn signed_moves_are_moves_the_world_accepts(
-            seed in any::<[u8; 32]>(),
-            world_id in world_id_strategy(),
-            inputs in proptest::collection::vec(
-                proptest::collection::vec(any::<u8>(), 0..12),
-                1..6,
-            ),
-        ) {
-            let key = SigningKey::from_bytes(&seed);
-            let author = *key.verifying_key().as_bytes();
-            let mut chain = MoveChain::new();
-            for input in &inputs {
-                let signed = sign_move(&key, &world_id, chain.next_seq(), chain.frontier(), input);
-                let in_domain = !world_id.trim().is_empty() && !input.is_empty();
-                match signed {
-                    Ok(event) => {
-                        prop_assert!(in_domain, "signed a move outside the acceptance domain");
-                        let journaled = chain
-                            .verify_journaled(&event.bytes, &world_id, &author)
-                            .map_err(|err| TestCaseError::fail(format!("journaled verify refused a signed move: {err}")))?;
-                        prop_assert_eq!(journaled.id, event.id);
-                        let accepted = chain
-                            .verify_and_accept(&event.bytes, &world_id, input, &author)
-                            .map_err(|err| TestCaseError::fail(format!("verify refused a signed move: {err}")))?;
-                        prop_assert_eq!(accepted.id, event.id);
-                        prop_assert_eq!(chain.frontier(), Some(event.id));
-                    }
-                    Err(err) => {
-                        prop_assert!(!in_domain, "refused an in-domain move at the expected position: {err:?}");
-                        prop_assert!(matches!(
-                            err,
-                            chain::ChainError::BlankWorldId | chain::ChainError::EmptyInput
-                        ));
-                    }
-                }
-            }
-        }
     }
 
     #[test]

@@ -13,12 +13,8 @@ if (args.length !== 2 || args[0] !== "--output-dir" || !args[1] || args[1].start
 const { mkdir, writeFile, rename } = await import("node:fs/promises");
 const { join } = await import("node:path");
 const { getTursoStoreClient } = await import("../src/turso-stores.ts");
-const { ensurePushRegistry, PUSH_REGISTRY_TABLES } = await import("../src/push-registry.ts");
 const db = await getTursoStoreClient();
 if (!db) throw new Error("Turso store credential unavailable");
-// The push registry (#14084 S1) creates its tables on first use; make
-// sure they exist so the export always writes every file it names.
-await ensurePushRegistry(db);
 const tables = {
   agg_actions: "id",
   agg_activity_ingestion: "source",
@@ -30,7 +26,6 @@ const tables = {
   alerts_push_subscriptions: "id",
   alerts_notification_sends: "id",
   orch_runs: "run_id",
-  ...PUSH_REGISTRY_TABLES,
 };
 await mkdir(args[1], { recursive: true, mode: 0o700 });
 for (const [table, key] of Object.entries(tables)) {

@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(first.parameters["provider_version"], 3);
         assert!(first.parameters["args_digest"].is_string());
         assert!(!first.parameters.to_string().contains("notes/readme.txt"));
-        assert_ne!(first.correlation_id, "");
+        assert!(!first.correlation_id.is_empty());
     }
 
     #[test]

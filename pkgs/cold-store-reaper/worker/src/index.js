@@ -90,38 +90,6 @@ export async function readStreamedFrame(resp, offset, frameLength) {
   return frame;
 }
 
-// The rehydration job the entry point posts to the bundle Durable Object
-// (#7983 item 6). It is a manifest row, but the DO reads every field into a
-// side effect (a Drive URL path, a Range header, the in-flight key, the
-// digest compare), so the shape is checked before any token exchange or
-// fetch. Returns the job, or a message naming the first bad field.
-// `size` is left to rehydrate(), which already fails closed on it (#6590).
-const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
-const DRIVE_FILE_ID = /^[A-Za-z0-9_-]+$/;
-
-export function parseJob(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { error: "job must be a JSON object" };
-  }
-  const { sha256, bundle_id, drive_file_id, offset, frame_length } = value;
-  if (typeof sha256 !== "string" || !SHA256_HEX.test(sha256)) {
-    return { error: "job sha256 must be 64 hex characters" };
-  }
-  if (typeof bundle_id !== "string" || bundle_id === "") {
-    return { error: "job bundle_id must be a non-empty string" };
-  }
-  if (typeof drive_file_id !== "string" || !DRIVE_FILE_ID.test(drive_file_id)) {
-    return { error: "job drive_file_id must be a Drive file id" };
-  }
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    return { error: "job offset must be a non-negative integer" };
-  }
-  if (!Number.isSafeInteger(frame_length) || frame_length <= 0) {
-    return { error: "job frame_length must be a positive integer" };
-  }
-  return { job: value };
-}
-
 // ---------------------------------------------------------------------------
 // Durable Object: one instance per bundle id. Concurrent fetches for the
 // same bundle funnel through here; an in-flight map joins identical member
@@ -135,17 +103,12 @@ export class BundleFlight {
   }
 
   async fetch(request) {
-    let body;
+    let job;
     try {
-      body = await request.json();
+      job = await request.json();
     } catch {
       return errorResponse("invalid JSON job body", 400);
     }
-    const parsed = parseJob(body);
-    if (parsed.error) {
-      return errorResponse(`invalid job body: ${parsed.error}`, 400);
-    }
-    const job = parsed.job;
     try {
       let pending = this.inflight.get(job.sha256);
       if (!pending) {

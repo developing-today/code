@@ -1944,7 +1944,7 @@ mod tests {
         assert!(matches!(error, StoredError::Store(_)));
         assert!(!stored.replica().inventory().contains(&[0x42; 32]));
         assert_eq!(stored.replica().envelope(&[0x42; 32]), None);
-        assert_eq!(stored.store().heads(&[0x11; 32]), [] as [[u8; 32]; 0]);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
         backend.stop_failing();
         let outcome = stored.produce(&envelope, START).await.unwrap();
         assert_eq!(outcome, IngestOutcome::Applied);
@@ -1978,7 +1978,7 @@ mod tests {
         }
         assert!(!stored.replica().inventory().contains(&[0x42; 32]));
         assert_eq!(stored.replica().envelope(&[0x42; 32]), None);
-        assert_eq!(stored.store().heads(&[0x11; 32]), [] as [[u8; 32]; 0]);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
     }
 
     #[tokio::test]
@@ -2007,7 +2007,7 @@ mod tests {
         }
         assert!(!stored.replica().inventory().contains(&[0x43; 32]));
         assert_eq!(stored.replica().envelope(&[0x43; 32]), None);
-        assert_eq!(stored.store().heads(&[0x11; 32]), [] as [[u8; 32]; 0]);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
     }
 
     #[tokio::test]

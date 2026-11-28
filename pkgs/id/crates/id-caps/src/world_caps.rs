@@ -722,7 +722,7 @@ define_provider_registry! {
         bounds: KV_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_RECORDS,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.set" => {
         version: 1,
@@ -731,7 +731,7 @@ define_provider_registry! {
         bounds: KV_SET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_STORAGE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.delete" => {
         version: 1,
@@ -740,7 +740,7 @@ define_provider_registry! {
         bounds: KV_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_STORAGE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `blob` store (#1062): a bounded, durable, per-world
     // set of content-addressed blobs. Inward-facing like `kv.*` and
@@ -753,7 +753,7 @@ define_provider_registry! {
         bounds: BLOB_PUT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_STORAGE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.get" => {
         version: 1,
@@ -762,7 +762,7 @@ define_provider_registry! {
         bounds: BLOB_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_RECORDS,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.delete" => {
         version: 1,
@@ -771,7 +771,7 @@ define_provider_registry! {
         bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_WORLD_STORAGE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `http.fetch` provider (#1062): an outbound GET
     // against an admin allowlist. Outward-facing, unlike `kv.*`
@@ -803,7 +803,7 @@ define_provider_registry! {
         bounds: NOTIFY_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
-        class: cap_class::CLASS_WORLD_NOTIFY,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "schedule.at" => {
         version: 1,
@@ -839,7 +839,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_NONE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.present" => {
         version: 1,
@@ -848,7 +848,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_DEVICE_FORM,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.result" => {
         version: 1,
@@ -857,7 +857,7 @@ define_provider_registry! {
         bounds: &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_DEVICE_FORM,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.cancel" => {
         version: 1,
@@ -866,7 +866,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_DEVICE_FORM,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // Sensor caps (#2341): excluded from default ceilings, so a world
     // reaches them only through an explicit ceiling entry and an
@@ -898,7 +898,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
-        class: cap_class::CLASS_DEVICE_MICROPHONE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.capture" => {
         version: 1,
@@ -907,7 +907,7 @@ define_provider_registry! {
         bounds: SPEECH_CAPTURE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
-        class: cap_class::CLASS_DEVICE_MICROPHONE_CAPTURE,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.synthesize" => {
         version: 1,
@@ -916,7 +916,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
-        class: cap_class::CLASS_DEVICE_SPEAKER,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "Key" => {
         version: 1,

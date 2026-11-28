@@ -86,27 +86,6 @@ describe("stale issue coverage panel", () => {
     expect(html).toContain("Unavailable — collection failed or not collected");
     expect(html).toContain(">—</td>");
   });
-
-  test("stale-count cell carries the week-over-week delta like every other count (#1224)", () => {
-    const row = (stale: number | null) => ({
-      repo: "org/nix",
-      openIssues: 55,
-      gateNow: 0,
-      gateNext: 0,
-      poolItems: null,
-      poolUnsetStatus: null,
-      poolUnsetArea: null,
-      staleOpenIssues: stale,
-      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
-      staleIssuesError: null,
-    });
-    const coverage: CoverageSnapshotFile = {
-      baseline: { generatedAt: "2026-10-25T12:00:00.000Z", repos: [row(267)] },
-      current: { generatedAt: "2026-11-01T12:00:00.000Z", repos: [row(0)] },
-    };
-    const html = projectsBodyHtml([], { coverage });
-    expect(html).toContain('>0 <span class="muted">(-267)</span></td>');
-  });
 });
 
 function poolItem(partial: Partial<ProjectPoolItem>): ProjectPoolItem {

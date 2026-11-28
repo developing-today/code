@@ -9,7 +9,7 @@ use p2panda_core::Hash;
 
 use super::fold::{GroupView, Outcome};
 use super::friendship::{Pair, friendship_id};
-use super::log::{GroupLog, PairAppend, Recorded};
+use super::log::{GroupLog, Recorded};
 use super::policy::{Delegation, Policy, RemoveMode, Template};
 use super::{Body, Create, Delegate, DeviceOp, Key, MemberOp, Role};
 
@@ -26,11 +26,8 @@ pub struct Action {
     pub outcome: Outcome,
 }
 
-/// What a delegation recorded: the delegation mode change, if one was needed, and the grant.
-///
-/// The grant is `None` when the mode change was refused. The mode change is `None` when the grant
-/// was refused: the pair is atomic (#14877), so a refused grant records neither event, and the
-/// returned grant carries the refusal the fold gave it in the trial fold.
+/// What a delegation recorded: the delegation mode change, if one was needed, and the grant. The
+/// grant is `None` when the mode change was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delegated {
     /// The change of the group's delegation mode, when it differed.
@@ -201,11 +198,8 @@ impl GroupLog {
         )
     }
 
-    /// Grants `delegate` its scope in `group`. With `mode`, the group's delegation mode is set
-    /// first, if it differs. The mode change and the grant are one atomic pair (#14877): a
-    /// refused grant records neither event, so the mode never changes under a grant that did not
-    /// happen. A refused mode change ends the call: its refusal is recorded, and no grant is
-    /// recorded after it.
+    /// Grants `delegate` its scope in `group`. With `mode`, the group's delegation mode is set first,
+    /// if it differs. A refused mode change ends the call: no grant is recorded after it.
     ///
     /// # Errors
     ///
@@ -217,41 +211,25 @@ impl GroupLog {
         delegate: Delegate,
         mode: Option<Delegation>,
     ) -> Result<Delegated> {
-        let view = self.view(group)?;
-        let Some(mode) = mode.filter(|mode| view.policy.delegation_mode() != *mode) else {
-            let grant = self.act(author, group, Body::Delegate(delegate))?;
+        let mode_change = match mode {
+            Some(mode) if self.view(group)?.policy.delegation_mode() != mode => {
+                Some(self.set_delegation(author, group, mode)?)
+            }
+            _ => None,
+        };
+        if mode_change
+            .as_ref()
+            .is_some_and(|change| matches!(change.outcome, Outcome::Refused(_)))
+        {
             return Ok(Delegated {
-                mode_change: None,
-                grant: Some(grant),
-            });
-        };
-        let (change, grant, appended) = self.record_pair(
-            author,
-            group,
-            Body::Policy(Policy {
-                delegation: Some(mode),
-                ..view.policy
-            }),
-            Body::Delegate(delegate),
-        )?;
-        let action = |recorded: Recorded| Action {
-            group,
-            event: recorded.event,
-            outcome: recorded.outcome,
-        };
-        Ok(match appended {
-            PairAppend::Both => Delegated {
-                mode_change: Some(action(change)),
-                grant: Some(action(grant)),
-            },
-            PairAppend::FirstOnly => Delegated {
-                mode_change: Some(action(change)),
+                mode_change,
                 grant: None,
-            },
-            PairAppend::Neither => Delegated {
-                mode_change: None,
-                grant: Some(action(grant)),
-            },
+            });
+        }
+        let grant = self.act(author, group, Body::Delegate(delegate))?;
+        Ok(Delegated {
+            mode_change,
+            grant: Some(grant),
         })
     }
 

@@ -28,7 +28,14 @@
 // from last_insert_rowid()/changes() on a held connection.
 
 import type { Json } from "./queue-validate.ts";
-import type { EventRow, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
+import type {
+  EventRow,
+  LaneRow,
+  LedgerRow,
+  LeaseRow,
+  QueueStore,
+  TaskRow,
+} from "./queue-store.ts";
 import {
   LIBSQL_QUEUE_SCHEMA,
   LEDGER_COLS,
@@ -132,7 +139,10 @@ export class HranaHttpClient implements HranaClient {
         ...(this.authToken ? { authorization: `Bearer ${this.authToken}` } : {}),
       },
       body: JSON.stringify({
-        requests: [{ type: "execute", stmt: { sql: stmt.sql, args: stmt.args.map(encodeArg) } }, { type: "close" }],
+        requests: [
+          { type: "execute", stmt: { sql: stmt.sql, args: stmt.args.map(encodeArg) } },
+          { type: "close" },
+        ],
       }),
     });
     if (!res.ok) {
@@ -203,23 +213,6 @@ export class HranaQueueStore implements QueueStore {
     this.schemaReady ??= (async () => {
       for (const stmt of LIBSQL_QUEUE_SCHEMA) {
         await this.client.execute({ sql: stmt, args: [] });
-      }
-      // The tasks schema-generation migration (#14985): ALTER in
-      // the columns a live-generation (export-shaped) tasks table
-      // predates. Recorded in libsql-queue-store.ts; fixture and
-      // determinations in test/queue-live-generation-fixture.ts.
-      const cols = await this.client.execute({ sql: "SELECT name FROM pragma_table_info('tasks')", args: [] });
-      if (!cols.rows.some((col) => col["name"] === "manual_only")) {
-        await this.client.execute({
-          sql: "ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0",
-          args: [],
-        });
-      }
-      if (!cols.rows.some((col) => col["name"] === "metadata")) {
-        await this.client.execute({
-          sql: "ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
-          args: [],
-        });
       }
     })();
     return this.schemaReady;
@@ -297,7 +290,11 @@ export class HranaQueueStore implements QueueStore {
     const cols = Object.keys(rec);
     if (cols.length === 0) return;
     const setSql = cols.map((c) => `${c} = ?`).join(", ");
-    await this.exec(`UPDATE tasks SET ${setSql} WHERE id = ?`, ...cols.map((c) => encodeTaskValue(c, rec[c])), id);
+    await this.exec(
+      `UPDATE tasks SET ${setSql} WHERE id = ?`,
+      ...cols.map((c) => encodeTaskValue(c, rec[c])),
+      id,
+    );
   }
 
   async getLedger(taskId: number): Promise<LedgerRow | null> {
@@ -444,9 +441,7 @@ export class HranaQueueStore implements QueueStore {
   }
 
   async allEvents(): Promise<EventRow[]> {
-    const { rows } = await this.exec(
-      "SELECT id, worker_id, task_id, kind, detail, created_at FROM events ORDER BY id ASC",
-    );
+    const { rows } = await this.exec("SELECT id, worker_id, task_id, kind, detail, created_at FROM events ORDER BY id ASC");
     return rows.map((r) => readEvent(r as Record<string, unknown>));
   }
 
@@ -467,11 +462,7 @@ export class HranaQueueStore implements QueueStore {
     // github_mirror_issues is the github-ci Worker's read model, not
     // this store's table: no row → null; a failing read (no table, no
     // database) throws so the caller warns and proceeds unenriched.
-    const { rows } = await this.exec(
-      "SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?",
-      repo,
-      issueNumber,
-    );
+    const { rows } = await this.exec("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", repo, issueNumber);
     if (rows.length === 0) return null;
     const parsed = jsonValue(rows[0]["labels"], "labels");
     return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === "string") : [];

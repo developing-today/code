@@ -353,35 +353,6 @@ export function parseTaskRequest(body: unknown): TaskRequest {
   };
 }
 
-interface AgentWakeRequest {
-  agent: string;
-  messageIds: number[];
-}
-
-/** Parse the Message Bridge's generic webhook for one Fleet agent address. */
-export function parseAgentWakeRequest(body: unknown): AgentWakeRequest {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("body: must be a JSON object");
-  }
-  const b = body as Record<string, unknown>;
-  if (b.event !== "message.created") throw new ValidationError("event: must be message.created");
-  const address = reqString(b, "address");
-  const match = /^agent:([a-z0-9][a-z0-9._-]{0,63})$/.exec(address);
-  if (!match) throw new ValidationError("address: must be agent:<name>");
-  const rawIds = b.message_ids;
-  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 1000) {
-    throw new ValidationError("message_ids: must be a non-empty list of up to 1000 positive integers");
-  }
-  const messageIds: number[] = [];
-  for (const id of rawIds) {
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
-      throw new ValidationError("message_ids: must be a non-empty list of up to 1000 positive integers");
-    }
-    messageIds.push(id);
-  }
-  return { agent: match[1]!, messageIds };
-}
-
 /** First line of a prompt, trimmed and length-capped — the fallback title. */
 export function titleFromPrompt(prompt: string, max = 120): string {
   const first =

@@ -60,10 +60,10 @@
 // --start/--end are ignored.
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { isRealCalendarDate, type ChargeCandidate } from "../src/charges-match.ts";
-import { requireHome } from "../src/home.ts";
 
 const run = promisify(execFile);
 const PLAID_CLI = process.env.PLAID_CLI ?? "/opt/hatch/bin/plaid";
@@ -493,10 +493,7 @@ async function main(): Promise<void> {
   const outPath =
     outArg ??
     process.env.CHARGE_CANDIDATES_PATH ??
-    join(
-      requireHome("CHARGE_CANDIDATES_PATH"),
-      "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json",
-    );
+    join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json");
 
   const plaid = await plaidCandidates(start, end);
   let gmail: ChargeCandidate[] = [];

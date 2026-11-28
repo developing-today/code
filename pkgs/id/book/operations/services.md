@@ -46,23 +46,23 @@ Startup prints a warning when a web listener is bound without `--web-token`. On 
 
 ## Hosting a world
 
-| Flag                           | Default | Effect                                                                                                                                                              |
-| ------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--world`                      | off     | Host a multiplayer world. Requires `--world-admin-token <TOKEN>`.                                                                                                   |
-| `--world-admin-token <TOKEN>`  | unset   | The admin token for the hosted world. The environment variable `ID_WORLD_ADMIN_TOKEN` sets the same value. The value is never printed in this book.                 |
-| `--world-name <NAME>`          | `lobby` | Name of the default world. Its files live in `.id-worlds/<NAME>/` inside the data directory. The name uses the characters `a-z`, `0-9`, `-` and `_`.                |
-| `--world-module <FILE>`        | none    | A precompiled Wasm module (Roc ABI) to load into the world. Requires `--world` and a build with the `sandbox` feature.                                              |
-| `--world-checkpoint-every <N>` | `1000`  | Journal events between checkpoints. `0` never trims the journal.                                                                                                    |
-| `--world-max-open <N>`         | `256`   | Maximum open worlds.                                                                                                                                                |
-| `--world-max-sessions <N>`     | `1024`  | Maximum world sessions.                                                                                                                                             |
-| `--world-idle-secs <N>`        | `600`   | Seconds before an idle world is closed. `0` keeps worlds open. With `--world-host` the default is `900` and `0` is refused; pin a world with `id host pin` instead. |
-| `--world-boot-window-secs <N>` | `600`   | Replay-refusal window after startup, in seconds. `0` disables it.                                                                                                   |
-| `--world-cap-policy <POLICY>`  | `deny`  | Capability policy for the default world's program. The other documented value is `grant-on-use`.                                                                    |
-| `--world-allowed-caps <NAMES>` | none    | Comma-separated server-wide capability ceiling. The value `*` is refused here.                                                                                      |
-| `--world-cap <NAME>`           | none    | Repeatable. One capability for the default world's program. `*` means the whole catalog.                                                                            |
-| `--world-ssh-port <PORT>`      | none    | Serve the world over SSH, bound to the `--bind` address. Requires `--world`. Actual SSH serving exists only in a build with the `ssh` feature.                      |
-| `--world-native`               | off     | Accept native (ELF) module installs, in the OS-sandbox tier.                                                                                                        |
-| `--world-source-only`          | off     | Accept Roc-source installs only. Conflicts with `--world-module`. The environment variable `ID_WORLD_SOURCE_ONLY` sets the same flag.                               |
+| Flag                           | Default | Effect                                                                                                                                               |
+| ------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--world`                      | off     | Host a multiplayer world. Requires `--world-admin-token <TOKEN>`.                                                                                    |
+| `--world-admin-token <TOKEN>`  | unset   | The admin token for the hosted world. The environment variable `ID_WORLD_ADMIN_TOKEN` sets the same value. The value is never printed in this book.  |
+| `--world-name <NAME>`          | `lobby` | Name of the default world. Its files live in `.id-worlds/<NAME>/` inside the data directory. The name uses the characters `a-z`, `0-9`, `-` and `_`. |
+| `--world-module <FILE>`        | none    | A precompiled Wasm module (Roc ABI) to load into the world. Requires `--world` and a build with the `sandbox` feature.                               |
+| `--world-checkpoint-every <N>` | `1000`  | Journal events between checkpoints. `0` never trims the journal.                                                                                     |
+| `--world-max-open <N>`         | `256`   | Maximum open worlds.                                                                                                                                 |
+| `--world-max-sessions <N>`     | `1024`  | Maximum world sessions.                                                                                                                              |
+| `--world-idle-secs <N>`        | `600`   | Seconds before an idle world is closed. `0` keeps worlds open.                                                                                       |
+| `--world-boot-window-secs <N>` | `600`   | Replay-refusal window after startup, in seconds. `0` disables it.                                                                                    |
+| `--world-cap-policy <POLICY>`  | `deny`  | Capability policy for the default world's program. The other documented value is `grant-on-use`.                                                     |
+| `--world-allowed-caps <NAMES>` | none    | Comma-separated server-wide capability ceiling. The value `*` is refused here.                                                                       |
+| `--world-cap <NAME>`           | none    | Repeatable. One capability for the default world's program. `*` means the whole catalog.                                                             |
+| `--world-ssh-port <PORT>`      | none    | Serve the world over SSH, bound to the `--bind` address. Requires `--world`. Actual SSH serving exists only in a build with the `ssh` feature.       |
+| `--world-native`               | off     | Accept native (ELF) module installs, in the OS-sandbox tier.                                                                                         |
+| `--world-source-only`          | off     | Accept Roc-source installs only. Conflicts with `--world-module`. The environment variable `ID_WORLD_SOURCE_ONLY` sets the same flag.                |
 
 The runtime limits for guest execution are flags in the same family: `--world-fuel <UNITS>` (default `10000000`), `--world-memory-mib <MIB>` (default `16`), `--world-message-kib <KIB>` (default `1024`), `--world-total-memory-mib <MIB>` (default `64`), and the native-tier limits `--world-native-memory-mib <MIB>` (default `256`), `--world-native-cpu-secs <SECS>` (default `10`) and `--world-native-deadline-ms <MS>` (default `10000`). Confirmation mail for world sign-up has three mutually conflicting sinks, all requiring `--world`: `--world-mail-outbox <DIR>`, `--world-mail-command <PROG>` and `--world-mail-smtp <IP:PORT>` (SMTP also requires `--world-mail-from <ADDR>` and must be loopback).
 

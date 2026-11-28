@@ -560,31 +560,6 @@ func (p *Pool) ReleaseKey(key string) int {
 	return 1
 }
 
-// KillKey ends the instance serving a key even when it is in use (#1931).
-// ReleaseKey detaches an idle instance and leaves a busy one alone; KillKey
-// is the force path: the instance is removed, its client is closed (ending
-// its streams and subscriptions with it), and a later call starts a fresh
-// one. Used by session kill, which addresses the caller session and ends
-// what it created rather than waiting for it to go idle.
-func (p *Pool) KillKey(key string) int {
-	if key == "" {
-		return 0
-	}
-	p.mu.Lock()
-	in := p.findLocked(key)
-	if in == nil {
-		p.mu.Unlock()
-		return 0
-	}
-	p.removeLocked(in)
-	p.cond.Broadcast()
-	p.mu.Unlock()
-	p.stopped(in, "killed")
-	p.forgetUpstreamSession(in)
-	_ = in.Client.Close()
-	return 1
-}
-
 // reapDeadLocked drops instances whose process has died and reports
 // whether any were reaped, so the caller can tell a crash (a server
 // that was running and terminated unexpectedly) from an idle pool.
@@ -701,7 +676,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dialMode(sctx, eff, rs.Root, kind, rs.Key)
+	tr, err := p.dialMode(sctx, eff, rs.Root, kind)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -745,7 +720,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -790,7 +765,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dialMode(sctx, eff, rs.Root, kind, rs.Key); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -1068,18 +1043,14 @@ const (
 // eff is the instance's effective (substituted) spawn definition; for
 // callers with no instance being spawned (HTTP session adoption) it is
 // simply the pool's stored config.
-func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string, scopeKey string) (mcpclient.Transport, error) {
-	return p.dialMode(ctx, eff, root, dialSpawn, scopeKey)
+func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
+	return p.dialMode(ctx, eff, root, dialSpawn)
 }
 
 // dialMode is dial with the supervised variation selected by kind:
 // dialAttachOnly never spawns a supervisor, dialRestart restarts the
 // child through its supervisor. Unsupervised paths ignore the kind.
-// scopeKey is the spawning instance's scope key: it keys the
-// supervisor socket per instance (#9963), so two scoped instances of
-// one server never share a supervisor. Callers with no instance being
-// spawned (HTTP session adoption) pass "" — the primary instance.
-func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind, scopeKey string) (mcpclient.Transport, error) {
+func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
@@ -1088,7 +1059,6 @@ func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, 
 	if eff.Stdio() && eff.Mcpx.SupervisedEnabled() {
 		opts := mcpclient.SupervisedOptions{
 			Name:       eff.Name,
-			Instance:   scopeKey,
 			Command:    eff.Command,
 			Args:       eff.Args,
 			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),

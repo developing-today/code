@@ -17,7 +17,7 @@
 // orchestrator's own alerting and are out of scope here.
 //
 // Thresholds (documented here, at the derivation site, per #1148):
-// - fleet feed: age >= 10 min (two collector cadences) is stale (FEED_STALE_MS, the same bound
+// - fleet feed: age >= 5 min is stale (FEED_STALE_MS, the same bound
 //   health.ts and live.ts apply to feed-backed facets).
 // - orchestration section: stale past 90 min (ORCHESTRATION_STALE_MS
 //   in feed.ts, applied by diagnoseOrchestrationSection), and the

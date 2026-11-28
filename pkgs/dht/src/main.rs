@@ -1,5 +1,5 @@
 use anyhow::Result;
-use iroh_gossip::Event;
+use iroh_gossip::api::Event;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,30 +13,26 @@ async fn main() -> Result<()> {
         .init();
 
     let node = dht_node::join().await?;
-    let hash = node.topic_id.hash();
-    println!(
-        "joined topic: {}",
-        hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    println!("joined topic: {}", node.topic_id.raw());
     let node_id = node.node_id();
     println!("node id: {}", &node_id[..8]);
 
-    let mut gossip_receiver = node.receiver;
+    let gossip_receiver = node.receiver;
     let gossip_sender = node.sender;
     tokio::spawn(async move {
-        while let Ok(event) = gossip_receiver.next().await {
+        while let Some(event) = gossip_receiver.next().await {
             match event {
-                Event::Received(msg) => {
+                Ok(Event::Received(msg)) => {
                     println!(
                         "\n{}: {}",
                         &msg.delivered_from.to_string()[..8],
                         String::from_utf8_lossy(&msg.content)
                     );
                 }
-                Event::NeighborUp(peer) => {
+                Ok(Event::NeighborUp(peer)) => {
                     println!("\njoined: {}", &peer.to_string()[..8]);
                 }
-                Event::NeighborDown(peer) => {
+                Ok(Event::NeighborDown(peer)) => {
                     println!("\nleft: {}", &peer.to_string()[..8]);
                 }
                 _ => {}

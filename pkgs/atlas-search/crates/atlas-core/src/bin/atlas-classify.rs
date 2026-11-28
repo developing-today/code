@@ -273,10 +273,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "atlas-classify {}",
-            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
-        );
+        println!("atlas-classify {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     // Global flags: exactly one --db, then the action and its args.

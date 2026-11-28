@@ -235,7 +235,6 @@ pub(super) fn resolve(
             let role = match (&node.action, node.excluded) {
                 (Some(action), false) if !voided.contains(&node.id) => Role::Auth {
                     author: node.author,
-                    authorization_actor: None,
                     group: node.group,
                     action: action.clone(),
                 },

@@ -14,9 +14,7 @@ import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts"
 
 type Args = Record<string, unknown>;
 export interface Action {
-  /** `by` is who asked, where the side running it knows (the edge's
-   * own actions that record who changed something need it). */
-  run: (args: Args, by?: string) => Promise<unknown>;
+  run: (args: Args) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
   /** What the audit log keeps of the arguments. */
@@ -196,14 +194,6 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
-    // Start a Turso management operation (create-db / mint-token) in
-    // its workflow (#14257). The audit keeps names only — the operation,
-    // the database and the secret's name — never a token value.
-    "store.admin": {
-      run: (a) => ops.tursoAdmin(a),
-      touch: [],
-      audit: ids("operation", "database", "secret_name"),
-    },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],
@@ -213,13 +203,9 @@ export function actions(
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
-    // Persist the desired direct-mode state, then ask Actions to apply it.
-    // Refresh is explicit because it replaces secrets whose values cannot be read back.
-    "edge.direct": {
-      run: (a) => ops.edgeDirect(a.on, a.refreshTokens ?? false),
-      touch: [],
-      audit: (a) => ({ on: a.on === true, refreshTokens: a.refreshTokens === true }),
-    },
+    // The owner's switch for the edge doing the core itself. Done on a
+    // machine, where the tokens are, and never held.
+    "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command, a.limit),
       touch: [],

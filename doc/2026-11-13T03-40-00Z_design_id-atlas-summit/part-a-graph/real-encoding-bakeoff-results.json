@@ -6,19 +6,19 @@
     {
       "engine": "chunked_binary",
       "load": {
-        "micros": 7848,
+        "micros": 13389,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 13469,
+        "micros": 12768,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 187875,
+        "micros": 178448,
         "queries": [
           {
             "count": 3,
@@ -119,7 +119,7 @@
         ]
       },
       "query_subject": {
-        "micros": 17622,
+        "micros": 18738,
         "queries": [
           {
             "count": 4,
@@ -285,7 +285,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 23472,
+        "micros": 33726,
         "mismatches": 0
       },
       "run": 0,
@@ -299,26 +299,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 872064,
+        "micros": 1097990,
         "transactions": 366
       }
     },
     {
       "engine": "redb_tuple",
       "load": {
-        "micros": 211690,
+        "micros": 197565,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 28045,
+        "micros": 27712,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 8927,
+        "micros": 8143,
         "queries": [
           {
             "count": 3,
@@ -419,7 +419,7 @@
         ]
       },
       "query_subject": {
-        "micros": 18342,
+        "micros": 17831,
         "queries": [
           {
             "count": 4,
@@ -585,7 +585,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 39124,
+        "micros": 37513,
         "mismatches": 0
       },
       "run": 0,
@@ -599,26 +599,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 655549,
+        "micros": 599645,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_jsonb",
       "load": {
-        "micros": 261045,
+        "micros": 254827,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 141854,
+        "micros": 116002,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 9425,
+        "micros": 8948,
         "queries": [
           {
             "count": 3,
@@ -719,7 +719,7 @@
         ]
       },
       "query_subject": {
-        "micros": 23950,
+        "micros": 24559,
         "queries": [
           {
             "count": 4,
@@ -885,7 +885,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 144273,
+        "micros": 125539,
         "mismatches": 0
       },
       "run": 0,
@@ -899,26 +899,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 383995,
+        "micros": 330740,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_blob_rows",
       "load": {
-        "micros": 214496,
+        "micros": 178440,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 32789,
+        "micros": 32813,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 10099,
+        "micros": 9544,
         "queries": [
           {
             "count": 3,
@@ -1019,7 +1019,7 @@
         ]
       },
       "query_subject": {
-        "micros": 20808,
+        "micros": 23801,
         "queries": [
           {
             "count": 4,
@@ -1185,7 +1185,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 46958,
+        "micros": 39455,
         "mismatches": 0
       },
       "run": 0,
@@ -1199,26 +1199,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 378740,
+        "micros": 401656,
         "transactions": 366
       }
     },
     {
       "engine": "chunked_binary",
       "load": {
-        "micros": 7581,
+        "micros": 7812,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 13413,
+        "micros": 11965,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 190778,
+        "micros": 171899,
         "queries": [
           {
             "count": 3,
@@ -1319,7 +1319,7 @@
         ]
       },
       "query_subject": {
-        "micros": 18001,
+        "micros": 16832,
         "queries": [
           {
             "count": 4,
@@ -1485,7 +1485,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 26046,
+        "micros": 22611,
         "mismatches": 0
       },
       "run": 1,
@@ -1499,26 +1499,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 878302,
+        "micros": 1056490,
         "transactions": 366
       }
     },
     {
       "engine": "redb_tuple",
       "load": {
-        "micros": 215123,
+        "micros": 199808,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 28386,
+        "micros": 27499,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 9029,
+        "micros": 8298,
         "queries": [
           {
             "count": 3,
@@ -1619,7 +1619,7 @@
         ]
       },
       "query_subject": {
-        "micros": 18548,
+        "micros": 20790,
         "queries": [
           {
             "count": 4,
@@ -1785,7 +1785,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 39115,
+        "micros": 38857,
         "mismatches": 0
       },
       "run": 1,
@@ -1799,26 +1799,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 650901,
+        "micros": 719519,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_jsonb",
       "load": {
-        "micros": 262843,
+        "micros": 288404,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 133828,
+        "micros": 115718,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 9483,
+        "micros": 15159,
         "queries": [
           {
             "count": 3,
@@ -1919,7 +1919,7 @@
         ]
       },
       "query_subject": {
-        "micros": 24961,
+        "micros": 39525,
         "queries": [
           {
             "count": 4,
@@ -2085,7 +2085,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 145073,
+        "micros": 174883,
         "mismatches": 0
       },
       "run": 1,
@@ -2099,26 +2099,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 373096,
+        "micros": 353003,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_blob_rows",
       "load": {
-        "micros": 213948,
+        "micros": 187157,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 33220,
+        "micros": 30377,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 10266,
+        "micros": 12840,
         "queries": [
           {
             "count": 3,
@@ -2219,7 +2219,7 @@
         ]
       },
       "query_subject": {
-        "micros": 21221,
+        "micros": 22771,
         "queries": [
           {
             "count": 4,
@@ -2385,7 +2385,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 44801,
+        "micros": 48401,
         "mismatches": 0
       },
       "run": 1,
@@ -2399,26 +2399,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 371262,
+        "micros": 333857,
         "transactions": 366
       }
     },
     {
       "engine": "chunked_binary",
       "load": {
-        "micros": 7562,
+        "micros": 7982,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 13166,
+        "micros": 12489,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 189198,
+        "micros": 173268,
         "queries": [
           {
             "count": 3,
@@ -2519,7 +2519,7 @@
         ]
       },
       "query_subject": {
-        "micros": 17673,
+        "micros": 17806,
         "queries": [
           {
             "count": 4,
@@ -2685,7 +2685,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 23265,
+        "micros": 23325,
         "mismatches": 0
       },
       "run": 2,
@@ -2699,26 +2699,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 890289,
+        "micros": 1085359,
         "transactions": 366
       }
     },
     {
       "engine": "redb_tuple",
       "load": {
-        "micros": 211359,
+        "micros": 257107,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 28300,
+        "micros": 28784,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 8976,
+        "micros": 12901,
         "queries": [
           {
             "count": 3,
@@ -2819,7 +2819,7 @@
         ]
       },
       "query_subject": {
-        "micros": 18406,
+        "micros": 21665,
         "queries": [
           {
             "count": 4,
@@ -2985,7 +2985,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 38991,
+        "micros": 40206,
         "mismatches": 0
       },
       "run": 2,
@@ -2999,26 +2999,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 649247,
+        "micros": 633849,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_jsonb",
       "load": {
-        "micros": 259699,
+        "micros": 277592,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 133069,
+        "micros": 123798,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 9562,
+        "micros": 9329,
         "queries": [
           {
             "count": 3,
@@ -3119,7 +3119,7 @@
         ]
       },
       "query_subject": {
-        "micros": 23969,
+        "micros": 25624,
         "queries": [
           {
             "count": 4,
@@ -3285,7 +3285,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 144427,
+        "micros": 126384,
         "mismatches": 0
       },
       "run": 2,
@@ -3299,26 +3299,26 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 346303,
+        "micros": 399351,
         "transactions": 366
       }
     },
     {
       "engine": "sqlite_blob_rows",
       "load": {
-        "micros": 207959,
+        "micros": 173872,
         "triples": 6129
       },
       "page_stream": {
         "count": 6129,
         "duplicates": 0,
-        "micros": 33696,
+        "micros": 26234,
         "page_size": 128,
         "pages": 48,
         "sha256": "73d1772be3c809f9aa38d6f9ba702f726eec5690636ac5f30c52e3b70cf869ec"
       },
       "query_predicate_object": {
-        "micros": 10501,
+        "micros": 10503,
         "queries": [
           {
             "count": 3,
@@ -3419,7 +3419,7 @@
         ]
       },
       "query_subject": {
-        "micros": 21361,
+        "micros": 28621,
         "queries": [
           {
             "count": 4,
@@ -3585,7 +3585,7 @@
       },
       "round_trip": {
         "checked": 6129,
-        "micros": 45429,
+        "micros": 44605,
         "mismatches": 0
       },
       "run": 2,
@@ -3599,7 +3599,7 @@
         "final_count": 6163,
         "final_sha256": "098f3af3cd35493ec2fe8f43b42f8d72d8cea315d47e29f82c86d39980458a3c",
         "inserts": 200,
-        "micros": 386175,
+        "micros": 357208,
         "transactions": 366
       }
     }
@@ -3620,7 +3620,7 @@
     {
       "durability": "Durability::Immediate (default) on every commit",
       "engine": "redb",
-      "engine_version": "5.0.0",
+      "engine_version": "4.6.0",
       "indexes": ["spo tuple-key table", "pos tuple-key table"],
       "name": "redb_tuple",
       "query_plans": {

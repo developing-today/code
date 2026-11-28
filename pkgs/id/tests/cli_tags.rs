@@ -171,10 +171,7 @@ fn test_clear_with_no_live_claim_is_an_error() {
 
     let output = owner.run(&["claim", "clear", &doc, "topic"]);
     assert!(!output.status.success());
-    assert_eq!(
-        open(&store).tag_claims().unwrap(),
-        [] as [id::tag_claims::Claim; 0]
-    );
+    assert!(open(&store).tag_claims().unwrap().is_empty());
 }
 
 #[test]

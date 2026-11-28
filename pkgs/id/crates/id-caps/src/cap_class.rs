@@ -15,12 +15,9 @@
 //! no class assignment, and a class id this table does not know, both
 //! resolve to [`CLASS_UNKNOWN`] — disclosing, and subsumed by nothing,
 //! so it triggers whenever it is new. Names registered after #5999's
-//! table was written carried [`CLASS_UNKNOWN`] until the #13004 design
-//! pass (`doc/2026-11-23T07-06-00Z_design_id_capability_class_assignments/`)
-//! assigned them classes — table version 2. A name registered later
-//! still carries [`CLASS_UNKNOWN`] until a design pass assigns it one;
-//! the tests below pin which names those are (none, today), so the gap
-//! cannot grow silently.
+//! table was written carry [`CLASS_UNKNOWN`] in their manifest until a
+//! design pass assigns them a class; the tests below pin exactly which
+//! names those are, so the gap cannot grow silently.
 //!
 //! The comparison that consumes these classes (message sets,
 //! subsumption, trigger rules) is #5999 §6's contract, implemented by
@@ -35,10 +32,7 @@ use crate::world_caps::{ProviderManifest, ProviderRegistry};
 /// since a baseline was accepted, the comparison is recomputed under
 /// the newer table. Bump it whenever a class is added, split, or
 /// merged — never for a wording-only edit.
-///
-/// Version 2 (#13004): eight classes added for the post-#5999
-/// registrations.
-pub const CAP_CLASS_TABLE_VERSION: u32 = 2;
+pub const CAP_CLASS_TABLE_VERSION: u32 = 1;
 
 /// Messageless: reading a clock, a random number, platform data types,
 /// or the world's own metadata discloses nothing a person would decide
@@ -60,35 +54,6 @@ pub const CLASS_DEVICE_SCREEN: &str = "device.screen";
 pub const CLASS_DEVICE_KEYBOARD: &str = "device.keyboard";
 /// "Use this device's location."
 pub const CLASS_DEVICE_LOCATION: &str = "device.location";
-/// "Store data in this world so it persists between visits." The
-/// world-storage writes — `kv.set`/`kv.delete`/`blob.put`/
-/// `blob.delete` (#13004 §1). Incomparable with [`CLASS_WORLD_RECORDS`].
-pub const CLASS_WORLD_STORAGE: &str = "world.storage";
-/// "Send notifications to this world's users." — `notify` (#13004 §2).
-/// Incomparable with [`CLASS_CHAT_WRITE`].
-pub const CLASS_WORLD_NOTIFY: &str = "world.notify";
-/// "Show you forms and collect what you enter in them." —
-/// `form.present`/`form.result`/`form.cancel` (#13004 §4).
-/// Incomparable with [`CLASS_DEVICE_SCREEN`].
-pub const CLASS_DEVICE_FORM: &str = "device.form";
-/// "Use this device's microphone to turn what you say into text for
-/// this world." — `speech.transcribe`, on-device (#13004 §5).
-/// Subsumed by [`CLASS_DEVICE_MICROPHONE_CAPTURE`].
-pub const CLASS_DEVICE_MICROPHONE: &str = "device.microphone";
-/// "Send this device's microphone audio to this world." —
-/// `speech.capture`, raw audio leaves the device (#13004 §5).
-pub const CLASS_DEVICE_MICROPHONE_CAPTURE: &str = "device.microphone.capture";
-/// "Speak text aloud through this device." — `speech.synthesize`
-/// (#13004 §5).
-pub const CLASS_DEVICE_SPEAKER: &str = "device.speaker";
-/// "Read files you choose on this device." — `client.file.read`, the
-/// user's own files under a user-selected root (#13004 §6). Not
-/// [`CLASS_FS_READ_ARBITRARY`] and not [`CLASS_FS_SANDBOX`]: no
-/// subsumption runs between them in either direction.
-pub const CLASS_FS_READ_SELECTED: &str = "fs.read.selected";
-/// "Show notifications on this device." — `client.notify` (#13004 §6).
-/// Incomparable with [`CLASS_WORLD_NOTIFY`].
-pub const CLASS_DEVICE_NOTIFY: &str = "device.notify";
 /// Reserved (#5999 §2.3): sandboxed file read+write, a slot held ahead
 /// of the provider that needs it (#5958 S12).
 pub const CLASS_FS_SANDBOX: &str = "fs.sandbox";
@@ -132,8 +97,8 @@ pub const UNKNOWN_CAP_CLASS: CapClass = CapClass {
     reserved: false,
 };
 
-/// The shipped class table: #5999 §2.2's classes, then the #13004
-/// classes, then §2.3's reserved classes, then `unknown`. Versioned by [`CAP_CLASS_TABLE_VERSION`].
+/// The shipped class table: #5999 §2.2's classes, then §2.3's reserved
+/// classes, then `unknown`. Versioned by [`CAP_CLASS_TABLE_VERSION`].
 pub const CAP_CLASSES: &[CapClass] = &[
     CapClass {
         id: CLASS_NONE,
@@ -178,48 +143,6 @@ pub const CAP_CLASSES: &[CapClass] = &[
     CapClass {
         id: CLASS_DEVICE_LOCATION,
         message: Some("Use this device's location."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_WORLD_STORAGE,
-        message: Some("Store data in this world so it persists between visits."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_WORLD_NOTIFY,
-        message: Some("Send notifications to this world's users."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_DEVICE_FORM,
-        message: Some("Show you forms and collect what you enter in them."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_DEVICE_MICROPHONE,
-        message: Some(
-            "Use this device's microphone to turn what you say into text for this world.",
-        ),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_DEVICE_MICROPHONE_CAPTURE,
-        message: Some("Send this device's microphone audio to this world."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_DEVICE_SPEAKER,
-        message: Some("Speak text aloud through this device."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_FS_READ_SELECTED,
-        message: Some("Read files you choose on this device."),
-        reserved: false,
-    },
-    CapClass {
-        id: CLASS_DEVICE_NOTIFY,
-        message: Some("Show notifications on this device."),
         reserved: false,
     },
     CapClass {
@@ -286,7 +209,7 @@ mod tests {
     use crate::world_caps::{CATALOG_ENTRIES, PROVIDER_REGISTRY};
 
     #[test]
-    fn shipped_table_is_exactly_the_5999_and_13004_table() {
+    fn shipped_table_is_exactly_the_5999_table() {
         let ids: Vec<&str> = CAP_CLASSES.iter().map(|class| class.id).collect();
         assert_eq!(
             ids,
@@ -300,14 +223,6 @@ mod tests {
                 CLASS_DEVICE_SCREEN,
                 CLASS_DEVICE_KEYBOARD,
                 CLASS_DEVICE_LOCATION,
-                CLASS_WORLD_STORAGE,
-                CLASS_WORLD_NOTIFY,
-                CLASS_DEVICE_FORM,
-                CLASS_DEVICE_MICROPHONE,
-                CLASS_DEVICE_MICROPHONE_CAPTURE,
-                CLASS_DEVICE_SPEAKER,
-                CLASS_FS_READ_SELECTED,
-                CLASS_DEVICE_NOTIFY,
                 CLASS_FS_SANDBOX,
                 CLASS_FS_READ_ARBITRARY,
                 CLASS_NET_OUT,
@@ -324,14 +239,14 @@ mod tests {
             reserved,
             [CLASS_FS_SANDBOX, CLASS_FS_READ_ARBITRARY, CLASS_NET_OUT]
         );
-        assert_eq!(CAP_CLASS_TABLE_VERSION, 2);
+        assert_eq!(CAP_CLASS_TABLE_VERSION, 1);
     }
 
     #[test]
     fn section_22_assignments_hold_for_every_member() {
         // #5999 §2.2's member lists, name by name, plus http.fetch in
         // §2.3's reserved net.out slot (it is the arbitrary-network-out
-        // provider the slot exists for), plus the #13004 assignments.
+        // provider the slot exists for).
         let expected: &[(&str, &str)] = &[
             ("time.now", CLASS_NONE),
             ("time.tick", CLASS_NONE),
@@ -353,23 +268,6 @@ mod tests {
             ("loc.position", CLASS_DEVICE_LOCATION),
             ("loc.watch", CLASS_DEVICE_LOCATION),
             ("http.fetch", CLASS_NET_OUT),
-            // The #13004 assignments (table version 2).
-            ("kv.get", CLASS_WORLD_RECORDS),
-            ("blob.get", CLASS_WORLD_RECORDS),
-            ("kv.set", CLASS_WORLD_STORAGE),
-            ("kv.delete", CLASS_WORLD_STORAGE),
-            ("blob.put", CLASS_WORLD_STORAGE),
-            ("blob.delete", CLASS_WORLD_STORAGE),
-            ("notify", CLASS_WORLD_NOTIFY),
-            ("device.info", CLASS_NONE),
-            ("form.present", CLASS_DEVICE_FORM),
-            ("form.result", CLASS_DEVICE_FORM),
-            ("form.cancel", CLASS_DEVICE_FORM),
-            ("speech.transcribe", CLASS_DEVICE_MICROPHONE),
-            ("speech.capture", CLASS_DEVICE_MICROPHONE_CAPTURE),
-            ("speech.synthesize", CLASS_DEVICE_SPEAKER),
-            ("client.file.read", CLASS_FS_READ_SELECTED),
-            ("client.notify", CLASS_DEVICE_NOTIFY),
         ];
         for (name, class) in expected {
             let manifest = PROVIDER_REGISTRY.get(name).expect(name);
@@ -398,23 +296,36 @@ mod tests {
 
     #[test]
     fn names_without_a_designed_class_carry_unknown_until_assigned() {
-        // The accounting point for registrations that outrun a design
-        // pass (#13004 §8): a name registered without a designed class
-        // carries CLASS_UNKNOWN and always discloses (#5959 §1), and
-        // must be listed here until a design pass assigns it a class.
-        // The #13004 pass assigned all sixteen post-#5999 names, so the
-        // list is empty: no production manifest carries CLASS_UNKNOWN.
-        let unassigned: [&str; 0] = [];
+        // Registered after #5999's table was written; no design pass
+        // has assigned them a class, so their manifests carry
+        // CLASS_UNKNOWN and they always disclose (#5959 §1). This list
+        // is the tripwire: assigning a class removes a name here in
+        // the same change; registering a new unassigned name fails
+        // every_registered_class_id_is_in_the_shipped_table only if it
+        // invents an id, so this test is where a new name must be
+        // accounted for.
+        let unassigned = [
+            "kv.get",
+            "kv.set",
+            "kv.delete",
+            "blob.put",
+            "blob.get",
+            "blob.delete",
+            "notify",
+            "device.info",
+            "form.present",
+            "form.result",
+            "form.cancel",
+            "speech.transcribe",
+            "speech.capture",
+            "speech.synthesize",
+            "client.file.read",
+            "client.notify",
+        ];
         for name in unassigned {
             let manifest = PROVIDER_REGISTRY.get(name).expect(name);
             assert_eq!(manifest.class, CLASS_UNKNOWN, "{name}");
         }
-        let carrying_unknown: Vec<&str> = CATALOG_ENTRIES
-            .iter()
-            .filter(|entry| entry.class == CLASS_UNKNOWN)
-            .map(|entry| entry.name)
-            .collect();
-        assert_eq!(carrying_unknown, unassigned);
     }
 
     #[test]

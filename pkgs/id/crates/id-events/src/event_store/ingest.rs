@@ -605,7 +605,7 @@ fn batch_may_fork(m: &Mirror<'_>, events: &[Event]) -> Result<bool, StoreError> 
         {
             return Ok(true);
         }
-        if stored_id_at(m.txn, &author, seq)?.is_some_and(|stored_id| stored_id != event.id) {
+        if stored_at(m.txn, &author, seq)?.is_some_and(|stored| stored.id != event.id) {
             return Ok(true);
         }
         if m.pool
@@ -1049,7 +1049,7 @@ fn decide_in(
     if seq > 0 {
         let linked = match event.header.backlink {
             Some(backlink) => {
-                stored_id_at(txn, &author, seq - 1)?.is_some_and(|before_id| before_id == backlink)
+                stored_at(txn, &author, seq - 1)?.is_some_and(|before| before.id == backlink)
                     || super::compaction::residue_at(&txn.open_table(COMPACTED)?, &author, seq - 1)?
                         .is_some_and(|residue| residue.id == backlink)
             }
@@ -1197,8 +1197,8 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
 ///
 /// Returns [`StoreError::Corrupt`] when the position holds neither.
 fn id_at(txn: &WriteTransaction, author: &AuthorKey, seq: SeqNum) -> Result<Hash, StoreError> {
-    if let Some(id) = stored_id_at(txn, author, seq)? {
-        return Ok(id);
+    if let Some(event) = stored_at(txn, author, seq)? {
+        return Ok(event.id);
     }
     match super::compaction::residue_at(&txn.open_table(COMPACTED)?, author, seq)? {
         Some(residue) => Ok(residue.id),
@@ -1291,47 +1291,6 @@ fn stored_at(
     let events = txn.open_table(EVENTS)?;
     let row = events.get(position_key(author, seq).as_slice())?;
     row.map(|row| decode_stored(row.value())).transpose()
-}
-
-/// The ID of the stored event at `author`'s `seq`, if there is one, without decoding it.
-///
-/// An event's ID is the BLAKE3 digest of its bytes — that is how [`chain::decode`]
-/// and `sign` both derive it — so the ID of a stored row is the digest of the row's
-/// bytes, and nothing in the header needs to be read to know it. Callers that only
-/// compare IDs (the backlink check in [`decide_in`], the fork pre-check in
-/// [`batch_may_fork`], [`id_at`]) use this instead of [`stored_at`]: the full
-/// decode re-verifies the signature and re-checks the canonical form, which is
-/// the ~7 ms per stored event measured on #15328, and it buys those callers
-/// nothing.
-///
-/// Decision on #15328, recorded here because this is the first stored-read path
-/// that skips re-verification:
-///
-/// - (1) Reads that use a header field keep the full verified decode. Only
-///   ID-only comparisons move to this path.
-/// - (2) `decide_in`'s neighbour reads are ID-only where this function is used;
-///   the conflict read keeps the decode, because a fork proof is built from the
-///   stored event itself.
-/// - (3) No cheaper structural decode is adopted: p2panda's `AnyHeader::decode`
-///   couples field parsing to signature verification, and duplicating its
-///   parser here would be a second header grammar to keep in step.
-///
-/// Threat model (the file changing underneath the store, cited by
-/// `decode_stored`): the digest is recomputed from the bytes actually read, so
-/// a tampered row yields a *different* ID — comparisons against a backlink, a
-/// rival, or the `hashes` index fail closed, exactly as a mismatched ID read
-/// from a decoded header would. A tampered row is still caught by name when
-/// any path that reads its header decodes it: `decode_stored` refuses it as
-/// [`StoreError::Corrupt`]. What this path gives up is only the *timing* of
-/// that named error for rows whose headers are never read again.
-fn stored_id_at(
-    txn: &WriteTransaction,
-    author: &AuthorKey,
-    seq: SeqNum,
-) -> Result<Option<Hash>, StoreError> {
-    let events = txn.open_table(EVENTS)?;
-    let row = events.get(position_key(author, seq).as_slice())?;
-    Ok(row.map(|row| Hash::digest(row.value())))
 }
 
 /// The stored event with this ID, applied or voided, if there is one. Reads the `hashes`
@@ -1428,7 +1387,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1479,7 +1437,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         sign(key, seq, backlink, Some(body), ext).unwrap()
     }
@@ -1493,75 +1450,6 @@ mod tests {
         let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
         assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
         assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
-    }
-
-    /// Oracle: an event's ID is the BLAKE3 digest of its bytes (the definition
-    /// `chain::decode` and `sign` both use), so the ID read without decoding
-    /// must equal the signed event's ID at every stored position, and no ID
-    /// is read at a position that holds nothing (#15328).
-    #[test]
-    fn test_stored_id_at_matches_the_signed_events_ids_without_decoding() {
-        let (_dir, mut store) = open();
-        let signer = key(61);
-        let events = chain_of(&signer, 3);
-        for event in &events {
-            ingest(&mut store, event);
-        }
-        let txn = store.db.begin_write().unwrap();
-        for (seq, event) in events.iter().enumerate() {
-            let seq = u32::try_from(seq).unwrap();
-            assert_eq!(
-                stored_id_at(&txn, &author(&signer), seq).unwrap(),
-                Some(event.id),
-                "seq {seq}"
-            );
-        }
-        assert_eq!(stored_id_at(&txn, &author(&signer), 3).unwrap(), None);
-        assert_eq!(stored_id_at(&txn, &author(&key(62)), 0).unwrap(), None);
-    }
-
-    /// The tamper property of the ID-only path (#15328): rewrite a stored row's
-    /// bytes underneath the store, and the ID read from that position changes
-    /// with the bytes — it is the digest of what is actually there, never a
-    /// cached or indexed ID — while the full decode of the same row still
-    /// refuses it as corrupt, which is where tampering is caught by name.
-    #[test]
-    fn test_stored_id_at_digests_the_rows_actual_bytes_and_decode_still_refuses_them() {
-        let (_dir, mut store) = open();
-        let signer = key(63);
-        let events = chain_of(&signer, 1);
-        ingest(&mut store, &events[0]);
-        // Flip a byte inside the stored row's signature region: the row no
-        // longer verifies, and its digest is no longer the event's ID.
-        let mut tampered = events[0].bytes.clone();
-        let last = tampered.len() - 1;
-        tampered[last] ^= 0xff;
-        {
-            let txn = store.db.begin_write().unwrap();
-            {
-                let mut table = txn.open_table(EVENTS).unwrap();
-                table
-                    .insert(
-                        position_key(&author(&signer), 0).as_slice(),
-                        tampered.as_slice(),
-                    )
-                    .unwrap();
-            }
-            txn.commit().unwrap();
-        }
-        let txn = store.db.begin_write().unwrap();
-        assert_eq!(
-            stored_id_at(&txn, &author(&signer), 0).unwrap(),
-            Some(Hash::digest(&tampered))
-        );
-        assert_ne!(
-            stored_id_at(&txn, &author(&signer), 0).unwrap(),
-            Some(events[0].id)
-        );
-        assert!(matches!(
-            stored_at(&txn, &author(&signer), 0),
-            Err(StoreError::Corrupt(_))
-        ));
     }
 
     #[test]
@@ -1653,7 +1541,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -1708,7 +1595,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();
@@ -1799,7 +1685,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();
@@ -1861,7 +1746,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -2331,7 +2215,6 @@ mod tests {
 
             chat: None,
             anchor: None,
-            thread: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -2393,7 +2276,6 @@ mod tests {
 
             chat: None,
             anchor: None,
-            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -2800,7 +2682,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             },
         )
         .unwrap();
@@ -2899,17 +2780,13 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
         let first = grouped(0, None);
         let second = grouped(1, Some(first.id));
         ingest(&mut store, &second);
-        assert_eq!(
-            store.group_members(&group).unwrap(),
-            [] as [([u8; 32], p2panda_core::SeqNum); 0]
-        );
+        assert!(store.group_members(&group).unwrap().is_empty());
         ingest(&mut store, &first);
         assert_eq!(
             store.group_members(&group).unwrap(),
@@ -2941,7 +2818,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -3760,7 +3636,7 @@ mod tests {
             "the released event applies"
         );
         assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 2);
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 
@@ -3793,7 +3669,7 @@ mod tests {
         // Due at 1_000 ms, so the open drops it and its row.
         let store = reopen(&dir, limits, 1_000);
         assert_eq!(store.waiting_len(), 0);
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         let txn = store.db.begin_read().unwrap();
         assert!(
             txn.open_table(DEVICE_OPS)
@@ -3821,7 +3697,7 @@ mod tests {
         }
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
     }
 
     /// #2690, at the mirror itself: a release whose `arrived` expires another
@@ -3883,7 +3759,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 
@@ -3919,7 +3795,7 @@ mod tests {
         // events[2] (or any waiting row) survives.
         assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
         assert_eq!(store.waiting_len(), 0);
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 
@@ -4158,7 +4034,7 @@ mod tests {
             }
         );
         assert!(!store.is_waiting(&waits.id));
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         assert_eq!(store.event(&author(&x), 2).unwrap(), Some(waits.clone()));
         assert_eq!(
             store.chain(&author(&x)).unwrap(),
@@ -4256,7 +4132,7 @@ mod tests {
                 let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
                 assert_eq!(held, waiting_rows::Hold::Held);
                 let released = m.release(&events[1].id, 0)?;
-                assert_eq!(released, [] as [id_store::chain::Event; 0]);
+                assert!(released.is_empty());
                 Ok(((), true))
             })
             .unwrap();
@@ -4325,7 +4201,7 @@ mod tests {
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), WEEK_MS);
         assert!(!store.is_waiting(&held.id));
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 
@@ -4351,7 +4227,7 @@ mod tests {
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert!(!store.is_waiting(&events[0].id));
-        assert_eq!(store.waiting_ids().unwrap(), [] as [p2panda_core::Hash; 0]);
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 

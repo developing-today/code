@@ -14,13 +14,9 @@
 // F11.14 -> PR #248, #227 for F11.12; Phase 13: issues #783-#790 in
 // order). Phase 12's source remains the ordered step list in #1235
 // (phase12.ts) — it is already uniform and machine-readable, so it
-// is not duplicated here. Phases 0-10 were added for #13944
-// (2026-11-25): their plans number P-steps, not F-items, so the
-// table's F-numbering mirrors those step lists in order and each
-// item's ref is the validation audit that walked every step of its
-// phase (#1075 for Phases 0-8, #1076 for Phase 9, #1077 for
-// Phase 10) — an item counts done exactly when its phase's audit
-// is closed in live state, the same oracle as below.
+// is not duplicated here. Phases 0-10 have no F-item numbering in
+// any plan (verified by the #9923 archaeology, 2026-11-14), so they
+// have no rows: the panel states that gap instead of inventing one.
 //
 // Oracle (same as derivePhase12Progress): an item is done iff its
 // ref is closed (issue) or merged/closed (PR) in LIVE GitHub state —
@@ -90,11 +86,6 @@ export function parsePhaseMapping(content: string): PhaseMappingEntry[] {
     const phase = Number(cells[0]);
     if (!Number.isInteger(phase) || phase < 0) continue;
     if (!/^F\d+\.\d+$/.test(cells[1])) continue;
-    // Bad-join guard: the F-item's own phase prefix must agree with
-    // the row's phase column. A row that disagrees is malformed
-    // mapping data, not progress for either phase — skip it rather
-    // than count an item under a phase it does not belong to.
-    if (Number(/^F(\d+)\./.exec(cells[1])![1]) !== phase) continue;
     const ref = /^(PR\s+)?#(\d+)$/.exec(cells[2]);
     if (!ref) continue;
     entries.push({

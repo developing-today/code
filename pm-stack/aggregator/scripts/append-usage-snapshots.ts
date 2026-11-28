@@ -30,6 +30,7 @@
 // the laptop is a stub with no quota-view.md, which is what used
 // to kill this step with ENOENT.
 import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
@@ -42,9 +43,8 @@ import {
 } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
-import { requireHome } from "../src/home.ts";
 
-const HOME = requireHome("the append-usage-snapshots paths");
+const HOME = homedir();
 const HIDDEN = defaultHiddenDir(HOME);
 const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
 const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");

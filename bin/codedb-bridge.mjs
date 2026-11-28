@@ -316,21 +316,12 @@ export const createHandler = ({ fetchFn, daemonUrl, timeoutMs = DEFAULT_DAEMON_F
         true
       );
     }
-    // The tree route answers { tree: "<text>" } (#7983 item 8): a missing or
-    // non-string tree is a daemon malfunction, not an empty project, so it
-    // must not be reported as an empty (or "[object Object]") success.
-    if (mapped.kind === 'tree' && typeof data.tree !== 'string') {
-      return textResult(
-        `codedb daemon at ${daemonUrl} returned no tree text for ${mapped.route}; expected { tree: string }`,
-        true
-      );
-    }
     try {
       data = sliceData(data, mapped.slice);
     } catch (err) {
       return textResult(err.message, true);
     }
-    return textResult(mapped.kind === 'tree' ? data.tree : JSON.stringify(data));
+    return textResult(mapped.kind === 'tree' ? String(data.tree ?? '') : JSON.stringify(data));
   };
 
   // Returns a JSON-RPC response object, or null for notifications.

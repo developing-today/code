@@ -19,7 +19,7 @@
 //! (3 matches the dispatch domain's unresolved-token exit, #5432).
 
 use fleet_config::Config;
-use fleet_secrets::{BrokerSource, Resolver, Scope};
+use fleet_secrets::{BrokerSource, Resolver};
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
@@ -82,20 +82,12 @@ const GET_USAGE: &str = "\
 Usage: fleet secrets get <name>
 
 Resolve a secret by name: the secrets-broker first, Bitwarden (`bws`)
-as fallback. The value goes to stdout and nowhere else.
-
-With a prefix configured ($FLEET_SECRETS_PREFIX, else `[secrets] prefix`
-in fleet.toml), a name reads `<prefix>.<name>`; a name that already
-starts with `<prefix>.` is used as is.";
+as fallback. The value goes to stdout and nowhere else.";
 
 const LIST_USAGE: &str = "\
 Usage: fleet secrets list
 
-List the names in the secrets-broker's cache (names only, never values).
-
-With a prefix configured ($FLEET_SECRETS_PREFIX, else `[secrets] prefix`
-in fleet.toml), only names under `<prefix>.` are listed, shown without
-it. A broker that does not support a scoped list is exit 3.";
+List the names in the secrets-broker's cache (names only, never values).";
 
 /// The usage a `--help`/`-h` flag anywhere in a leaf verb's arguments
 /// asks for, if any (#5627). Every other fleet leaf verb answers a help
@@ -128,32 +120,13 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let name = &args[0];
-    // #10358 S1: a configured prefix maps the name once, before any
-    // source sees it; with none configured the scope is the identity.
-    let scope = match Scope::from_config(config) {
-        Ok(scope) => scope,
-        Err(e) => {
-            eprintln!("fleet secrets: secrets prefix: {e}");
-            return EXIT_USAGE;
-        }
-    };
-    match Resolver::default_chain(config).resolve_scoped(&scope, name) {
+    match Resolver::default_chain(config).resolve(name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
             EXIT_UNRESOLVED
         }
     }
-}
-
-/// The names a scoped `list` prints (#10358 D5): only stored names
-/// under the prefix, each shown as [`Scope::display`] gives it, in the
-/// broker's order.
-fn scoped_listing(scope: &Scope, stored: &[String]) -> Vec<String> {
-    stored
-        .iter()
-        .filter_map(|name| scope.display(name))
-        .collect()
 }
 
 fn cmd_list(config: &Config, args: &[String]) -> i32 {
@@ -168,25 +141,14 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
     // #6218: on the laptop the broker's own socket answers
     // directly (no session broker exists there); elsewhere the
     // session-broker source reads the same route.
-    // #10358 S2: a configured prefix asks the broker for its names only
-    // (`GET /secrets?prefix=P`) and filters again here, so output is
-    // right against any broker; an unscoped list sends no query.
-    let scope = match Scope::from_config(config) {
-        Ok(scope) => scope,
-        Err(e) => {
-            eprintln!("fleet secrets: secrets prefix: {e}");
-            return EXIT_USAGE;
-        }
-    };
     let names_result = match fleet_secrets::DirectBrokerSource::from_config(config) {
-        Some(direct) => direct.list_names_in(&scope),
-        None => BrokerSource::new(config.broker_socket(), config.secrets_token_file())
-            .list_names_in(&scope),
+        Some(direct) => direct.list_names(),
+        None => BrokerSource::new(config.broker_socket(), config.secrets_token_file()).list_names(),
     };
     match names_result {
         Ok(names) => {
             let mut out = std::io::stdout().lock();
-            for name in &scoped_listing(&scope, &names) {
+            for name in &names {
                 match write_line(&mut out, name) {
                     LineWrite::Written => {}
                     // Downstream closed early (`| head`): quiet exit.
@@ -225,16 +187,6 @@ mod tests {
         ] {
             assert_eq!(leaf_help_usage("get", &form), Some(GET_USAGE));
         }
-    }
-
-    #[test]
-    fn scoped_list_shows_only_names_under_the_prefix() {
-        // #10358 S2, design record §6.
-        let stored = args(&["alpha", "42.alpha", "42.42.x", "420.y", "43.z"]);
-        let scope = Scope::prefixed("42").unwrap();
-        assert_eq!(scoped_listing(&scope, &stored), ["alpha", "42.42.x"]);
-        // No prefix: every name, in the broker's order.
-        assert_eq!(scoped_listing(&Scope::none(), &stored), stored);
     }
 
     #[test]

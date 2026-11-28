@@ -144,7 +144,7 @@ export const PROGRAM: ProgramDoc = {
     {
       title: "GitHub comment projection live via the projector",
       detail:
-        'Item pages render the GitHub comment stream live from the projector (deployed 2026-10-27, #1199); dashboard-native comments work too. The projector is a declared service of the stack (the pm-projector unit; the aggregator\'s PM_PROJECTOR_URL is pinned to it in the NixOS module), and each facet says "unavailable" instead of serving fixtures when it is unreachable (#14065). Capability provenance: the matrix in the aggregator README (#1200).',
+        "Item pages render the GitHub comment stream live from the projector (deployed 2026-10-27, #1199); dashboard-native comments work too. The projector is a declared service of the stack (the pm-projector unit; the aggregator's PM_PROJECTOR_URL is pinned to it in the NixOS module), with fixtures as the per-facet fallback when it is unreachable. Capability provenance: the matrix in the aggregator README (#1200).",
     },
     {
       title: "Oct 26 fixes — accuracy pass",

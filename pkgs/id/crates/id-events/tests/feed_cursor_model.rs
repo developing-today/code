@@ -148,7 +148,7 @@ fn since_and_before_page_by_stable_projection_order() {
     let (_, oldest) = feed
         .before(&SERVER_KEY, older_cursor.as_bytes(), NOW)
         .unwrap();
-    assert_eq!(oldest, [] as [id_core::graph::feed_cursor::FeedEntry; 0]);
+    assert!(oldest.is_empty());
 
     // since from the middle cursor returns exactly the tail.
     let (_, tail) = feed
@@ -252,7 +252,7 @@ fn retention_gap_expires_cursors_positioned_in_pruned_range() {
     let (head_cursor, head) = feed
         .before(&SERVER_KEY, first_cursor.as_bytes(), NOW)
         .unwrap();
-    assert_eq!(head, [] as [id_core::graph::feed_cursor::FeedEntry; 0]);
+    assert!(head.is_empty());
     feed.prune_below(3);
     assert_eq!(
         feed.since(&SERVER_KEY, head_cursor.as_bytes(), NOW)

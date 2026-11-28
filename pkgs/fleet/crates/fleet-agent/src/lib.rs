@@ -63,11 +63,6 @@ usage: fleet agent <verb> [options]
          [--bootstrap TOKEN]    provision from the owner's single-use
                                 bootstrap token instead of the shared
                                 fleet token (see fleet bridge exchange)
-         [--model-provider P] [--model-id M] [--model-variant V]
-                                the lane's model stamp, recorded in
-                                the profile; `next` stamps its queue
-                                claims with it (the #4919 effort
-                                producer)
   doctor [--agent N]            which legs answer from this seat
   next   [--agent N]            the next piece of work, down the ladder:
          [--lane L] [--repo OWNER/NAME] [--low-water N]
@@ -105,17 +100,12 @@ The agent kinds this fleet can enrol."
             "\
 usage: fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
        fleet agent enroll --kind K --name N --bootstrap TOKEN
-       [--model-provider P] [--model-id M] [--model-variant V]
 
 Register an agent and save its profile. With --bootstrap, the
 single-use token the owner minted for this agent is first exchanged
 for the agent's own bridge credentials (stored in the vault by name
 and recorded in the profile), and a Muse seat also gets its
-bridge wake hook written. The --model-* flags record the lane's
-model stamp in the profile; `fleet agent next` stamps its queue
-claims with it unless the caller passes its own --model-* flags,
-which is what lets completion telemetry carry the lane's effort
-(#4919). Re-enrolling without the flags keeps a recorded stamp."
+bridge wake hook written."
         }
         "doctor" => {
             "\

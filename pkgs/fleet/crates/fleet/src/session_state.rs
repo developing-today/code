@@ -9,43 +9,27 @@ use base64::Engine;
 use std::path::{Path, PathBuf};
 
 pub const PWD_FILE: &str = ".fleet-session-id";
-const USAGE: &str = "Usage: fleet session bind [--session-id ID] [--force]\n\nResolve and persist this worktree's session identity.\n--force removes the worktree marker without validating it, so a stale\nbinding can be replaced in place; resolution then proceeds as usual.";
+const USAGE: &str = "Usage: fleet session bind [--session-id ID]\n\nResolve and persist this worktree's session identity.";
 
 /// This command owns its whole argument list. Validate before Git, marker I/O,
 /// environment mutation or HTTP. In particular, never scan another domain's tail.
 pub fn run(args: &[String]) -> i32 {
-    run_with(args, initialize, clear_stale_marker)
+    run_with(args, initialize)
 }
 
-fn run_with(
-    args: &[String],
-    initialize: impl FnOnce(Option<&str>) -> Result<Option<String>, String>,
-    clear_marker: impl FnOnce() -> Result<(), String>,
-) -> i32 {
+fn run_with<T>(args: &[String], initialize: impl FnOnce(Option<&str>) -> Result<T, String>) -> i32 {
     if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
         println!("{USAGE}");
         return 0;
     }
-    let bind = match parse_bind(args) {
+    let explicit = match parse_bind(args) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("fleet session: {error}\n{USAGE}");
             return 2;
         }
     };
-    // Forced clearing runs before resolution: a stale marker blocks
-    // resolution, so without this ordering bind could not self-heal
-    // from inside the worktree whose binding is dead (#14454). The
-    // marker is removed without validating it — the operator asserts
-    // the recorded session is gone — and a supplied or inherited
-    // identity is then persisted by the normal resolve path.
-    if bind.force {
-        if let Err(error) = clear_marker() {
-            eprintln!("fleet session: {error}");
-            return 2;
-        }
-    }
-    match initialize(bind.explicit) {
+    match initialize(explicit) {
         Ok(_) => 0,
         Err(error) => {
             eprintln!("fleet session: {error}");
@@ -54,54 +38,19 @@ fn run_with(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BindArgs<'a> {
-    explicit: Option<&'a str>,
-    force: bool,
-}
-
-fn parse_bind(args: &[String]) -> Result<BindArgs<'_>, String> {
-    let mut explicit: Option<&str> = None;
-    let mut force = false;
-    let mut rest: &[String] = args;
-    let verb = rest.first().map(String::as_str);
-    if verb != Some("bind") {
-        return Err("expected bind with at most one --session-id value and one --force".into());
-    }
-    rest = &rest[1..];
-    while let Some((head, tail)) = rest.split_first() {
-        if head == "--force" {
-            if force {
-                return Err("duplicate --force".into());
-            }
-            force = true;
-        } else if head == "--session-id" {
-            let value = tail.first().map(String::as_str).ok_or_else(|| {
-                "expected bind with at most one --session-id value and one --force".to_owned()
-            })?;
-            if explicit.is_some() {
-                return Err("expected bind with at most one --session-id value".into());
-            }
-            if !valid_session_id(value) {
-                return Err("session ID must be ses_ followed by ASCII letters or digits".into());
-            }
-            explicit = Some(value);
-            rest = &tail[1..];
-            continue;
-        } else if let Some(value) = head.strip_prefix("--session-id=") {
-            if explicit.is_some() {
-                return Err("expected bind with at most one --session-id value".into());
-            }
-            if !valid_session_id(value) {
-                return Err("session ID must be ses_ followed by ASCII letters or digits".into());
-            }
-            explicit = Some(value);
-        } else {
-            return Err("expected bind with at most one --session-id value and one --force".into());
+fn parse_bind(args: &[String]) -> Result<Option<&str>, String> {
+    let value = match args {
+        [verb] if verb == "bind" => return Ok(None),
+        [verb, flag, value] if verb == "bind" && flag == "--session-id" => value.as_str(),
+        [verb, flag] if verb == "bind" && flag.starts_with("--session-id=") => {
+            &flag["--session-id=".len()..]
         }
-        rest = tail;
+        _ => return Err("expected bind with at most one --session-id value".into()),
+    };
+    if !valid_session_id(value) {
+        return Err("session ID must be ses_ followed by ASCII letters or digits".into());
     }
-    Ok(BindArgs { explicit, force })
+    Ok(Some(value))
 }
 
 fn valid_session_id(value: &str) -> bool {
@@ -220,26 +169,6 @@ fn resolve_marker(
     Ok(resolved)
 }
 
-/// Remove the worktree marker without reading or validating it, so
-/// `fleet session bind --force` can replace a dead binding in place
-/// (#14454). A missing worktree or a missing marker is a no-op: there
-/// is nothing stale to clear. Anything else — an undiscoverable root
-/// that errors, a removal failure — fails closed like resolution does.
-fn clear_stale_marker() -> Result<(), String> {
-    clear_marker_at(worktree_root()?.as_deref())
-}
-
-fn clear_marker_at(root: Option<&Path>) -> Result<(), String> {
-    let Some(root) = root else {
-        return Ok(());
-    };
-    let path = marker_path(root);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot remove stale {}: {error}", path.display())),
-    }
-}
 /// Best-effort liveness check against the local OpenCode server. An
 /// unavailable server is not proof that the recorded session is live.
 #[cfg(feature = "opencode-probe")]
@@ -548,165 +477,28 @@ mod tests {
 
     #[test]
     fn bind_parser_owns_and_validates_its_arguments() {
-        assert_eq!(
-            parse_bind(&["bind".into()]),
-            Ok(BindArgs {
-                explicit: None,
-                force: false
-            })
-        );
+        assert_eq!(parse_bind(&["bind".into()]), Ok(None));
         assert_eq!(
             parse_bind(&["bind".into(), "--session-id=ses_123".into()]),
-            Ok(BindArgs {
-                explicit: Some("ses_123"),
-                force: false
-            })
-        );
-        assert_eq!(
-            parse_bind(&["bind".into(), "--force".into()]),
-            Ok(BindArgs {
-                explicit: None,
-                force: true
-            })
-        );
-        assert_eq!(
-            parse_bind(&[
-                "bind".into(),
-                "--session-id".into(),
-                "ses_123".into(),
-                "--force".into()
-            ]),
-            Ok(BindArgs {
-                explicit: Some("ses_123"),
-                force: true
-            })
-        );
-        assert_eq!(
-            parse_bind(&[
-                "bind".into(),
-                "--force".into(),
-                "--session-id=ses_123".into()
-            ]),
-            Ok(BindArgs {
-                explicit: Some("ses_123"),
-                force: true
-            })
+            Ok(Some("ses_123"))
         );
         assert!(parse_bind(&["bind".into(), "--session-id".into()]).is_err());
         assert!(parse_bind(&["bind".into(), "--session-id".into(), "--help".into()]).is_err());
         assert!(parse_bind(&["bind".into(), "--session-id=ses_x".into(), "extra".into()]).is_err());
-        assert!(parse_bind(&["bind".into(), "--force".into(), "--force".into()]).is_err());
-        assert!(
-            parse_bind(&[
-                "bind".into(),
-                "--session-id".into(),
-                "ses_a".into(),
-                "--session-id".into(),
-                "ses_b".into()
-            ])
-            .is_err()
-        );
-        assert!(parse_bind(&["other".into(), "--force".into()]).is_err());
     }
 
     #[test]
-    fn invalid_bind_invokes_neither_clear_nor_session_initialization() {
-        let invoked = std::cell::Cell::new(false);
+    fn invalid_bind_does_not_invoke_session_initialization() {
+        let mut invoked = false;
         let code = run_with(
             &["bind".into(), "--session-id".into(), "--help".into()],
             |_| {
-                invoked.set(true);
-                Ok(None)
-            },
-            || {
-                invoked.set(true);
+                invoked = true;
                 Ok(())
             },
         );
         assert_eq!(code, 2);
-        assert!(!invoked.get());
-    }
-
-    #[test]
-    fn stale_marker_still_fails_closed_without_force_and_clear_is_not_run() {
-        let mut cleared = false;
-        let code = run_with(
-            &["bind".into()],
-            |_| {
-                Err::<Option<String>, String>("stale .fleet-session-id refers to ended or unverifiable session ses_ended; remove it or start a new Fleet session".into())
-            },
-            || {
-                cleared = true;
-                Ok(())
-            },
-        );
-        assert_eq!(code, 2);
-        assert!(!cleared);
-    }
-
-    #[test]
-    fn force_clears_before_resolving_and_rebinds_the_supplied_identity() {
-        let mut cleared = false;
-        let mut initialized_with: Option<Option<String>> = None;
-        let code = run_with(
-            &[
-                "bind".into(),
-                "--force".into(),
-                "--session-id".into(),
-                "ses_live".into(),
-            ],
-            |explicit| {
-                initialized_with = Some(explicit.map(str::to_owned));
-                Ok(explicit.map(str::to_owned))
-            },
-            || {
-                cleared = true;
-                Ok(())
-            },
-        );
-        assert_eq!(code, 0);
-        assert!(cleared);
-        assert_eq!(initialized_with, Some(Some("ses_live".to_owned())));
-    }
-
-    #[test]
-    fn force_clear_failure_blocks_session_initialization() {
-        let mut initialized = false;
-        let code = run_with(
-            &["bind".into(), "--force".into()],
-            |_| {
-                initialized = true;
-                Ok(None)
-            },
-            || {
-                Err::<(), String>(
-                    "cannot remove stale /root/.fleet-session-id: permission denied".into(),
-                )
-            },
-        );
-        assert_eq!(code, 2);
-        assert!(!initialized);
-    }
-
-    #[test]
-    fn clear_marker_at_removes_the_marker_and_ignores_a_missing_one() {
-        let root = std::env::temp_dir().join(format!(
-            "fleet-session-clear-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        let path = marker_path(&root);
-        std::fs::write(&path, "ses_ended\n").unwrap();
-        assert_eq!(clear_marker_at(Some(&root)), Ok(()));
-        assert!(!path.exists());
-        // Second removal is a no-op success: nothing stale left to clear.
-        assert_eq!(clear_marker_at(Some(&root)), Ok(()));
-        assert_eq!(clear_marker_at(None), Ok(()));
-        std::fs::remove_dir(root).unwrap();
+        assert!(!invoked);
     }
 
     #[cfg(feature = "opencode-probe")]

@@ -284,4 +284,5 @@ export class Builds {
   get releaseTrouble(): string | null {
     return this.released?.trouble ?? null;
   }
+
 }

@@ -581,34 +581,6 @@ class ItemsTests(unittest.TestCase):
         )
         self.assertIn("status --live", self.check(ok=False))
 
-    def test_check_rejects_non_object_state_entries_with_a_clear_error(self):
-        package = self.rendered()
-        text = self.main(package)
-        state = re.search(
-            r"<!-- workflow:state -->\n(.*?)\n<!-- /workflow:state -->", text, re.S
-        )
-        url = "https://github.com/developing-today/code/issues/3235"
-        broken = {
-            "issue as bare url": lambda data: data.update(issues=[url]),
-            "pr as bare url": lambda data: data.update(prs=[url]),
-            "concept issue as bare url": lambda data: data["concepts"][0].update(
-                issues=[url]
-            ),
-        }
-        for name, mutate in broken.items():
-            with self.subTest(name):
-                data = json.loads(state[1])
-                mutate(data)
-                (package / "main.md").write_text(
-                    text.replace(state[1], json.dumps(data, indent=2)),
-                    encoding="utf-8",
-                )
-                error = self.check(ok=False)
-                self.assertIn("entries must be objects", error)
-                self.assertNotIn("has no attribute", error)
-        (package / "main.md").write_text(text, encoding="utf-8")
-        self.check()
-
     def test_single_concept_package_gets_a_section_for_items(self):
         package = self.rendered(single=True)
         self.assertIn('<a id="c001"></a>\n\n## C001: One concept\n', self.main(package))

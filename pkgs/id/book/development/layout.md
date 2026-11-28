@@ -18,9 +18,9 @@ ID lives in the `developing-today/code` monorepo, in the directory `pkgs/id/`. T
 
 There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Cargo.toml`. The two binaries exist by Cargo's implicit `src/main.rs` rule: `id` from the root package, and `id-native-shell` from `crates/id-native-shell/src/main.rs`.
 
-## The 23 crates
+## The 19 crates
 
-`crates/` holds the 23 sub-crates. The workspace has 24 members in total: the root plus these 23. `default-members` lists 18 packages — the root plus 17 crates. `id-native-shell`, `id-hw-shell`, `id-tui-shell`, `id-android-remote`, `id-bevy-bridge`, and `id-bevy-presenter` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the shell crates.
+`crates/` holds the 19 sub-crates. The workspace has 20 members in total: the root plus these 19. `default-members` lists 17 packages — the root plus 16 crates. `id-native-shell`, `id-hw-shell`, and `id-tui-shell` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the shell crates.
 
 | Crate                  | Role in one line                                                                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -39,14 +39,10 @@ There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Carg
 | `id-render`            | Rendering pipeline compiler core: parse and vocabulary validation of semantic markup. No dependents.                                                                                                         |
 | `id-import-notion`     | Notion importer manifest and inventory primitives. No dependents.                                                                                                                                            |
 | `id-client`             | Client-only Rust facade for the id native Android client v1 (slice 1 of #7938, #13403).                                                                                                                     |
-| `id-pg`                 | Postgres-over-HTTP adapter (#5805): allowlisted translation, registration, typed mapping, error mapping, and live/materialized reads (slices #13758–#13763); PostgREST contract fixtures (#13764). |
-| `id-grants`             | Selective-sharing grants model core (decision record #5799, slice 1 of #14790): grants, attenuated delegation, revocation cascade and the authorization check. Used by `id-store`.                          |
+| `id-pg`                 | Postgres-over-HTTP adapter (#5805): the PostgREST query translator and collection allowlist (design §3), slice #13760. No dependents yet.                                                                   |
 | `id-native-shell`      | The Bevy native reference shell. Not a default member.                                                                                                                                                       |
 | `id-hw-shell`          | The ESP32-class hardware shell spike: one file, `src/lib.rs`, frame builders only, no binary. Not a default member.                                                                                          |
 | `id-tui-shell`          | The terminal (TUI) shell: the text-native world-session client on the F13.1 shell contract (#12818). Not a default member.                                                                                  |
-| `id-android-remote`   | Android remote-drive transport bridge (#1831): an Iroh session bridge speaking the `/id-world/1` shell session protocol as a client only. Not a default member.                                                                                  |
-| `id-bevy-bridge`      | Bevy projection bridge for id worlds (slices 1–3, #13702–#13704): journal tail, entity map, schema as data, intents and the replay oracle over `bevy_ecs`. Not a default member.                                                                                  |
-| `id-bevy-presenter`   | Bevy presenter-client reference app (slices 4–5, #13705–#13706): the 2D presenter that joins a hosted world, over `id-bevy-bridge`. Not a default member.                                                                                  |
 
 Dependency direction runs downward to `id-core`. Nothing in the split family depends on the facade in production code; the two original shells depend on the facade, and `id-store` dev-depends on it for tests. The full per-crate surface is [The crates](../library/crates.md).
 
@@ -56,7 +52,7 @@ Two directories sit outside the workspace: `vendor/p2panda-sync` and `vendor/p2p
 
 | Path            | What it holds                                                                                                                                                                                                                                                              |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/`         | Packaged apps. It contains four apps: `apps/tic-tac-toe/`, `apps/space-invaders/`, `apps/checkers/` and `apps/chess/`, each with an `app.toml` declaring `[program] kind = "roc-world"` and the guest source in `program/main.roc`. It contains no Rust.                                                                              |
+| `apps/`         | Packaged apps. It contains exactly one app: `apps/tic-tac-toe/`, with an `app.toml` declaring `[program] kind = "roc-world"` and the guest source in `program/main.roc`. It contains no Rust.                                                                              |
 | `examples/`     | The Roc guest apps, the shared Roc platform package, the Rust guest SDK and its example, the import-policy fixture matrix, and one standalone Rust example file, `examples/session_checkpoint_poc.rs`. The guest apps are listed in [Add a Roc guest app](add-a-guest.md). |
 | `contract/`     | The machine-readable shell contract, 4 files: `shell-contract.v1.json` (contract `id-shell`, version 1, revision 15), `shell-suite.v1.json`, and the two golden session transcripts `sessions/terminal.jsonl` and `sessions/native.jsonl`.                                 |
 | `config/`       | The JSON Schema twin of the `id-config` document, `config/id-config-v1.schema.json`.                                                                                                                                                                                       |

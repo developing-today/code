@@ -23,10 +23,6 @@ fleet-search = { workspace = true, optional = true }
 # half (fleet-proxy's `serve` feature) is variant-gated, through
 # the proxy-serve feature below.
 fleet-proxy = { workspace = true, default-features = false }
-# The pooling primitive (design #13752, crate #14721): the laptop
-# route-form walker (#14722) selects through it. Linked only by the
-# laptop feature, so the connect variant does not carry it.
-fleet-pool = { workspace = true, optional = true }
 # fleet-secrets is linked only by builds whose domains resolve secrets;
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
@@ -44,9 +40,6 @@ fleet-agent = { workspace = true, optional = true }
 # chains and bundles over the fleet-cert library crate.
 fleet-cert = { workspace = true, optional = true }
 fleet-orgs = { workspace = true, optional = true }
-# The kv domain (code#13314): identity-scoped local key/value bytes over
-# the fleet-kv crate; a working-seat client, so full only.
-fleet-kv = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
@@ -69,12 +62,6 @@ ureq = { version = "3", default-features = false, features = [
 # must reproduce byte-exact — so signing is a library call, not a
 # subprocess. Same major version as pkgs/id's id-worlds.
 ed25519-dalek = { version = "3", optional = true }
-# The id domain (code#15430, design #10391 §4.1): the session secret
-# lives in a zeroizing buffer, and ephemeral generation fills it
-# from the OS RNG. Both crates are already in this workspace's lock
-# file as transitive dependencies.
-zeroize = { version = "1", optional = true }
-getrandom = { version = "0.3", optional = true }
 # The gh domain's Metadata store (code#9073): #9074's pm_metadata
 # schema over SQLite. Same pin as fleet-queue.
 rusqlite = { version = "0.43", features = ["bundled"], optional = true }
@@ -104,7 +91,6 @@ full = [
   "http",
   "ssh",
   "laptop",
-  "host",
   "secrets",
   "gh",
   "bridge",
@@ -112,8 +98,6 @@ full = [
   "cert",
   "actions",
   "orgs",
-  "kv",
-  "id",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -167,10 +151,7 @@ laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 commander = ["dep:fleet-secrets", "dep:ureq"]
 http = ["dep:fleet-laptop-agent"]
 ssh = []
-laptop = ["commander", "http", "ssh", "dep:fleet-pool"]
-# The host domain (#14716) is a working-seat client on the laptop
-# capability; include its compiled capability and the pool primitive.
-host = ["laptop"]
+laptop = ["commander", "http", "ssh"]
 # The actions domain (#13774): live exec sessions inside Actions
 # runners — seat verbs over the queue client, the runner-side
 # agent, and the R2 egress helper (SigV4 over sha2). Full only.
@@ -199,11 +180,6 @@ agent = ["dep:fleet-agent"]
 # never in serve (no daemon role) or connect (size gate).
 cert = ["dep:fleet-cert"]
 orgs = ["dep:fleet-orgs"]
-kv = ["dep:fleet-kv"]
-# The id domain (code#15430): iroh session key lifecycle + stamping
-# (design #10391 §4.1). A working-seat client surface, so full only;
-# later slices add the proxy/initiator verbs to this domain.
-id = ["dep:ed25519-dalek", "dep:zeroize", "dep:getrandom"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

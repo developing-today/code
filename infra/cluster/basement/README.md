@@ -27,7 +27,7 @@ Decision: cluster config lives at `infra/cluster/<cluster>/` in this repo, as re
 3. Generate the node file with `talm template -i`, then replace the matching `EXAMPLE-` file.
 4. Render and review with `talm template -f nodes/<node>.yaml --offline`, then dry-run apply.
 
-Hand-offs: real machines and BMCs go to #1086. The Cozystack install goes to #14017; its design record is `doc/2026-11-25T01-10-44Z_design_cozystack-platform-networking/`.
+Hand-offs: real machines and BMCs go to #1086. The Cozystack install goes to #14017.
 
 ## Render proof
 

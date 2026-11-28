@@ -342,7 +342,6 @@ fn pointer_frame(event: PointerEvent, pointer_id: u32, x: u16, y: u16) -> Client
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

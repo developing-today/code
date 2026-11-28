@@ -27,10 +27,6 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
           await Promise.resolve();
           return (db.prepare(query).get(...values) as T | undefined) ?? null;
         },
-        async all<T extends Record<string, unknown>>() {
-          await Promise.resolve();
-          return db.prepare(query).all(...values) as T[];
-        },
       };
     },
   };
@@ -38,10 +34,11 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
 
 async function createTestDirectory() {
   const db = new DatabaseSync(":memory:");
-  for (const migration of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql", "0003_migration_leases.sql"]) {
-    const schema = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
-    db.exec(schema);
-  }
+  const schema = await readFile(
+    new URL("../migrations/0001_hosted_accounts.sql", import.meta.url),
+    "utf8",
+  );
+  db.exec(schema);
   return { db, directory: new PersistentHostedAccountDirectory(sqliteD1(db)) };
 }
 
@@ -63,50 +60,6 @@ test("persistent duplicate signup returns the stored row without changing its po
       db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
       1,
     );
-  } finally {
-    db.close();
-  }
-});
-
-test("read-only binding lookup returns matching stable records and leaves storage unchanged", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    const record = await directory.signup({
-      subjectKey: "subject-lookup",
-      bindingId: BINDING,
-      jurisdiction: "eu",
-    });
-    const before = db.prepare("SELECT * FROM hosted_accounts").all();
-    assert.deepEqual(await directory.findByBindingId(BINDING), record);
-    assert.deepEqual(db.prepare("SELECT * FROM hosted_accounts").all(), before);
-  } finally {
-    db.close();
-  }
-});
-
-test("read-only binding lookup returns missing for unknown rows", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    assert.equal(await directory.findByBindingId(BINDING), undefined);
-    assert.deepEqual(await directory.listLegacyInventory(), []);
-  } finally {
-    db.close();
-  }
-});
-
-test("read-only binding lookup identifies a legacy-only row without mutation", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    const legacy = await directory.inventoryLegacy({ subjectKey: "subject-legacy", bindingId: BINDING });
-    const before = db.prepare("SELECT * FROM legacy_hosted_accounts").all();
-    assert.equal(await directory.findByBindingId(BINDING), undefined);
-    assert.deepEqual(await directory.findLegacyByBindingId(BINDING), legacy);
-    await assert.rejects(
-      directory.signup({ subjectKey: "subject-legacy", bindingId: BINDING, jurisdiction: "us" }),
-      (error: unknown) => error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
-    );
-    assert.deepEqual(db.prepare("SELECT * FROM legacy_hosted_accounts").all(), before);
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -196,239 +149,6 @@ test("persistent signup fails closed before creating a row for invalid jurisdict
   }
 });
 
-test("durable legacy inventory records a pre-existing account without a jurisdiction", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    const entry = await accountDirectory.inventoryLegacy({
-      subjectKey: "subject-legacy",
-      bindingId: BINDING,
-    });
-    assert.deepEqual(entry, {
-      subjectKey: "subject-legacy",
-      bindingId: BINDING,
-      jurisdiction: null,
-      classification: "legacy-unrestricted",
-    });
-    assert.deepEqual(await accountDirectory.legacyInventory("subject-legacy"), entry);
-    assert.equal(await accountDirectory.legacyInventory("unknown-subject"), undefined);
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), [entry]);
-    // A legacy entry is not a validated row: no signup record exists.
-    assert.equal(await accountDirectory.get("subject-legacy"), undefined);
-  } finally {
-    db.close();
-  }
-});
-
-test("durable legacy inventory refuses any asserted jurisdiction, even on repeat", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    for (const jurisdiction of ["us", "eu", "apac"]) {
-      await assert.rejects(
-        accountDirectory.inventoryLegacy({
-          subjectKey: "subject-legacy",
-          bindingId: BINDING,
-          jurisdiction,
-        }),
-        (error: unknown) =>
-          error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
-      );
-    }
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), []);
-    // A relabel attempt against an already-inventoried subject still fails closed.
-    await accountDirectory.inventoryLegacy({ subjectKey: "subject-legacy", bindingId: BINDING });
-    await assert.rejects(
-      accountDirectory.inventoryLegacy({
-        subjectKey: "subject-legacy",
-        bindingId: BINDING,
-        jurisdiction: "us",
-      }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
-    );
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), [
-      {
-        subjectKey: "subject-legacy",
-        bindingId: BINDING,
-        jurisdiction: null,
-        classification: "legacy-unrestricted",
-      },
-    ]);
-  } finally {
-    db.close();
-  }
-});
-
-test("duplicate durable legacy inventory returns the preserved entry; conflicting binding fails closed", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    const first = await accountDirectory.inventoryLegacy({
-      subjectKey: "subject-legacy",
-      bindingId: BINDING,
-    });
-    const second = await accountDirectory.inventoryLegacy({
-      subjectKey: "subject-legacy",
-      bindingId: BINDING,
-    });
-    assert.deepEqual(second, first);
-    await assert.rejects(
-      accountDirectory.inventoryLegacy({
-        subjectKey: "subject-legacy",
-        bindingId: OTHER_BINDING,
-      }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "duplicate_subject_conflict",
-    );
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), [first]);
-  } finally {
-    db.close();
-  }
-});
-
-test("durable signup for a legacy-inventoried subject fails closed without creating a validated row", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    await accountDirectory.inventoryLegacy({
-      subjectKey: "subject-legacy",
-      bindingId: BINDING,
-    });
-    await assert.rejects(
-      accountDirectory.signup({
-        subjectKey: "subject-legacy",
-        bindingId: BINDING,
-        jurisdiction: "us",
-      }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
-    );
-    assert.equal(await accountDirectory.get("subject-legacy"), undefined);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      0,
-    );
-  } finally {
-    db.close();
-  }
-});
-
-test("durable inventory of an already-registered subject fails closed", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    const record = await accountDirectory.signup({
-      subjectKey: "subject-1",
-      bindingId: BINDING,
-      jurisdiction: "eu",
-    });
-    await assert.rejects(
-      accountDirectory.inventoryLegacy({ subjectKey: "subject-1", bindingId: BINDING }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "legacy_subject_already_registered",
-    );
-    assert.deepEqual(
-      await accountDirectory.signup({
-        subjectKey: "subject-1",
-        bindingId: BINDING,
-        jurisdiction: "eu",
-      }),
-      record,
-    );
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), []);
-  } finally {
-    db.close();
-  }
-});
-
-test("durable legacy inventory lists every entry ordered by subject key", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    await accountDirectory.inventoryLegacy({ subjectKey: "subject-b", bindingId: BINDING });
-    await accountDirectory.inventoryLegacy({ subjectKey: "subject-a", bindingId: OTHER_BINDING });
-    assert.deepEqual(await accountDirectory.listLegacyInventory(), [
-      {
-        subjectKey: "subject-a",
-        bindingId: OTHER_BINDING,
-        jurisdiction: null,
-        classification: "legacy-unrestricted",
-      },
-      {
-        subjectKey: "subject-b",
-        bindingId: BINDING,
-        jurisdiction: null,
-        classification: "legacy-unrestricted",
-      },
-    ]);
-  } finally {
-    db.close();
-  }
-});
-
-test("legacy inventory CHECK constraints reject malformed identity and any jurisdiction label", async () => {
-  const { db } = await createTestDirectory();
-  const insert = db.prepare(
-    "INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)",
-  );
-
-  try {
-    assert.throws(() => insert.run("   ", BINDING, "legacy-unrestricted"), undefined, "blank subject");
-    assert.throws(
-      () => insert.run("subject", "0123456789abcdef0123456789abcde", "legacy-unrestricted"),
-      undefined,
-      "short binding id",
-    );
-    assert.throws(
-      () => insert.run("subject", "g" + BINDING.slice(1), "legacy-unrestricted"),
-      undefined,
-      "non-hex binding id",
-    );
-    assert.throws(
-      () => insert.run("subject", BINDING, "us"),
-      undefined,
-      "jurisdiction as classification",
-    );
-    assert.throws(
-      () => insert.run("subject", BINDING, "other"),
-      undefined,
-      "unknown classification",
-    );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM legacy_hosted_accounts").get()?.count,
-      0,
-    );
-  } finally {
-    db.close();
-  }
-});
-
-test("durable legacy reads fail closed on records outside the legacy contract", async () => {
-  const { db, directory: accountDirectory } = await createTestDirectory();
-  try {
-    // Recreate the table without its CHECKs to plant rows the schema
-    // could never have produced; the read path must still fail closed.
-    db.exec("DROP TABLE legacy_hosted_accounts");
-    db.exec(
-      "CREATE TABLE legacy_hosted_accounts (subject_key TEXT PRIMARY KEY NOT NULL, binding_id TEXT NOT NULL UNIQUE, classification TEXT NOT NULL)",
-    );
-    const insert = db.prepare(
-      "INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)",
-    );
-    insert.run("subject-odd", BINDING, "us");
-    insert.run("subject-bad-binding", "google:sub", "legacy-unrestricted");
-    await assert.rejects(
-      accountDirectory.legacyInventory("subject-odd"),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
-      "jurisdiction-labelled legacy row",
-    );
-    await assert.rejects(
-      accountDirectory.legacyInventory("subject-bad-binding"),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
-      "malformed binding id in legacy row",
-    );
-  } finally {
-    db.close();
-  }
-});
-
 test("directory migration CHECK constraints reject malformed identity and routing metadata", async () => {
   const { db } = await createTestDirectory();
   const insert = db.prepare(
@@ -453,26 +173,20 @@ test("directory migration CHECK constraints reject malformed identity and routin
   }
 });
 
-test("persistent reads reject records outside the per-phase account contract", async () => {
+test("persistent reads reject records outside the current stable account contract", async () => {
   const { db, directory: accountDirectory } = await createTestDirectory();
   const invalidRows = [
-    ["stable with pending jurisdiction", "us", "eu", null, "stable", 0],
-    ["stable with migration id", "us", null, "migration-1", "stable", 0],
-    ["unknown phase", "us", null, null, "moving", 0],
-    ["pending without migration id", "us", "eu", null, "pending", 1],
-    ["pending without target", "us", null, "m-1", "pending", 1],
-    ["pending to the same jurisdiction", "us", "us", "m-1", "pending", 1],
-    ["pending at epoch 0", "us", "eu", "m-1", "pending", 0],
-    ["malformed migration id", "us", "eu", "bad id!", "frozen", 1],
-    ["switched without its source", "eu", null, "m-1", "switched", 2],
-    ["switched below epoch 2", "eu", "us", "m-1", "switched", 1],
+    ["pending jurisdiction", "us", null, "stable", 0],
+    ["migration id", null, "migration-1", "stable", 0],
+    ["non-zero routing epoch", null, null, "stable", 1],
+    ["unknown phase", null, null, "moving", 0],
   ] as const;
 
   try {
-    for (const [index, [name, jurisdiction, pending, migrationId, phase, epoch]] of invalidRows.entries()) {
+    for (const [index, [name, pending, migrationId, phase, epoch]] of invalidRows.entries()) {
       db.prepare(
         "INSERT INTO hosted_accounts (subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(`subject-${index}`, BINDING, jurisdiction, pending, migrationId, phase, epoch);
+      ).run(`subject-${index}`, BINDING, "us", pending, migrationId, phase, epoch);
 
       await assert.rejects(
         accountDirectory.get(`subject-${index}`),
@@ -485,117 +199,4 @@ test("persistent reads reject records outside the per-phase account contract", a
   } finally {
     db.close();
   }
-});
-
-test("directory migration transitions advance epochs by compare-and-set (#3404)", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
-    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
-    assert.deepEqual(
-      [pending.phase, pending.jurisdiction, pending.jurisdictionPending, pending.migrationId, pending.routingEpoch],
-      ["pending", "us", "eu", "m-1", 1],
-    );
-    const frozen = await directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" });
-    const verified = await directory.transition(frozen, { type: "snapshot-verified", migrationId: "m-1" });
-    assert.deepEqual([frozen.phase, verified.phase, verified.routingEpoch], ["frozen", "verified", 1]);
-    const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
-    assert.deepEqual(
-      [switched.phase, switched.jurisdiction, switched.jurisdictionPending, switched.routingEpoch],
-      ["switched", "eu", "us", 2],
-    );
-    const done = await directory.transition(switched, { type: "complete", migrationId: "m-1" });
-    assert.deepEqual(
-      [done.phase, done.jurisdiction, done.jurisdictionPending, done.migrationId, done.routingEpoch],
-      ["stable", "eu", null, null, 2],
-    );
-    assert.deepEqual(await directory.get("s"), done, "the stored row is the completed record");
-    assert.equal(done.bindingId, BINDING, "the binding never changes across a migration");
-  } finally {
-    db.close();
-  }
-});
-
-test("a retried transition returns the applied row; a stale one conflicts (#3404)", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
-    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
-    const replay = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
-    assert.deepEqual(replay, pending, "a retried begin is idempotent");
-
-    await assert.rejects(
-      directory.transition(stable, { type: "begin", migrationId: "m-2", targetJurisdiction: "eu" }),
-      (e: unknown) => e instanceof FailClosed && e.status === 409 && e.code === "directory_cas_conflict",
-      "a second coordinator with another migration loses",
-    );
-
-    const aborted = await directory.transition(pending, { type: "abort", migrationId: "m-1" });
-    assert.deepEqual(
-      [aborted.phase, aborted.jurisdiction, aborted.migrationId, aborted.routingEpoch],
-      ["stable", "us", null, 2],
-      "abort returns to the source at a fresh epoch",
-    );
-    await assert.rejects(
-      directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" }),
-      (e: unknown) => e instanceof FailClosed && e.code === "directory_cas_conflict",
-      "a stale coordinator cannot resurrect the aborted attempt",
-    );
-    assert.deepEqual(await directory.get("s"), aborted);
-
-    const ghost = { ...stable, subjectKey: "nobody" };
-    await assert.rejects(
-      directory.transition(ghost, { type: "begin", migrationId: "m-3", targetJurisdiction: "eu" }),
-      (e: unknown) => e instanceof FailClosed && e.status === 404,
-    );
-  } finally {
-    db.close();
-  }
-});
-
-test("transitions refuse steps out of order, foreign migration ids and bad targets (#3404)", async () => {
-  const { db, directory } = await createTestDirectory();
-  try {
-    const stable = await directory.signup({ subjectKey: "s", bindingId: BINDING, jurisdiction: "us" });
-    const refused = (e: unknown) => e instanceof FailClosed && e.code === "directory_transition_refused";
-    await assert.rejects(directory.transition(stable, { type: "switch", migrationId: "m-1" }), refused);
-    await assert.rejects(
-      directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "us" }),
-      refused,
-      "the target must differ",
-    );
-    await assert.rejects(
-      directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "mars" }),
-      (e: unknown) => e instanceof FailClosed && e.code === "unsupported_jurisdiction",
-    );
-    await assert.rejects(
-      directory.transition(stable, { type: "begin", migrationId: "bad id!", targetJurisdiction: "eu" }),
-      (e: unknown) => e instanceof FailClosed && e.code === "invalid_migration_id",
-    );
-    const pending = await directory.transition(stable, { type: "begin", migrationId: "m-1", targetJurisdiction: "eu" });
-    await assert.rejects(directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-9" }), refused);
-    await assert.rejects(directory.transition(pending, { type: "switch", migrationId: "m-1" }), refused, "switch needs a verified snapshot");
-    await assert.rejects(directory.transition(pending, { type: "begin", migrationId: "m-2", targetJurisdiction: "fedramp" }), refused);
-    const frozen = await directory.transition(pending, { type: "freeze-acknowledged", migrationId: "m-1" });
-    const verified = await directory.transition(frozen, { type: "snapshot-verified", migrationId: "m-1" });
-    const switched = await directory.transition(verified, { type: "switch", migrationId: "m-1" });
-    await assert.rejects(directory.transition(switched, { type: "abort", migrationId: "m-1" }), refused, "no abort after the switch");
-    assert.deepEqual(await directory.get("s"), switched, "refused steps write nothing");
-  } finally {
-    db.close();
-  }
-});
-
-test("hosted README discloses the shared directory residency exception and its limits", async () => {
-  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-
-  // Oracle: the disclosure checklist in the jurisdiction-aware store design
-  // requires the shared D1 exception, the pseudonymous-data caveat, and the
-  // separate KV, logging, request-processing, and backup residency gaps.
-  assert.match(readme, /single\s+shared durable-directory residency exception/i);
-  assert.match(readme, /hashed subject.{0,40}potentially personal data/i);
-  assert.match(readme, /KV caches/i);
-  assert.match(readme, /logs/i);
-  assert.match(readme, /request\s+processing/i);
-  assert.match(readme, /backup\s+placement/i);
 });

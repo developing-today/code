@@ -67,7 +67,6 @@ fn chain_ext() -> impl Strategy<Value = ChainExt> {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         }
     })
 }
@@ -133,7 +132,6 @@ proptest! {
             rotation: None,
             chat: None,
                     anchor: None,
-            thread: None,
         };
         prop_assert!(sign(&key(), 0, None, None, ext.clone()).is_err());
         prop_assert!(ext.validate().is_err());
@@ -206,7 +204,6 @@ proptest! {
                     rotation: None,
                     chat: None,
                                     anchor: None,
-                    thread: None,
                 },
             )
             .encode();

@@ -18,11 +18,12 @@
 // shape before the registry is consulted, exactly as the native
 // resolver validates before it trusts any source.
 //
-// STORAGE: the registry below is an interface plus a fixture
-// in-memory implementation — the TenancyDirectory idiom of
-// src/tenancy.ts. The DB-backed implementation is D1SessionRegistry
-// (src/d1-session-registry.ts), which the Worker resolves whenever
-// its D1 binding is present; no caller changes.
+// SKELETON SEAM: the record's production home is the fleet metadata
+// DB's session table (the same DB #9074 builds; design §4.2), which
+// does not exist yet, so the registry below is an interface plus a
+// fixture in-memory implementation — the TenancyDirectory idiom of
+// src/tenancy.ts. A DB-backed SessionRegistry replaces the fixture
+// behind this same interface; no caller changes.
 
 import { FailClosed } from "./errors.ts";
 

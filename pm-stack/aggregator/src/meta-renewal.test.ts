@@ -8,7 +8,6 @@ import {
   pickMetaCookies,
   renewMetaSession,
   restoreBackoffMs,
-  STALE_MS,
   restoreCookiesFromCredential,
   type MetaBrowserCookie,
   type MetaCredential,
@@ -382,11 +381,8 @@ describe("renewMetaSession — browser-jar restore (#10839)", () => {
     expect(a3.alert).toContain("restored the laptop Helium cookie jar");
     expect(setCalls).toBe(3);
 
-    // The read path recovers: episode closes, alert clears. The
-    // recovered exporter produces a fresh read at the current time —
-    // an ok read measured hours ago would be stale readings under
-    // the #15114 alert, not a recovery.
-    doc = { status: "ok", measuredAt: new Date(nowMs).toISOString(), attemptedAt: new Date(nowMs).toISOString() };
+    // The read path recovers: episode closes, alert clears.
+    doc = okDoc;
     const healed = await renewMetaSession(deps);
     expect(healed.status).toBe("valid");
     expect(healed.alert).toBeNull();
@@ -414,106 +410,5 @@ describe("renewMetaSession — browser-jar restore (#10839)", () => {
     expect(state.restore.attempted).toBe(true);
     expect(state.restore.result).toBe("restored");
     expect(sets).toHaveLength(1);
-  });
-});
-
-describe("renewMetaSession — stale-readings alert (#15114)", () => {
-  const expiredDoc: MetaExporterDoc = { status: "session-expired", measuredAt: null, attemptedAt: NOW.toISOString() };
-
-  test("oracle: a valid credential does NOT mask stale readings — last good read older than STALE_MS raises attention + one push", async () => {
-    const { statePath, credentialPath } = await paths();
-    const pushes: string[] = [];
-    let nowMs = NOW.getTime() - 2 * 3_600_000;
-    let doc: MetaExporterDoc = {
-      status: "ok",
-      measuredAt: new Date(nowMs).toISOString(),
-      attemptedAt: new Date(nowMs).toISOString(),
-    };
-    const deps = baseDeps({
-      statePath,
-      credentialPath,
-      now: () => new Date(nowMs),
-      readLatest: async () => doc,
-      readCredential: async () => storedCred(),
-      validateCredential: async () => true,
-      notifyPush: async (notice) => {
-        pushes.push(notice.title);
-        return "sent:1/1";
-      },
-    });
-    const baseline = await renewMetaSession(deps);
-    expect(baseline.status).toBe("valid");
-    expect(baseline.lastGoodAt).toBe(new Date(nowMs).toISOString());
-
-    // Exporter goes session-expired; time passes beyond the stale bound.
-    nowMs = NOW.getTime();
-    doc = expiredDoc;
-    const stale = await renewMetaSession(deps);
-    expect(stale.status).toBe("attention");
-    expect(stale.alert).toContain("readings are stale");
-    expect(stale.alert).toContain("session-expired");
-    expect(stale.notification.attempted).toBe(true);
-    expect(pushes).toHaveLength(1);
-
-    // Same episode, next cycle: still attention, no second push.
-    const again = await renewMetaSession(deps);
-    expect(again.status).toBe("attention");
-    expect(again.notification.attempted).toBe(false);
-    expect(pushes).toHaveLength(1);
-  });
-
-  test("oracle: the stale bound is exact — age == STALE_MS stays valid, STALE_MS + 1ms raises attention", async () => {
-    const { statePath, credentialPath } = await paths();
-    let nowMs = NOW.getTime() - STALE_MS;
-    let doc: MetaExporterDoc = {
-      status: "ok",
-      measuredAt: new Date(nowMs).toISOString(),
-      attemptedAt: new Date(nowMs).toISOString(),
-    };
-    const deps = baseDeps({
-      statePath,
-      credentialPath,
-      now: () => new Date(nowMs),
-      readLatest: async () => doc,
-      readCredential: async () => storedCred(),
-      validateCredential: async () => true,
-    });
-    await renewMetaSession(deps);
-    doc = expiredDoc;
-    nowMs = NOW.getTime();
-    const atBound = await renewMetaSession(deps);
-    expect(atBound.status).toBe("valid");
-    expect(atBound.alert).toBeNull();
-
-    nowMs = NOW.getTime() + 1;
-    const pastBound = await renewMetaSession(deps);
-    expect(pastBound.status).toBe("attention");
-    expect(pastBound.alert).toContain("readings are stale");
-  });
-
-  test("oracle: a fresh ok exporter read is never stale, however old the previous last-good was", async () => {
-    const { statePath, credentialPath } = await paths();
-    let nowMs = NOW.getTime() - 24 * 3_600_000;
-    const deps = baseDeps({
-      statePath,
-      credentialPath,
-      now: () => new Date(nowMs),
-      readLatest: async () => ({
-        status: "ok",
-        measuredAt: new Date(nowMs).toISOString(),
-        attemptedAt: new Date(nowMs).toISOString(),
-      }),
-      readCredential: async () => storedCred(),
-      validateCredential: async () => true,
-    });
-    await renewMetaSession(deps);
-    nowMs = NOW.getTime();
-    const fresh = await renewMetaSession({
-      ...deps,
-      readLatest: async () => ({ status: "ok", measuredAt: NOW.toISOString(), attemptedAt: NOW.toISOString() }),
-    });
-    expect(fresh.status).toBe("valid");
-    expect(fresh.alert).toBeNull();
-    expect(fresh.lastGoodAt).toBe(NOW.toISOString());
   });
 });

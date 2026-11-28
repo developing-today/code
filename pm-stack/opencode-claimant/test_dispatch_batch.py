@@ -421,41 +421,5 @@ class DispatchBatchTests(unittest.TestCase):
         self.assertEqual(fake_q.calls, [])
 
 
-class FetchTaskRowShapeTests(unittest.TestCase):
-    """fetch_task_row reads only list pages (#7983 item 10)."""
-
-    def _with_answers(self, answers):
-        calls = []
-
-        def fake_post(path, body):
-            calls.append(body["status"])
-            answer = answers[body["status"]]
-            if isinstance(answer, Exception):
-                raise answer
-            return answer
-
-        original = db.poll._broker_post
-        db.poll._broker_post = fake_post
-        self.addCleanup(setattr, db.poll, "_broker_post", original)
-        return calls
-
-    def test_malformed_pages_are_skipped_not_iterated(self):
-        calls = self._with_answers(
-            {
-                "claimed": {"rows": 7},
-                "queued": {"rows": {"id": 5}},
-                "parked": {"rows": [row(5, 99)]},
-            }
-        )
-        found = db.fetch_task_row(QUEUE, 5)
-        self.assertEqual(calls, ["claimed", "queued", "parked"])
-        self.assertIsNotNone(found)
-        self.assertEqual(found["id"], 5)
-
-    def test_no_list_page_anywhere_is_none(self):
-        self._with_answers({"claimed": 3, "queued": "x", "parked": {"rows": None}})
-        self.assertIsNone(db.fetch_task_row(QUEUE, 5))
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -136,7 +136,7 @@ async fn naming_a_blob_that_was_never_uploaded_is_refused_even_for_writers() {
     .unwrap();
     let msg = resp.error_message().expect("must be refused");
     assert!(msg.contains("not present"), "{msg}");
-    assert_eq!(names_on(&server).await, [] as [String; 0]);
+    assert!(names_on(&server).await.is_empty());
 
     conn.close(0u32.into(), b"done");
     c.endpoint.close().await;

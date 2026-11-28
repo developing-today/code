@@ -17,10 +17,8 @@ import (
 // Adopt-or-reap scan — Phase 3 of #1384 (issue #9963).
 //
 // On daemon start the state directory holds one supervisor socket
-// per supervised server instance that has ever run — sockets are
-// keyed per instance, and classified here by the server segment of
-// the socket's file name, so every instance of a server classifies
-// the same way. Sockets fall into three classes:
+// per supervised server that has ever run. Sockets fall into three
+// classes:
 //
 //   - configured: the server is in the daemon's current config and
 //     supervised — the pool's adoption scan (Phase 2, #9962) attaches
@@ -54,83 +52,34 @@ func ScanSupervisorSockets(stateDir string, configured []string, logf func(strin
 	}
 	expected := map[string]string{}
 	for _, name := range configured {
-		expected[supervisorNameHash(name)] = name
+		expected[SupervisorSocketPath(stateDir, name)] = name
 	}
 	matches, _ := filepath.Glob(filepath.Join(SupervisorSocketDir(stateDir), "sup-*.sock"))
 	sort.Strings(matches)
 	var out []SupervisorScanOutcome
 	for _, sock := range matches {
-		if hash, ok := supervisorSocketNameHash(filepath.Base(sock)); ok {
-			if name, configured := expected[hash]; configured {
-				out = append(out, SupervisorScanOutcome{Socket: sock, Action: "configured", Detail: name})
-				continue
-			}
-		}
-		out = append(out, terminateScanSocket(sock,
-			"reaped orphaned supervisor %s (server no longer configured as supervised)",
-			"orphan scan", logf))
-	}
-	return out
-}
-
-// ReapSupervisors terminates every supervisor of the named servers in
-// stateDir — every instance of each, primary and scoped — and returns
-// one outcome per socket of those servers, with the same actions as
-// the scan. Sockets of other servers are untouched and unreported. A
-// supervisor that refuses the terminate (a daemon is still attached)
-// is left in place and reported refused: a refusal is never evidence
-// the supervisor is reapable.
-//
-// `mcpx stop` calls this for the stopped daemon's servers (#9963):
-// supervisors are built to outlive daemon restarts so a restarted
-// frontend re-adopts the same child, so only an explicit stop reaps
-// them — restoring the no-orphan guarantee the direct-spawn path
-// always had, whose absence forced #11343 to pause the supervised
-// default.
-func ReapSupervisors(stateDir string, names []string, logf func(string, ...any)) []SupervisorScanOutcome {
-	if logf == nil {
-		logf = func(string, ...any) {}
-	}
-	targets := map[string]bool{}
-	for _, name := range names {
-		targets[supervisorNameHash(name)] = true
-	}
-	matches, _ := filepath.Glob(filepath.Join(SupervisorSocketDir(stateDir), "sup-*.sock"))
-	sort.Strings(matches)
-	var out []SupervisorScanOutcome
-	for _, sock := range matches {
-		hash, ok := supervisorSocketNameHash(filepath.Base(sock))
-		if !ok || !targets[hash] {
+		if name, ok := expected[sock]; ok {
+			out = append(out, SupervisorScanOutcome{Socket: sock, Action: "configured", Detail: name})
 			continue
 		}
-		out = append(out, terminateScanSocket(sock,
-			"reaped supervisor %s (server stopped)",
-			"stop reap", logf))
+		err := TerminateSupervisorSocket(sock)
+		switch {
+		case err == nil:
+			logf("mcpx: reaped orphaned supervisor %s (server no longer configured as supervised)", sock)
+			out = append(out, SupervisorScanOutcome{Socket: sock, Action: "reaped"})
+		case IsSupervisorRefusal(err):
+			logf("mcpx: orphan scan left supervisor %s in place: %v", sock, err)
+			out = append(out, SupervisorScanOutcome{Socket: sock, Action: "refused", Detail: err.Error()})
+		case isStaleSocketErr(err):
+			_ = os.Remove(sock)
+			logf("mcpx: removed stale supervisor socket %s", sock)
+			out = append(out, SupervisorScanOutcome{Socket: sock, Action: "stale-removed", Detail: err.Error()})
+		default:
+			logf("mcpx: orphan scan could not terminate supervisor %s: %v", sock, err)
+			out = append(out, SupervisorScanOutcome{Socket: sock, Action: "terminate-failed", Detail: err.Error()})
+		}
 	}
 	return out
-}
-
-// terminateScanSocket terminates one supervisor socket and classifies
-// the result. reapFormat is the log line for a landed terminate (one
-// %s verb, the socket); context names the pass in the refusal and
-// failure lines.
-func terminateScanSocket(sock, reapFormat, context string, logf func(string, ...any)) SupervisorScanOutcome {
-	err := TerminateSupervisorSocket(sock)
-	switch {
-	case err == nil:
-		logf("mcpx: "+reapFormat, sock)
-		return SupervisorScanOutcome{Socket: sock, Action: "reaped"}
-	case IsSupervisorRefusal(err):
-		logf("mcpx: %s left supervisor %s in place: %v", context, sock, err)
-		return SupervisorScanOutcome{Socket: sock, Action: "refused", Detail: err.Error()}
-	case isStaleSocketErr(err):
-		_ = os.Remove(sock)
-		logf("mcpx: removed stale supervisor socket %s", sock)
-		return SupervisorScanOutcome{Socket: sock, Action: "stale-removed", Detail: err.Error()}
-	default:
-		logf("mcpx: %s could not terminate supervisor %s: %v", context, sock, err)
-		return SupervisorScanOutcome{Socket: sock, Action: "terminate-failed", Detail: err.Error()}
-	}
 }
 
 // isStaleSocketErr reports whether err means nobody is listening on

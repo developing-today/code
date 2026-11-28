@@ -29,11 +29,6 @@ def check_record(path: Path, max_age_hours: int, now: datetime) -> str:
         record = json.loads(path.read_text())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("record is unreadable or invalid JSON") from exc
-    return check_record_data(record, max_age_hours, now)
-
-
-def check_record_data(record, max_age_hours: int, now: datetime) -> str:
-    """Validate one parsed snapshot; consumers must not combine generations."""
     if not isinstance(record, dict):
         raise ValueError("record is not an object")
     if record.get("result") != "complete":
@@ -68,15 +63,11 @@ def check_record_data(record, max_age_hours: int, now: datetime) -> str:
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        finished = check_record(
-            Path(args.record), args.max_age_hours, datetime.now(timezone.utc)
-        )
+        finished = check_record(Path(args.record), args.max_age_hours, datetime.now(timezone.utc))
     except ValueError as exc:
         print(f"restore-point-check: unavailable restore point: {exc}", file=sys.stderr)
         return 1
-    print(
-        f"RESTORE POINT OK: complete generation finished {finished}; local/R2/Drive verified"
-    )
+    print(f"RESTORE POINT OK: complete generation finished {finished}; local/R2/Drive verified")
     return 0
 
 

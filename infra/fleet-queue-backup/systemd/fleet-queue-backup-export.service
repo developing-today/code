@@ -11,5 +11,4 @@ Type=oneshot
 # start timeout (90s) would kill every scheduled run, so the bound is
 # set from the measured cycle with headroom for import + verify.
 TimeoutStartSec=2h
-ExecStartPre=/usr/bin/env bash __FQ_DIR__/systemd/update-checkout.sh
 ExecStart=/usr/bin/env bash __FQ_DIR__/systemd/run-export.sh

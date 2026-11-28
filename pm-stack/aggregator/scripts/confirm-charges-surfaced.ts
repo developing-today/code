@@ -2,11 +2,11 @@
 // Confirm only the charges in the exact feed successfully installed remotely.
 // The push script holds the state-specific flock across collection and confirmation.
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { unmatchedKey } from "../src/charges-collect.ts";
 import type { UnmatchedCharge } from "../src/charges-match.ts";
 import { isFiniteNumber, isRecord } from "../src/validate.ts";
-import { requireHome } from "../src/home.ts";
 
 const args = process.argv.slice(2);
 // Exactly one positional argument is the whole contract. Any extra or
@@ -26,10 +26,7 @@ const feedPath = args[0];
 if (!feedPath) throw new Error("usage: confirm-charges-surfaced.ts <delivered-feed>");
 const statePath =
   process.env.CHARGES_SURFACED_STATE_PATH ??
-  join(
-    requireHome("CHARGES_SURFACED_STATE_PATH"),
-    "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json",
-  );
+  join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json");
 const feed: unknown = JSON.parse(await readFile(feedPath, "utf8"));
 // The feed arrives from disk after delivery, so it is untrusted input:
 // a non-object top level (null, array, string, number) is an invalid

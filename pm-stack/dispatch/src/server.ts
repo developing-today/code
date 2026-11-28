@@ -23,7 +23,6 @@ import { APP_INSTALLED_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig, type Config } 
 import { AuthError, assertCallerRepo, authenticate, type CallerIdentity } from "./auth.ts";
 import {
   ValidationError,
-  parseAgentWakeRequest,
   parseSessionRequest,
   parseTaskRequest,
   resolveSessionDirectory,
@@ -978,31 +977,6 @@ async function handleGetSession(caller: CallerIdentity, idSegment: string): Prom
   return json(200, sessionStatusView(raw));
 }
 
-/** A Message Bridge wake starts an OpenCode session that enters the same
- * fleet intake ladder as a scheduled lane. The prompt is fixed and does not
- * treat the webhook's text as a work packet; `fleet agent next` reads the
- * authenticated inbox and claims work itself. */
-async function handleAgentWake(req: Request): Promise<Response> {
-  const wake = parseAgentWakeRequest(await readJsonBody(req));
-  let session: { id: string };
-  try {
-    session = await opencode.createSession({
-      directory: REPO_DIRS["developing-today/code"],
-      title: `Fleet wake: ${wake.agent}`,
-      model: null,
-    });
-  } catch (error) {
-    return json(502, { error: error instanceof Error ? error.message : String(error) });
-  }
-  const prompt =
-    `A Message Bridge wake arrived for Fleet agent ${wake.agent} (message ids ${wake.messageIds.join(", ")}).\n\n` +
-    `Run \`fleet agent next --agent ${wake.agent}\` once now. If it returns a task, follow its packet and every command in its \`then\` list. If it returns no work, report that and stop.`;
-  void opencode.sendPrompt(session.id, prompt).catch((error) => {
-    console.error(`[dispatch-wake] prompt failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  return json(202, { agent: wake.agent, session_id: session.id, status: "started" });
-}
-
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -1023,14 +997,6 @@ export async function handler(req: Request): Promise<Response> {
         allowlist: cfg.repoAllowlist,
       });
       return path === "/v1/sessions" ? await handleSessions(req, caller) : await handleTasks(req, caller);
-    }
-    if (req.method === "POST" && path === "/v1/agent-wake") {
-      await authenticate(req, {
-        apiToken: cfg.apiToken,
-        oidcAudience: cfg.oidcAudience,
-        allowlist: cfg.repoAllowlist,
-      });
-      return await handleAgentWake(req);
     }
     const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)$/);
     const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)$/);

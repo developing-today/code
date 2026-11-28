@@ -12,7 +12,6 @@ import { join } from "node:path";
 
 interface HealthBody {
   status: string;
-  degraded?: boolean;
   version?: string;
   comments?: { pendingMessages: number; pendingGithub: number; total: number };
 }
@@ -130,10 +129,7 @@ describe("/api/health build version (#1150)", () => {
 
 describe("/api/health comment counts (#1145)", () => {
   test("the API body carries pending message/github counts from the store", () => {
-    // #14062: the status follows the degraded flag. This live-source
-    // server's probes reach nothing, so it is degraded and says so.
-    expect(health?.degraded).toBe(true);
-    expect(health?.status).toBe("degraded");
+    expect(health?.status).toBe("ok");
     expect(health?.comments).toEqual({ pendingMessages: 1, pendingGithub: 1, total: 4 });
   });
 });

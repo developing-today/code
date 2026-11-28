@@ -81,7 +81,6 @@ impl Writer {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -271,7 +270,6 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     };
     assert!(sign(&a.key, 0, None, None, mismatch).is_err());
     let missing = ChainExt {
@@ -287,7 +285,6 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     };
     assert!(sign(&a.key, 0, None, None, missing).is_err());
 }

@@ -1433,7 +1433,7 @@ mod tests {
         assert_eq!(rig.journal.pending()[0].attempts, 1);
 
         let still = rig.pipeline.retry_outbox();
-        assert_eq!(still, [] as [HookId; 0]);
+        assert!(still.is_empty());
         assert!(rig.journal.pending().is_empty());
         let attempts = attempts.lock().unwrap();
         assert_eq!(attempts.len(), 2);

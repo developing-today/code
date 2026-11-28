@@ -53,13 +53,6 @@ pub struct CertInfo {
     spki_oid: String,
 }
 
-impl CertInfo {
-    /// The raw signature bytes over this certificate's TBS.
-    pub fn signature(&self) -> &[u8] {
-        &self.signature
-    }
-}
-
 pub fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -104,7 +97,7 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Classify a subject key from its SPKI OID (+ size for RSA).
-pub(crate) fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
+fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
     match spki_oid {
         "1.3.101.112" => Some(AlgorithmId::Ed25519),
         "1.2.840.10045.2.1" => Some(AlgorithmId::P256),

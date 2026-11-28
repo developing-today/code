@@ -97,7 +97,7 @@ describe("live Grist roadmap reader (#1213)", () => {
     }
   });
 
-  test("serves no rows and names the Grist read failure, never fixture rows (#14065)", async () => {
+  test("falls back to fixture rows and reports the Grist read failure", async () => {
     const cfg = await testConfig();
     const requests: { url: string; authorization: string | null }[] = [];
     const realFetch = globalThis.fetch;
@@ -112,13 +112,8 @@ describe("live Grist roadmap reader (#1213)", () => {
     try {
       const src = liveSource(cfg);
 
-      const rows = await src.roadmap();
-      expect(rows).toEqual([]);
-      expect(rows).not.toEqual(FIXTURE_ROADMAP);
-      expect(src.provenance().roadmap).toBe(
-        "unavailable (grist unreachable: grist roadmap read failed; fixtures withheld in live mode)",
-      );
-      expect(src.provenanceDetail!().roadmap.state).toBe("unavailable");
+      expect(await src.roadmap()).toEqual(FIXTURE_ROADMAP);
+      expect(src.provenance().roadmap).toBe("fixtures (grist unreachable: grist roadmap read failed)");
       expect(requests).toEqual([
         {
           url: "http://grist.test/api/docs/test-roadmap-doc/tables/Roadmap/records",

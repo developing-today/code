@@ -26,7 +26,6 @@ Transport contracts:
 
 import base64
 import hashlib
-import http.client
 import json
 import os
 import re
@@ -42,11 +41,6 @@ DEFAULT_TURSO_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
 TURSO_TOKEN_SECRET_NAME = "turso.fleet-queue-rw-token"
 CLOUDFLARE_TOKEN_SECRET_NAME = "cloudflare.api-token-account-wide"
 DEFAULT_D1_NAME = "fleet-queue-backup"
-# CF-3 (#14943): after CF-2's cutover the live queue plane is itself
-# a D1 database named `fleet-queue`; the backup copy stays the
-# separate D1 database `fleet-queue-backup`. The two names must never
-# be conflated (see tests/test_database_name_contract.py).
-LIVE_D1_NAME = "fleet-queue"
 META_TABLE = "_fleet_queue_backup_meta"
 
 # Page size / bound for row reads (#6622): at 500 rows per page and a
@@ -100,16 +94,7 @@ def http_json(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECONDS):
     for attempt in range(TRANSPORT_ATTEMPTS):
         try:
             return _http_json_once(method, url, token, payload, timeout)
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-            # A response truncated mid-body (IncompleteRead) is a
-            # transport failure, not an API answer: seen live on the
-            # CF-3 D1 export's paged reads through the egress proxy
-            # (2026-11-26, #14943) after ~30 minutes of clean pages.
-            http.client.HTTPException,
-        ) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_exc = exc
             if attempt + 1 < TRANSPORT_ATTEMPTS:
                 time.sleep(min(30, 2 ** (attempt + 1)))
@@ -125,8 +110,6 @@ def _http_json_once(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECON
     """
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method=method)
-    # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
-    req.add_header("User-Agent", "fleet-d1-client/1")
     req.add_header("Authorization", f"Bearer {token}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -227,11 +210,6 @@ def read_schema(client):
     _cols, rows = client.execute(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
-        # Cloudflare-internal objects (_cf_KV and friends) are managed
-        # by the platform and the D1 query API refuses to read them
-        # (SQLITE_AUTH, seen live on fleet-queue 2026-11-26, #14943);
-        # they are not user data and never part of a backup copy.
-        "AND substr(name, 1, 4) <> '_cf_' "
         "AND name <> ? ORDER BY rowid",
         (META_TABLE,),
     )
@@ -256,56 +234,26 @@ def read_table_quoted(client, table, ncols):
     quote() as SQL literal text — the export's escaping oracle.
 
     Column names come from the schema itself, via a zero-row probe, so
-    quote() wraps the real columns in order. Rowid tables are paged by
-    rowid (WHERE rowid > last ORDER BY rowid), so each page reads only
-    its own rows; paging by OFFSET re-read every earlier row on every
-    page, which on a 400k-row Turso table cost hundreds of millions of
-    row reads and most of an hour. A table without a rowid (WITHOUT
-    ROWID) falls back to OFFSET. Both carry the #6622 bound: a table
-    whose pages never shorten past the bound raises instead of looping
-    forever.
+    quote() wraps the real columns in order. Paged by OFFSET with the
+    #6622 bound: a table whose pages never shorten past the bound
+    raises instead of looping forever.
     """
     colnames, _probe = client.execute(f'SELECT * FROM "{table}" LIMIT 0')
     if len(colnames) != ncols:
         raise RuntimeError(f"{table}: expected {ncols} columns, found {len(colnames)}")
     quoted = ", ".join(f'quote("{c}")' for c in colnames)
-    # A client may declare a smaller page (D1SourceClient does): the
-    # bound is on pages either way, so a smaller page only lowers the
-    # admitted row ceiling, never the termination guarantee.
-    page_rows = getattr(client, "page_rows", PAGE_ROWS)
-    try:
-        _cols, rows = client.execute(
-            f'SELECT _rowid_, {quoted} FROM "{table}" ORDER BY _rowid_ LIMIT {page_rows}'
-        )
-    except Exception:  # noqa: BLE001 - no rowid: the source says so as an error
-        rows = None
-    if rows is not None:
-        for _page in range(MAX_PAGES):
-            for row in rows:
-                yield tuple(row[1:])
-            if len(rows) < page_rows:
-                return
-            _cols, rows = client.execute(
-                f'SELECT _rowid_, {quoted} FROM "{table}" WHERE _rowid_ > ? '
-                f"ORDER BY _rowid_ LIMIT {page_rows}",
-                (rows[-1][0],),
-            )
-        raise RuntimeError(
-            f"{table}: pagination exceeded {MAX_PAGES} pages of {page_rows}; "
-            "refusing to page unboundedly"
-        )
     offset = 0
     for _page in range(MAX_PAGES):
         _cols, rows = client.execute(
-            f'SELECT {quoted} FROM "{table}" LIMIT {page_rows} OFFSET {offset}'
+            f'SELECT {quoted} FROM "{table}" LIMIT {PAGE_ROWS} OFFSET {offset}'
         )
         for row in rows:
             yield row
-        if len(rows) < page_rows:
+        if len(rows) < PAGE_ROWS:
             return
-        offset += page_rows
+        offset += PAGE_ROWS
     raise RuntimeError(
-        f"{table}: pagination exceeded {MAX_PAGES} pages of {page_rows}; "
+        f"{table}: pagination exceeded {MAX_PAGES} pages of {PAGE_ROWS}; "
         "refusing to page unboundedly"
     )
 
@@ -556,45 +504,6 @@ def _split_row_insert(table, colnames, row, pk_cols, splits):
     return out
 
 
-def read_table_schema(client, table):
-    """The table's current CREATE sql, read at the moment of use, or
-    None if the table is gone."""
-    _cols, rows = client.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    )
-    return rows[0][0] if rows else None
-
-
-def _fresh_table_shape(client, name):
-    """(create_sql, colnames) for `name`, captured at the same instant.
-
-    The CREATE is re-read beside a zero-row probe and the pair is
-    retried until they agree: a migration landing between the two
-    reads retries, and one that never settles fails the export here,
-    naming the drift, instead of emitting a dump whose CREATE and
-    INSERTs disagree until import time (#15081). When the CREATE
-    text does not parse into column names, the probe alone is the
-    shape (the pre-#15081 behaviour for exotic CREATEs).
-    """
-    for _attempt in range(3):
-        sql = read_table_schema(client, name)
-        if sql is None:
-            raise RuntimeError(f"{name}: table vanished during export")
-        colnames, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
-        expected = table_columns(sql)
-        if not expected or list(colnames) == expected:
-            return sql, colnames
-    raise RuntimeError(
-        f"{name}: schema drifted during export: CREATE defines "
-        f"{expected}, live table has {list(colnames)}"
-    )
-
-
-def _is_unique_index(sql):
-    return bool(re.match(r"\s*CREATE\s+UNIQUE\s+INDEX\b", sql or "", re.IGNORECASE))
-
-
 def build_dump(client, exported_at):
     """A complete, re-importable SQL dump of the store as D1-safe text.
 
@@ -605,16 +514,9 @@ def build_dump(client, exported_at):
     (dump_text, counts, splits), where splits records each row that
     had to be chunked for the D1 statement limit (see
     _split_row_insert), for post-import verification.
-
-    The opening schema read fixes only the table set and the DROP
-    order. Each table's CREATE is captured at the moment that table
-    is read (_fresh_table_shape): the source is live and migrates
-    under the export, and pairing an opening-capture CREATE with
-    rows read minutes later corrupts the dump when a column lands
-    in between (#15081).
     """
     schema = read_schema(client)
-    tables = [name for kind, name, _t, _sql in schema if kind == "table"]
+    tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
     # Counts are taken from the rows actually emitted below, never from
     # a separate COUNT(*) pass: on the live store the two reads smear
     # (rows land between them), which made the exporter's read-back
@@ -622,12 +524,11 @@ def build_dump(client, exported_at):
     # copy that ever existed (live run 4, #8584). Emitted counts make
     # the meta, the read-back check and the restore drill all describe
     # the same artifact.
-    counts = {name: 0 for name in tables}
+    counts = {name: 0 for name, _sql in tables}
     lines = [
         "-- fleet-queue-backup export (#8584)",
         f"-- exported_at: {exported_at}",
         f"-- source tables: {len(tables)}",
-        "PRAGMA defer_foreign_keys = true;",
     ]
     # Drop every object the dump recreates, dependents first, so the
     # dump is idempotent against a target already holding a copy
@@ -635,38 +536,24 @@ def build_dump(client, exported_at):
     for kind, name, _t, _sql in schema:
         if kind in ("trigger", "view", "index"):
             lines.append(f'DROP {kind.upper()} IF EXISTS "{name}";')
-    for name in tables:
+    for name, _sql in tables:
         lines.append(f'DROP TABLE IF EXISTS "{name}";')
-    create_lines = []
-    body = []
+    for _name, sql in tables:
+        lines.append(sql.rstrip().rstrip(";") + ";")
     splits = []
-    for name in tables:
-        sql, colnames = _fresh_table_shape(client, name)
-        create_lines.append(sql.rstrip().rstrip(";") + ";")
+    for name, sql in tables:
+        colnames, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
+        ncols = len(colnames)
         pk_cols = _pk_columns(sql)
-        for row in read_table_quoted(client, name, len(colnames)):
+        for row in read_table_quoted(client, name, ncols):
             counts[name] += 1
             stmt = f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");"
             if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
-                body.append(stmt)
+                lines.append(stmt)
             else:
-                body.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
-    lines.extend(create_lines)
-    # D1 always enforces foreign keys. A key a child row points at must
-    # be unique when the row lands, so UNIQUE indexes go in before the
-    # rows (a parent whose id is unique only by index otherwise fails
-    # with "foreign key mismatch"), and the checks wait for the end of
-    # the import, since tables are not loaded parents first.
-    unique_indexes = [
-        sql
-        for kind, _name, _t, sql in schema
-        if kind == "index" and _is_unique_index(sql)
-    ]
-    for sql in unique_indexes:
-        lines.append(sql.rstrip().rstrip(";") + ";")
-    lines.extend(body)
+                lines.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
     for kind, _name, _t, sql in schema:
-        if kind in ("index", "view", "trigger") and sql not in unique_indexes:
+        if kind in ("index", "view", "trigger"):
             lines.append(sql.rstrip().rstrip(";") + ";")
     lines.append(f'DROP TABLE IF EXISTS "{META_TABLE}";')
     lines.append(
@@ -793,9 +680,6 @@ class D1Client:
             time.sleep(5)
         raise RuntimeError("D1 import did not complete within the poll bound")
 
-    def delete_database(self, db_id):
-        return self._call("DELETE", f"/accounts/{self.account}/d1/database/{db_id}")
-
     def read_meta(self, db_id):
         rows = self.query(
             db_id, f'SELECT value FROM "{META_TABLE}" WHERE key = ?', ("export",)
@@ -810,46 +694,3 @@ class D1Client:
             rows = self.query(db_id, f'SELECT count(*) AS n FROM "{name}"')
             out[name] = rows[0]["n"]
         return out
-
-
-class D1SourceClient:
-    """A D1 database presented through the execute() shape build_dump
-    consumes (the LibsqlClient interface), so the same dump builder
-    exports a D1 source (CF-3, #14943) exactly as it exports the Turso
-    source: schema from sqlite_master, rows rendered by SQLite's own
-    quote() at the source — here the source is D1's query API, whose
-    SQL engine is SQLite, so quote() keeps its escaping-oracle role.
-
-    D1's query API returns rows as objects; execute() converts them
-    to (cols, tuple-rows) in the response's column order. A zero-row
-    result carries no column names in the response, so the one
-    zero-row probe build_dump makes (SELECT * ... LIMIT 0) takes its
-    columns from the table's CREATE text instead (table_columns —
-    the same fallback the restore drill uses because D1 refuses
-    PRAGMA). Cell values come back as JSON values (null / number /
-    string); the queue schema's cells are TEXT/INTEGER, and quote()
-    renders the literal text server-side, so no binary cell ever
-    crosses this adapter on the export path.
-    """
-
-    # Smaller pages than the libsql path: a 500-row page of
-    # quote()-rendered queue rows runs to ~190 KB, and the sandbox
-    # seat's egress proxy truncates responses of that size mid-body
-    # on every attempt (live CF-3 runs, 2026-11-26, #14943). 100-row
-    # pages keep each response well under the observed cut.
-    page_rows = 100
-
-    def __init__(self, d1, db_id):
-        self.d1 = d1
-        self.db_id = db_id
-
-    def execute(self, sql, args=()):
-        rows = self.d1.query(self.db_id, sql, list(args))
-        if rows:
-            cols = list(rows[0].keys())
-            return cols, [tuple(row.get(c) for c in cols) for row in rows]
-        probe = re.match(r'SELECT \* FROM "([^"]+)" LIMIT 0\s*$', sql)
-        if probe:
-            create_sql = read_table_schema(self, probe.group(1))
-            return (table_columns(create_sql) if create_sql else []), []
-        return [], []

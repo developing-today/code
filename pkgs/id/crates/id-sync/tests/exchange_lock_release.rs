@@ -39,10 +39,10 @@ use id_core::graph::term::{Term, Triple};
 use id_core::signed_envelope::LogicalGraphId;
 use id_sync::federation::exchange_net::{
     ClientTransfer, EXCHANGE_ALPN, ExchangeProtocol, Hello, HelloReply, ServerTransfer,
-    WireEnvelope, reconcile_remote,
+    reconcile_remote,
 };
 use id_sync::federation::slices::b07_conflict_report::{
-    ConflictStore, Digest32, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
+    ConflictStore, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
 };
 use id_sync::federation::slices::b08_sync_scope::SyncScopeConfig;
 use id_sync::federation::slices::b09_anti_entropy::Replica;
@@ -229,7 +229,7 @@ async fn a_version_admitted_during_the_wait_waits_for_the_next_exchange() {
         .unwrap()
         .unwrap();
     let reply: HelloReply = serde_json::from_slice(&frame).unwrap();
-    assert_eq!(reply.summary, [] as [(ObjectId, Digest32); 0]);
+    assert!(reply.summary.is_empty());
 
     // While the session waits, the responder's owner admits a version
     // issued after the session's logical time.
@@ -257,8 +257,8 @@ async fn a_version_admitted_during_the_wait_waits_for_the_next_exchange() {
         .unwrap()
         .unwrap();
     let server_transfer: ServerTransfer = serde_json::from_slice(&frame).unwrap();
-    assert_eq!(server_transfer.offer.send, [] as [EventId; 0]);
-    assert_eq!(server_transfer.versions, [] as [WireEnvelope; 0]);
+    assert!(server_transfer.offer.send.is_empty());
+    assert!(server_transfer.versions.is_empty());
     conn.close(0_u32.into(), b"done");
 
     // The next exchange, at a time the version is valid for, delivers

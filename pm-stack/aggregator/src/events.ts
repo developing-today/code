@@ -29,31 +29,16 @@
 // pending-retry count and the integrity verdict as a readable
 // surface; failures are also logged loudly at the point of failure.
 //
-// Storage follows the views/comments store discipline (#906, #1276)
-// for its failure handling — writes are serialized through a per-store
-// promise chain; a missing file is the only silent empty start — an
-// unparseable or wrongly-shaped store is quarantined to
-// <file>.corrupt-<timestamp> with a loud log, never silently
-// overwritten — but the hot stream's layout is segmented since #14958
-// (the #14865 write-amplification follow-on): the file at
-// PM_AGG_EVENTS_FILE is a small v3 manifest
-// ({version: 3, segments, checkpoint}) and the records live one JSON
-// object per line in append-only segment files under
-// <file>.segments/. A persist appends only the new records' lines
-// plus the manifest (rewritten atomically, unique temp file +
-// rename, on every persist, so the failure surface is unchanged);
-// the whole-stream rewrite the v2 layout needed on every append —
-// rechain + full-file write, quadratic in stream length — is gone.
-// The manifest's per-segment entries and top-level checkpoint are
-// chain checkpoints: load verifies the full chain as before and the
-// checkpoint additionally makes tail truncation visible (see
-// readManifestSegments). v1 files ({version: 1}) and v2 files
-// ({version: 2, events: [...]}) remain readable through the legacy
-// path: v1 rows are migrated in memory to v2 records with
-// deterministic stable ids (see migrateV1Event), and the first
-// persist after a legacy load converts the store to the v3 layout.
-// The full design and migration story are recorded on #14958; the
-// retention contract is in docs/audit-event-retention.md.
+// Storage follows the views/comments store discipline (#906, #1276):
+// one JSON file in the aggregator's data directory
+// (PM_AGG_EVENTS_FILE); writes are atomic (unique temp file + rename)
+// and serialized through a per-store promise chain; a missing file is
+// the only silent empty start — an unparseable or wrongly-shaped file
+// is quarantined to <file>.corrupt-<timestamp> with a loud log, never
+// silently overwritten. v1 files ({version: 1}) remain readable:
+// their rows are migrated in memory to v2 records with deterministic
+// stable ids (see migrateV1Event) and the file is rewritten as v2 on
+// the next persist.
 //
 // Retention is bounded (#1739 acceptance): records older than 30 days
 // or beyond the newest 5000 leave the hot stream on append and on
@@ -85,7 +70,7 @@
 // and since slice A the failed record waits in the retry outbox
 // instead of being lost.
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rename, rm, truncate, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isIsoDate } from "./validate.ts";
 
@@ -165,55 +150,6 @@ export interface EventsFile {
 interface EventsFileV1 {
   version: 1;
   events: StreamEvent[];
-}
-
-/** One segment file's checkpoint entry in the v3 manifest: how many
- *  records the segment held at the last manifest write, and the hash
- *  of the last of them. */
-export interface EventsManifestSegment {
-  file: string;
-  records: number;
-  lastHash: string;
-}
-
-/** The v3 store manifest (#14958): the file at PM_AGG_EVENTS_FILE
- *  since the segmented layout landed. The segments it lists are the
- *  truth; the manifest is their checkpoint index — rewritten on
- *  every persist, it attests how far the chain on disk had verifiably
- *  reached, which is what makes a truncated segment tail visible at
- *  load (full-chain verification alone cannot see a missing tail). */
-export interface EventsManifest {
-  version: 3;
-  updatedAt: string;
-  segments: EventsManifestSegment[];
-  /** Chain checkpoint across all segments: total records attested
-   *  and the hash of the last one. */
-  checkpoint: { records: number; lastHash: string; at: string };
-  /** Next segment sequence number to allocate; segment names are
-   *  never reused, so a rewrite's new files can be written before
-   *  the manifest commits to them and superseded files are only
-   *  deleted after that commit. */
-  nextSeq?: number;
-}
-
-/** Records per segment file before an append rolls to a new one. */
-export const EVENT_SEGMENT_MAX_RECORDS = 1000;
-
-const SEGMENT_NAME = /^seg-(\d+)\.jsonl$/;
-
-function segmentFileName(seq: number): string {
-  return `seg-${String(seq).padStart(6, "0")}.jsonl`;
-}
-
-/** The load-time defaults for the audit fields a stored row may
- *  predate (shared by the legacy file rows and the segment lines):
- *  attribution is unknown and never asserted; the source is unknown. */
-function withAuditDefaults(row: AuditEvent): AuditEvent {
-  return {
-    ...row,
-    attribution: row.attribution ?? { confidence: "unknown", asserted: false },
-    source: row.source ?? { identity: "unknown" },
-  };
 }
 
 export const EVENT_RETENTION_DAYS = 30;
@@ -698,22 +634,6 @@ export class EventsStore {
   private writeChain: Promise<void> = Promise.resolve();
   private recordChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
-  /** On-disk layout this store loaded (#14958): "segments" once the
-   *  v3 layout is on disk; anything else persists via a full
-   *  (re)write that converts the store to the segmented layout. */
-  private format: "legacy" | "segments" = "legacy";
-  /** The records exactly as they exist in the segment files, in
-   *  order — a SUPERSET of `events` once retention has pruned in
-   *  memory (segment space is reclaimed by amortized compaction, not
-   *  per prune). Object identity against this list is how persist()
-   *  finds the durable prefix of `events`. Null until a segment
-   *  load or rewrite has established it. */
-  private diskChain: AuditEvent[] | null = null;
-  /** Manifest segment index mirroring the segment files on disk. */
-  private segmentIndex: EventsManifestSegment[] = [];
-  /** Highest segment sequence number allocated so far; names are
-   *  never reused (see EventsManifest.nextSeq). */
-  private segmentSeq = 0;
   private integrityViolation: string | null = null;
   private archiveError: string | null = null;
   /** Missing-anchor evidence captured at load, before retention
@@ -744,34 +664,66 @@ export class EventsStore {
     return `${this.file}.archive`;
   }
 
-  /** The append-only segment directory (#14958): seg-NNNNNN.jsonl
-   *  files holding the hot stream's records, one JSON record per
-   *  line, in stored-chain order. */
-  get segmentsDir(): string {
-    return `${this.file}.segments`;
-  }
-
   async load(): Promise<void> {
     if (!this.loadPromise) this.loadPromise = this.doLoad();
     return this.loadPromise;
   }
 
   private async doLoad(): Promise<void> {
-    const gathered = await this.gatherStoredRecords();
-    if (gathered.kind === "empty") {
+    let raw: string;
+    try {
+      raw = await readFile(this.file, "utf8");
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") {
+        this.events = [];
+        await this.flushOutbox();
+        return;
+      }
       this.events = [];
-      await this.flushOutbox();
+      await this.quarantine(`could not be read (${err instanceof Error ? err.message : String(err)})`);
       return;
     }
-    if (gathered.kind === "damaged") {
-      // gatherStoredRecords has already quarantined the store's
-      // bytes and logged loudly; the store starts empty, exactly as
-      // the legacy unparseable path always has.
-      this.events = [];
-      return;
-    }
-    const normalized = gathered.records;
-    {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as EventsFile).events)) {
+        throw new Error("store file does not have the expected { events: [...] } shape");
+      }
+      const fileVersion = (parsed as { version?: unknown }).version;
+      const rows = (parsed as { events: unknown[] }).events;
+      const normalized: AuditEvent[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (isAuditEvent(row) && fileVersion === 2 && row.hash === "") {
+          // A v2 main-file record with an empty hash is damaged, not
+          // unhashed-by-design (#3322 Codex re-review, PR #5137):
+          // persist() rechains before every write, so a record the
+          // store wrote always carries a hash. Accepting an empty
+          // one would exclude it from verification (both checks
+          // filter hash !== "") and let a silent edit pass as
+          // healthy. Unhashed records remain legitimate ONLY as v1
+          // migration rows (fileVersion 1, handled below) and as
+          // retry-outbox lines (parsed in flushOutbox, never here).
+          throw new Error(`event row ${i} is a v2 audit record with an empty hash`);
+        }
+        if (isAuditEvent(row)) {
+          normalized.push({
+            ...row,
+            attribution: row.attribution ?? { confidence: "unknown", asserted: false },
+            source: row.source ?? { identity: "unknown" },
+          });
+        } else if (fileVersion === 1 && isStreamEvent(row)) {
+          // Legacy migration is gated on the FILE version (#3322
+          // Codex re-review, PR #5137): in a v2 file, a row that
+          // fails the v2 shape is a damaged audit record, not a v1
+          // row — migrating it would give it an empty hash, exclude
+          // it from verification, and hide a possible silent edit.
+          // It falls through to the shape error below instead, and
+          // the file is quarantined with its bytes preserved.
+          normalized.push(migrateV1Event(row, i));
+        } else {
+          throw new Error(`event row ${i} does not have the expected StreamEvent/AuditEvent shape`);
+        }
+      }
       // Integrity is checked against the STORED hashes before any
       // persist can re-stamp them — and before retention pruning
       // drops any record (#3322 Codex re-review, PR #5137): pruning
@@ -785,22 +737,6 @@ export class EventsStore {
       // violation is loud and is reported by health() until a
       // human looks.
       const verdict = verifyEventChain(normalized.filter((e) => e.hash !== ""));
-      if (verdict.ok && gathered.checkpointError) {
-        // The chain itself verifies, but the v3 manifest checkpoint
-        // attests to records the segments no longer hold — a
-        // truncated tail, the one alteration full-chain verification
-        // cannot see (#14958). Same treatment as a failed chain,
-        // recorded BEFORE the retention branch below so nothing is
-        // archived or persisted from a store under this violation:
-        // the records stay readable, the violation is loud and
-        // health-visible, and persists refuse until a human
-        // investigates.
-        this.integrityViolation = gathered.checkpointError;
-        console.error(
-          `[events] WARNING: events store ${this.file} failed its checkpoint check: ${gathered.checkpointError}. ` +
-            `Stored audit records must not be edited or deleted outside retention pruning — investigate before trusting this stream.`,
-        );
-      }
       // Missing-anchor evidence is captured BEFORE retention and
       // before any persist can rechain the retained records from
       // genesis (#3322 Codex re-review, PR #7665): if the loaded
@@ -827,13 +763,11 @@ export class EventsStore {
             "(pruned before the #3322 archive contract, or a lost partition)";
         }
       }
-      if (verdict.ok && !gathered.checkpointError) {
+      if (verdict.ok) {
         // Archive before pruning (#3322 retention contract): records
         // leaving the hot stream are preserved in the archive
-        // partitions first, then the retained set is persisted (the
-        // segmented layout's files are a superset of the retained
-        // set, reclaimed by compaction — the in-memory stream is
-        // the retained set either way). A chain that FAILED
+        // partitions first, then the retained set is persisted so
+        // the hot file no longer carries them. A chain that FAILED
         // verification is never laundered into the archive — it
         // keeps the legacy in-memory prune (else-branch) and the
         // violation stays visible via health().
@@ -860,336 +794,20 @@ export class EventsStore {
             `Stored audit records must not be edited or deleted outside retention pruning — investigate before trusting this stream.`,
         );
       }
+    } catch (err) {
+      this.events = [];
+      await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);
+      return;
     }
     await this.flushOutbox();
   }
 
-  /** Read the store's records from disk in whichever layout is
-   *  present (#14958): the v3 manifest + segments, a legacy v1/v2
-   *  file, segments whose manifest was lost (adopted), nothing
-   *  ("empty"), or a damaged store ("damaged" — already quarantined
-   *  and logged by the time this returns). For a segment store the
-   *  result also carries any checkpoint violation the manifest
-   *  attests to; the caller folds it into the integrity verdict. */
-  private async gatherStoredRecords(): Promise<
-    { kind: "empty" } | { kind: "damaged" } | { kind: "ok"; records: AuditEvent[]; checkpointError: string | null }
-  > {
-    let raw: string;
-    try {
-      raw = await readFile(this.file, "utf8");
-    } catch (err) {
-      if ((err as { code?: unknown })?.code === "ENOENT") {
-        // No manifest: the segments may still be there (the
-        // manifest was lost, or a restore carried only the tree).
-        try {
-          const adopted = await this.adoptSegmentsWithoutManifest();
-          if (adopted) return { kind: "ok", records: adopted, checkpointError: null };
-        } catch (adoptErr) {
-          await this.quarantine(
-            `segments could not be read (${adoptErr instanceof Error ? adoptErr.message : String(adoptErr)})`,
-          );
-          return { kind: "damaged" };
-        }
-        return { kind: "empty" };
-      }
-      await this.quarantine(`could not be read (${err instanceof Error ? err.message : String(err)})`);
-      return { kind: "damaged" };
-    }
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null) {
-        throw new Error("store file does not have the expected shape");
-      }
-      if ((parsed as { version?: unknown }).version === 3) {
-        if (!Array.isArray((parsed as EventsManifest).segments)) {
-          throw new Error("v3 manifest does not have the expected { segments: [...] } shape");
-        }
-        const { records, checkpointError } = await this.readManifestSegments(parsed as EventsManifest);
-        return { kind: "ok", records, checkpointError };
-      }
-      if (!Array.isArray((parsed as EventsFile).events)) {
-        throw new Error("store file does not have the expected { events: [...] } shape");
-      }
-      const records = this.normalizeLegacyRows(parsed as { version?: unknown; events: unknown[] });
-      return { kind: "ok", records, checkpointError: null };
-    } catch (err) {
-      await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);
-      return { kind: "damaged" };
-    }
-  }
-
-  /** Normalize the rows of a legacy v1/v2 store file — the load
-   *  path that predates the segmented layout, unchanged (#14958):
-   *  v2 rows pass through with audit-field defaults; v1 rows, gated
-   *  on the FILE version, migrate in memory. Throws on any damaged
-   *  row; the caller quarantines. */
-  private normalizeLegacyRows(parsed: { version?: unknown; events: unknown[] }): AuditEvent[] {
-    const fileVersion = parsed.version;
-    const rows = parsed.events;
-    const normalized: AuditEvent[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (isAuditEvent(row) && fileVersion === 2 && row.hash === "") {
-        // A v2 main-file record with an empty hash is damaged, not
-        // unhashed-by-design (#3322 Codex re-review, PR #5137):
-        // persist() rechains before every write, so a record the
-        // store wrote always carries a hash. Accepting an empty
-        // one would exclude it from verification (both checks
-        // filter hash !== "") and let a silent edit pass as
-        // healthy. Unhashed records remain legitimate ONLY as v1
-        // migration rows (fileVersion 1, handled in this loop) and
-        // as retry-outbox lines (parsed in flushOutbox, never here).
-        throw new Error(`event row ${i} is a v2 audit record with an empty hash`);
-      }
-      if (isAuditEvent(row)) {
-        normalized.push(withAuditDefaults(row));
-      } else if (fileVersion === 1 && isStreamEvent(row)) {
-        // Legacy migration is gated on the FILE version (#3322
-        // Codex re-review, PR #5137): in a v2 file, a row that
-        // fails the v2 shape is a damaged audit record, not a v1
-        // row — migrating it would give it an empty hash, exclude
-        // it from verification, and hide a possible silent edit.
-        // It falls through to the shape error below instead, and
-        // the file is quarantined with its bytes preserved.
-        normalized.push(migrateV1Event(row, i));
-      } else {
-        throw new Error(`event row ${i} does not have the expected StreamEvent/AuditEvent shape`);
-      }
-    }
-    this.format = "legacy";
-    return normalized;
-  }
-
-  /** Read the segment files a v3 manifest lists, in order, and
-   *  cross-check them against the manifest's checkpoints. Segment
-   *  contents are truth; the checkpoints exist to catch what chain
-   *  verification cannot: a tail (or a whole segment) deleted
-   *  cleanly leaves a shorter chain that still verifies, so a
-   *  checkpoint AHEAD of the segments is reported as a checkpoint
-   *  error (the caller turns it into an integrity violation). A
-   *  checkpoint BEHIND the segments is the benign crash window —
-   *  lines were appended but the manifest rewrite was lost — and
-   *  the extra records are adopted once the caller's full-chain
-   *  verification passes. Damaged content (an unparseable line
-   *  anywhere but the last segment's trailing run, a shape-damaged
-   *  record, an empty hash) throws; the caller quarantines the
-   *  whole store set with its bytes preserved. */
-  private async readManifestSegments(
-    manifest: EventsManifest,
-  ): Promise<{ records: AuditEvent[]; checkpointError: string | null }> {
-    const records: AuditEvent[] = [];
-    const actualIndex: EventsManifestSegment[] = [];
-    let checkpointError: string | null = null;
-    const note = (msg: string) => {
-      if (!checkpointError) checkpointError = msg;
-    };
-    for (let s = 0; s < manifest.segments.length; s++) {
-      const entry = manifest.segments[s]!;
-      const isLast = s === manifest.segments.length - 1;
-      let text: string;
-      try {
-        text = await readFile(join(this.segmentsDir, entry.file), "utf8");
-      } catch (err) {
-        if ((err as { code?: unknown })?.code === "ENOENT") {
-          note(
-            `segment file ${entry.file} is missing but the manifest checkpoint attests ${entry.records} record(s) in it — ` +
-              `stored history was deleted outside the store`,
-          );
-          continue;
-        }
-        throw err;
-      }
-      const { records: segRecords, goodBytes, torn } = this.parseSegmentLines(entry.file, text, isLast);
-      if (isLast && torn > 0) await this.repairTornTail(entry.file, goodBytes);
-      if (segRecords.length < entry.records) {
-        note(
-          `segment ${entry.file} holds ${segRecords.length} record(s), fewer than its checkpoint ${entry.records} — ` +
-            `stored history was truncated outside the store`,
-        );
-      } else if (entry.records > 0 && segRecords[entry.records - 1]!.hash !== entry.lastHash) {
-        note(
-          `segment ${entry.file}'s checkpoint hash does not match the record at its checkpoint position — ` +
-            `stored history was altered outside the store`,
-        );
-      }
-      for (const record of segRecords) records.push(record);
-      actualIndex.push({
-        file: entry.file,
-        records: segRecords.length,
-        lastHash: segRecords.at(-1)?.hash ?? entry.lastHash,
-      });
-    }
-    const cp = manifest.checkpoint;
-    if (cp) {
-      if (records.length < cp.records) {
-        note(
-          `the manifest checkpoint attests ${cp.records} record(s) but the segments hold ${records.length} — ` +
-            `stored history was truncated outside the store`,
-        );
-      } else if (cp.records > 0 && records[cp.records - 1]!.hash !== cp.lastHash) {
-        note(
-          `the manifest checkpoint hash does not match the record at its checkpoint position — ` +
-            `stored history was altered outside the store`,
-        );
-      }
-    }
-    this.format = "segments";
-    this.diskChain = records;
-    this.segmentIndex = actualIndex;
-    this.segmentSeq =
-      manifest.nextSeq ??
-      actualIndex.reduce((max, seg) => Math.max(max, Number(SEGMENT_NAME.exec(seg.file)?.[1] ?? 0)), 0);
-    return { records, checkpointError };
-  }
-
-  /** Adopt the segment files when the manifest is gone (deleted,
-   *  or a restore that carried only the tree): the segments are the
-   *  records; the manifest is rewritten on the next persist. Every
-   *  generation of segments starts at the chain genesis (rewrites
-   *  rechain from genesis), so when files from more than one
-   *  generation are present — a rewrite's superseded files not yet
-   *  cleaned up when the manifest was lost — adoption starts at the
-   *  LAST genesis-anchored segment and the caller's full-chain
-   *  verification judges the result. Returns null when there are no
-   *  segment files at all. Throws on damaged content. */
-  private async adoptSegmentsWithoutManifest(): Promise<AuditEvent[] | null> {
-    let names: string[];
-    try {
-      names = await readdir(this.segmentsDir);
-    } catch {
-      return null; // no segments directory — a genuinely empty store
-    }
-    const segNames = names.filter((n) => SEGMENT_NAME.test(n)).sort();
-    if (segNames.length === 0) return null;
-    const perFile: AuditEvent[][] = [];
-    for (let s = 0; s < segNames.length; s++) {
-      const isLastFile = s === segNames.length - 1;
-      const text = await readFile(join(this.segmentsDir, segNames[s]!), "utf8");
-      const { records: fileRecords, goodBytes, torn } = this.parseSegmentLines(segNames[s]!, text, isLastFile);
-      if (isLastFile && torn > 0) await this.repairTornTail(segNames[s]!, goodBytes);
-      perFile.push(fileRecords);
-    }
-    let start = -1;
-    for (let s = 0; s < segNames.length; s++) {
-      if (perFile[s]![0]?.prevHash === EVENT_CHAIN_GENESIS) start = s;
-    }
-    if (start === -1) {
-      throw new Error("segment files exist but none starts at the chain genesis — no complete generation to adopt");
-    }
-    const records: AuditEvent[] = [];
-    const index: EventsManifestSegment[] = [];
-    for (let s = start; s < segNames.length; s++) {
-      for (const record of perFile[s]!) records.push(record);
-      index.push({
-        file: segNames[s]!,
-        records: perFile[s]!.length,
-        lastHash: perFile[s]!.at(-1)?.hash ?? EVENT_CHAIN_GENESIS,
-      });
-    }
-    this.format = "segments";
-    this.diskChain = records;
-    this.segmentIndex = index;
-    this.segmentSeq = segNames.reduce((max, n) => Math.max(max, Number(SEGMENT_NAME.exec(n)?.[1] ?? 0)), 0);
-    console.error(
-      `[events] WARNING: events store ${this.file} has no manifest but ${records.length} record(s) were adopted ` +
-        `from ${index.length} segment file(s) under ${this.segmentsDir}; the manifest is rewritten on the next persist.`,
-    );
-    return records;
-  }
-
-  /** Parse one segment file's lines into records, and report the
-   *  byte length of the kept lines (`goodBytes`) so the caller can
-   *  repair a torn tail. An unparseable line is droppable ONLY as
-   *  a trailing run of the last segment: a torn append — the write
-   *  never completed, so the record is absent exactly as a crash
-   *  between temp-write and rename made it absent in the v2 layout
-   *  (a persist that failed in-process still lands in the retry
-   *  outbox and is merged by stable id). Anything else — a bad
-   *  line with good lines after it, a shape-damaged record, an
-   *  empty hash (the #5137 rule: segments are written only by
-   *  persist(), which stamps every record) — is damage and
-   *  throws. */
-  private parseSegmentLines(
-    name: string,
-    text: string,
-    isLastSegment: boolean,
-  ): { records: AuditEvent[]; goodBytes: number; torn: number } {
-    const lines = text.split("\n").filter((line) => line !== "");
-    const records: AuditEvent[] = [];
-    let goodBytes = 0;
-    let torn = 0;
-    for (let i = 0; i < lines.length; i++) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(lines[i]!);
-      } catch {
-        const restAllBad =
-          isLastSegment &&
-          lines.slice(i).every((line) => {
-            try {
-              JSON.parse(line);
-              return false;
-            } catch {
-              return true;
-            }
-          });
-        if (restAllBad) {
-          torn = lines.length - i;
-          console.error(
-            `[events] WARNING: dropped ${torn} torn trailing line(s) from segment ${name} of ${this.file} — ` +
-              `an append was interrupted before it completed; those records never persisted (a failed in-process ` +
-              `append is in the retry outbox instead). The segment tail is truncated back to the last complete line.`,
-          );
-          break;
-        }
-        throw new Error(`segment ${name} line ${i + 1} is unparseable`);
-      }
-      if (!isAuditEvent(parsed) || parsed.hash === "") {
-        throw new Error(`segment ${name} line ${i + 1} is a damaged audit record`);
-      }
-      records.push(withAuditDefaults(parsed));
-      goodBytes += Buffer.byteLength(lines[i]!) + 1; // + the line's newline
-    }
-    return { records, goodBytes, torn };
-  }
-
-  /** Truncate a segment file back to its last complete line after
-   *  a torn tail was dropped at load: without the repair, the next
-   *  append would glue onto the torn fragment and the merged line
-   *  would be unparseable — the dropped bytes were never a
-   *  completed append, so removing them loses nothing that ever
-   *  persisted. A failed repair is loud; appends to a read-only
-   *  store fail into the retry outbox as usual. */
-  private async repairTornTail(name: string, goodBytes: number): Promise<void> {
-    try {
-      await truncate(join(this.segmentsDir, name), goodBytes);
-    } catch (err) {
-      console.error(
-        `[events] WARNING: could not truncate the torn tail of segment ${name} of ${this.file} ` +
-          `(${err instanceof Error ? err.message : String(err)}); appends to this segment may fail or be dropped as torn on the next load.`,
-      );
-    }
-  }
-
   private async quarantine(why: string): Promise<void> {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const quarantined = `${this.file}.corrupt-${stamp}`;
-    // The segmented layout keeps the records beside the manifest:
-    // quarantine the segment tree under the same stamp so the whole
-    // store set is preserved together (#14958). Absence is the
-    // normal legacy case and is not an error.
-    let segmentsNote = "";
-    try {
-      const quarantinedSegments = `${this.segmentsDir}.corrupt-${stamp}`;
-      await rename(this.segmentsDir, quarantinedSegments);
-      segmentsNote = ` and its segment tree to ${quarantinedSegments}`;
-    } catch {
-      // no segment tree — nothing more to preserve
-    }
+    const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     try {
       await rename(this.file, quarantined);
       console.error(
-        `[events] WARNING: events store ${this.file} ${why}; quarantined the original bytes to ${quarantined}${segmentsNote} and started empty. ` +
+        `[events] WARNING: events store ${this.file} ${why}; quarantined the original bytes to ${quarantined} and started empty. ` +
           `The quarantined file holds the event history — do not delete it.`,
       );
     } catch (renameErr) {
@@ -1224,175 +842,15 @@ export class EventsStore {
           `events store integrity violation: ${verdict.error} — refusing to persist over a chain that failed verification`,
         );
       }
-      // The segmented layout (#14958): a store already on segments
-      // appends only its new records; anything else (a legacy load
-      // converting, a fresh store) goes through the full rewrite
-      // that establishes the layout.
-      if (this.format === "segments" && this.diskChain) {
-        await this.persistSegments();
-      } else {
-        await this.rewriteSegments();
-      }
+      this.events = rechain(this.events);
+      const data: EventsFile = { version: 2, events: this.events };
+      await mkdir(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
+      await writeFile(tmp, JSON.stringify(data, null, 2));
+      await rename(tmp, this.file);
     });
     this.writeChain = run.catch(() => {});
     return run;
-  }
-
-  /** The segmented persist (#14958): append only the records that
-   *  are not yet durable, then rewrite the manifest checkpoint.
-   *  The durable records of `events` are found by object identity
-   *  against diskChain: they must form a prefix of `events` that is
-   *  exactly a suffix of diskChain (retention may have dropped a
-   *  prefix of the disk chain from memory; the segments are a
-   *  superset and are not rewritten for that). Anything else — a
-   *  rechained stream (retention removed a record from the middle),
-   *  a stream whose head is not on disk at all, or a disk chain
-   *  grown past the compaction bound — goes through a full rewrite.
-   *  New tail records are stamped in order against the durable
-   *  tail: for a pure tail append that is byte-identical to what
-   *  the old whole-stream rechain produced, because rechain is the
-   *  identity on an already-valid chain. */
-  private async persistSegments(): Promise<void> {
-    const disk = this.diskChain!;
-    if (disk.length > 2 * this.events.length + EVENT_SEGMENT_MAX_RECORDS) {
-      // Amortized compaction: the superset has grown past twice the
-      // retained stream, so a rewrite costs O(retained) at most
-      // once per retained-count appends — appends stay O(1) on
-      // average and the segment space is reclaimed.
-      await this.rewriteSegments();
-      return;
-    }
-    let pre = 0;
-    if (this.events.length > 0) {
-      const diskSet = new Set(disk);
-      if (!diskSet.has(this.events[0]!)) {
-        // The head of the in-memory stream is not on disk: the
-        // stream was rechained (retention's middle removal) or
-        // every durable record was pruned — either way the new
-        // records do not extend the disk chain, so rewrite.
-        await this.rewriteSegments();
-        return;
-      }
-      while (pre < this.events.length && diskSet.has(this.events[pre]!)) pre++;
-      for (let j = 0; j < pre; j++) {
-        if (this.events[j] !== disk[disk.length - pre + j]) {
-          await this.rewriteSegments();
-          return;
-        }
-      }
-    }
-    // Stamp the new tail against the durable tail.
-    let prev = pre > 0 ? this.events[pre - 1]!.hash : (disk.at(-1)?.hash ?? EVENT_CHAIN_GENESIS);
-    const stampedTail: AuditEvent[] = [];
-    for (let k = pre; k < this.events.length; k++) {
-      let e = this.events[k]!;
-      if (e.hash === "") {
-        e = { ...e, prevHash: prev };
-        e.hash = eventHash(prev, e);
-        this.events[k] = e;
-      } else if (e.prevHash !== prev || eventHash(e.prevHash, e) !== e.hash) {
-        // A pre-stamped record that does not extend the durable
-        // chain (reachable only from a hand-written retry outbox —
-        // the store's own writers never produce one): refuse,
-        // exactly as the whole-chain verification in persist()
-        // refuses a chain that does not verify.
-        this.integrityViolation = `record ${e.id}: prevHash does not extend the durable chain — stored record was altered`;
-        throw new Error(
-          `events store integrity violation: ${this.integrityViolation} — refusing to persist over a chain that failed verification`,
-        );
-      }
-      prev = e.hash;
-      stampedTail.push(e);
-    }
-    if (stampedTail.length > 0) {
-      await mkdir(this.segmentsDir, { recursive: true });
-      let seg = this.segmentIndex[this.segmentIndex.length - 1];
-      let pending = "";
-      const flushPending = async () => {
-        if (pending) {
-          await appendFile(join(this.segmentsDir, seg!.file), pending);
-          pending = "";
-        }
-      };
-      for (let i = 0; i < stampedTail.length; i++) {
-        if (!seg || seg.records >= EVENT_SEGMENT_MAX_RECORDS) {
-          await flushPending();
-          seg = { file: segmentFileName(++this.segmentSeq), records: 0, lastHash: "" };
-          this.segmentIndex.push(seg);
-        }
-        pending += `${JSON.stringify(stampedTail[i]!)}\n`;
-        seg.records++;
-        seg.lastHash = stampedTail[i]!.hash;
-      }
-      await flushPending();
-      this.diskChain = [...disk, ...stampedTail];
-    }
-    await this.writeManifest();
-  }
-
-  /** Full (re)write of the segmented layout from the in-memory
-   *  stream: the legacy conversion path (first persist after a
-   *  v1/v2 load, or for a fresh store) and the divergence path
-   *  (a rechained stream, amortized compaction). The stream is
-   *  rechained first — exactly the stamping the v2 persist always
-   *  did — then written as fresh segment files under NEW sequence
-   *  names; the manifest rename is the commit point, and the
-   *  superseded segment files are deleted only after it, so a
-   *  crash at any point leaves either the old complete set or the
-   *  new one readable. */
-  private async rewriteSegments(): Promise<void> {
-    this.events = rechain(this.events);
-    await mkdir(this.segmentsDir, { recursive: true });
-    const superseded = this.segmentIndex.map((s) => s.file);
-    const index: EventsManifestSegment[] = [];
-    for (let start = 0; start < this.events.length; start += EVENT_SEGMENT_MAX_RECORDS) {
-      const chunk = this.events.slice(start, start + EVENT_SEGMENT_MAX_RECORDS);
-      const name = segmentFileName(++this.segmentSeq);
-      await writeFile(join(this.segmentsDir, name), chunk.map((e) => `${JSON.stringify(e)}\n`).join(""));
-      index.push({ file: name, records: chunk.length, lastHash: chunk[chunk.length - 1]!.hash });
-    }
-    this.segmentIndex = index;
-    this.diskChain = [...this.events];
-    this.format = "segments";
-    await this.writeManifest();
-    // Post-commit cleanup, best effort: an orphaned file is ignored
-    // by manifest-following loads and retried on the next rewrite.
-    const live = new Set(index.map((s) => s.file));
-    for (const name of superseded) {
-      if (live.has(name)) continue;
-      try {
-        await rm(join(this.segmentsDir, name), { force: true });
-      } catch {
-        // best effort — see above
-      }
-    }
-  }
-
-  /** Rewrite the v3 manifest (unique temp file + rename, like every
-   *  store write): the segment index as it now stands on disk and
-   *  the chain checkpoint across all of it. Runs on every persist —
-   *  the manifest is O(segments), not O(records), so this stays
-   *  cheap while keeping the persist failure surface identical to
-   *  the v2 layout's (a store path that cannot be renamed over
-   *  fails the persist, and the record goes to the retry outbox). */
-  private async writeManifest(): Promise<void> {
-    const disk = this.diskChain ?? [];
-    const now = new Date().toISOString();
-    const manifest: EventsManifest = {
-      version: 3,
-      updatedAt: now,
-      segments: this.segmentIndex,
-      checkpoint: {
-        records: disk.length,
-        lastHash: disk.at(-1)?.hash ?? EVENT_CHAIN_GENESIS,
-        at: now,
-      },
-      nextSeq: this.segmentSeq,
-    };
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
-    await writeFile(tmp, JSON.stringify(manifest, null, 2));
-    await rename(tmp, this.file);
   }
 
   /** Persist one record to the retry outbox after a failed append.

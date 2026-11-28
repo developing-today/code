@@ -169,15 +169,8 @@ def journal(rec):
 
 
 def queue(*args, timeout=120):
-    # #6533: the trigger acts as the claimant, never as the lane whose
-    # shell ran it, so an inherited REPO_QUEUE_LANE stays out of every
-    # repo-queue call (the client falls back to it for holder checks).
     p = subprocess.run(
-        [repo_queue_cmd(), *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=claimant._queue_env(),
+        [repo_queue_cmd(), *args], capture_output=True, text=True, timeout=timeout
     )
     return p.returncode, p.stdout, p.stderr
 
@@ -431,8 +424,7 @@ def post_agent_note(row, ref, repo, sid):
 
 def collect_sink_claim(queue_name, task_id, model_provider=None, model_id=None):
     """Claim THIS sink row (status 'handed_off') by id, as the
-    claimant. Returns (claimed_row, None) or (None, error), where
-    error is sink_claim_error's category/action/detail record. The
+    claimant. Returns (claimed_row, None) or (None, error). The
     claim output is the claimed row itself, a {"task": row}
     wrapper, or {"task": null} when the broker would not hand it
     over; only a row whose id is the requested task counts.
@@ -454,42 +446,19 @@ def collect_sink_claim(queue_name, task_id, model_provider=None, model_id=None):
         argv += ["--model-provider", model_provider, "--model-id", model_id]
     try:
         rc, out, err = queue(*argv)
-    except subprocess.TimeoutExpired:
-        return None, sink_claim_error("timeout", task_id, "")
-    except OSError as e:
-        return None, sink_claim_error("spawn_error", task_id, str(e))
     except Exception as e:
-        return None, sink_claim_error("unexpected_error", task_id, str(e))
+        return None, str(e)[:300]
     data = None
-    category = None
     if out.strip():
         try:
             data = json.loads(out)
         except ValueError:
-            category = "invalid_json" if rc == 0 else "cli_nonzero"
-    if category is None:
-        row, category = claimant._classify_claim_body(data, rc)
-        if row is not None and row.get("id") != task_id:
-            row, category = None, "different_row"
-        if row is not None and rc != 0:
-            row, category = None, "cli_nonzero"
-        if row is not None:
-            return row, None
-    return None, sink_claim_error(category, task_id, err.strip() or out.strip())
-
-
-def sink_claim_error(category, task_id, detail):
-    """A by-id sink claim failure a coordinator can act on (#6533): a
-    fixed category, the action that category calls for, and the CLI's
-    own words (this trigger runs by hand, so its stderr is the
-    evidence; the scheduled fire log keeps the category only)."""
-    return {
-        "category": category,
-        "action": claimant.SINK_CLAIM_ACTIONS.get(
-            category, claimant.SINK_CLAIM_ACTIONS["unexpected_error"]
-        ),
-        "detail": f"by-id claim did not return task {task_id}: {detail[:300]}",
-    }
+            data = None
+    row = data.get("task") if isinstance(data, dict) and "task" in data else data
+    if rc != 0 or not isinstance(row, dict) or row.get("id") != task_id:
+        detail = (err.strip() or out.strip())[:300]
+        return None, f"by-id claim did not return task {task_id}: {detail}"
+    return row, None
 
 
 def launch(queue_name, task_id):
@@ -570,7 +539,7 @@ def launch(queue_name, task_id):
                 "queue": queue_name,
                 "ok": False,
                 "reason": "sink_claim_failed",
-                **claim_err,
+                "detail": claim_err,
             }
         worker_id = CLAIMANT_WORKER
     else:
@@ -862,9 +831,6 @@ def parse_spec(spec):
 
 
 def main(argv):
-    # #6533: every repo-queue child, including the claimant helpers
-    # this trigger reuses, acts as the claimant, not an inherited lane.
-    claimant._drop_inherited_lane()
     if len(argv) >= 2 and argv[1] in ("--help", "-h", "help"):
         print(__doc__)
         return 0

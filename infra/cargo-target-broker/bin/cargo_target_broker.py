@@ -276,7 +276,9 @@ def find_wedged_sccache_clients(
     wedge signature. Young idlers are cargo jobslot waiters, not wedges.
     """
     return [
-        c for c in clients if c.age_secs >= stall_secs and c.cpu_secs <= max_cpu_secs
+        c
+        for c in clients
+        if c.age_secs >= stall_secs and c.cpu_secs <= max_cpu_secs
     ]
 
 
@@ -310,7 +312,9 @@ def watch_sccache_clients(
             clients = iter_sccache_clients(pattern)
         except OSError:
             continue
-        for client in find_wedged_sccache_clients(clients, stall_secs, max_cpu_secs):
+        for client in find_wedged_sccache_clients(
+            clients, stall_secs, max_cpu_secs
+        ):
             if client.pid in reported:
                 continue
             reported.add(client.pid)

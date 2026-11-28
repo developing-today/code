@@ -31,9 +31,8 @@ import (
 // child's pipes for the child's whole life; daemons attach to it over a
 // unix socket, one at a time, and detach without signalling the child.
 // Everything here is additive: the direct NewStdio path is untouched and
-// the supervised path is selected by the server's resolved config —
-// for file-loaded configs supervised is the stdio default (#9963),
-// with "supervised": false the one opt-out.
+// the supervised path is selected only when a server's config sets the
+// supervised flag (default off).
 
 // SupervisorProtocolVersion is the attach-handshake version. A mismatch
 // is refused with an explicit error; there is no silent fallback.
@@ -174,68 +173,16 @@ type supervisorReply struct {
 	StderrTail   string `json:"stderrTail,omitempty"`
 }
 
-// SupervisorSocketPath names the socket of a server's primary
-// instance inside the directory SupervisorSocketDir picks for
-// stateDir. The server name is hashed so any configured name is a
-// safe, short file name. This name-only form predates per-instance
-// keying (#9963): it is the socket every supervisor used before the
-// restore, and it stays the primary instance's socket, so a running
-// supervisor from an older binary is adopted by attach and counted
-// as configured by the scan — never orphaned by the upgrade.
+// SupervisorSocketPath names the per-instance socket inside the
+// directory SupervisorSocketDir picks for stateDir. The server name is
+// hashed so any configured name is a safe, short file name.
 func SupervisorSocketPath(stateDir, name string) string {
 	return filepath.Join(SupervisorSocketDir(stateDir), supervisorSocketFile(name))
 }
 
 func supervisorSocketFile(name string) string {
-	return "sup-" + supervisorNameHash(name) + ".sock"
-}
-
-// supervisorNameHash is the filename segment identifying a server:
-// the first 16 hex chars of the name's SHA-256. ScanSupervisorSockets
-// classifies sockets by this segment, so every instance socket of a
-// configured server is recognised as that server's.
-func supervisorNameHash(name string) string {
 	sum := sha256.Sum256([]byte(name))
-	return hex.EncodeToString(sum[:])[:16]
-}
-
-// SupervisorSocketPathForInstance names the socket of one pool
-// instance of a server: the instance is the scope key the pool serves
-// the instance under (pool identity + scope key, #9963). The primary
-// instance — an empty key, or the global scope's key — keeps the
-// historical name-only socket (see SupervisorSocketPath); every other
-// instance gets its own socket beside it, so two scoped instances of
-// one server (another session, repo or worktree) never dial each
-// other's supervisor and get refused "already attached" — the defect
-// that forced #11343 to pause the supervised default.
-func SupervisorSocketPathForInstance(stateDir, name, instance string) string {
-	if instance == "" || instance == "global" {
-		return SupervisorSocketPath(stateDir, name)
-	}
-	return filepath.Join(SupervisorSocketDir(stateDir), supervisorSocketFileForInstance(name, instance))
-}
-
-func supervisorSocketFileForInstance(name, instance string) string {
-	sum := sha256.Sum256([]byte(instance))
-	return "sup-" + supervisorNameHash(name) + "-" + hex.EncodeToString(sum[:])[:16] + ".sock"
-}
-
-// supervisorSocketNameHash extracts the server segment from a
-// supervisor socket's file name: the segment after "sup-", up to the
-// instance separator or the ".sock" suffix. ok is false for a name
-// that is not a supervisor socket file.
-func supervisorSocketNameHash(base string) (string, bool) {
-	if !strings.HasPrefix(base, "sup-") || !strings.HasSuffix(base, ".sock") {
-		return "", false
-	}
-	seg := strings.TrimSuffix(strings.TrimPrefix(base, "sup-"), ".sock")
-	if i := strings.IndexByte(seg, '-'); i >= 0 {
-		seg = seg[:i]
-	}
-	if len(seg) != 16 {
-		return "", false
-	}
-	return seg, true
+	return "sup-" + hex.EncodeToString(sum[:])[:16] + ".sock"
 }
 
 // SupervisorSocketDir is the one directory every supervisor socket of
@@ -250,7 +197,7 @@ func supervisorSocketNameHash(base string) (string, bool) {
 // TestDefaultConfigStdioRunsSupervised failed on every Mac and in the
 // darwin nix build).
 func SupervisorSocketDir(stateDir string) string {
-	if len(filepath.Join(stateDir, supervisorSocketFileForInstance("", ""))) <= 100 {
+	if len(filepath.Join(stateDir, supervisorSocketFile(""))) <= 100 {
 		return stateDir
 	}
 	raw := sha256.Sum256([]byte(stateDir))
@@ -946,13 +893,6 @@ func (e *supervisorRefusal) Error() string { return "supervisor refused attach: 
 type SupervisedOptions struct {
 	// Name identifies the server; it names the supervisor socket.
 	Name string
-	// Instance is the pool instance's scope key: together with Name
-	// it keys the supervisor socket per instance (#9963), so two
-	// scoped instances of one server run under distinct supervisors.
-	// "" (and the global scope's key) names the primary instance and
-	// keeps the historical name-only socket — see
-	// SupervisorSocketPathForInstance.
-	Instance string
 	// StateDir is the mcpx state directory (default: StateDir()).
 	StateDir string
 	Command  string
@@ -1009,7 +949,7 @@ func AttachSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
 	if opts.StateDir == "" {
 		opts.StateDir = StateDir()
 	}
-	return attachSupervisor(SupervisorSocketPathForInstance(opts.StateDir, opts.Name, opts.Instance), opts, "")
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts, "")
 }
 
 // RestartSupervised attaches to the server's supervisor and has it
@@ -1022,7 +962,7 @@ func RestartSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
 	if opts.StateDir == "" {
 		opts.StateDir = StateDir()
 	}
-	return attachSupervisor(SupervisorSocketPathForInstance(opts.StateDir, opts.Name, opts.Instance), opts, "restart")
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts, "restart")
 }
 
 // IsSupervisorRefusal reports whether err is a live supervisor's
@@ -1054,7 +994,7 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 	if opts.SpawnTimeout <= 0 {
 		opts.SpawnTimeout = 5 * time.Second
 	}
-	sock := SupervisorSocketPathForInstance(opts.StateDir, opts.Name, opts.Instance)
+	sock := SupervisorSocketPath(opts.StateDir, opts.Name)
 
 	tr, err := attachSupervisor(sock, opts, "")
 	if err == nil {

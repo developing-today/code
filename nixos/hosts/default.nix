@@ -170,19 +170,6 @@ in
         };
       }
       {
-        # Stable deploy entrypoints (code#14187): the OpenChamber and
-        # mcpx user units exec fixed state-home paths instead of
-        # store paths, so a deploy app can repoint a service's
-        # entrypoint and restart it without writing Home Manager's
-        # unit files. The contract lives in
-        # nixos/home/stable-entrypoints.nix and doc/fleet/services.md;
-        # the coordinated consumer is dezren39/darwin-nix#1393.
-        home-manager.users.user = {
-          imports = [ ../home/stable-entrypoints.nix ];
-          services.stable-entrypoints.enable = true;
-        };
-      }
-      {
         # Laptop repo keeper (code#1723): hourly sweep keeping every
         # repo primary on this machine committed, pulled, pushed and
         # on its default branch.

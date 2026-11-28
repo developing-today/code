@@ -52,11 +52,5 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "preferGlobal": true,
-  "overrides": {
-    "ws": "^8.21.0",
-    "@solana/web3.js": {
-      "jayson": "^5.0.0"
-    }
-  }
+  "preferGlobal": true
 }

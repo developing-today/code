@@ -20,33 +20,12 @@ use serde_json::{Value, json};
 use crate::kinds::{self, Seat};
 use crate::{AgentError, EXIT_DOWN, EXIT_OK, Out, R, World, argv, check_name, parse, usage};
 
-/// The model stamp this seat's claims carry (#4919): the serving
-/// leaf the lane runs on — provider + model + the effort variant —
-/// recorded in the profile at enrolment so `fleet agent next` can
-/// stamp every queue claim without the caller repeating --model-*
-/// on each run. A lane that cannot name a leaf records the lane
-/// marker its claim surface already uses (provider/model
-/// `muse-lane`) plus its variant: the variant is the field the
-/// completion-telemetry derive reads as effort, and it was the one
-/// field no producer supplied (claim_variant NULL on all 3334
-/// post-#10704 completions measured 2026-11-24).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModelStamp {
-    pub provider: String,
-    pub model: String,
-    pub variant: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     pub name: String,
     pub kind: String,
     pub groups: Vec<String>,
     pub enrolled_at: u64,
-    /// The lane's own model stamp, when enrolment recorded one
-    /// (#4919). Absent on a profile saved before the stamp existed
-    /// or by an enrolment that named no model.
-    pub model: Option<ModelStamp>,
     /// The route that reached GitHub at enrolment (`fleet` or
     /// `plain`), so later runs try the working one first.
     pub gh: Option<String>,
@@ -89,7 +68,6 @@ pub fn read_profile(world: &dyn World, flag: Option<String>) -> Option<Profile> 
             })
             .unwrap_or_default(),
         enrolled_at: v.get("enrolled_at").and_then(Value::as_u64).unwrap_or(0),
-        model: parse_profile_model(&v),
         gh: v.get("gh").and_then(Value::as_str).map(str::to_string),
         fleet_token_name: v
             .get("fleet_token_name")
@@ -104,56 +82,6 @@ pub fn read_profile(world: &dyn World, flag: Option<String>) -> Option<Profile> 
             .and_then(Value::as_str)
             .map(str::to_string),
     })
-}
-
-/// The profile's recorded model stamp (#4919), when the record
-/// carries one that parses: provider and model together (a record
-/// naming only one half stamps nothing, mirroring the queue
-/// claim's own rule), the variant optional. Fail-soft like the
-/// rest of the profile read — a malformed stamp is no stamp.
-fn parse_profile_model(v: &Value) -> Option<ModelStamp> {
-    let m = v.get("model")?;
-    let field = |key: &str| {
-        m.get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    Some(ModelStamp {
-        provider: field("provider")?,
-        model: field("id")?,
-        variant: field("variant"),
-    })
-}
-
-/// The --model-* enrolment flags as a stamp (#4919): provider and
-/// model travel together and the variant needs both, mirroring the
-/// queue claim's parse — a half-stamp is a usage error, never a
-/// profile that stamps wrong. No flags at all is no stamp.
-fn model_stamp_from_flags(
-    provider: Option<String>,
-    model: Option<String>,
-    variant: Option<String>,
-) -> R<Option<ModelStamp>> {
-    let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    match (clean(provider), clean(model), clean(variant)) {
-        (None, None, None) => Ok(None),
-        (Some(p), Some(m), v) => Ok(Some(ModelStamp {
-            provider: p,
-            model: m,
-            variant: v,
-        })),
-        (None, None, Some(_)) => Err(usage(
-            "--model-variant requires --model-provider and --model-id",
-        )),
-        (Some(_), None, _) => Err(usage(
-            "--model-provider requires --model-id (the profile stamp names the serving leaf, provider and model together)",
-        )),
-        (None, Some(_), _) => Err(usage(
-            "--model-id requires --model-provider (the profile stamp names the serving leaf, provider and model together)",
-        )),
-    }
 }
 
 fn write_profile(path: &PathBuf, profile: &Profile) -> R<()> {
@@ -173,13 +101,6 @@ fn write_profile(path: &PathBuf, profile: &Profile) -> R<()> {
     });
     if let Some(gh) = &profile.gh {
         record["gh"] = json!(gh);
-    }
-    if let Some(stamp) = &profile.model {
-        let mut m = json!({"provider": stamp.provider, "id": stamp.model});
-        if let Some(variant) = &stamp.variant {
-            m["variant"] = json!(variant);
-        }
-        record["model"] = m;
     }
     if let Some(name) = &profile.fleet_token_name {
         record["fleet_token_name"] = json!(name);
@@ -398,8 +319,9 @@ fn run_exchange(world: &dyn World, name: &str, token: &str) -> R<Bootstrap> {
             out.why()
         )));
     }
-    let v: Value = serde_json::from_str(&out.stdout)
-        .map_err(|e| AgentError::Down(format!("the exchange answered unparseable output: {e}")))?;
+    let v: Value = serde_json::from_str(&out.stdout).map_err(|e| {
+        AgentError::Down(format!("the exchange answered unparseable output: {e}"))
+    })?;
     let fleet_token_name = v
         .get("fleet_token_name")
         .and_then(Value::as_str)
@@ -573,16 +495,7 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     let a = parse(
         args,
         &["--dry-run"],
-        &[
-            "--kind",
-            "--name",
-            "--groups",
-            "--profile",
-            "--bootstrap",
-            "--model-provider",
-            "--model-id",
-            "--model-variant",
-        ],
+        &["--kind", "--name", "--groups", "--profile", "--bootstrap"],
     )?;
     a.no_positional("enroll")?;
     let kind_name = a.last("--kind").ok_or_else(|| {
@@ -598,14 +511,6 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
         ))
     })?;
     let dry_run = a.has("--dry-run");
-    // #4919: the lane's model stamp, validated before anything is
-    // probed or written — a half-stamp fails the enrolment here,
-    // not later at claim time.
-    let flag_stamp = model_stamp_from_flags(
-        a.last("--model-provider"),
-        a.last("--model-id"),
-        a.last("--model-variant"),
-    )?;
     let bootstrap = a.last("--bootstrap");
     if let Some(token) = &bootstrap {
         if token.trim().is_empty() {
@@ -675,12 +580,6 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
         groups = boot.groups.clone();
     }
     let profile_file = profile_path(world, a.last("--profile"));
-    // The stamp the saved profile carries: this enrolment's flags
-    // win; absent them, a stamp a previous enrolment recorded is
-    // kept — re-enrolling to refresh legs must not silently drop
-    // the lane's effort producer.
-    let model = flag_stamp
-        .or_else(|| read_profile(world, a.last("--profile")).and_then(|prior| prior.model));
     if let (Some(boot), Some(path)) = (&boot, &profile_file) {
         write_profile(
             path,
@@ -689,7 +588,6 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                 kind: kind.name.to_string(),
                 groups: groups.clone(),
                 enrolled_at: world.now(),
-                model: model.clone(),
                 gh: None,
                 fleet_token_name: Some(boot.fleet_token_name.clone()),
                 notes_token_name: boot.notes_token_name.clone(),
@@ -716,7 +614,6 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     kind: kind.name.to_string(),
                     groups: groups.clone(),
                     enrolled_at: world.now(),
-                    model: model.clone(),
                     gh: legs
                         .iter()
                         .find(|l| l.name == "github")
@@ -774,18 +671,6 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     }
     if let Some(hook) = &wake_hook {
         out["wake_hook"] = hook.clone();
-    }
-    if let (Some(stamp), Some(_)) = (&model, &saved) {
-        // The stamp the saved profile now carries (#4919), echoed
-        // so the enrolling operator can verify the effort producer
-        // landed. Only when a profile was saved: an enrolment that
-        // wrote nothing (dry run, another seat's http agent) must
-        // not claim a stamp.
-        let mut m = json!({"provider": stamp.provider, "id": stamp.model});
-        if let Some(variant) = &stamp.variant {
-            m["variant"] = json!(variant);
-        }
-        out["model"] = m;
     }
     match kind.seat {
         Seat::Binary => {

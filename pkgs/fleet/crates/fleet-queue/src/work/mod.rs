@@ -11,7 +11,6 @@ pub mod degraded;
 pub mod journal;
 pub mod lifecycle;
 pub mod operations;
-pub mod priority;
 pub mod routing;
 pub mod selection;
 #[cfg(feature = "queue-broker")]

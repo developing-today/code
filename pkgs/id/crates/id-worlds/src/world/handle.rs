@@ -692,46 +692,6 @@ impl WorldHandle {
             .context("world actor dropped execution profile response")?
     }
 
-    /// Durably replace this world's presentation policy (#14731 slice
-    /// 2b) and return the stored policy.
-    ///
-    /// # Errors
-    ///
-    /// Fails on a policy past its size bounds, on a read-only world, or on
-    /// world storage failure.
-    pub async fn set_presentation_policy(
-        &self,
-        policy: id_core::presentation_policy::PresentationPolicy,
-    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(WorldCommand::SetPresentationPolicy { policy, reply })
-            .await
-            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
-        response
-            .await
-            .context("world actor dropped presentation policy response")?
-    }
-
-    /// Read this world's presentation policy. It is public pre-join
-    /// metadata (#5970 §5).
-    ///
-    /// # Errors
-    ///
-    /// Fails only when the world actor is closed.
-    pub async fn presentation_policy(
-        &self,
-    ) -> Result<id_core::presentation_policy::PresentationPolicy> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(WorldCommand::PresentationPolicyInfo { reply })
-            .await
-            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
-        response
-            .await
-            .context("world actor dropped presentation policy")
-    }
-
     /// Read this world's currently requested resource profile.
     pub async fn execution_profile(&self) -> Result<crate::world_limits::WorldExecutionProfile> {
         let (reply, response) = oneshot::channel();
@@ -1123,30 +1083,6 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped schedule response")?
-    }
-
-    /// Whether `authority` may change this world's lifecycle: `act` names
-    /// the change ("wakes the world", "pauses the world", "archives the
-    /// world") for the refusal. Only the world's owner (an admin seat in
-    /// one of its groups) or the operator may (#10694); nothing changes.
-    ///
-    /// # Errors
-    ///
-    /// Fails with a forbidden refusal for any other authority, or if the
-    /// world actor is closed.
-    pub async fn authorize_lifecycle(&self, authority: Authority, act: &'static str) -> Result<()> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(WorldCommand::AuthorizeLifecycle {
-                authority,
-                act,
-                reply,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
-        response
-            .await
-            .context("world actor dropped lifecycle authorization response")?
     }
 
     /// Change the world's isolation.
@@ -1763,38 +1699,6 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped lease failover response")?
-    }
-
-    /// Release a journal copy for a spilled holder only after the holder's
-    /// verified replay cursor reaches the current grant boundary. The
-    /// serialized authority actor rechecks holder, epoch, term, and boundary
-    /// immediately before returning the bytes; callers must authenticate the
-    /// holder and cursor and pass the residency gate before invoking this
-    /// method, then send only returned bytes. A refused copy is never
-    /// released for dispatch. The sanctioned production caller is
-    /// [`super::spill_controller::SpillController`], which fixes that
-    /// authenticate → residency → dispatch order with no bypass.
-    pub async fn dispatch_spill_copy(
-        &self,
-        holder: impl Into<String>,
-        epoch: u64,
-        replayed_position: u64,
-        journal_copy: Vec<u8>,
-    ) -> Result<Vec<u8>> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(WorldCommand::DispatchSpillCopy {
-                holder: holder.into(),
-                epoch,
-                replayed_position,
-                journal_copy,
-                reply,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
-        response
-            .await
-            .context("world actor dropped spill dispatch response")?
     }
 
     /// Read a world snapshot.

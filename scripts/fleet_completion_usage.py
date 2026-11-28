@@ -105,17 +105,11 @@ def report(snapshot, start, end):
             continue
         if not lower <= latest[task_id] < upper:
             continue
-        queue = queues.setdefault(
-            task["queue"],
-            {
-                "queue": task["queue"],
-                "completed_tasks": 0,
-                "measured_tasks": 0,
-                "missing_task_ids": [],
-                "known_input_tokens": 0,
-                "input_tokens_per_completed_task": None,
-            },
-        )
+        queue = queues.setdefault(task["queue"], {
+            "queue": task["queue"], "completed_tasks": 0, "measured_tasks": 0,
+            "missing_task_ids": [], "known_input_tokens": 0,
+            "input_tokens_per_completed_task": None,
+        })
         queue["completed_tasks"] += 1
         sessions = bindings[task_id]
         known = [tokens[s] for s in sessions if tokens.get(s) is not None]
@@ -134,8 +128,7 @@ def report(snapshot, start, end):
             )
     return {
         "scope": "completed-cohort cumulative bound-session input tokens; not window spend",
-        "start": start,
-        "end": end,
+        "start": start, "end": end,
         "binding_history_complete": history_complete,
         "done_tasks_without_completion_event": sorted(unlocated),
         "queues": [queues[q] for q in sorted(queues)],

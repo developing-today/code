@@ -94,43 +94,17 @@ and record the switch on the tracking issue.
 
 ## Pass 1 — census
 
-Snapshot the whole queue before touching anything. Since the #14170
-queue-schema slices landed, the census runs from the **census pack**:
-the canned queries named in the design record
-(`doc/2026-11-24T07-23-14Z_design_queue-metadata-history/`, §9), not
-client-side assembly over `/list` pages. The pack, per census element:
+Snapshot the whole queue before touching anything:
 
-1. **Counts and bands** (SQL on the queue store): counts by
-   queue × status; the actionable set = queued + claimed + handed_off
-   + parked + blocked; per-queue, per-kind, per-band tables from the
-   same scan. Terminal audit: terminal-status rows with
-   `resolution IS NULL` are a finding, not a fact (Q2 columns).
-2. **Claims audit:** `fleet queue staleness --lease-cap-seconds 900`
-   — the response's `claims_near_lease_cap` names every claim at or
-   past its lease cap against the response's own `now`; a claimed task
-   absent from that list holds a live lease. (2026-11-24, pre-pack:
-   465 actionable of 18,556 tasks; 32 claimed, all live.)
-3. **Staleness:** `fleet queue staleness --older-than-seconds <n>`
-   — one broker query returns every actionable task whose last
-   `task_history` transition is older than the threshold, oldest
-   first, with the transition's kind and actor. This replaces the
-   ad-hoc age reconstruction the first census did by hand.
-4. **Needs-user pile:** `fleet queue needs-user` — blocked/parked
-   tasks carrying a `question` metadata entry, oldest first. Its
-   blocked-by counts still read the `blocked_deps` cache; they move
-   to `task_deps` counts when Q6 lands (see below).
-5. **Held check:** all items whose issue carries `user/*` — read the
-   Q5 label cache (`fleet queue list --label 'user/*'`), not a
-   per-issue GitHub sweep.
-6. **Blocker graph — still client-side (the pack's open rows).**
-   Open dep edges from `blocked_deps` (issue-keyed), top blockers by
-   direct unlock count — these drive the pass-2 push-ups. The canned
-   forms (direct + transitive unlock counts from a `task_deps`
-   recursive CTE; the blocked-with-no-open-dep cleanup query as a
-   `tasks` ⋉ `task_deps` + `metadata.question` join) are specified in
-   design §9 and land with Q6 (`queue_links`/`task_deps`). Until
-   then this element — and only this element — keeps the client-side
-   assembly the 2026-11-24 census used.
+1. Counts by queue × status; the actionable set = queued + claimed +
+   handed_off + parked + blocked. Per-queue, per-kind, per-band
+   tables.
+2. **Claims audit:** every claimed task's lease vs now — live or
+   stale, named. (2026-11-24: 465 actionable of 18,556 tasks; 32
+   claimed, all live.)
+3. **Blocker graph:** open dep edges from `blocked_deps`
+   (issue-keyed), top blockers by direct unlock count — these drive
+   the pass-2 push-ups.
 4. **Named-error sweep** (check for each, every run):
    - *Off-scale priorities* — any priority not in the named scale
      (2026-11-24: task 21435 at 15, quarantined; fixed to the band
@@ -143,10 +117,8 @@ client-side assembly over `/list` pages. The pack, per census element:
      designated claimant makes it a correct resting state
      (2026-11-24: task 20708, verified legitimate; cancelled later
      only because its issue closed).
-   - *The no-dep blocked pile* — blocked tasks with NO open dep
-     (computed from the census-pack element 6 assembly until Q6's
-     canned cleanup query lands). 2026-11-24: 165 of 343 blocked.
-     Expect the composition found
+   - *The no-dep blocked pile* — blocked tasks with NO open dep.
+     2026-11-24: 165 of 343 blocked. Expect the composition found
      there: stale environmental blocks, questions already answered
      by standing statements, expired ready conditions, quota-moment
      readings, mis-typed packets, and a minority of genuine holds.

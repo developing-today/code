@@ -65,10 +65,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "atlas-sweep {}",
-            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
-        );
+        println!("atlas-sweep {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let mut state_dir: Option<PathBuf> = None;

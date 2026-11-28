@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (97)
+## /v1 operations (96)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -115,7 +115,6 @@ carry instead is a description that says so and MCP annotations
 | `servers_add` | `POST /v1/servers` | `mcpx servers add` | `mcpx_servers_add` | `ops.serversAdd()` | Privileged. |
 | `servers_remove` | `DELETE /v1/servers/{name}` | `mcpx servers remove` | `mcpx_servers_remove` | `ops.serversRemove()` | Privileged. Destructive. |
 | `servers_get` | `GET /v1/servers/{name}` | `mcpx servers show` | `mcpx_servers_get` | `ops.serversGet()` |  |
-| `session_kill` | `POST /v1/session/kill` | `mcpx session kill` *generated* | `mcpx_session_kill` | `ops.sessionKill()` | Privileged. Destructive. |
 | `session_release` | `POST /v1/session/release` | `mcpx session release` *generated* | `mcpx_session_release` | `ops.sessionRelease()` | Privileged. |
 | `sessions_read` | `GET /v1/sessions` | `mcpx sessions read` *generated* | `mcpx_sessions_read` | `ops.sessionsRead()` |  |
 | `settings_list` | `GET /v1/settings` | `mcpx settings list` | `mcpx_settings_list` | `ops.settingsList()` |  |
@@ -199,7 +198,7 @@ that reaches none says why: those are decisions, not gaps.
 | `secrets` | `secret_requests_list`, `secret_request_decline`, `secret_request_get`, `secrets_list`, `secrets_unset`, `secrets_set` |  |
 | `serve` | – | It is the MCP surface: a stdio shim over the daemon, which serves the same tools at `/mcp` itself. |
 | `servers` | `servers_list`, `servers_add`, `servers_remove`, `servers_get` |  |
-| `session` | `session_kill`, `session_release` | Generated from the operation table. |
+| `session` | `session_release` | Generated from the operation table. |
 | `sessions` | `sessions_read` | Generated from the operation table. |
 | `settings` | `settings_list`, `settings_unset`, `settings_get`, `settings_set` |  |
 | `skills` | – | Manages embedded agent skills. |

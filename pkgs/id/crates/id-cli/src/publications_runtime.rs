@@ -663,7 +663,7 @@ mod tests {
             .unwrap();
         let mut manager = fx.manager(registry, true);
         let warnings = manager.restore().unwrap();
-        assert_eq!(warnings, [] as [String; 0]);
+        assert!(warnings.is_empty());
         let listed = manager.list();
         assert_eq!(listed.len(), 2);
         let actual = listed[0].actual_addr.expect("listener is live");
@@ -729,7 +729,7 @@ mod tests {
             .push("127.0.0.1:4002".parse().unwrap());
         let mut manager = fx.manager(Registry::default(), true);
         assert!(manager.publish(listener_pub("127.0.0.1:4002")).is_err());
-        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
+        assert!(manager.registry().publications.is_empty());
         assert!(!fx.file.exists(), "nothing was persisted");
         fx.cleanup();
     }
@@ -756,7 +756,7 @@ mod tests {
             },
         );
         assert!(manager.publish(listener_pub("127.0.0.1:4001")).is_err());
-        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
+        assert!(manager.registry().publications.is_empty());
         assert_eq!(
             fx.state.lock().unwrap().closed,
             vec!["127.0.0.1:4001".parse::<SocketAddr>().unwrap()],
@@ -772,7 +772,7 @@ mod tests {
         // Unacknowledged shadow: refused by the registry gate,
         // nothing mounted, nothing persisted.
         assert!(manager.publish(mount_pub("/world", false)).is_err());
-        assert_eq!(fx.state.lock().unwrap().mounted, [] as [String; 0]);
+        assert!(fx.state.lock().unwrap().mounted.is_empty());
         // Acknowledged: warns loudly and mounts.
         let warning = manager.publish(mount_pub("/world", true)).unwrap();
         assert!(
@@ -786,7 +786,7 @@ mod tests {
         let fx2 = Fixture::new("publish-mount-no-explorer");
         let mut manager2 = fx2.manager(Registry::default(), false);
         assert!(manager2.publish(mount_pub("/arena", false)).is_err());
-        assert_eq!(manager2.registry().publications, [] as [Publication; 0]);
+        assert!(manager2.registry().publications.is_empty());
         assert!(!fx2.file.exists());
         fx.cleanup();
         fx2.cleanup();
@@ -818,7 +818,7 @@ mod tests {
             fx.state.lock().unwrap().unmounted,
             vec!["/arena".to_string()]
         );
-        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
+        assert!(manager.registry().publications.is_empty());
         assert_eq!(Registry::load(&fx.file).unwrap().publications.len(), 0);
         // A second unpublish of the same placement is an error.
         assert!(
@@ -855,8 +855,8 @@ mod tests {
             fx.state.lock().unwrap().unmounted,
             vec!["/arena".to_string()]
         );
-        assert_eq!(fx.state.lock().unwrap().live_mounts, [] as [String; 0]);
-        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
+        assert!(fx.state.lock().unwrap().live_mounts.is_empty());
+        assert!(manager.registry().publications.is_empty());
         fx.cleanup();
     }
 
@@ -895,8 +895,8 @@ mod tests {
                 path: "/arena".to_string(),
             })
             .unwrap();
-        assert_eq!(manager.registry().publications, [] as [Publication; 0]);
-        assert_eq!(fx.state.lock().unwrap().live_mounts, [] as [String; 0]);
+        assert!(manager.registry().publications.is_empty());
+        assert!(fx.state.lock().unwrap().live_mounts.is_empty());
         fx.cleanup();
     }
 

@@ -74,6 +74,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
@@ -174,10 +175,9 @@ import { AaLastGoodStore } from "../src/aa-last-good.ts";
 import { createTursoDocumentRemote } from "../src/remote-stores.ts";
 import { parseStoreBackend } from "../src/store-backend.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
-import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = requireHome("the collect-fleet-feed paths");
+const HOME = homedir();
 const HIDDEN = defaultHiddenDir(HOME);
 
 export type FleetFeedPublication = Readonly<{

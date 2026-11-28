@@ -197,7 +197,6 @@ fn access_of(level: u64) -> Access<()> {
 fn create_role(members: &[(u64, u64)]) -> Role {
     Role::Auth {
         author: [1; 32],
-        authorization_actor: None,
         group: None,
         action: GroupAction::Create {
             initial_members: members
@@ -256,7 +255,6 @@ fn scenario(seed: u64, size: usize) -> Vec<CausalEvent> {
             };
             Role::Auth {
                 author: [1 + rng.below(4) as u8; 32],
-                authorization_actor: None,
                 group: Some(group),
                 action,
             }

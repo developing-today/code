@@ -222,7 +222,7 @@ fn test_admins_on_create_is_for_friendships_only() {
     assert!(!attempt.status.success());
     let stderr = String::from_utf8_lossy(&attempt.stderr);
     assert!(stderr.contains("friendships"), "stderr: {stderr}");
-    assert_eq!(GroupLog::open(&log).unwrap().events(), [] as [Event; 0]);
+    assert!(GroupLog::open(&log).unwrap().events().is_empty());
 }
 
 #[test]
@@ -333,5 +333,5 @@ fn test_group_join_refuses_a_valid_invitation_and_records_nothing() {
         "stderr: {stderr}"
     );
     assert!(stderr.contains("not implemented yet"), "stderr: {stderr}");
-    assert_eq!(GroupLog::open(&log).unwrap().events(), [] as [Event; 0]);
+    assert!(GroupLog::open(&log).unwrap().events().is_empty());
 }

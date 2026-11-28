@@ -10,9 +10,7 @@ use fleet_cert::algorithm::AlgorithmId;
 use fleet_cert::engine;
 use fleet_cert::graph::CrossSigningMode;
 use fleet_cert::inventory::{self, InventoryRequest, SearchFilter};
-use fleet_cert::model::{
-    IssuerCreateRequest, IssuerPurpose, LeafIssueRequest, RootCreateRequest, SignerSource,
-};
+use fleet_cert::model::{IssuerCreateRequest, IssuerPurpose, LeafIssueRequest, RootCreateRequest, SignerSource};
 use fleet_cert::timeparse::{CalendarDuration, Rfc3339};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -102,8 +100,6 @@ fn issue_leaf(issuer: &Path, out: &Path, name: &str, valid_for: CalendarDuration
             name: name.into(),
             common_name: None,
             dns_names: vec!["www.example.test".into()],
-            ip_addresses: vec![],
-            csr: None,
             key_algorithm: None,
             issuer_algorithm: None,
             issuer_partition: None,
@@ -153,11 +149,7 @@ fn clean_hierarchy_audits_clean() {
         leaf_within: inventory::DEFAULT_LEAF_WITHIN,
     };
     let report = inventory::audit(&req).unwrap();
-    assert_eq!(
-        report.bundles.len(),
-        3,
-        "root + issuer + leaf under scan dir: {root_dir:?} {issuer_dir:?} {leaf_dir:?}"
-    );
+    assert_eq!(report.bundles.len(), 3, "root + issuer + leaf under scan dir: {root_dir:?} {issuer_dir:?} {leaf_dir:?}");
     assert_eq!(report.totals.bundles_verified, 3);
     assert_eq!(report.totals.drift_findings, 0);
     assert_eq!(report.totals.expired, 0);
@@ -184,21 +176,14 @@ fn expired_leaf_is_reported() {
         leaf_within: inventory::DEFAULT_LEAF_WITHIN,
     };
     let report = inventory::audit(&req).unwrap();
-    assert!(
-        report.totals.expired > 0,
-        "a 30d leaf must be expired 17 months later"
-    );
+    assert!(report.totals.expired > 0, "a 30d leaf must be expired 17 months later");
     let leaf_bundle = report
         .bundles
         .iter()
         .find(|b| b.dir == leaf_dir)
         .expect("leaf bundle inventoried");
-    assert!(
-        leaf_bundle
-            .certs
-            .iter()
-            .any(|c| c.role == "leaf" && c.status == inventory::ExpiryStatus::Expired)
-    );
+    assert!(leaf_bundle.certs.iter().any(|c| c.role == "leaf"
+        && c.status == inventory::ExpiryStatus::Expired));
 }
 
 #[test]
@@ -261,7 +246,8 @@ fn tamper_and_orphan_are_drift() {
     // orphan (§7.1).
     let tmp = TempDir::new("drift");
     let (root_dir, _issuer) = build_two_bundles(&tmp);
-    let manifest_text = std::fs::read_to_string(root_dir.join("manifest.json")).unwrap();
+    let manifest_text =
+        std::fs::read_to_string(root_dir.join("manifest.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text).unwrap();
     let first_cert = manifest["certificates"][0]["cert_path"]
         .as_str()
@@ -316,12 +302,9 @@ fn search_filters_and_verbs_are_read_only() {
     )
     .unwrap();
     assert!(!hits.is_empty());
-    assert!(
-        hits.iter()
-            .all(|h| h.cert.subject_dn.contains("example.test")
-                || h.cert.cert_path.contains("leaf")
-                || true)
-    );
+    assert!(hits.iter().all(|h| h.cert.subject_dn.contains("example.test")
+        || h.cert.cert_path.contains("leaf")
+        || true));
     let role_hits = inventory::search(
         tmp.path(),
         at,
@@ -349,7 +332,9 @@ fn search_filters_and_verbs_are_read_only() {
     )
     .unwrap();
     assert!(!fp_hits.is_empty());
-    assert!(fp_hits.iter().all(|h| h.cert.role == "leaf"));
+    assert!(fp_hits
+        .iter()
+        .all(|h| h.cert.role == "leaf"));
     // Expired filter matches nothing while everything is valid.
     let none = inventory::search(
         tmp.path(),
@@ -377,9 +362,5 @@ fn search_filters_and_verbs_are_read_only() {
     if let Some(b) = report.bundles.first() {
         let _ = inventory::render_show(b, at);
     }
-    assert_eq!(
-        snapshot(tmp.path()),
-        before,
-        "inventory verbs must not write"
-    );
+    assert_eq!(snapshot(tmp.path()), before, "inventory verbs must not write");
 }

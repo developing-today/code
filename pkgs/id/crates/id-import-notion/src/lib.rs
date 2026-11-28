@@ -614,12 +614,6 @@ pub struct Manifest {
     /// manifests, so it defaults empty when an older manifest is loaded.
     #[serde(default)]
     pub row_records: BTreeMap<String, crate::rows::RowConversion>,
-    /// Page UUID -> its degradation ledger (slice 4 design record §2.4,
-    /// §2.6), recorded by [`content::convert_page`]. Absent from
-    /// pre-slice-4 manifests, so it defaults empty when an older
-    /// manifest is loaded.
-    #[serde(default)]
-    pub page_losses: BTreeMap<String, crate::content::LossLedger>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -682,7 +676,6 @@ impl Manifest {
             comment_claims: BTreeMap::new(),
             comments_coverage: BTreeMap::new(),
             row_records: BTreeMap::new(),
-            page_losses: BTreeMap::new(),
         })
     }
 

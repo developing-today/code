@@ -42,14 +42,6 @@ pub mod shims;
 pub mod stdio;
 pub mod tunnel;
 
-/// The mux endpoint machinery (#5756 §7 steps 2–3) is shared
-/// by both halves: the broker terminates streams, the client
-/// originates them. It carries no serve-only dependencies, so
-/// it is not feature-gated — the connect-only variant needs it
-/// for its stream-open call path, and §2's mechanical
-/// incapability is about the broker half, not this machinery.
-pub mod mux;
-
 #[cfg(feature = "serve")]
 pub mod serve;
 

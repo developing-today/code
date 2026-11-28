@@ -154,7 +154,6 @@ fn signed(
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -349,7 +348,6 @@ fn present_event(
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -776,7 +774,6 @@ proptest! {
                     rotation: None,
                     chat: None,
                                     anchor: None,
-                    thread: None,
                 },
             )
             .encode();
@@ -826,7 +823,6 @@ fn print_ingest_seeds() {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             };
             sign(key, seq, backlink, None, ext).unwrap()
         };

@@ -14,10 +14,6 @@
  * - GET /api/releases.json — milestone close-out snapshots (#9060
  *   §4): stored snapshots where close-out recorded them, retroactive
  *   computed accounting for the rest.
- * - GET /api/overview.json and /api/queue.json — the CF-5d (#14970)
- *   read wave: overview totals/breakdowns and the open-pool queue
- *   view, both derived over the same projections (waves.ts) with
- *   data-plane freshness in the served shape.
  *
  * Read-only: the handler answers GETs only and the store layer
  * issues SELECTs only. No token is read, minted, or persisted on
@@ -26,7 +22,6 @@
 import type { SqlDb } from "../tenant-store/migrate.ts";
 import { deriveGenealogy } from "./genealogy.ts";
 import { loadBoardSummaries, loadPool, loadReleaseSnapshots, loadRoadmapRows } from "./store.ts";
-import { freshnessFromSummaries, overviewFromPool, queueFromPool } from "./waves.ts";
 
 export interface ReadApiDeps {
   db: SqlDb;
@@ -68,29 +63,6 @@ export function roadmapJson(deps: ReadApiDeps) {
   return { generatedAt: now(), rows: loadRoadmapRows(deps.db, pool) };
 }
 
-/** CF-5d (#14970) wave: the overview view over the projections,
- * with data-plane freshness visible in the served shape. */
-export function overviewJson(deps: ReadApiDeps) {
-  const now = deps.now ?? (() => new Date().toISOString());
-  const summaries = loadBoardSummaries(deps.db);
-  const pool = loadPool(deps.db);
-  return {
-    generatedAt: now(),
-    freshness: freshnessFromSummaries(summaries),
-    ...overviewFromPool(pool, summaries),
-    projects: summaries,
-  };
-}
-
-/** CF-5d (#14970) wave: the queue view over the projections — the
- * open pool grouped by status and split by live blockers. */
-export function queueJson(deps: ReadApiDeps) {
-  const now = deps.now ?? (() => new Date().toISOString());
-  const summaries = loadBoardSummaries(deps.db);
-  const pool = loadPool(deps.db);
-  return { generatedAt: now(), freshness: freshnessFromSummaries(summaries), queue: queueFromPool(pool) };
-}
-
 export function releasesJson(deps: ReadApiDeps) {
   const now = deps.now ?? (() => new Date().toISOString());
   const pool = loadPool(deps.db);
@@ -122,8 +94,6 @@ export function createReadApiHandler(deps: ReadApiDeps): (req: Request) => Promi
     }
     if (req.method === "GET" && path === "/api/roadmap.json") return json(roadmapJson(deps));
     if (req.method === "GET" && path === "/api/releases.json") return json(releasesJson(deps));
-    if (req.method === "GET" && path === "/api/overview.json") return json(overviewJson(deps));
-    if (req.method === "GET" && path === "/api/queue.json") return json(queueJson(deps));
     return json({ error: `not found: ${path}` }, 404);
   };
 }

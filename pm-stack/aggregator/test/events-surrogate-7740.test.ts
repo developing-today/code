@@ -8,7 +8,7 @@
 // writer can persist one. Oracle: the stored value never ends in a lone
 // high surrogate and always round-trips through UTF-8 unchanged.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventsStore, validateStreamEvent } from "../src/events.ts";
@@ -88,13 +88,7 @@ describe("#7740 EventsStore never persists a lone surrogate", () => {
     expect(loneHighAtEnd(rec.actor)).toBe(false);
     expect(roundTrips(rec.summary)).toBe(true);
     expect(roundTrips(rec.actor)).toBe(true);
-    // #14958: the persisted record bytes live in the segment
-    // files under <file>.segments/ (the file itself is the v3
-    // manifest now); the oracle is unchanged — no persisted byte
-    // sequence may carry an escaped lone surrogate.
-    const raw = readdirSync(store.segmentsDir)
-      .map((name) => readFileSync(join(store.segmentsDir, name), "utf8"))
-      .join("");
+    const raw = readFileSync(file, "utf8");
     expect(raw.includes("\\ud83d")).toBe(false);
     const health = await store.health();
     expect(health.integrity.ok).toBe(true);

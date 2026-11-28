@@ -270,7 +270,7 @@ mod tests {
         got.sort_unstable();
         assert_eq!(got, vec![[1; 32], [2; 32]]);
         assert!(index.named("a").is_empty(), "a is not a\\0b");
-        assert_eq!(index.named("missing"), [] as [Entry; 0]);
+        assert!(index.named("missing").is_empty());
     }
 
     fn claim_by(id: u8, author: u8, subject: u8, name: &str, value: Option<&str>) -> Claim {
@@ -301,7 +301,7 @@ mod tests {
             .collect();
         got.sort_unstable();
         assert_eq!(got, vec![[1; 32], [2; 32], [4; 32]]);
-        assert_eq!(index.author(&[9; 32]), [] as [Entry; 0]);
+        assert!(index.author(&[9; 32]).is_empty());
         // The entry carries the author, so a scan can report provenance.
         assert_eq!(index.author(&[6; 32])[0].author, [6; 32]);
     }
@@ -337,6 +337,6 @@ mod tests {
             ids(index.author_name_value(&[7; 32], "city", None)),
             vec![[2; 32]]
         );
-        assert_eq!(index.author_name(&[7; 32], "missing"), [] as [Entry; 0]);
+        assert!(index.author_name(&[7; 32], "missing").is_empty());
     }
 }

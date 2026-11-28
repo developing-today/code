@@ -4,7 +4,7 @@ Source: this chapter rests on the library survey (`survey/library.md`, the crate
 
 ## One workspace, one public surface
 
-The system lives in `pkgs/id/` in the `developing-today/code` repository. The root `Cargo.toml` is two things at once: the package `id` at version `0.1.0` (edition 2024, rust-version 1.96) and the workspace root. The workspace has 24 members: the root package plus 23 crates under `pkgs/id/crates/`. Default members are 18: the root plus 17 crates. `id-native-shell`, `id-hw-shell`, `id-tui-shell`, `id-android-remote`, `id-bevy-bridge`, and `id-bevy-presenter` are members but not default members, so a plain `cargo build` in `pkgs/id/` never acquires the Bevy desktop dependencies or the shell code.
+The system lives in `pkgs/id/` in the `developing-today/code` repository. The root `Cargo.toml` is two things at once: the package `id` at version `0.1.0` (edition 2024, rust-version 1.96) and the workspace root. The workspace has 20 members: the root package plus 19 crates under `pkgs/id/crates/`. Default members are 17: the root plus 16 crates. `id-native-shell`, `id-hw-shell`, and `id-tui-shell` are members but not default members, so a plain `cargo build` in `pkgs/id/` never acquires the Bevy desktop dependencies or the shell code.
 
 Library consumers use one public surface: the root crate, imported as `id::`. The split crates are internal. A consumer who names a split crate directly uses an internal path, with two recorded exceptions: `id-config`, `id-currency-registry`, `id-render` and `id-import-notion` are not exposed at `id::` at all, so a consumer who wants them names those crates directly (library survey §2).
 

@@ -35,7 +35,6 @@ fn probe_nonplayer_signers() {
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
-        witness_terms: None,
     };
     // 1. A non-player signs the genesis agreement: refused (#6424).
     let g_stranger = sign_genesis(&stranger, 0, None, &agreement, vec![]);

@@ -18,7 +18,7 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
-import type { OwnerChangeableName, PlatformSettings, SettingDiffers, SettingInForce } from "./settings.ts";
+import type { SettingDiffers } from "./settings.ts";
 
 /** What a machine tells the edge in every sync. Who may sign in (the
  * owners, the certificate names, the issuers, the Android signing
@@ -71,10 +71,6 @@ export interface SyncRequest {
    * console older than this: the edge then knows it only as a machine
    * that reports. */
   machine?: MachineReport;
-  /** The revision of the owner's changed settings this machine runs
-   * with, as the edge last said them (0: none, its own). Absent from a
-   * console older than the saying (#14957). */
-  settingsRev?: number;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -142,22 +138,7 @@ export interface MachinesAnswer {
   served: "edge" | "machine";
   /** What the platform does with no machine: null when it is not in
    * front, and an empty list of each when it only serves and waits. */
-  platform: {
-    primary: boolean;
-    actions: string[];
-    sections: string[];
-    refused: string[];
-    /** Which source each of the platform's settings is in force from,
-     * with its value, the repository's beside it, and for an owner's
-     * change who made it, when, and at which revision: the one place
-     * the owner reads which settings are in force and since when
-     * (#14955). Absent from an answer older than the saying. */
-    settings?: SettingInForce[];
-    /** The revision of the owner's changes these settings are at (0
-     * before any): what a change from the app is made from, so one made
-     * from an older look is refused (#14956). */
-    settingsRev?: number;
-  } | null;
+  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
   machines: {
     name: string;
     /** When it last reported, in milliseconds; null if it never has. */
@@ -171,11 +152,6 @@ export interface MachinesAnswer {
      * values and which the platform goes by. Absent when there is none
      * (and from an answer older than the saying). */
     differs?: SettingDiffers[];
-    /** The revision of the owner's changed settings it last said it runs
-     * with (0: its own); null when its console is older than the saying.
-     * Behind the platform's `settingsRev`, it has not taken the owner's
-     * latest change yet (#14957). */
-    settingsRev?: number | null;
   }[];
   /** What the owner did that waits to be done, oldest first, and who
    * each waits for (absent from an answer older than the saying). */
@@ -288,11 +264,6 @@ export interface SyncResponse {
   /** Sections the edge reads itself, and so need not be sent to it.
    * Absent from an edge that reads none. */
   owns?: string[];
-  /** The settings the owner changed from the app, at their revision,
-   * for the machine to run with in place of its own (#14957). Sent
-   * whenever the owner has changed any (an empty `values` once every
-   * change was put back); absent before, and from an older edge. */
-  settings?: { rev: number; values: Partial<Pick<PlatformSettings, OwnerChangeableName>> };
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
@@ -344,36 +315,6 @@ export const HOLDABLE = new Set([
   "intake.send",
   "triage.enqueue",
 ]);
-/** Actions on something that may have changed by the time they arrive:
- * a merge, a deploy, a task's or a unit's state. A device keeps these
- * and sends them by itself only while they are fresh (`TIMELY` in
- * public/outbox.js is the same list, and a test holds the two together).
- * The platform holds every sender to the same rule (#13501). */
-export const TIMELY = new Set(["pr.merge", "deploy.start", "task.cancel", "task.unblock", "unit.act"]);
-/** How long a timely action stays fresh. */
-export const TIMELY_MS = 10 * 60_000;
-/** What a timely action that arrived too late is answered with. */
-export const STALE_ACT_ERROR =
-  "This was done more than ten minutes ago and may no longer apply. Look again, and send it with sure to do it anyway.";
-
-/** Whether an action arrives too late to be done unasked (#13501). The
- * sender says when the owner did it (`at`, ms since the epoch) and may
- * say what its own clock read when it sent it (`sent`). It is too late
- * when either clock says more than ten minutes have passed: the
- * platform's, which a device whose clock runs slow cannot talk round,
- * or the device's own, which a device whose clock runs fast cannot hide
- * from the platform's. One that says `sure` was looked at again by the
- * owner and goes as it is. One that says nothing of when it was done
- * claims to be done now, and is taken as that. */
-export function staleAct(kind: string, body: { at?: unknown; sent?: unknown; sure?: unknown }, now: number): boolean {
-  if (!TIMELY.has(kind) || body.sure === true) return false;
-  const at = body.at;
-  if (typeof at !== "number" || !Number.isFinite(at)) return false;
-  if (now - at > TIMELY_MS) return true;
-  const sent = body.sent;
-  return typeof sent === "number" && Number.isFinite(sent) && sent - at > TIMELY_MS;
-}
-
 /** What an action is about, where the order of two matters: a rank set
  * twice, a task moved twice. Two about one thing are done in the order
  * the owner did them: one that may be done late goes behind an earlier

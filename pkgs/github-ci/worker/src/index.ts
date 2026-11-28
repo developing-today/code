@@ -29,7 +29,7 @@
  * - ping: pong. Everything else: 202 ignored.
  */
 import { readBodyUpTo } from "./body";
-import { Turso, configureTursoGateway, iArg, tArg, type D1Gateway } from "./turso";
+import { Turso, iArg, tArg } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
 import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
 import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent, mirrorSubIssueEvent } from "./mirror";
@@ -38,8 +38,6 @@ export interface Env extends SinkEnv {
   GITHUB_WEBHOOK_SECRET: string;
   TURSO_PLATFORM_URL: string;
   TURSO_PLATFORM_TOKEN: string;
-  /** d1-gateway Gateway entrypoint; d1gw:// URLs go through it. */
-  D1GW?: D1Gateway;
 }
 
 async function hmacHex(secret: string, body: string): Promise<string> {
@@ -70,7 +68,6 @@ function json(body: unknown, status = 200): Response {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    configureTursoGateway(env.D1GW);
     if (req.method === "GET") return new Response("github-ci worker ok", { status: 200 });
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 

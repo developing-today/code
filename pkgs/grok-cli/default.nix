@@ -59,13 +59,11 @@ let
         const fs = require("fs");
         const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
         delete p.devDependencies; delete p.scripts; delete p.workspaces;
-        const repo = JSON.parse(fs.readFileSync("${./package.json}", "utf8"));
-        if (repo.overrides) p.overrides = repo.overrides;
         fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
       '
     '';
 
-    npmDepsHash = "sha256-zJZ2leOpsiismxtYxC4RPzeJFvkpwz61VO54UWL+CEI=";
+    npmDepsHash = "sha256-SUo8vbwKaOqberL9PyOAqd11sPfbyPdtNKUDIJHlm+I=";
     npmFlags = [
       "--ignore-scripts"
       "--no-audit"

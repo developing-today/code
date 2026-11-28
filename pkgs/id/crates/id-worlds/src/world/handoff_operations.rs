@@ -446,7 +446,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, OpsError::HandoffsDisabled);
         // Nothing journaled, no handoff started, routing unaffected.
-        assert_eq!(ops.coordinator().journal(), []);
+        assert!(ops.coordinator().journal().is_empty());
         assert!(ops.coordinator().active_handoff("entity-1").is_none());
         assert_eq!(
             route(&ops, "entity-1", OperationKind::Write),
@@ -683,10 +683,7 @@ mod tests {
                 owner_epoch: 8
             }
         );
-        assert_eq!(
-            replayed.ops_snapshot(4_000).entries,
-            [] as [HandoffOpsEntry; 0]
-        );
+        assert!(replayed.ops_snapshot(4_000).entries.is_empty());
     }
 
     #[test]

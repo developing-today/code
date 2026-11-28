@@ -50,15 +50,6 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
   audio device output remains a separate step. A widget surface produces
   placed controls and an initial focus marker ([widget.rs](src/widget.rs));
   keyboard and pointer activation of those controls remains future work.
-- The first end-user application surface (issue #15022) is the
-  world directory (`src/directory.rs`): launched at a host without
-  `--world`, the app lists the host's public world directory
-  ordered pinned/recent/discovered (design #5782 §3), with
-  keyboard navigation, per-world sessions that coexist (leaving
-  one never tears down another), and an accessible text table the
-  graphical list renders line for line. Richer directory
-  surfaces (presence detail, counted/uncounted writer sides)
-  remain later #5782 slices.
 
 ## Recorded shells v1 capability statements
 
@@ -104,28 +95,10 @@ the equivalent `-dev` packages for your distribution first.
 cargo run -p id-native-shell -- --node <node-id> --capability <cap> [--world <name>] [--addr <ip:port>] [--no-relay]
 ```
 
-With `--world` the shell joins that world directly: host views
-feed the presented view as they arrive. Without `--world` it opens
-the **world directory** (issue #15022, design #5782 §3): the host's
-public directory (`WorldClient::directory`) listed pinned first,
-then recent, then discovered. Up/Down move, Enter opens the
-selected world into its own session, Esc leaves back to the list
-(the session keeps running), P pins/unpins, and X closes the
-selected world's session — only that one. Sessions to several
-worlds coexist; switching never tears another down. Pins and
-recents persist in `directory-marks.json` beside the client key
-file. The graphical list renders exactly the lines of the
-directory's accessible text table (`DirectoryApp::text_table`).
-Without `--node`/`--capability` the window opens without a
-session and the startup line on stdout says so.
-
-Inside a session, key presses go to the world as the terminal's own
-`input` bytes. Ctrl+Shift+V and Shift+Insert paste the system
-clipboard instead, as one contract `paste` frame, the chords
-terminal emulators use (a plain Ctrl+V stays the literal-next byte).
-An empty clipboard sends nothing, and text over the contract's
-4096-byte bound is refused with a notice on stderr rather than
-split or truncated.
+opens the Bevy window with the renderer live and joins the world:
+host views feed the presented view as they arrive. Without
+`--node`/`--capability` the window opens without a session and the
+startup line on stdout says so.
 
 ## Recording / checking a session
 

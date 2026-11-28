@@ -1060,7 +1060,7 @@ mod tests {
             c.start_handoff(HANDOFF, ENTITY, "region-a", "m", "s", 1_000),
             Err(CoordinatorError::SameRegion)
         );
-        assert_eq!(c.journal(), []);
+        assert!(c.journal().is_empty());
     }
 
     #[test]

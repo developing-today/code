@@ -83,19 +83,6 @@ pub struct Disposition {
     pub follow_up: Option<FollowUp>,
 }
 
-/// Resolution substatus derived from a verified disposition readback.
-/// The broker calls this only after `require_verified` has checked the
-/// timestamp, linked PRs, issue state, and any required follow-up.
-pub fn resolution_for_disposition(record: &Disposition) -> Option<(&'static str, &'static str)> {
-    match record.verdict.as_str() {
-        "closed_verified" | "merged_verified" => Some(("done", "verified")),
-        "open_draft_with_followup" | "open_draft_superseded" => {
-            Some(("done", "partial_with_followup"))
-        }
-        _ => None,
-    }
-}
-
 /// The follow-up an open remainder is handed to. Each target is
 /// verified, never taken on the operator's word: an issue target
 /// carries its own readback (state and explicit links), a successor
@@ -975,33 +962,6 @@ mod tests {
                 DEFAULT_STALENESS_SECONDS
             )
             .is_ok()
-        );
-        assert_eq!(resolution_for_disposition(&rec), Some(("done", "verified")));
-    }
-
-    #[test]
-    fn disposition_followup_maps_to_partial_completion() {
-        let rec = Disposition {
-            checked_at: "2026-11-25T00:00:00Z".into(),
-            checked_at_epoch: 0,
-            source: "fleet gh readback".into(),
-            issue_number: 14170,
-            issue_state: "open".into(),
-            issue_state_reason: None,
-            issue_closed_at: None,
-            issue_closed_by: None,
-            pulls: vec![],
-            verdict: "open_draft_with_followup".into(),
-            follow_up: Some(FollowUp {
-                reason: "successor task".into(),
-                task_id: Some(21700),
-                issue: None,
-                successor_pr: None,
-            }),
-        };
-        assert_eq!(
-            resolution_for_disposition(&rec),
-            Some(("done", "partial_with_followup"))
         );
     }
 

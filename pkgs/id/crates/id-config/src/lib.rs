@@ -30,40 +30,13 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-pub mod explain;
-pub mod links;
-pub mod namespaces;
-pub mod peers;
-pub mod remotes;
 pub mod resolve;
 pub mod rollout;
-pub mod storage;
-pub mod tiers;
 
-pub use explain::{ExplainEntry, Explanation, explain};
-pub use links::{
-    ADVERTISED_LINK_ADAPTERS, ControlLink, Links, QueryLink, ResolvedLinks, ResolvedQueryLink,
-    ResolvedSendOnlyLink, ResolvedSyncLink, SendOnlyLink, SyncLink,
-};
-pub use namespaces::{
-    BUILTIN_NAMESPACE_REGISTRY, MAX_NAMESPACE_REGISTRY_ID_LEN, Namespaces, RegistryRef,
-    ResolvedNamespaces,
-};
-pub use peers::{OperationOverride, PeerClass, PeerEntry, PeerOperation};
-pub use remotes::FanoutRemote;
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
     RevisionRecord, RollbackOutcome, Rollout, RolloutError, resolved_digest,
-};
-pub use storage::{
-    ADVERTISED_OBJECT_STORE_ADAPTERS, ADVERTISED_STORE_ADAPTERS, AdvertisedStoreAdapter,
-    ObjectStoreBinding, ResolvedObjectStoreBinding, ResolvedStorage, ResolvedStoreBinding, Storage,
-    StoreBinding, SyncParticipation,
-};
-pub use tiers::{
-    DEFAULT_TIER, MAX_TIER_ID_LEN, Placement, RETENTION_INDEFINITE, ResolvedTier, ResolvedTiers,
-    TierLookup, TierPolicy,
 };
 
 /// The only `ConfigDocument` schema version this crate accepts. The schema
@@ -71,20 +44,6 @@ pub use tiers::{
 /// other version is rejected ([`ConfigError::UnsupportedSchemaVersion`])
 /// rather than silently reinterpreted.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
-
-/// Reject boundary for `ceilings.max_hops`.
-///
-/// A document whose hop ceiling is above this does not load (#9111 record
-/// §5.2 and §5.3 item 7; #9144 §5.1). Not configurable.
-pub const MAX_HOPS_LIMIT: u32 = 8;
-/// Reject boundary for `fanout.deadline_ms` (#9111 record §5.2; #9144 Q5).
-pub const DEADLINE_MS_LIMIT: u64 = 60_000;
-/// Reject boundary for `fanout.per_peer_timeout_ms` (#9111 record §5.2;
-/// #9144 Q5).
-pub const PER_PEER_TIMEOUT_MS_LIMIT: u64 = 30_000;
-/// Reject boundary for `fanout.peer_breadth` (#9111 record §5.2; #9144
-/// §5.3).
-pub const PEER_BREADTH_LIMIT: u32 = 16;
 
 /// The fixed admission gates, by canonical ID. These are mechanism, not
 /// behavior: they are compiled into the admission pipeline (design decision
@@ -127,12 +86,9 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         // and the fixed gates are the invariant skeleton of the document.
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
-        // Mode bundles, behavioral values, scoped overrides, retained
-        // extensions, fan-out keys, the peer plane, the storage plane and the
-        // tier map, the link plane and the namespace registry reference are
-        // the configurable surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage"
-        | "tiers" | "links" | "namespaces" => Some(FieldClass::Behavior),
+        // Mode bundles, behavioral values, scoped overrides and retained
+        // extensions are the configurable surface.
+        "mode" | "behavior" | "overrides" | "extensions" => Some(FieldClass::Behavior),
         _ => None,
     }
 }
@@ -282,104 +238,6 @@ impl Ceilings {
 
 const fn default_true() -> bool {
     true
-}
-
-const fn default_deadline_ms() -> u64 {
-    5_000
-}
-
-const fn default_per_peer_timeout_ms() -> u64 {
-    2_000
-}
-
-const fn default_peer_breadth() -> u32 {
-    4
-}
-
-/// The fan-out keys of #9111 record §7.1.
-///
-/// They come from #9144 §8 and §11.1. Each key has a default, so an absent
-/// `fanout` section or key means the default, and each is validated
-/// against `1 ..= limit`, where the limit
-/// is fixed in this crate ([`DEADLINE_MS_LIMIT`],
-/// [`PER_PEER_TIMEOUT_MS_LIMIT`], [`PEER_BREADTH_LIMIT`]); a value above
-/// its limit rejects the document at load instead of being clamped, so an
-/// operator sees the mistake. The hop limit is `ceilings.max_hops`, bounded
-/// by [`MAX_HOPS_LIMIT`].
-///
-/// `fanout.remotes[]` names entries of the `peers[]` plane
-/// ([`PeerEntry`]); see [`FanoutRemote`] for its rules.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Fanout {
-    /// Whole fan-out query deadline in milliseconds. Default 5000.
-    #[serde(default = "default_deadline_ms")]
-    pub deadline_ms: u64,
-    /// Per-peer timeout in milliseconds. Default 2000.
-    ///
-    /// A value above `deadline_ms` is accepted and clamped to it in the
-    /// resolved config (record §7.1).
-    #[serde(default = "default_per_peer_timeout_ms")]
-    pub per_peer_timeout_ms: u64,
-    /// How many peers one query asks at once. Default 4.
-    #[serde(default = "default_peer_breadth")]
-    pub peer_breadth: u32,
-    /// The peers fan-out queries may ask (record §7.1). Default `[]`:
-    /// local-only. Omitted from the canonical encoding when empty, so a
-    /// document without remotes keeps the digest it had before the list
-    /// existed. The resolved list is sorted by priority and each entry
-    /// carries its effective timeout and scope.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub remotes: Vec<FanoutRemote>,
-}
-
-impl Default for Fanout {
-    fn default() -> Self {
-        Self {
-            deadline_ms: default_deadline_ms(),
-            per_peer_timeout_ms: default_per_peer_timeout_ms(),
-            peer_breadth: default_peer_breadth(),
-            remotes: Vec::new(),
-        }
-    }
-}
-
-impl Fanout {
-    /// The first key outside `1 ..= limit`, as `(field, value, limit)`.
-    fn first_out_of_range(&self) -> Option<(&'static str, u64, u64)> {
-        [
-            ("fanout.deadline_ms", self.deadline_ms, DEADLINE_MS_LIMIT),
-            (
-                "fanout.per_peer_timeout_ms",
-                self.per_peer_timeout_ms,
-                PER_PEER_TIMEOUT_MS_LIMIT,
-            ),
-            (
-                "fanout.peer_breadth",
-                u64::from(self.peer_breadth),
-                u64::from(PEER_BREADTH_LIMIT),
-            ),
-        ]
-        .into_iter()
-        .find(|&(_, value, limit)| value == 0 || value > limit)
-    }
-
-    /// The resolved form.
-    ///
-    /// The per-peer timeout is clamped to the deadline (record §7.1 and
-    /// §7.2), and the remotes are sorted by priority with their effective
-    /// timeout and scope filled in from `peers`; every other key is as
-    /// written.
-    #[must_use]
-    pub fn resolved(&self, peers: &[PeerEntry]) -> Self {
-        let per_peer_timeout_ms = self.per_peer_timeout_ms.min(self.deadline_ms);
-        Self {
-            deadline_ms: self.deadline_ms,
-            per_peer_timeout_ms,
-            peer_breadth: self.peer_breadth,
-            remotes: remotes::resolved(&self.remotes, peers, per_peer_timeout_ms, self.deadline_ms),
-        }
-    }
 }
 
 /// The fixed admission gates. Every field defaults to `true` and validation
@@ -536,30 +394,6 @@ pub struct ConfigDocument {
     /// resolved output and never executed here.
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
-    /// The fan-out keys; absent means every default. See [`Fanout`].
-    #[serde(default)]
-    pub fanout: Fanout,
-    /// The peer plane: one entry per peer relationship. Absent means no
-    /// configured peers, so every peer is `unknown`. See [`PeerEntry`].
-    #[serde(default)]
-    pub peers: Vec<PeerEntry>,
-    /// The storage plane: which adapter backs each store. Absent means
-    /// the built-in defaults. See [`Storage`].
-    #[serde(default)]
-    pub storage: Storage,
-    /// The tier map: tier identifier to placement and retention. Absent
-    /// means every record is in the built-in `default` tier. See
-    /// [`TierPolicy`].
-    #[serde(default)]
-    pub tiers: BTreeMap<String, TierPolicy>,
-    /// The link plane: per-kind link defaults. Absent means every
-    /// configurable kind is off. See [`Links`].
-    #[serde(default)]
-    pub links: Links,
-    /// The namespace plane: which local registry names resolve in. Absent
-    /// means the built-in registry only. See [`Namespaces`].
-    #[serde(default)]
-    pub namespaces: Namespaces,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -590,35 +424,6 @@ pub struct ResolvedConfig {
     pub provenance: BTreeMap<String, String>,
     /// Namespaced extensions, retained verbatim, never executed.
     pub extensions: BTreeMap<String, serde_json::Value>,
-    /// Resolved fan-out keys, per-peer timeout clamped to the deadline.
-    pub fanout: Fanout,
-    /// Resolved peer plane, sorted by `peer_id` with each entry's
-    /// operations sorted. Omitted from the canonical encoding when empty,
-    /// so a document without peers keeps the digest it had before the
-    /// plane existed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub peers: Vec<PeerEntry>,
-    /// Resolved storage plane. Omitted from the canonical encoding when it
-    /// is the built-in default, so a document without `storage` keeps the
-    /// digest it had before the plane existed.
-    #[serde(default, skip_serializing_if = "ResolvedStorage::is_default")]
-    pub storage: ResolvedStorage,
-    /// Resolved tier map, always holding `default`. Omitted from the
-    /// canonical encoding when it is only the built-in `default` tier, so
-    /// a document without `tiers` keeps the digest it had before the map
-    /// existed.
-    #[serde(default, skip_serializing_if = "ResolvedTiers::is_default")]
-    pub tiers: ResolvedTiers,
-    /// Resolved link plane. Omitted from the canonical encoding when it is
-    /// the built-in default, so a document without `links` keeps the
-    /// digest it had before the plane existed.
-    #[serde(default, skip_serializing_if = "ResolvedLinks::is_default")]
-    pub links: ResolvedLinks,
-    /// Resolved namespace plane. Omitted from the canonical encoding when
-    /// it is the built-in registry, so a document without `namespaces`
-    /// keeps the digest it had before the plane existed.
-    #[serde(default, skip_serializing_if = "ResolvedNamespaces::is_default")]
-    pub namespaces: ResolvedNamespaces,
 }
 
 impl ResolvedConfig {
@@ -664,18 +469,6 @@ pub enum ConfigError {
     /// A ceiling field is zero.
     #[error("ceiling {0} must be at least 1")]
     ZeroCeiling(&'static str),
-    /// A value is zero or above a limit fixed in this crate.
-    ///
-    /// Never clamped: the document is rejected.
-    #[error("{field} value {value} is outside 1..={limit}")]
-    OutOfRange {
-        /// The field's dotted path.
-        field: &'static str,
-        /// The value the document gave.
-        value: u64,
-        /// The fixed upper limit.
-        limit: u64,
-    },
     /// The document tried to disable a fixed admission gate.
     #[error("fixed gate {0} cannot be disabled by configuration")]
     FixedGateDisabled(&'static str),
@@ -709,153 +502,6 @@ pub enum ConfigError {
     /// An override names an empty scope.
     #[error("override scope must not be empty")]
     EmptyScope,
-    /// A peer entry has an empty `peer_id`.
-    #[error("peers[].peer_id must not be empty")]
-    EmptyPeerId,
-    /// Two peer entries name the same peer (record §6.3).
-    #[error("duplicate peer entry for peer_id {0:?}")]
-    DuplicatePeer(String),
-    /// A peer entry lists one operation twice.
-    #[error("peer {peer_id:?} lists operation {operation} twice")]
-    DuplicatePeerOperation {
-        /// The peer.
-        peer_id: String,
-        /// The repeated operation.
-        operation: &'static str,
-    },
-    /// A peer entry sets an empty `scope`.
-    #[error("peer {0:?} has an empty scope; omit it for the deployment default")]
-    EmptyPeerScope(String),
-    /// A peer entry grants something its class can never use (record
-    /// §6.5 step 3).
-    #[error("peer {peer_id:?} with class {class}: {rule}")]
-    PeerClassConflict {
-        /// The peer.
-        peer_id: String,
-        /// Its class.
-        class: &'static str,
-        /// The rule it breaks.
-        rule: &'static str,
-    },
-    /// A peer entry's `valid_from` or `expires_at` is not an RFC 3339
-    /// date-time.
-    #[error("peer {peer_id:?} {field} {value:?} is not an RFC 3339 date-time")]
-    InvalidPeerInstant {
-        /// The peer.
-        peer_id: String,
-        /// `valid_from` or `expires_at`.
-        field: &'static str,
-        /// The text given.
-        value: String,
-    },
-    /// A peer entry's `expires_at` is not after its `valid_from`, so the
-    /// policy would never be in force.
-    #[error("peer {0:?} expires_at must be after valid_from")]
-    EmptyPeerWindow(String),
-    /// A storage binding names an adapter this build does not advertise
-    /// (record §6.5 step 4).
-    #[error("storage.{store}.adapter {adapter:?} is not advertised by this build")]
-    UnadvertisedStorageAdapter {
-        /// `local_store`, `event_log` or `object_store`.
-        store: &'static str,
-        /// The adapter named.
-        adapter: String,
-    },
-    /// A storage binding asks for a durability its adapter does not
-    /// advertise (record §6.5 step 4).
-    #[error("storage.{store}.durability {durability:?} is not advertised by adapter {adapter:?}")]
-    UnadvertisedDurability {
-        /// `local_store` or `event_log`.
-        store: &'static str,
-        /// The adapter.
-        adapter: String,
-        /// The durability named.
-        durability: String,
-    },
-    /// `storage.object_store.retention_class` is empty.
-    #[error("storage.object_store.retention_class must not be empty; omit it for the default")]
-    EmptyRetentionClass,
-    /// A fan-out remote names a peer with no `peers[]` entry.
-    #[error("fanout.remotes[] peer_id {0:?} has no peers[] entry")]
-    UnknownRemotePeer(String),
-    /// A peer is listed twice in `fanout.remotes[]`.
-    #[error("fanout.remotes[] lists peer {0:?} more than once")]
-    DuplicateRemote(String),
-    /// A fan-out remote names a peer that can never be asked.
-    #[error("fanout.remotes[] peer {peer_id:?} can never be asked: {rule}")]
-    RemoteNotAskable {
-        /// The peer.
-        peer_id: String,
-        /// Why it can't be asked.
-        rule: &'static str,
-    },
-    /// A fan-out remote asks to relay through a peer that is not
-    /// `fully_trusted` with `relay_granted` (record §7.3).
-    #[error(
-        "fanout.remotes[] peer {0:?} has relay true but is not fully_trusted with relay_granted"
-    )]
-    RemoteRelayNotGranted(String),
-    /// A fan-out remote's `scope` is present but empty.
-    #[error("fanout.remotes[] peer {0:?} scope must not be empty; omit it for the peer's scope")]
-    EmptyRemoteScope(String),
-    /// A per-operation override names an operation it may not override.
-    #[error("peer {peer_id:?} overrides.{operation} is not allowed: {rule}")]
-    InvalidOperationOverride {
-        /// The peer.
-        peer_id: String,
-        /// The operation's wire name.
-        operation: &'static str,
-        /// Why it is not allowed.
-        rule: &'static str,
-    },
-    /// A per-operation override names an adapter this build does not
-    /// advertise (record §6.5 step 4).
-    #[error(
-        "peer {peer_id:?} overrides.{operation}.adapter {adapter:?} is not advertised by this build"
-    )]
-    UnadvertisedOverrideAdapter {
-        /// The peer.
-        peer_id: String,
-        /// The operation's wire name.
-        operation: &'static str,
-        /// The adapter named.
-        adapter: String,
-    },
-    /// A link names an adapter this build does not advertise (record §6.5
-    /// step 4).
-    #[error("links.{link}.adapter {adapter:?} is not advertised by this build")]
-    UnadvertisedLinkAdapter {
-        /// `sync` or `send_only`.
-        link: &'static str,
-        /// The adapter named.
-        adapter: String,
-    },
-    /// `namespaces.registry` is not `builtin`, `server:<id>` or
-    /// `handle:<handle>` with a valid ID (record §3.1, §7.4; #9116).
-    #[error(
-        "namespaces.registry {0:?} must be \"builtin\", \"server:<id>\" or \"handle:<handle>\", the id 1 to 255 visible ASCII characters"
-    )]
-    InvalidNamespaceRegistry(String),
-    /// A link's `retention_class` is empty.
-    #[error("links.{0}.retention_class must not be empty; omit it for the default")]
-    EmptyLinkRetentionClass(&'static str),
-    /// A tier identifier is empty, too long, or uses a character other
-    /// than ASCII letters, digits, `-` and `_`.
-    #[error("tier id {0:?} must be 1 to 64 ASCII letters, digits, '-' or '_' (record section 3.5)")]
-    InvalidTierId(String),
-    /// A tier's retention is neither `indefinite` nor a whole number of
-    /// days written `<n>d` with `n` at least 1.
-    #[error("tiers.{tier}.retention {retention:?} must be \"indefinite\" or \"<n>d\" with n >= 1")]
-    InvalidTierRetention {
-        /// The tier.
-        tier: String,
-        /// The retention given.
-        retention: String,
-    },
-    /// A tier is placed in the object store but `storage.object_store` is
-    /// not bound.
-    #[error("tiers.{0}.placement is object_store but storage.object_store is not bound")]
-    TierNeedsObjectStore(String),
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -945,29 +591,9 @@ impl ConfigDocument {
                 return Err(ConfigError::ZeroCeiling(field));
             }
         }
-        if self.ceilings.max_hops > MAX_HOPS_LIMIT {
-            return Err(ConfigError::OutOfRange {
-                field: "ceilings.max_hops",
-                value: u64::from(self.ceilings.max_hops),
-                limit: u64::from(MAX_HOPS_LIMIT),
-            });
-        }
-        if let Some((field, value, limit)) = self.fanout.first_out_of_range() {
-            return Err(ConfigError::OutOfRange {
-                field,
-                value,
-                limit,
-            });
-        }
         if let Some(gate) = self.gates.first_disabled() {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
-        peers::validate(&self.peers)?;
-        remotes::validate(&self.fanout.remotes, &self.peers)?;
-        self.storage.validate()?;
-        self.links.validate()?;
-        self.namespaces.validate()?;
-        tiers::validate(&self.tiers, &self.storage)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -1087,12 +713,6 @@ impl ConfigDocument {
             behavior,
             provenance,
             extensions: self.extensions.clone(),
-            fanout: self.fanout.resolved(&self.peers),
-            peers: peers::resolved(&self.peers),
-            storage: self.storage.resolved(),
-            tiers: tiers::resolved(&self.tiers),
-            links: self.links.resolved(),
-            namespaces: self.namespaces.resolved(),
         })
     }
 }

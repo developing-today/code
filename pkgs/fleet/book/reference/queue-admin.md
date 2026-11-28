@@ -1,6 +1,6 @@
 # fleet queue: inspection and admin
 
-The inspection and admin verbs read the queue's history and operate its side systems: `timeline` / `history` (one task's event timeline), `staleness` / `needs-user` (the stewardship cycle's canned reads over the status-history table), `signal` (the wake-up signal file), `models` (serving-model rollup), `outbox` (the creation outbox for GitHub objects), and `stack` (merge-intent stacks).
+The inspection and admin verbs read the queue's history and operate its side systems: `timeline` / `history` (one task's event timeline), `signal` (the wake-up signal file), `models` (serving-model rollup), `outbox` (the creation outbox for GitHub objects), and `stack` (merge-intent stacks).
 
 Shared context — the global exit-code vocabulary (0 ok, 1 gate/not-found, 2 usage, 3 transport/401, 4 broker store failure, 5 no-claim/no-row, 6 fallback switch) — is stated in [fleet queue: core verbs](queue-core.md).
 
@@ -50,49 +50,6 @@ Exit codes: 0 ok · 2 usage · 3 broker does not serve `/events-list` / transpor
 ```text
 $ fleet queue history 19479 --json
 {"task_id": 19479, "events": [{"kind": "claimed", "created_at": "2026-11-23T04:05:00Z"}], "served": []}
-```
-
-## fleet queue staleness
-
-```text
-usage: repo-queue staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]
-```
-
-| Flag                   | Argument   | Default | Meaning                                                                                          |
-| ---------------------- | ---------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--queue`              | queue name | unset   | Restrict both reads to one queue. Unset = estate-wide.                                           |
-| `--older-than-seconds` | seconds    | 86400   | Staleness threshold: a task is stale when its last status-history transition is older than this. |
-| `--lease-cap-seconds`  | seconds    | 900     | Lease-cap window: a claim is near its cap when its lease expires within this many seconds.       |
-| `--limit`              | row cap    | 200     | Maximum rows per read. Clamped to 1..=50000.                                                     |
-
-**Behaviour.** The stewardship cycle's staleness read (broker route `/staleness`), landed as a Q8 consumer of the queue-schema design (#14170). One call returns two canned reads as a single JSON object: `rows` — every actionable task (queued, claimed, parked, blocked, handed_off) whose last `task_history` transition is older than the threshold, oldest first, each with `last_history_id`, `last_kind`, `last_to_status`, `last_actor`, and `last_transition_at`; and `claims_near_lease_cap` — claimed tasks whose `lease_until` falls inside the lease-cap window (already-expired leases sort first). A task with no history row falls back to its `updated_at` as its last transition and reports a null `last_history_id`, so pre-history tasks stay visible instead of dropping out of the read. The response also carries the thresholds used and the broker's `now`, so a reader can age leases against the same clock the broker used.
-
-Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
-
-```text
-$ fleet queue staleness --queue repo-health-code-pilot --older-than-seconds 3600
-{"rows": [{"id": 21706, "queue": "repo-health-code-pilot", "status": "parked", "last_kind": "parked", "last_transition_at": "2026-11-25T07:01:55Z"}], "claims_near_lease_cap": [], "older_than_seconds": 3600, "lease_cap_seconds": 900, "queue": "repo-health-code-pilot", "now": "2026-11-25T09:05:00Z"}
-```
-
-## fleet queue needs-user
-
-```text
-usage: repo-queue needs-user [--queue <name>] [--state <s>] [--limit <n>]
-```
-
-| Flag      | Argument   | Default | Meaning                                                                  |
-| --------- | ---------- | ------- | ------------------------------------------------------------------------ |
-| `--queue` | queue name | unset   | Restrict to one queue. Unset = estate-wide.                              |
-| `--state` | text       | unset   | Restrict to questions whose metadata `question.state` equals this value. |
-| `--limit` | row cap    | 200     | Maximum rows. Clamped to 1..=50000.                                      |
-
-**Behaviour.** The stewardship cycle's needs-user read (broker route `/needs-user`): blocked and parked tasks carrying a `question` metadata entry (the registry shape `{ledger_id, state}`), oldest last transition first. Each row carries the question object lifted out of the task's metadata, the task's `last_transition_at` from the status-history table, and `blocked_by_count_cache` — the count of the task's `blocked_deps` cache entries. The count is cache-derived until the Q6 slice normalises dependencies into `task_deps`; the canned query then reads its counts from `task_deps` instead.
-
-Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
-
-```text
-$ fleet queue needs-user --state open
-{"rows": [{"id": 22735, "queue": "repo-health-code-pilot", "status": "parked", "question": {"ledger_id": "q-0001", "state": "open"}, "last_transition_at": "2026-11-25T01:30:00Z", "blocked_by_count_cache": 1}], "queue": null}
 ```
 
 ## fleet queue signal

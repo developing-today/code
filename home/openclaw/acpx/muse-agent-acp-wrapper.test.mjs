@@ -106,12 +106,8 @@ function startAdapter(opts = {}) {
       HOME: ctx.home,
       META_API_KEY: "sk-must-never-reach-the-child",
       MUSE_ACP_MUSE_BIN: shim,
-      ...(opts.useDefaultPaths
-        ? {}
-        : {
-            MUSE_ACP_POOL_FILE: join(ctx.dir, "latest.json"),
-            MUSE_ACP_LEDGER: join(ctx.dir, "ledger.jsonl"),
-          }),
+      MUSE_ACP_POOL_FILE: join(ctx.dir, "latest.json"),
+      MUSE_ACP_LEDGER: join(ctx.dir, "ledger.jsonl"),
       FAKE_MUSE_ENV_DUMP: ctx.envDump,
       FAKE_MUSE_CANCEL_DUMP: join(ctx.dir, "cancel.json"),
       ...(opts.adapterEnv || {}),
@@ -152,8 +148,6 @@ function startAdapter(opts = {}) {
     notify,
     state,
     ledger,
-    home: ctx.home,
-    dir: ctx.dir,
     envDump: ctx.envDump,
     poolFile: join(ctx.dir, "latest.json"),
     cancelDump: join(ctx.dir, "cancel.json"),
@@ -341,80 +335,6 @@ test("pool check re-reads the snapshot before every new session", async () => {
     await ctx.rpc("initialize", { protocolVersion: 1, clientCapabilities: {} });
     const second = await ctx.rpc("session/new", { cwd: "/tmp", mcpServers: [] });
     assert.match(second.error.message, /meta pool at capacity/);
-  } finally {
-    ctx.child.kill();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Home-resolution contract probes (#5762/#8220 unit 3, #14757): the
-// adapter resolves its pool, ledger and auth paths through
-// ./home-dir.mjs — HOME unset or empty is a named HomeUnsetError at
-// startup, a set HOME gives the unchanged default paths, and the
-// MUSE_ACP_POOL_FILE / MUSE_ACP_LEDGER overrides never need HOME (with
-// both set, the only remaining HOME need is the muse auth file, which
-// has no override).
-// ---------------------------------------------------------------------------
-
-function spawnRawAdapter(env) {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [ADAPTER], { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    child.stdout.on("data", () => {});
-    child.on("exit", (code) => resolve({ code, stderr }));
-  });
-}
-
-function probeEnv({ home, overrides = {} } = {}) {
-  const ctx = setup({});
-  const shim = join(ctx.dir, "muse-shim.sh");
-  writeFileSync(shim, "#!/bin/sh\nexec \"" + process.execPath + "\" \"" + ctx.fakeBin + "\" \"$@\"\n", { mode: 0o755 });
-  const env = { PATH: process.env.PATH, MUSE_ACP_MUSE_BIN: shim, ...overrides };
-  if (home !== undefined) env.HOME = home;
-  return env;
-}
-
-test("home contract: HOME unset is a named error at startup", async () => {
-  const { code, stderr } = await spawnRawAdapter(probeEnv({}));
-  assert.notEqual(code, 0);
-  assert.match(stderr, /HomeUnsetError/);
-  assert.match(stderr, /HOME is not set or is empty/);
-  assert.match(stderr, /Meta pool file/);
-});
-
-test("home contract: HOME empty is a named error at startup", async () => {
-  const { code, stderr } = await spawnRawAdapter(probeEnv({ home: "" }));
-  assert.notEqual(code, 0);
-  assert.match(stderr, /HomeUnsetError/);
-  assert.match(stderr, /HOME is not set or is empty/);
-});
-
-test("home contract: pool and ledger overrides never need HOME", async () => {
-  const { code, stderr } = await spawnRawAdapter(
-    probeEnv({ overrides: { MUSE_ACP_POOL_FILE: "/tmp/pool.json", MUSE_ACP_LEDGER: "/tmp/ledger.jsonl" } }),
-  );
-  assert.notEqual(code, 0);
-  // Both overridden paths resolved without HOME; the failure is the one
-  // path with no override — the muse auth file.
-  assert.match(stderr, /muse auth file/);
-  assert.doesNotMatch(stderr, /Meta pool file|ledger file/);
-});
-
-test("home contract: a set HOME gives the unchanged default paths", async () => {
-  const ctx = startAdapter({ useDefaultPaths: true });
-  try {
-    const created = await newSession(ctx);
-    assert.equal(created.result.sessionId, "fake-session-1");
-    const res = await ctx.rpc("session/prompt", {
-      sessionId: "fake-session-1",
-      prompt: [{ type: "text", text: "say hello" }],
-    });
-    assert.equal(res.result.stopReason, "end_turn");
-    const defaultLedger = join(ctx.home, ".local", "state", "muse-acp", "ledger.jsonl");
-    assert.ok(existsSync(defaultLedger), "ledger written at the HOME default path");
-    const entries = readFileSync(defaultLedger, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    assert.ok(entries.some((e) => e.kind === "turn"), "ledger has a turn entry");
   } finally {
     ctx.child.kill();
   }

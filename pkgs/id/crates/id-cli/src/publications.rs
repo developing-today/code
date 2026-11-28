@@ -516,7 +516,7 @@ mod tests {
             .publish(mount("/world", false), KNOWN_EXPLORER_ROUTES)
             .unwrap_err();
         assert!(format!("{err:#}").contains("/world"), "{err:#}");
-        assert_eq!(registry.publications, [] as [Publication; 0]);
+        assert!(registry.publications.is_empty());
 
         let warning = registry
             .publish(mount("/world", true), KNOWN_EXPLORER_ROUTES)
@@ -626,7 +626,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed.world, "arena");
-        assert_eq!(registry.publications, [] as [Publication; 0]);
+        assert!(registry.publications.is_empty());
         assert!(
             registry
                 .unpublish(&Placement::PathMount {
@@ -641,7 +641,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("id-publications-test-{}", std::process::id()));
         let file = dir.join("publications.json");
         let missing = Registry::load(&file).unwrap();
-        assert_eq!(missing.publications, [] as [Publication; 0]);
+        assert!(missing.publications.is_empty());
 
         let mut registry = Registry::default();
         registry
@@ -673,10 +673,7 @@ mod tests {
         registry
             .publish(mount("/arena", false), KNOWN_EXPLORER_ROUTES)
             .unwrap();
-        assert_eq!(
-            registry.boot_warnings(KNOWN_EXPLORER_ROUTES),
-            [] as [String; 0]
-        );
+        assert!(registry.boot_warnings(KNOWN_EXPLORER_ROUTES).is_empty());
 
         // A record persisted outside publish() (hand-edited, or routes
         // changed since) still warns at boot.
@@ -844,6 +841,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(removed.world, "arena");
-        assert_eq!(registry.publications, [] as [Publication; 0]);
+        assert!(registry.publications.is_empty());
     }
 }

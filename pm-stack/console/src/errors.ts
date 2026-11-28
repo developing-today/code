@@ -5,9 +5,6 @@ export class OpError extends Error {
   constructor(
     public status: 400 | 404 | 409 | 502 | 503,
     message: string,
-    /** More the answer carries beside the message, such as what a
-     * refusal found in place of what was expected. */
-    public said?: Record<string, unknown>,
   ) {
     super(message);
   }

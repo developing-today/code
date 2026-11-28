@@ -420,37 +420,6 @@ for index, word in enumerate(words):
             tmp_root="$TMPDIR"
             if [ -z "$tmp_root" ]; then tmp_root=/tmp; fi
             group_file=$(mktemp "$tmp_root/fleet-cargo-group.XXXXXX" 2>/dev/null) || group_file=""
-            group_live() {
-              # kill -0 on a process group succeeds for zombie members too,
-              # and an init that never reaps orphans (the fleet-command
-              # executor's PID 1 does not) leaves a finished background job
-              # as a zombie in its group forever: the group would look alive
-              # until the outer command timeout kills the lane. Count only
-              # members that have not exited. Where /proc is unavailable,
-              # fall back to kill -0.
-              if [ -d /proc ]; then
-                python3 -c '
-import os, sys
-pgid = int(sys.argv[1])
-live = False
-for name in os.listdir("/proc"):
-    if not name.isdigit():
-        continue
-    try:
-        with open("/proc/" + name + "/stat", "rb") as fh:
-            data = fh.read()
-        fields = data[data.rfind(b")") + 2:].split()
-        if int(fields[2]) == pgid and fields[0] != b"Z":
-            live = True
-            break
-    except (OSError, ValueError, IndexError):
-        continue
-sys.exit(0 if live else 1)
-' "$1"
-              else
-                kill -0 "-$1" 2>/dev/null
-              fi
-            }
             cleanup_lane() {
               status=$?
               trap - EXIT HUP INT TERM
@@ -470,11 +439,11 @@ sys.exit(0 if live else 1)
                       # laptop-agent escalates the outer process group
                       # after 2 seconds; kill this detached group first.
                       grace=0
-                      while group_live "$worker_pgid" && [ "$grace" -lt 10 ]; do
+                      while kill -0 "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
                         sleep 0.1
                         grace=$((grace + 1))
                       done
-                      if group_live "$worker_pgid"; then
+                      if kill -0 "-$worker_pgid" 2>/dev/null; then
                         echo "fleet shell: terminating unresponsive build process group" >&2
                         kill -KILL "-$worker_pgid" 2>/dev/null || :
                         if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
@@ -483,7 +452,7 @@ sys.exit(0 if live else 1)
                     if [ -n "$worker_pid" ]; then
                       wait "$worker_pid" >/dev/null 2>&1 || :
                     fi
-                    while group_live "$worker_pgid"; do sleep 0.1; done
+                    while kill -0 "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
                     ;;
                 esac
               elif [ -n "$worker_pid" ]; then

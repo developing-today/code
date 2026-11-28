@@ -21,12 +21,6 @@ SERVICE_BASE = "https://atlas-search.security.cab"
 # read path exactly; src/hot_cache.ts is the only consumer.
 HOT_CACHE_ENABLED = "false"
 
-# Retention cycle (#9140 slice 7): every six hours, store a scheduled
-# retention report and retire what it lists in classes an admin promoted
-# to live-cold. With no RETAINED binding the handler does nothing.
-[triggers]
-crons = ["17 */6 * * *"]
-
 [durable_objects]
 bindings = [{ name = "QUERY_CACHE", class_name = "QueryCache" }]
 

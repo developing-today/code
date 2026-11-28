@@ -219,9 +219,7 @@ export function computeCoverage(
 }
 
 export type RepoCoverageDelta = {
-  [K in "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues"]:
-    | number
-    | null;
+  [K in "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea"]: number | null;
 };
 
 const deltaOrNull = (a: number | null, b: number | null | undefined): number | null =>
@@ -241,10 +239,6 @@ export function diffCoverage(current: CoverageReport, baseline: CoverageReport |
       poolItems: deltaOrNull(r.poolItems, b?.poolItems),
       poolUnsetStatus: deltaOrNull(r.poolUnsetStatus, b?.poolUnsetStatus),
       poolUnsetArea: deltaOrNull(r.poolUnsetArea, b?.poolUnsetArea),
-      // The stale count is a census count like the others: its delta is
-      // what makes a #1224-style triage campaign's drop visible on the
-      // panel, and it stays null wherever either week went uncounted.
-      staleOpenIssues: deltaOrNull(r.staleOpenIssues, b?.staleOpenIssues),
     });
   }
   return out;

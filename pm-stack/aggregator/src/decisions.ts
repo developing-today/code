@@ -31,8 +31,8 @@
 // same trust model as the #8568 per-question answer token.
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { requireHome } from "./home.ts";
 
 export type DeferLean = "none" | "skeptical" | "approve";
 export const DEFER_LEANS: readonly DeferLean[] = ["none", "skeptical", "approve"];
@@ -218,7 +218,7 @@ export const DECISIONS_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 /** Default decision-set store path (mirrors src/config.ts decisionsFile). */
 export function defaultDecisionsFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_DECISIONS_FILE?.trim();
-  return v ? v : join(requireHome("PM_AGG_DECISIONS_FILE"), ".local", "state", "pm-aggregator", "decisions.json");
+  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "decisions.json");
 }
 
 const SET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;

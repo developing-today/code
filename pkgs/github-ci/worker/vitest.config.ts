@@ -14,13 +14,6 @@ export default defineConfig({
           TURSO_PLATFORM_TOKEN: "test-platform-token",
           TURSO_QUEUE_TOKEN: "test-queue-token",
           EVENTS_BROKER_URL: "",
-          // The tests mock the Turso hosts; production uses d1gw:// URLs
-          // (wrangler.toml) through the D1GW service binding.
-          TURSO_PLATFORM_URL: "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
-          TURSO_QUEUE_URL: "https://fleet-queue-dezren39.aws-us-east-1.turso.io",
-        },
-        serviceBindings: {
-          D1GW: () => new Response("d1-gateway is not used in tests", { status: 500 }),
         },
       },
     }),

@@ -46,10 +46,7 @@ async function joinWorldAsGuest(page: Page, guestName: string): Promise<void> {
 /** The current fixture counter as rendered in the screen surface. */
 async function screenCount(page: Page): Promise<number> {
   const text = await page.locator("[data-world-view]").innerText();
-  // The presenter renders one DOM node per cell in a CSS grid, so innerText
-  // separates every cell with a newline; the logical screen text is the
-  // row-major cell stream with those separators removed (#15170).
-  const match = /count=(\d+)/.exec(text.replace(/\r?\n/g, ""));
+  const match = /count=(\d+)/.exec(text);
   if (!match) throw new Error(`no count=N in world view: ${JSON.stringify(text)}`);
   return Number(match[1]);
 }

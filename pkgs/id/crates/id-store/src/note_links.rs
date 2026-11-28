@@ -31,7 +31,6 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
-use crate::note_projections::CanRead;
 use crate::notes::NoteRecord;
 use id_core::waiting::AuthorKey;
 
@@ -231,78 +230,34 @@ impl LinkProjection {
             .collect()
     }
 
-    /// [`LinkProjection::links_from`] for one reader: `can_read` is the
-    /// same predicate every note projection takes, normally
-    /// [`crate::read_authority::NoteReader::may_read`]. A source the
-    /// reader cannot read has no links, and an edge to an unreadable
-    /// target is dropped whole, so the target's existence does not leak
-    /// through the link.
+    /// [`LinkProjection::links_from`] for one viewer: `visible` names every note
+    /// the viewer may access. A source the viewer cannot access has no visible
+    /// links, and an edge to an inaccessible target is dropped whole, so the
+    /// target's existence does not leak through the link.
     #[must_use]
-    pub fn links_from_readable(&self, source: Hash, can_read: &CanRead<'_>) -> Vec<&LinkRecord> {
-        if !can_read(&source) {
+    pub fn links_from_visible(&self, source: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
+        if !visible.contains(&source) {
             return Vec::new();
         }
         self.links_from(source)
             .into_iter()
-            .filter(|edge| can_read(&edge.target))
+            .filter(|edge| visible.contains(&edge.target))
             .collect()
     }
 
-    /// [`LinkProjection::backlinks_to`] for one reader, under the same
-    /// predicate as [`LinkProjection::links_from_readable`]. A target the
-    /// reader cannot read has no backlinks, and a backlink from an
-    /// unreadable source is dropped with its authored surface, which is
-    /// the source's content.
+    /// [`LinkProjection::backlinks_to`] for one viewer: `visible` names every note
+    /// the viewer may access. A target the viewer cannot access has no visible
+    /// backlinks, and a backlink from an inaccessible source is dropped with its
+    /// authored surface, which is the source's content.
     #[must_use]
-    pub fn backlinks_to_readable(&self, target: Hash, can_read: &CanRead<'_>) -> Vec<&LinkRecord> {
-        if !can_read(&target) {
+    pub fn backlinks_to_visible(&self, target: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
+        if !visible.contains(&target) {
             return Vec::new();
         }
         self.backlinks_to(target)
             .into_iter()
-            .filter(|edge| can_read(&edge.source))
+            .filter(|edge| visible.contains(&edge.source))
             .collect()
-    }
-
-    /// [`LinkProjection::links_from_readable`] one page at a time, with the
-    /// cursor rule of [`LinkProjection::links_from_visible_page`]: the
-    /// cursor is looked up only among edges the reader may see.
-    #[must_use]
-    pub fn links_from_readable_page(
-        &self,
-        source: Hash,
-        can_read: &CanRead<'_>,
-        limit: usize,
-        after: Option<Hash>,
-    ) -> VisibleLinkPage<'_> {
-        Self::page(self.links_from_readable(source, can_read), limit, after)
-    }
-
-    /// [`LinkProjection::backlinks_to_readable`] one page at a time, with
-    /// the same cursor rule.
-    #[must_use]
-    pub fn backlinks_to_readable_page(
-        &self,
-        target: Hash,
-        can_read: &CanRead<'_>,
-        limit: usize,
-        after: Option<Hash>,
-    ) -> VisibleLinkPage<'_> {
-        Self::page(self.backlinks_to_readable(target, can_read), limit, after)
-    }
-
-    /// [`LinkProjection::links_from_readable`] over a precomputed set:
-    /// `visible` names every note the viewer may access.
-    #[must_use]
-    pub fn links_from_visible(&self, source: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
-        self.links_from_readable(source, &|note: &Hash| visible.contains(note))
-    }
-
-    /// [`LinkProjection::backlinks_to_readable`] over a precomputed set:
-    /// `visible` names every note the viewer may access.
-    #[must_use]
-    pub fn backlinks_to_visible(&self, target: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
-        self.backlinks_to_readable(target, &|note: &Hash| visible.contains(note))
     }
 
     /// [`LinkProjection::links_from_visible`] one page at a time, for the
@@ -512,7 +467,6 @@ mod tests {
                 note: hash(note),
                 content: content(bytes),
                 parents: parents.iter().map(|parent| hash(*parent)).collect(),
-                proposal: None,
             },
         }
     }
@@ -667,7 +621,7 @@ mod tests {
             .map(|edge| edge.source)
             .collect();
         assert_eq!(to_20, vec![hash(10), hash(30)]);
-        assert_eq!(projection.backlinks_to(hash(10)), [] as [&LinkRecord; 0]);
+        assert!(projection.backlinks_to(hash(10)).is_empty());
     }
 
     #[test]
@@ -686,7 +640,7 @@ mod tests {
         let projection = project_links(&folded, &links).unwrap();
         assert_eq!(projection.edges().len(), 1);
         assert_eq!(projection.edges()[0].id, hash(41));
-        assert_eq!(projection.backlinks_to(hash(20)), [] as [&LinkRecord; 0]);
+        assert!(projection.backlinks_to(hash(20)).is_empty());
     }
 
     #[test]
@@ -701,7 +655,7 @@ mod tests {
         let projection =
             project_links(&folded, &[link(40, 10, 10, 20, "dropped", Some(30))]).unwrap();
 
-        assert_eq!(projection.edges(), [] as [LinkRecord; 0]);
+        assert!(projection.edges().is_empty());
     }
 
     #[test]
@@ -710,7 +664,7 @@ mod tests {
 
         let projection = project_links(&folded, &[link(40, 10, 10, 99, "dropped", None)]).unwrap();
 
-        assert_eq!(projection.edges(), [] as [LinkRecord; 0]);
+        assert!(projection.edges().is_empty());
     }
 
     #[test]
@@ -812,14 +766,16 @@ mod tests {
         // A viewer who cannot access target 20 learns nothing from note 10's links:
         // the edge is dropped, not returned with its target redacted.
         let only_source: HashSet<Hash> = HashSet::from([hash(10)]);
-        assert_eq!(
-            projection.links_from_visible(hash(10), &only_source),
-            [] as [&LinkRecord; 0]
+        assert!(
+            projection
+                .links_from_visible(hash(10), &only_source)
+                .is_empty()
         );
         // And an inaccessible target has no visible backlinks at all.
-        assert_eq!(
-            projection.backlinks_to_visible(hash(20), &only_source),
-            [] as [&LinkRecord; 0]
+        assert!(
+            projection
+                .backlinks_to_visible(hash(20), &only_source)
+                .is_empty()
         );
     }
 
@@ -899,7 +855,7 @@ mod tests {
         // shows through the walk.
         for store in [&store_a, &store_b] {
             let page = store.links_from_visible_page(hash(10), &visible, 1, Some(hash(41)));
-            assert_eq!(page.edges, [] as [&LinkRecord; 0]);
+            assert!(page.edges.is_empty());
             assert!(!page.has_next);
         }
 
@@ -931,10 +887,10 @@ mod tests {
         let projection = project_links(&folded, &links).unwrap();
         let visible: HashSet<Hash> = HashSet::from([hash(10), hash(20)]);
         let page = projection.links_from_visible_page(hash(10), &visible, 0, None);
-        assert_eq!(page.edges, [] as [&LinkRecord; 0]);
+        assert!(page.edges.is_empty());
         assert!(page.has_next);
         let empty = projection.links_from_visible_page(hash(20), &visible, 0, None);
-        assert_eq!(empty.edges, [] as [&LinkRecord; 0]);
+        assert!(empty.edges.is_empty());
         assert!(!empty.has_next);
     }
 

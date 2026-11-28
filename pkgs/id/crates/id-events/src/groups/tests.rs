@@ -469,7 +469,7 @@ fn test_a_rule_refusal_gives_the_voided_reason() {
         ),
         add("a0", 2, g, 4, Role::Read, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
     assert_eq!(outcome(&p, "a0").reason(), Some(Reason::Voided));
 }
 
@@ -529,41 +529,8 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
         add("a0", 2, g, 4, Role::Read, &["g"]),
         remove("x0", 2, g, 3, &["g"]),
     ]);
-    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
-    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NoChain));
-}
-
-#[test]
-fn test_delegated_manage_can_add_and_remove_members() {
-    let g = id("g");
-    let events = vec![
-        custom("g", 1, &[(2, Role::Read)], Policy::default()),
-        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
-        add("a0", 2, g, 3, Role::Read, &["g", "d0"]),
-        remove("r0", 2, g, 3, &["a0"]),
-    ];
-    let projection = project(&events);
-    assert_eq!(outcome(&projection, "a0"), Outcome::Applied);
-    assert_eq!(outcome(&projection, "r0"), Outcome::Applied);
-    assert_eq!(role_of(&projection, g, 3), None);
-}
-
-#[test]
-fn test_a_cut_delegated_manage_chain_refuses_membership_changes() {
-    let g = id("g");
-    let events = vec![
-        custom("g", 1, &[(2, Role::Read)], Policy::default()),
-        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
-        veto("v0", 1, g, "d0", &["d0"]),
-        add("a0", 2, g, 3, Role::Read, &["g", "d0", "v0"]),
-    ];
-    let projection = project(&events);
-    assert_eq!(outcome(&projection, "v0"), Outcome::Applied);
-    assert_eq!(
-        outcome(&projection, "a0"),
-        Outcome::Refused(Refusal::NoChain)
-    );
-    assert_eq!(role_of(&projection, g, 3), None);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotManager));
 }
 
 #[test]
@@ -1360,9 +1327,8 @@ fn test_reassign_to_group_keeps_the_grant_as_a_group_root_without_manage_authori
         Outcome::Applied,
         "the group root reaches 3"
     );
-    assert_eq!(outcome(&p, "x1"), Outcome::Applied);
+    assert_eq!(outcome(&p, "x1"), Outcome::Refused(Refusal::NotManager));
     assert_eq!(p.group(&g).unwrap().members.get(&key(3)), Some(&Role::Read));
-    assert_eq!(p.group(&g).unwrap().members.get(&key(4)), None);
     assert!(!p.group(&g).unwrap().members.contains_key(&key(5)));
     let reassigned = p
         .grants_in_force()
@@ -2301,7 +2267,7 @@ fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_pas
 // ----- Grant expiry (F1) and grantor veto (F2, #13534) -----
 
 /// The expiry comparison rule (D1): expired iff action time T >= grant bound; T = None
-/// is expired under a bounded grant (#14876). Each action below differs only in its asserted time.
+/// never expires. Each action below differs only in its asserted time.
 #[test]
 fn test_an_expired_grant_carries_no_chain_at_or_past_its_bound() {
     let g = id("g");
@@ -2341,10 +2307,8 @@ fn test_an_expired_grant_carries_no_chain_at_or_past_its_bound() {
     }
 }
 
-/// A bounded grant fails closed: an action that asserts no time cannot show it falls before
-/// the bound, so the chain is refused (#14876).
 #[test]
-fn test_an_untimed_action_is_outside_a_bounded_grant() {
+fn test_an_untimed_action_does_not_expire_a_grant() {
     let g = id("g");
     let events = vec![
         stamped(custom("g", 1, &[], Policy::default()), Some(10)),
@@ -2352,29 +2316,6 @@ fn test_an_untimed_action_is_outside_a_bounded_grant() {
         stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
         stamped(
             delegate_exp("d0", 1, g, 2, Role::Write, true, Some(100), &["a1"]),
-            Some(10),
-        ),
-        stamped(
-            delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
-            Some(10),
-        ),
-        delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
-    ];
-    let p = project(&events);
-    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
-}
-
-/// Fail-closed applies only to bounded grants: an untimed action under an unbounded chain
-/// still stands (#14876).
-#[test]
-fn test_an_untimed_action_under_an_unbounded_grant_stands() {
-    let g = id("g");
-    let events = vec![
-        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
-        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
-        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
-        stamped(
-            delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
             Some(10),
         ),
         stamped(

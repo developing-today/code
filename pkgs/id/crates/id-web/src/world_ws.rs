@@ -1198,10 +1198,7 @@ mod tests {
         assert_eq!(public.status(), StatusCode::FORBIDDEN);
 
         let anonymous_before = view_as(&router, None).await;
-        assert_eq!(
-            *anonymous_before["groups"].as_array().unwrap(),
-            [] as [serde_json::Value; 0]
-        );
+        assert!(anonymous_before["groups"].as_array().unwrap().is_empty());
 
         let made_public = act(
             &router,
@@ -1223,10 +1220,7 @@ mod tests {
         .await;
         assert_eq!(deleted.status(), StatusCode::OK);
         let after = view_as(&router, None).await;
-        assert_eq!(
-            *after["groups"].as_array().unwrap(),
-            [] as [serde_json::Value; 0]
-        );
+        assert!(after["groups"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

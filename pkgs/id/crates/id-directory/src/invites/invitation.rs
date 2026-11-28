@@ -169,7 +169,7 @@ fn parse_hex32(text: &str, what: &str) -> Result<[u8; 32]> {
         "{what} must be 64 hex characters"
     );
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
+    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
         *slot = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(out)

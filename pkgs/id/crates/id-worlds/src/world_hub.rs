@@ -80,20 +80,6 @@ pub trait WorldOpener: Send + Sync + 'static {
     /// Whether a closed world can be reopened from storage. Only durable
     /// worlds are ever evicted.
     fn durable(&self) -> bool;
-
-    /// The hub shut `name` down after an eviction (idle, or to make room
-    /// for another world); it reopens from storage when next named. Called
-    /// once the world's actor has drained. A host-mode opener records the
-    /// world asleep here (#10693); the default does nothing.
-    fn closed(&self, _name: &str) {}
-
-    /// Whether an operator pinned `name` always-live: the hub never closes
-    /// a pinned world for idleness or to make room for another world
-    /// (#10694). Asked while the hub's slot map is locked, so it must be
-    /// cheap and must not call back into the hub. The default pins none.
-    fn pinned(&self, _name: &str) -> bool {
-        false
-    }
 }
 
 /// Ceilings a hub enforces.
@@ -600,11 +586,8 @@ impl WorldHub {
             slot: Arc::clone(&slot),
             armed: true,
         };
-        for (victim, service) in evicted {
+        for service in evicted {
             let _ = service.world().shutdown().await;
-            if let Some(opener) = self.inner.opener.as_ref() {
-                opener.closed(&victim);
-            }
         }
         let opened = slot
             .service
@@ -650,13 +633,12 @@ impl WorldHub {
     }
 
     /// Find or create the slot for `name` and count a lease on it. Returns
-    /// the worlds evicted to make room (name and service), to be shut down
-    /// by the caller.
+    /// services evicted to make room, to be shut down by the caller.
     fn acquire_slot(
         &self,
         name: &str,
         create: bool,
-    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>), ResolveError> {
+    ) -> Result<(Arc<Slot>, Vec<WorldService>), ResolveError> {
         let mut slots = self
             .inner
             .slots
@@ -683,10 +665,8 @@ impl WorldHub {
                 .then(|| {
                     slots
                         .iter()
-                        .filter(|(key, slot)| {
-                            slot.leases.load(Ordering::Acquire) == 0
-                                && slot.service.get().is_some()
-                                && !opener.pinned(key)
+                        .filter(|(_, slot)| {
+                            slot.leases.load(Ordering::Acquire) == 0 && slot.service.get().is_some()
                         })
                         .max_by_key(|(_, slot)| slot.idle_for())
                         .map(|(key, _)| key.clone())
@@ -698,7 +678,7 @@ impl WorldHub {
             if let Some(slot) = slots.remove(&victim)
                 && let Some(service) = slot.service.get()
             {
-                evicted.push((victim, service.clone()));
+                evicted.push(service.clone());
             }
         }
         let slot = Arc::new(Slot::new());
@@ -817,36 +797,31 @@ impl WorldHub {
     /// Shut down durable worlds that no session has used for `idle`. They
     /// reopen from their journal when next named. Returns how many closed.
     pub async fn evict_idle(&self, idle: Duration) -> usize {
-        let Some(opener) = self.inner.opener.as_ref().filter(|o| o.durable()) else {
+        if !self.inner.opener.as_ref().is_some_and(|o| o.durable()) {
             return 0;
-        };
-        let victims: Vec<(String, WorldService)> = {
+        }
+        let victims: Vec<WorldService> = {
             let Ok(mut slots) = self.inner.slots.lock() else {
                 return 0;
             };
             let names: Vec<String> = slots
                 .iter()
-                .filter(|(name, slot)| {
+                .filter(|(_, slot)| {
                     slot.service.get().is_some()
                         && slot.leases.load(Ordering::Acquire) == 0
                         && slot.idle_for() >= idle
-                        && !opener.pinned(name)
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
             names
                 .into_iter()
-                .filter_map(|name| {
-                    let slot = slots.remove(&name)?;
-                    let service = slot.service.get().cloned()?;
-                    Some((name, service))
-                })
+                .filter_map(|name| slots.remove(&name))
+                .filter_map(|slot| slot.service.get().cloned())
                 .collect()
         };
         let closed = victims.len();
-        for (name, service) in victims {
+        for service in victims {
             let _ = service.world().shutdown().await;
-            opener.closed(&name);
         }
         closed
     }
@@ -937,10 +912,6 @@ pub mod testing {
         pub(crate) known: StdMutex<Vec<String>>,
         pub(crate) opens: AtomicUsize,
         pub(crate) durable: bool,
-        /// Names the hub reported closed, in order.
-        pub(crate) closed: StdMutex<Vec<String>>,
-        /// Names an operator pinned always-live.
-        pub(crate) pinned: StdMutex<Vec<String>>,
     }
 
     impl MemoryOpener {
@@ -949,8 +920,6 @@ pub mod testing {
                 known: StdMutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
                 durable,
-                closed: StdMutex::new(Vec::new()),
-                pinned: StdMutex::new(Vec::new()),
             })
         }
     }
@@ -983,14 +952,6 @@ pub mod testing {
 
         fn durable(&self) -> bool {
             self.durable
-        }
-
-        fn closed(&self, name: &str) {
-            self.closed.lock().unwrap().push(name.to_owned());
-        }
-
-        fn pinned(&self, name: &str) -> bool {
-            self.pinned.lock().unwrap().iter().any(|n| n == name)
         }
     }
 }
@@ -1335,9 +1296,14 @@ mod tests {
             .issue("bea", WorldScopes::GUEST)
             .await
             .unwrap();
-        assert_eq!(
-            b.service().world().snapshot(token_b).await.unwrap().events,
-            [] as [crate::world::WorldEvent; 0]
+        assert!(
+            b.service()
+                .world()
+                .snapshot(token_b)
+                .await
+                .unwrap()
+                .events
+                .is_empty()
         );
     }
 
@@ -1422,8 +1388,6 @@ mod tests {
                 ("c".to_owned(), true)
             ]
         );
-        // The opener heard that "a" closed (#10693: a host records it asleep).
-        assert_eq!(*opener.closed.lock().unwrap(), vec!["a".to_owned()]);
         // "a" still exists and reopens on demand (evicting nothing leased).
         drop(_b);
         hub.lease(Some("a"), None).await.unwrap();
@@ -1438,7 +1402,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(hub.evict_idle(Duration::from_millis(10)).await, 1);
         assert_eq!(hub.open_count(), 1);
-        assert_eq!(*opener.closed.lock().unwrap(), vec!["idle".to_owned()]);
         assert!(
             busy.service().world().shutdown().await.is_ok(),
             "the leased world kept running"
@@ -1452,62 +1415,6 @@ mod tests {
             0,
             "never evicts ephemeral worlds"
         );
-    }
-
-    #[tokio::test]
-    async fn an_idle_world_sleeps_after_its_window_and_not_before() {
-        // #10694: the last client left; the world stays open until the
-        // whole window has passed, then closes.
-        let opener = MemoryOpener::new(true);
-        let hub = new_hub(&opener, HubLimits::default());
-        drop(hub.lease(Some("quiet"), Some("admin")).await.unwrap());
-        assert_eq!(hub.evict_idle(Duration::from_secs(3600)).await, 0);
-        assert_eq!(hub.open_count(), 1);
-        assert!(opener.closed.lock().unwrap().is_empty());
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert_eq!(hub.evict_idle(Duration::from_millis(10)).await, 1);
-        assert_eq!(hub.open_count(), 0);
-        assert_eq!(*opener.closed.lock().unwrap(), vec!["quiet".to_owned()]);
-    }
-
-    #[tokio::test]
-    async fn pinned_worlds_are_never_closed_for_idleness_or_to_make_room() {
-        let opener = MemoryOpener::new(true);
-        opener.pinned.lock().unwrap().push("kept".to_owned());
-        let hub = new_hub(
-            &opener,
-            HubLimits {
-                max_open_worlds: 2,
-                ..HubLimits::default()
-            },
-        );
-        drop(hub.lease(Some("kept"), Some("admin")).await.unwrap());
-        drop(hub.lease(Some("loose"), Some("admin")).await.unwrap());
-        tokio::time::sleep(Duration::from_millis(30)).await;
-
-        // "kept" is the longest idle, but "loose" makes room for "new".
-        let new = hub.lease(Some("new"), Some("admin")).await.unwrap();
-        assert_eq!(*opener.closed.lock().unwrap(), vec!["loose".to_owned()]);
-        // With "new" leased and "kept" pinned there is no room left.
-        assert_eq!(
-            hub.lease(Some("more"), Some("admin")).await.err(),
-            Some(ResolveError::TooManyWorlds)
-        );
-        drop(new);
-
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert_eq!(hub.evict_idle(Duration::from_millis(10)).await, 1);
-        assert_eq!(
-            *opener.closed.lock().unwrap(),
-            vec!["loose".to_owned(), "new".to_owned()]
-        );
-        let open: Vec<_> = hub
-            .list()
-            .into_iter()
-            .filter(|w| w.open)
-            .map(|w| w.name)
-            .collect();
-        assert_eq!(open, vec!["kept".to_owned()]);
     }
 
     #[tokio::test]

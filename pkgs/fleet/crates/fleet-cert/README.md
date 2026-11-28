@@ -18,13 +18,7 @@ Implements the fleet architecture spec v0.3
   requires `--root` and `--root-key-dir`.
 - `fleet cert leaf issue|inspect|list` — profiles mirroring
   `pkgs/idp-pki`'s idp-ca: `server`, `client`, `saml-signing`,
-  `oidc-signing`; requires `--issuer-key-dir`. `--ip` adds IP SANs and
-  `--csr <file>` certifies a key made elsewhere (no key is generated or
-  written; the manifest records `host-local` custody). The broker TLS
-  profiles `broker-server`/`broker-client` (P-256, 90d, renewed with
-  30d left) take a CSR only, issue only from a Base (`general`) issuer
-  set, and require `.internal` DNS names plus a tailnet IP SAN, with
-  wildcards and public names refused (#14399).
+  `oidc-signing`; requires `--issuer-key-dir`.
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
@@ -33,26 +27,6 @@ Implements the fleet architecture spec v0.3
   certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
   - NoCheck, 30d default), verified against the crate chain code.
     This is the §4.3 functional responder core; it embeds no OCSP URL.
-- `fleet cert trust export|stage|ack|activate|retire|status` —
-  the §3.5 trust bundle and the broker-client trust store (#14400):
-  export assembles a versioned trust bundle (roots-classical /
-  roots-all / roots-pq / cross-certs) from verified root sets;
-  the store runs the §27.3 item 9 two-phase rollover — stage
-  (verify; a failed distribution never touches the active
-  anchors), acknowledge (binds version to content hash),
-  activate (refused without a matching ack; the displaced
-  version is kept as last-known-good), retire.
-- `fleet cert key generate|inspect|import|export|rotate` — standalone key
-  ceremonies (§6.1). `generate` and `import` write PKCS#8 DER to a
-  new owner-only file and never replace one; `import` takes PKCS#8
-  DER or a PEM `PRIVATE KEY` block and refuses a key that does not
-  load under the named `--algorithm`. `export` writes the public
-  half only, as SubjectPublicKeyInfo PEM (default) or DER
-  (`--format der`); private-key export stays behind the #9155
-  custody gates. `rotate` checks that the `--in` key loads under
-  `--algorithm`, then writes a fresh key of that algorithm to a new
-  owner-only `--out` file and reports both public-key fingerprints;
-  the old key is kept, and retiring it is a separate step.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only
@@ -63,7 +37,7 @@ Implements the fleet architecture spec v0.3
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`dns`, `key` escrow/restore/rotate and private export,
+`dns`, `trust`, `key` import/export/escrow/restore/rotate,
 `format`, profile validate/scaffold, algorithm benchmark/doctor,
 `batch`, renew/rotate verbs, bundle pack/unpack/diff/migrate,
 publish apply/status (production-gated; slice 1 ships plan +

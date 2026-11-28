@@ -875,37 +875,3 @@ test("parseArgs property: generated malformed streams are usage errors naming th
     }
   }
 });
-
-// #8220: the home-resolution contract (#5762). The default --out-dir needs
-// HOME; an unset or empty HOME is a usage error (nothing written), never the
-// passwd fallback, and an explicit --out-dir needs no HOME.
-function withHome(value, fn) {
-  const saved = process.env.HOME;
-  if (value === undefined) delete process.env.HOME;
-  else process.env.HOME = value;
-  try {
-    return fn();
-  } finally {
-    if (saved === undefined) delete process.env.HOME;
-    else process.env.HOME = saved;
-  }
-}
-
-for (const value of [undefined, "", "  "]) {
-  test(`#8220: HOME ${value === undefined ? "unset" : JSON.stringify(value)} with no --out-dir is a usage error`, () => {
-    assert.throws(
-      () => withHome(value, () => parseArgs([])),
-      (error) =>
-        error instanceof ExportError &&
-        error.status === "usage" &&
-        error.exitCode === 2 &&
-        error.message.includes(value === undefined ? "HOME is unset" : "HOME is empty") &&
-        error.message.includes("set HOME or pass --out-dir"),
-    );
-  });
-}
-
-test("#8220: an explicit --out-dir needs no HOME, and a set HOME keeps the default path", () => {
-  assert.equal(withHome(undefined, () => parseArgs(["--out-dir", "out"])).outDir, "out");
-  assert.equal(withHome("/home/probe", () => parseArgs([])).outDir, path.join("/home/probe", "atlas", "cloudflare-export"));
-});

@@ -32,7 +32,6 @@ import {
   isSendFileResponse,
 } from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
-import { registerShellServiceWorker } from "./sw-policy";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -673,14 +672,6 @@ async function init(): Promise<void> {
 
   // Initialize theme system
   initTheme();
-
-  // Offline app shell (#13918): the service worker keeps this build's
-  // assets and visited pages readable with no network. Best-effort and
-  // secure-context only; never blocks start-up.
-  void registerShellServiceWorker(
-    "serviceWorker" in navigator ? navigator.serviceWorker : undefined,
-    window.isSecureContext,
-  );
 
   // A program-only surface (#2146 phase 2) has no Explorer identity
   // or tags endpoints on its listener: registering an identity or

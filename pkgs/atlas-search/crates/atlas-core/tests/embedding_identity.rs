@@ -52,7 +52,8 @@ impl DocEmbedder for KeywordEmbedder {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("atlas-embed-id-{}-{tag}", std::process::id()));
+    let d =
+        std::env::temp_dir().join(format!("atlas-embed-id-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");
     d
@@ -86,10 +87,7 @@ fn stale_recorded_model_refuses_at_every_ingestion_gate() {
         .record_embedding_model("unit-stale", "retired-model-v0", NOW)
         .unwrap();
 
-    let err = registry
-        .assert_corpus_model("unit-stale")
-        .unwrap_err()
-        .to_string();
+    let err = registry.assert_corpus_model("unit-stale").unwrap_err().to_string();
     assert!(err.contains("retired-model-v0"), "{err}");
     assert!(err.contains("re-embed"), "{err}");
 
@@ -199,7 +197,11 @@ fn reembed_rebuilds_agent_memory_with_matching_counts() {
         EMBEDDING_MODEL_ID
     );
     assert_eq!(
-        registry.lookup(AGENT_MEMORY_UNIT).unwrap().unwrap().state,
+        registry
+            .lookup(AGENT_MEMORY_UNIT)
+            .unwrap()
+            .unwrap()
+            .state,
         UnitState::Merged
     );
 
@@ -324,11 +326,7 @@ fn two_corpora_under_one_model_compare_scores() {
     // scores that survive are finite, i.e. comparable, across corpora
     // under the one model.
     assert_eq!(result.scanned.len(), 2, "both corpora scan");
-    assert_eq!(
-        result.hits.len(),
-        2,
-        "shared chunk ids merge to one hit each"
-    );
+    assert_eq!(result.hits.len(), 2, "shared chunk ids merge to one hit each");
     assert!(
         result.hits.iter().all(|h| h.dist.is_finite()),
         "scores are comparable (finite) across corpora under one model"

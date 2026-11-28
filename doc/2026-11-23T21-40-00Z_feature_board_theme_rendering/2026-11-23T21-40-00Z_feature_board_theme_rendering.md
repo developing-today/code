@@ -63,8 +63,3 @@ same projection discipline as `compose_view`:
 2. Wire `render_web` into id-web board pages and `render_terminal`
    into the terminal/CLI board surface when those land.
 3. Publish-time validation report tooling (#5858 ring 3 tooling).
-   Landed for #13816: `theme_validation_report` in
-   `pkgs/id/src/boards/render.rs` runs ring 1, ring 2 and the static
-   part of ring 3 and returns a `ThemeValidationReport` whose `lines()`
-   a publish surface or theme page shows. Showing it on a theme page
-   waits for those surfaces, with item 2.

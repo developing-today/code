@@ -140,12 +140,3 @@ issue when the model is accepted:
 
 Splitting further or filing these issues is left to the design PR's follow-up,
 so this record stays a decision, not a backlog.
-
-## 2026-11-25T11:18:00Z Implementation: slice 2, talk-page read and write (#14270)
-
-- A post travels as the body of one `talk.post.v1` content event, signed by the posting node's key. The body is the post's canonical bytes (record plus text), so the store's body table holds the text beside the signed record. The kind is durable: compaction never drops it, because a superseded post stays stored.
-- `LocalEvents::post_talk` and `LocalEvents::talk_page` (`pkgs/id/crates/id-events/src/local_events/talk.rs`) are the read and write; `id talk post` and `id talk list` expose them on the CLI.
-- Visibility, the only write gate (invariant 5), is read from the event store: an object is an applied event, and an object that names a group is visible to that group's members. A post on a group's object carries the group. Note-granularity read authority (#12751) is not wired into the event-store surface yet; when it is, the same `visible_object` check is where it plugs in.
-- Attribution: a post is listed only when its author key is the signer of the event that carries it, its signature verifies, it names the object, and, for a group's object, its author is a member. A replayed post under another signer is not attributed to that signer.
-- `supersedes` collapse is computed on read and never written: the earlier post is returned with `superseded_by`, and stays listed.
-- The store keeps no per-event receipt time, so the read returns the signed `TalkPost`; stamping a `ReceivedPost` belongs to the server surface that receives it. Redaction (slice 3) will need the body moved out of the event body, or the body table entry dropped, while the record stays; this slice stores the full canonical bytes for simplicity.

@@ -398,7 +398,9 @@ class FilesRoutesTest(unittest.TestCase):
             },
         )
         self.assertIn("conflicting rewrite", reply["error"])
-        st = self.ok("/files/stat", {"path": temp_for(str(dest), sha), "sha256": False})
+        st = self.ok(
+            "/files/stat", {"path": temp_for(str(dest), sha), "sha256": False}
+        )
         self.assertEqual(st["size"], len(data))
         self.ok("/files/commit", {"path": str(dest), "sha256": sha})
         self.assertEqual(dest.read_bytes(), data)

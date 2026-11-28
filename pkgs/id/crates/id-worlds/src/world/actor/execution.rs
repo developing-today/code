@@ -819,8 +819,9 @@ impl WorldActor {
     /// is anchored to it at construction), so this bound holds on
     /// either clock.
     fn note_fuel_refusal(&mut self) {
-        self.fuel_retry_not_before =
-            Some(self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW);
+        self.fuel_retry_not_before = Some(
+            self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW,
+        );
     }
 
     /// Deliver a capability result, or queue it when the account's fuel
@@ -1955,7 +1956,6 @@ impl WorldActor {
             .ok_or(CapError::bad_args())?;
         let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
         let hash = super::super::blob_id(&bytes);
-        self.check_blob_boundary()?;
         if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
             tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
@@ -1989,7 +1989,6 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
-        self.check_blob_boundary()?;
         let data = match self.core.blobs.get(hash) {
             None => serde_json::Value::Null,
             Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
@@ -2011,7 +2010,6 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
-        self.check_blob_boundary()?;
         if !self.core.blobs.contains_key(hash) {
             return Ok(serde_json::json!({"hash": hash, "deleted": false}));
         }
@@ -2025,12 +2023,6 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
-    }
-
-    fn check_blob_boundary(&self) -> Result<(), CapError> {
-        self.core
-            .check_blob_boundary_for(self.acting)
-            .map_err(|error| CapError::bad_args_with(format!("{error:#}")))
     }
 
     /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
@@ -2381,30 +2373,6 @@ impl WorldActor {
         } else {
             Err(crate::directory::Refusal::Forbidden(format!(
                 "only an admin or a moderator {what}"
-            ))
-            .into())
-        }
-    }
-
-    /// The world's owner (an account holding an admin seat in one of its
-    /// groups) or the operator (the process admin) may change its
-    /// lifecycle; everyone else gets the same forbidden refusal any other
-    /// owner-only act gives (#10694).
-    pub(super) fn require_ownership(&self, authority: &Authority, what: &str) -> Result<()> {
-        let directory = self.core.directory();
-        let allowed = match authority {
-            Authority::Admin => true,
-            Authority::Signed(key) => directory.account_for_key(key).is_some_and(|account| {
-                directory.groups().any(|group| {
-                    directory.level_in(&account, group.id) == Some(crate::directory::Level::Admin)
-                })
-            }),
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err(crate::directory::Refusal::Forbidden(format!(
-                "only the world's owner or the operator {what}"
             ))
             .into())
         }

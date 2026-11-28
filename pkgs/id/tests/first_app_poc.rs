@@ -110,7 +110,6 @@ fn ext(kind: &str, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
-        thread: None,
     }
 }
 

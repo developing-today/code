@@ -321,25 +321,6 @@ export async function reconcileRepos(
     }
   }
   const total = results.reduce((n, r) => n + (r.written ?? 0), 0);
-  // #10305 ask 2: a pass is ok only when every stream ran. A stream that
-  // threw (rate limit, auth, pagination bound) wrote nothing and kept
-  // its cursor, so reporting ok:true hid a stalled projection. Per-PR
-  // review failures stay contained to that PR (#2745) and do not fail
-  // the pass, but they are counted so the result still shows them.
-  const failed = results
-    .filter((r) => typeof r.error === "string")
-    .map((r) => ({ repo: r.repo, stream: r.stream, error: r.error as string }));
-  const partial = results.filter((r) => Array.isArray(r.errors) && r.errors.length > 0).length;
-  console.log(
-    `[projector] reconcile pass finished written=${total} failed_streams=${failed.length}/${results.length}` +
-      `${partial > 0 ? ` partial_streams=${partial}` : ""} ms=${Date.now() - passStarted}`,
-  );
-  for (const f of failed) console.log(`[projector] reconcile failed stream ${f.repo} ${f.stream}: ${f.error}`);
-  return {
-    ok: failed.length === 0,
-    written: total,
-    streams: results,
-    ...(failed.length > 0 ? { failed } : {}),
-    ...(partial > 0 ? { partial_streams: partial } : {}),
-  };
+  console.log(`[projector] reconcile pass finished written=${total} ms=${Date.now() - passStarted}`);
+  return { ok: true, written: total, streams: results };
 }

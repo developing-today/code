@@ -48,7 +48,3 @@ Untrusted programs should be accepted only as source submitted to the configured
 - [Roc worlds architecture](../2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md)
 - [Attenuated capabilities design](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md)
 - `pkgs/id/src/world.rs`, `pkgs/id/src/world_session.rs`, `pkgs/id/src/world_ssh.rs`, `pkgs/id/src/sandbox.rs`, `pkgs/id/examples/roc-world/Screen.roc`
-
-## Tracking
-
-This record predates the tracking-issue convention. Phase 9, which it designs, was validated under #1076 (closed). No separate issue was filed for the record itself. (Pointer added 2026-11-25 for #13881.)

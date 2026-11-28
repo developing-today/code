@@ -608,7 +608,10 @@ impl GraphIndex {
         let mut cost = ScanCost::default();
         let mut last_key = None;
         let mut more = false;
-        for entry in table.range((lower, Bound::Unbounded)).map_err(storage)? {
+        for entry in table
+            .range((lower, Bound::Unbounded))
+            .map_err(storage)?
+        {
             let (key, _) = entry.map_err(storage)?;
             let key = key.value();
             if !key.starts_with(&prefix) {

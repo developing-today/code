@@ -62,11 +62,6 @@ export interface LinkOptions {
   version?: string;
   /** What this machine is called, and the kinds of action it does. */
   machine?: () => { name: string; actions: string[] };
-  /** The owner's changed settings, as the edge said them in its answer
-   * (undefined when it said none): the machine runs with them from now,
-   * and this says the revision it then runs with, which the next report
-   * carries. Null keeps what it runs with now (#14957). */
-  adopt?: (said: SyncResponse["settings"]) => number | null;
   /** The signed Android build on this host, if there is one, and a way
    * to read it when the edge asks for it. */
   apk?: () => Promise<{ sha256: string; size: number; at: number; read: () => Promise<Uint8Array> } | null>;
@@ -99,9 +94,6 @@ export class EdgeLink {
   private log: (line: string) => void;
   /** The last answer from the edge, or null while it cannot be reached. */
   last: SyncResponse | null = null;
-  /** The revision of the owner's changed settings this machine runs
-   * with: 0, its own, until the edge says otherwise. */
-  private settingsRev = 0;
 
   constructor(private o: LinkOptions) {
     this.now = o.now ?? Date.now;
@@ -255,7 +247,6 @@ export class EdgeLink {
           at,
           ...(this.o.version ? { version: this.o.version } : {}),
           ...(machine ? { machine } : {}),
-          ...(this.o.adopt ? { settingsRev: this.settingsRev } : {}),
           ...(apk ? { apk } : {}),
           config,
           sections: carried,
@@ -325,19 +316,6 @@ export class EdgeLink {
       this.want = new Set(answer.want ?? []);
       this.last = answer;
       await this.o.phones.mergeLinks(answer.phones);
-      if (this.o.adopt) {
-        try {
-          const rev = this.o.adopt(answer.settings);
-          if (rev !== null) {
-            if (rev !== this.settingsRev) this.log(`running with the owner's settings at revision ${rev}`);
-            this.settingsRev = rev;
-          } else {
-            this.log("the owner's settings the edge sent do not read as settings; running with the ones before");
-          }
-        } catch (error) {
-          this.log(`could not take the owner's settings: ${(error as Error).message}`);
-        }
-      }
       for (const held of answer.commands ?? []) await this.doHeld(held);
       return answer;
     } finally {

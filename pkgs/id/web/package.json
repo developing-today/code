@@ -5,9 +5,8 @@
   "description": "Web interface for id P2P file sharing",
   "type": "module",
   "scripts": {
-    "build": "bun run build:js && bun run build:sw && bun run build:css && bun run build:manifest",
+    "build": "bun run build:js && bun run build:css && bun run build:manifest",
     "build:js": "bun build src/main.ts --outdir=dist --minify --sourcemap=external --entry-naming=[name].[hash].js",
-    "build:sw": "bun build src/sw.ts --outdir=dist --minify --entry-naming=[name].js",
     "build:css": "node_modules/.bin/tailwindcss -i src/input.css -o dist/styles.css --minify",
     "build:manifest": "bun run scripts/build-manifest.ts",
     "dev": "bun build src/main.ts --outdir=dist --watch",

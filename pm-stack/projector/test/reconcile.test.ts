@@ -261,8 +261,6 @@ describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
     expect(reviews!.error).toBeUndefined();
     expect(reviews!.written).toBe(2);
     expect(reviews!.errors).toEqual([{ pr: 2, error: "github_api_500" }]);
-    expect(result.failed).toBeUndefined();
-    expect(result.partial_streams).toBe(1);
     expect(reviews!.cursor).toBe("2026-10-06T00:00:00Z");
     expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toEqual(["101"]);
     expect((await getComments(db, [`${repo}#3`])).map((c) => c.id)).toEqual(["103"]);
@@ -450,72 +448,5 @@ describe("reconcile streams are incremental (#9850 round 2)", () => {
     expect(await getItems(db, [`${repo}#3`])).toHaveLength(1);
     expect(await getItems(db, [`${repo}#4`])).toHaveLength(0);
     expect(await getSyncCursor(db, repo, "prs")).toBe("2026-10-06T00:00:00Z");
-  });
-});
-
-describe("reconcile result reports failed streams (#10305)", () => {
-  test("a pass where every stream runs stays ok:true with no failed list", async () => {
-    const repo = "developing-today/all-ok-10305";
-    const fetchFn = (async () => jsonRes([])) as unknown as typeof fetch;
-    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
-    expect(result.ok).toBe(true);
-    expect(result.failed).toBeUndefined();
-    expect(result.partial_streams).toBeUndefined();
-    expect((result.streams as unknown[]).length).toBe(5);
-  });
-
-  test("rate-limited PR streams make the pass ok:false and name each failed stream with the reset time", async () => {
-    const repo = "developing-today/rate-limited-10305";
-    const resetEpoch = 1_800_000_000;
-    const resetIso = new Date(resetEpoch * 1000).toISOString();
-    const fetchFn = (async (url: string) => {
-      if (url.includes("/pulls") || url.includes("/issues/comments")) {
-        return new Response('{"message":"API rate limit exceeded"}', {
-          status: 403,
-          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(resetEpoch) },
-        });
-      }
-      return jsonRes([]);
-    }) as unknown as typeof fetch;
-
-    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
-
-    expect(result.ok).toBe(false);
-    const expected = `github_api_403 rate_limited reset=${resetIso}`;
-    expect(result.failed).toEqual([
-      { repo, stream: "prs", error: expected },
-      { repo, stream: "issue_comments", error: expected },
-      { repo, stream: "review_comments", error: expected },
-      { repo, stream: "reviews", error: expected },
-    ]);
-    const issues = (result.streams as Record<string, any>[]).find((s) => s.stream === "issues");
-    expect(issues!.error).toBeUndefined();
-    // A failed stream keeps its cursor, so the next tick resumes it.
-    expect(await getSyncCursor(db, repo, "prs")).toBeNull();
-  });
-
-  test("a plain 403 without spent rate-limit headers keeps the bare status code", async () => {
-    const repo = "developing-today/forbidden-10305";
-    const fetchFn = (async (url: string) => {
-      if (url.includes("/issues?")) {
-        return new Response("forbidden", { status: 403, headers: { "x-ratelimit-remaining": "4000" } });
-      }
-      return jsonRes([]);
-    }) as unknown as typeof fetch;
-
-    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
-
-    expect(result.ok).toBe(false);
-    expect(result.failed).toEqual([{ repo, stream: "issues", error: "github_api_403" }]);
-  });
-
-  test("missing credentials fail every stream of that repo and the pass", async () => {
-    const repo = "developing-today/no-creds-10305";
-    const fetchFn = (async () => jsonRes([])) as unknown as typeof fetch;
-    const result = await reconcileRepos(db, { PM_REPOS: repo }, fetchFn);
-    expect(result.ok).toBe(false);
-    const failed = result.failed as { repo: string; stream: string; error: string }[];
-    expect(failed.map((f) => f.stream)).toEqual(["issues", "prs", "issue_comments", "review_comments", "reviews"]);
-    expect(failed.every((f) => f.repo === repo && f.error.length > 0)).toBe(true);
   });
 });

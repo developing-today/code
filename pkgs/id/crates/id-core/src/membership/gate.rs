@@ -136,7 +136,6 @@ mod tests {
         AuthOperation {
             id: Hash::digest([id]),
             author: key(1),
-            authorization_actor: None,
             dependencies: deps.iter().map(|d| Hash::digest([*d])).collect(),
             group_id,
             action,

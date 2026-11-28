@@ -3,10 +3,10 @@
 // documents to the existing aggregator document store.
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppendOnlyDocumentRemote } from "./aa-last-good.ts";
 import { reportPeriod, type ReportPeriod, type ReportPeriodKind } from "./report-periods.ts";
-import { requireHome } from "./home.ts";
 
 export interface ReportRecordSource {
   id: string;
@@ -49,10 +49,7 @@ export interface ReportRecord extends ReportRecordInput {
 /** Persistent PM-stack location; override for tests and managed deployments. */
 export function defaultReportRecordsFile(env: Record<string, string | undefined> = process.env): string {
   const configured = env.PM_AGG_REPORT_RECORDS_FILE?.trim();
-  return (
-    configured ||
-    join(requireHome("PM_AGG_REPORT_RECORDS_FILE"), ".local", "state", "pm-aggregator", "report-records.jsonl")
-  );
+  return configured || join(homedir(), ".local", "state", "pm-aggregator", "report-records.jsonl");
 }
 
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;

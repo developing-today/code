@@ -33,13 +33,6 @@ pub struct PostgrestRequest {
     /// parameter per filter leaf, the keyset `or` parameter when
     /// paging, `order`, and `limit`.
     pub params: Vec<(String, String)>,
-    /// Ordering columns the query's projection left out. They are
-    /// appended to `select` only so the reader can build the keyset
-    /// cursor from each row; the reader removes them from the rows it
-    /// returns, so the caller sees exactly the projection it asked
-    /// for (#15010). Empty for a star projection, which already
-    /// carries every declared column.
-    pub cursor_only: Vec<String>,
 }
 
 /// The query translator, holding the owner's collection allowlists.
@@ -67,8 +60,7 @@ impl Translator {
     /// collection's allowlist fails
     /// [`CollectionAllowlist::validate`]: a relation that is not a
     /// plain identifier, a declared column that is not a usable
-    /// field name, an empty unique key, or a unique-key entry that
-    /// is not declared. A bad
+    /// field name, or a unique-key entry that is not declared. A bad
     /// configuration is refused here, at construction, so it never
     /// reaches a request.
     pub fn try_new(collections: Vec<CollectionAllowlist>) -> Result<Self, String> {
@@ -122,15 +114,6 @@ impl Translator {
             .iter()
             .find(|c| &c.relation == relation)
             .ok_or_else(Refusal::not_available)?;
-        // 7b. A collection with an empty unique key has no total
-        // ordering, so it cannot serve a stable read: without this
-        // guard the legacy unchecked constructor path would emit an
-        // empty `order=` and an empty keyset `or=()` (#14795). The
-        // refusal collapses to `not_available`, like an unlisted
-        // relation, so no configuration detail leaks.
-        if collection.unique_key.is_empty() {
-            return Err(Refusal::not_available());
-        }
         // 8. Fields: projection, filter, and order columns must be
         // declared for the use they are put to. An undeclared column
         // and a withheld column are the same refusal (§6.1). A filter
@@ -162,19 +145,14 @@ impl Translator {
                 return Err(Refusal::shape(Feature::TextPatternUnsupported));
             }
         }
-        // 10. Values and rendering of the filter parameters. The
-        // effective ordering (total by construction: see
-        // `effective_ordering`) decides which columns each row must
-        // carry for its keyset cursor; any the projection left out are
-        // fetched as cursor-only columns (#15010).
-        let ordering = effective_ordering(collection, &query.order);
-        let (sent, cursor_only) = with_cursor_columns(projection, &ordering);
-        let mut params: Vec<(String, String)> = vec![("select".to_string(), sent.join(","))];
+        // 10. Values and rendering of the filter parameters.
+        let mut params: Vec<(String, String)> = vec![("select".to_string(), projection.join(","))];
         for leaf in &leaves {
             params.push((leaf.column.clone(), render_leaf_value(leaf)?));
         }
         // 11. Ordering and the keyset cursor over the effective
-        // ordering.
+        // ordering (total by construction: see `effective_ordering`).
+        let ordering = effective_ordering(collection, &query.order);
         if let Pagination::Keyset { cursor } = &query.pagination {
             params.push(("or".to_string(), keyset_or(&ordering, cursor)?));
         }
@@ -192,7 +170,6 @@ impl Translator {
             path: format!("/{relation}"),
             accept_profile: collection.schema.clone(),
             params,
-            cursor_only,
         })
     }
 }
@@ -218,26 +195,6 @@ pub fn effective_ordering(collection: &CollectionAllowlist, order: &[OrderKey]) 
         }
     }
     effective
-}
-
-/// The columns to send in `select`: the resolved projection, then
-/// every effective-ordering column it does not already name, in
-/// ordering order. The second list is those appended columns alone,
-/// which the reader strips from returned rows. Ordering columns are
-/// declared (checked in step 8 and by the allowlist's unique-key
-/// rule), so appending one never projects an undeclared column.
-fn with_cursor_columns(
-    mut projection: Vec<String>,
-    ordering: &[OrderKey],
-) -> (Vec<String>, Vec<String>) {
-    let mut cursor_only = Vec::new();
-    for key in ordering {
-        if !projection.contains(&key.column) {
-            projection.push(key.column.clone());
-            cursor_only.push(key.column.clone());
-        }
-    }
-    (projection, cursor_only)
 }
 
 /// Flatten a filter expression into its leaves. Only conjunctions
@@ -457,50 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn projection_without_the_unique_key_fetches_it_cursor_only() {
-        // Oracle: #15010 — the reader builds the keyset cursor from
-        // every effective-ordering column, so a projection that leaves
-        // the unique key out still has it sent, marked cursor-only.
-        let mut query = Query::read("items");
-        query.select = vec![SelectItem::Column("title".to_string())];
-        let request = translator().translate(&query).unwrap();
-        assert_eq!(param(&request, "select"), Some("title,id"));
-        assert_eq!(param(&request, "order"), Some("id.asc"));
-        assert_eq!(request.cursor_only, vec!["id".to_string()]);
-    }
-
-    #[test]
-    fn projection_without_an_order_key_fetches_it_cursor_only() {
-        let mut query = Query::read("items");
-        query.select = vec![SelectItem::Column("body".to_string())];
-        query.order = vec![OrderKey {
-            column: "title".to_string(),
-            direction: Direction::Desc,
-        }];
-        let request = translator().translate(&query).unwrap();
-        assert_eq!(param(&request, "select"), Some("body,title,id"));
-        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
-        assert_eq!(
-            request.cursor_only,
-            vec!["title".to_string(), "id".to_string()]
-        );
-    }
-
-    #[test]
-    fn projection_naming_every_ordering_column_has_no_cursor_only_columns() {
-        let mut query = Query::read("items");
-        query.select = vec![
-            SelectItem::Column("title".to_string()),
-            SelectItem::Column("id".to_string()),
-        ];
-        let request = translator().translate(&query).unwrap();
-        assert_eq!(param(&request, "select"), Some("title,id"));
-        assert_eq!(request.cursor_only, [] as [std::string::String; 0]);
-        let star = translator().translate(&Query::read("items")).unwrap();
-        assert_eq!(star.cursor_only, [] as [std::string::String; 0]);
-    }
-
-    #[test]
     fn plain_read_expands_to_declared_columns_and_defaults() {
         let request = translator().translate(&Query::read("items")).unwrap();
         assert_eq!(request.method, "GET");
@@ -650,32 +563,6 @@ mod tests {
     #[test]
     fn try_new_accepts_valid_allowlist() {
         assert!(Translator::try_new(vec![collection()]).is_ok());
-    }
-
-    #[test]
-    fn try_new_refuses_empty_unique_key() {
-        // Oracle: #14795 acceptance — the translator boundary refuses
-        // an allowlist whose unique key is empty.
-        let mut raw = collection();
-        raw.unique_key = vec![];
-        assert!(Translator::try_new(vec![raw]).is_err());
-    }
-
-    #[test]
-    fn empty_unique_key_never_produces_empty_order_or_keyset_or() {
-        // Oracle: #14795 acceptance — even through the legacy
-        // unchecked `Translator::new` path, a keyless collection
-        // produces no request at all (so no `order=` and no
-        // `or=()`), for both a plain read and a keyset read.
-        let mut raw = collection();
-        raw.unique_key = vec![];
-        let translator = Translator::new(vec![raw]);
-        let refusal = translator.translate(&Query::read("items")).unwrap_err();
-        assert_eq!(refusal, Refusal::not_available());
-        let mut keyset = Query::read("items");
-        keyset.pagination = Pagination::Keyset { cursor: vec![] };
-        let refusal = translator.translate(&keyset).unwrap_err();
-        assert_eq!(refusal, Refusal::not_available());
     }
 
     #[test]

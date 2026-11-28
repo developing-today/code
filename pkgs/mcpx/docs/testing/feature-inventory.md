@@ -230,12 +230,7 @@ JSON lines — and the guard now compares that ledger against the registries.
   in): one line per feature with a one-line reason naming its burn-down
   issue. Empty reasons, exemptions for unknown features, and exemptions
   for features that have since gained a ledger row are all violations —
-  burn-down is self-verifying. A per-platform overlay
-  (`feature_coverage_exemptions_<goos>.txt`, merged only on that GOOS;
-  today darwin-only for the linux-tagged `explore` pty exercise and the
-  /proc-gated `supervise` exercise) excuses genuinely ineligible
-  features while the other platforms still block on them.
-  `TestFeatureCoverageGuardAgainstRecordedLedger`
+  burn-down is self-verifying. `TestFeatureCoverageGuardAgainstRecordedLedger`
   re-evaluates any recorded ledger (set
   `MCPX_FEATURE_COVERAGE_EVALUATE_LEDGER`) without a 25-minute suite run.
 - **Measured state at landing (full-suite ledger on `2b3db37221`):** 152 of

@@ -471,7 +471,7 @@ fn admission_trace_matches_the_design_order() {
         "the commit step receives the annotations in hook order"
     );
     assert_eq!(annotations.len(), 2);
-    assert_eq!(pending_outbox, [] as [HookId; 0]);
+    assert!(pending_outbox.is_empty());
     assert_eq!(policy_epoch, 3);
 }
 

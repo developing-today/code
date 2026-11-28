@@ -51,14 +51,7 @@ anyhow = "1"
 base64 = "0.23"
 blake3 = "1"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
-# zlib for kitty graphics RGBA payloads (`o=z`, kitty_graphics.rs, #13623);
-# already in the workspace graph through id-core's `world` feature.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-lite = "2"
-# Decodes and resizes kitty graphics stills (kitty_graphics::fit_still,
-# #13623). Already in the workspace graph through bevy; this edge turns
-# on its PNG codec only, which adds the `png` and `fdeflate` crates.
-image = { version = "0.25", default-features = false, features = ["png"] }
 id-caps = { path = "../id-caps", default-features = false }
 id-core = { path = "../id-core", default-features = false, features = [
   "world",
@@ -74,7 +67,7 @@ iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
 libc = "0.2"
-p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 # The `http.fetch` provider's client (#1062): blocking API only,
@@ -186,3 +179,5 @@ fn_params_excessive_bools = "allow"
 struct_excessive_bools = "allow"
 cognitive_complexity = "allow"
 future_not_send = "allow"
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"

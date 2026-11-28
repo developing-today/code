@@ -19,11 +19,7 @@ Every verb's call goes down a four-leg **ladder**, in order; the first leg that 
 1. **Broker** — the warm session-broker socket (default `~/.cache/laptop-agent/broker.sock`): the framed protocol (8-byte big-endian length + JSON `{method, path, body, trip}`; reply framed the same way, `{status, body}`). Absent when no socket file exists.
 2. **Cloudflare** — TLS through the egress proxy to the tunnel hostname, with the Access service token resolved by name (secret name `cloudflare.access-laptop-agent`) _only when this leg is tried_, so a healthy broker never pays for the resolution; a resolution failure is cached 60 s.
 3. **Tailscale** — HTTP CONNECT through the egress proxy at port **3130** to `100.99.113.103:4799`.
-4. **SSH** — the daemon's surfaces (`/health`, `/exec`, `/jobs`) re-run as shell commands over `~/tools/laptop-ssh-real.sh`, for when the daemon itself is down. It owns `sshfb-` jobs, spooled on the laptop under `~/.local/state/laptop-agent/sshfb-jobs/`. `LAPTOP_AGENT_NO_SSH_FALLBACK` turns it off.
-
-When the SSH leg answers a call, the client prints `fleet: form T3 ssh/fleet` on stderr, once per process (#15419). Under the route-form matrix (#13717) a call served this way is tier T3, not T2, and the line says so in the words the other forms announce themselves with. Calls answered by an HTTP leg print nothing.
-
-**New callers:** use [`fleet http`](laptop-route-forms.md) for the same verbs over HTTP legs only (it can never become SSH), or `fleet laptop exec` (tier 0) to let Fleet choose the form. `fleet laptop-agent` stays for existing callers. No `fleet connect --method` wrapper is planned (#10356 section 2).
+4. **SSH** — a named **stub**: always absent ("ssh leg not implemented"). The ladder's fourth leg exists in the ordering but never carries traffic in this build.
 
 **Replay rules:** each leg classifies its failures as **absent** (not configured here), **unsent** (failed before the request was written), or **sent** (failed after). A request may fall through to the next leg freely when absent/unsent, but a _sent_ failure replays only for idempotent calls — non-idempotent calls (`exec`, `run` submits) are never replayed on a leg that may already have sent them, so a submitted job or an exec is never duplicated by the ladder.
 

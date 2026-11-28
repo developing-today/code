@@ -378,9 +378,6 @@ type resolution struct {
 	// Model says where the script came from: a recipe, sampling, or nothing.
 	Model   string `json:"model,omitempty"`
 	Message string `json:"message,omitempty"`
-	// Reason is the machine-readable cause when Model is "none": today
-	// provider_payment_required (#13610) for a provider's HTTP 402.
-	Reason string `json:"reason,omitempty"`
 	// Save is the offer to keep a generated script that worked.
 	Save *saveOffer `json:"save,omitempty"`
 }
@@ -573,20 +570,6 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 
 	source, used, err := s.generate(r.Context(), req.Prompt, prov, model, req.Session, req.Provider)
 	if err != nil {
-		// A provider's HTTP 402 is its own answer: the provider was
-		// reached and refused for payment, which is not the generic
-		// "no model answered" case (#13610). The provider's body never
-		// reaches the caller; only this fixed sentence and the typed
-		// reason do.
-		if providerPaymentRequired(err) {
-			out.Model = "none"
-			out.Reason = "provider_payment_required"
-			out.Message = "no recipe matched, and the configured model provider " +
-				"refused the request for payment (HTTP 402). The ranked " +
-				"recipes above are everything mcpx can offer without a model."
-			writeJSON(w, 200, out)
-			return
-		}
 		out.Model = "none"
 		out.Message = "no recipe matched, and no model answered. " +
 			"Generation needs a provider -- the model.* settings " +

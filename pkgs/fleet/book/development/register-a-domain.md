@@ -8,7 +8,7 @@ A domain exists in fleet because three things agree: the registry names it, a Ca
 
 ### Domains
 
-`pub const DOMAINS: &[Domain]` is the full registry, in help order, with 22 entries: `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`, `gh`, `bridge`, `orgs`, `kv`, `id`, `agent`, `shell`, `search`, `cert`, `laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `host`, `actions`. `pub fn domain(name)` is a linear find over it.
+`pub const DOMAINS: &[Domain]` is the full registry, in help order, with 19 entries: `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`, `gh`, `bridge`, `orgs`, `agent`, `shell`, `search`, `cert`, `laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `actions`. `pub fn domain(name)` is a linear find over it.
 
 `struct Domain` is the unit that help lists, stubs name, and config disables:
 

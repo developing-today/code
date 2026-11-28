@@ -318,8 +318,8 @@ export function analyticsSectionHtml(a: QuotaAnalytics, display: (n: string) => 
   if (!a.dbAvailable) {
     return (
       `<h2 id="analytics">Analytics &amp; projection</h2>` +
-      `<div class="card"><strong>Analytics unavailable</strong> — the OpenCode route ledger could not be read from the OpenCode server right now (it may still be loading after a restart). ` +
-      `Pool state above still comes from the quota gatherer. <span class="muted">Source: route_attempt ledger via the OpenCode server, read-only.</span></div>`
+      `<div class="card"><strong>Analytics unavailable</strong> — the OpenCode route ledger could not be read on this host right now. ` +
+      `Pool state above still comes from the quota gatherer. <span class="muted">Source: route_attempt ledger (opencode.db), read-only.</span></div>`
     );
   }
   const totals = a.totals;

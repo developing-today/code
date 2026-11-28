@@ -4,7 +4,6 @@
 // to create an issue/task/session would fail loudly instead of 400ing.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSign, generateKeyPairSync } from "node:crypto";
-import { OpenCodeClient } from "../src/opencode.ts";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = publicKey.export({ format: "jwk" }) as unknown as Record<string, unknown>;
@@ -74,7 +73,6 @@ function signOidc(repository: string): string {
 // (#5120), so the suite pins a fixture project (no service-role key: the
 // queue stays disabled, as these tests intend).
 process.env.QUEUE_BROKER_TOKEN_FILE ??= "/nonexistent-dispatch-test/broker-token";
-process.env.DISPATCH_API_TOKEN = "dispatch-wake-test-token";
 const { handler, taskStatusView, sessionStatusView, LaunchLog } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {
@@ -120,55 +118,6 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
     const token = signOidc("developing-today/code");
     const res = await handler(sessionsRequest(token, { ...base, directory: "/home/user/git/code" }));
     expect(res.status).toBe(502);
-  });
-});
-
-describe("POST /v1/agent-wake", () => {
-  test("starts an OpenCode session that runs fleet agent next for the addressed agent", async () => {
-    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({ id: "ses_wake_1" });
-    const sendPrompt = spyOn(OpenCodeClient.prototype, "sendPrompt").mockResolvedValue(undefined);
-    try {
-      const response = await handler(new Request("http://x/v1/agent-wake", {
-        method: "POST",
-        headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
-        body: JSON.stringify({
-          event: "message.created",
-          address: "agent:agent-next-20-local",
-          message_ids: [42],
-          kind: "instruction",
-          from: ["drew"],
-          text: "bridge summary that must not become a task prompt",
-        }),
-      }));
-
-      expect(response.status).toBe(202);
-      expect(await response.json()).toEqual({ agent: "agent-next-20-local", session_id: "ses_wake_1", status: "started" });
-      expect(createSession).toHaveBeenCalledWith({
-        directory: "/home/user/git/code",
-        title: "Fleet wake: agent-next-20-local",
-        model: null,
-      });
-      expect(sendPrompt).toHaveBeenCalledWith("ses_wake_1", expect.stringContaining("fleet agent next --agent agent-next-20-local"));
-      expect(sendPrompt.mock.calls[0]?.[1]).not.toContain("bridge summary that must not become a task prompt");
-    } finally {
-      createSession.mockRestore();
-      sendPrompt.mockRestore();
-    }
-  });
-
-  test("rejects channel and malformed addresses without starting a session", async () => {
-    const createSession = spyOn(OpenCodeClient.prototype, "createSession").mockResolvedValue({ id: "ses_wake_invalid" });
-    try {
-      const response = await handler(new Request("http://x/v1/agent-wake", {
-        method: "POST",
-        headers: { authorization: "Bearer dispatch-wake-test-token", "content-type": "application/json" },
-        body: JSON.stringify({ event: "message.created", address: "channel:chatgpt", message_ids: [42] }),
-      }));
-      expect(response.status).toBe(400);
-      expect(createSession).not.toHaveBeenCalled();
-    } finally {
-      createSession.mockRestore();
-    }
   });
 });
 

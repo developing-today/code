@@ -1138,7 +1138,3 @@ The v1 record is shaped so that signed capabilities (Stage 1), then Keyhive or O
 or the transports. See
 [`2026-10-09T09-59-07Z_design_attenuated_capabilities`](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md).
 No code changed in this step.
-
-## Tracking
-
-This record predates the tracking-issue convention. Its work was logged in place, in the dated Implementation and Decision sections above, and no issue was filed for it. Live follow-on work on Roc worlds, capabilities and permissions is tracked in #5955 (the worlds design program). (Pointer added 2026-11-25 for #13881.)

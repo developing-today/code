@@ -759,9 +759,6 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
   if (!isObj(packet)) {
     return [["packet: must be a JSON object"], warnings];
   }
-  if (get(packet, "manual_only") !== undefined && typeof get(packet, "manual_only") !== "boolean") {
-    errors.push("packet.manual_only: must be a boolean");
-  }
   const payload = get(packet, "payload");
   if (!isObj(payload)) {
     return [["packet.payload: required object (repo-task/v1 payload)"], warnings];
@@ -883,7 +880,6 @@ export function taskFromPacket(packet: JsonObject, queue: string): JsonObject {
   const priority: Json = band !== null ? band : ((get(packet, "priority") as Json) ?? null);
   return {
     queue,
-    manual_only: get(packet, "manual_only") === true,
     title: (get(packet, "title") as Json) ?? null,
     body: (get(packet, "body") as Json) ?? null,
     payload,

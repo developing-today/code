@@ -177,7 +177,6 @@ fn entry_fields(entry: &Entry) -> Vec<(&'static str, Value)> {
             note,
             content,
             parents,
-            proposal,
             ..
         } => {
             fields.push(("note", json!(note.to_hex())));
@@ -186,9 +185,6 @@ fn entry_fields(entry: &Entry) -> Vec<(&'static str, Value)> {
             fields.push(("media_type", json!(content.media_type)));
             let named: Vec<String> = parents.iter().map(Hash::to_hex).collect();
             fields.push(("parents", json!(named.join(","))));
-            if let Some(proposal) = proposal {
-                fields.push(("proposal", json!(proposal.to_hex())));
-            }
         }
     }
     fields
@@ -292,7 +288,6 @@ mod tests {
             note: hash(10),
             content,
             parents: vec![hash(10)],
-            proposal: None,
         };
         let fields = entry_fields(&entry);
         let get = |name: &str| -> Option<&Value> {

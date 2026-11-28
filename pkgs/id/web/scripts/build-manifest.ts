@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const distDir = "dist";
@@ -76,20 +76,3 @@ if (cssFiles.includes("styles.css")) {
 
 writeFileSync(join(distDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 console.log("  manifest.json:", manifest);
-
-// Service worker shell manifest (#13918). `bun run build:sw` emits
-// dist/sw.js; prefix it with one line naming this build's hashed shell
-// assets so the worker's bytes change with every shell build (that is
-// how the browser finds a new worker) and it knows what to precache.
-// Idempotent: an earlier prefix line is replaced, never stacked.
-const swPath = join(distDir, "sw.js");
-const swManifestPrefix = "self.__ID_SHELL_MANIFEST__=";
-if (existsSync(swPath)) {
-  const body = readFileSync(swPath, "utf8")
-    .split("\n")
-    .filter((line) => !line.startsWith(swManifestPrefix))
-    .join("\n");
-  const shell = { "main.js": manifest["main.js"], "styles.css": manifest["styles.css"] };
-  writeFileSync(swPath, `${swManifestPrefix}${JSON.stringify(shell)};\n${body}`);
-  console.log("  sw.js shell manifest:", shell);
-}

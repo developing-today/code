@@ -57,23 +57,6 @@ class TestHttpRetry(unittest.TestCase):
         self.assertEqual(out, {"ok": True})
         self.assertEqual(self.calls, 3)
 
-    def test_incomplete_read_is_retried(self):
-        # CF-3 (#14943): a D1 query response truncated mid-body raises
-        # http.client.IncompleteRead inside _http_json_once; http_json
-        # must treat it as the transport failure it is.
-        import http.client
-
-        def truncated(req, timeout=None):
-            self.calls += 1
-            if self.calls < 2:
-                raise http.client.IncompleteRead(b"partial", 100)
-            return FakeResponse(json.dumps({"ok": True}).encode())
-
-        urllib.request.urlopen = truncated
-        out = fq_common.http_json("POST", "https://example.invalid/query", "tok")
-        self.assertEqual(out, {"ok": True})
-        self.assertEqual(self.calls, 2)
-
     def test_http_errors_are_not_retried(self):
         def broken(req, timeout=None):
             self.calls += 1

@@ -6,10 +6,7 @@ import {
   deletionBlocks,
   buildPrRow,
   isAgentNote,
-  labelDiff,
-  labelStartStmt,
   labelsOf,
-  parseLabelSet,
   mirrorCommentEvent,
   mirrorIssueEvent,
   mirrorPrEvent,
@@ -527,8 +524,6 @@ interface StoredFixture {
   commentsGhUpdatedAt: string | null;
   ghUpdatedAt: string | null;
   parentNumber: number | null;
-  /** Stored label set as JSON text (#14170 Q5); omitted = column not returned. */
-  labels?: string | null;
 }
 
 /**
@@ -566,7 +561,6 @@ function capturePipelineWithStored(stored: StoredFixture | null, opts?: { failHi
             arg(stored.commentsGhUpdatedAt),
             arg(stored.ghUpdatedAt),
             int(stored.parentNumber),
-            ...(stored.labels === undefined ? [] : [arg(stored.labels)]),
           ],
         ];
       }
@@ -909,155 +903,5 @@ describe("mirror history (#14170 Q7)", () => {
     expect(sql).toContain("CREATE TABLE IF NOT EXISTS github_issue_history");
     expect(sql).toContain("CREATE INDEX IF NOT EXISTS github_issue_history_issue");
     expect(sql).toContain("parent_number INTEGER");
-  });
-});
-
-const labelInserts = (stmts: CapturedStmt[]): CapturedStmt[] =>
-  stmts.filter((s) => s.sql.includes("INSERT INTO github_label_history") && s.sql.includes("VALUES"));
-const labelStarts = (stmts: CapturedStmt[]): CapturedStmt[] =>
-  stmts.filter((s) => s.sql.includes("INSERT INTO github_label_history") && s.sql.includes("NOT EXISTS"));
-const jsonArg = (s: CapturedStmt, i: number): unknown => JSON.parse(String(s.args?.[i]?.value ?? "null"));
-
-describe("mirror label history (#14170 Q5)", () => {
-  const observed = (labels: string[], ghUpdatedAt = T0): StoredFixture => ({
-    bodyHash: "hash",
-    comments: 3,
-    commentsGhUpdatedAt: T0,
-    ghUpdatedAt,
-    parentNumber: null,
-    labels: JSON.stringify(labels),
-  });
-
-  it("labelDiff / parseLabelSet: exact, sorted, and honest about unknown sets", () => {
-    expect(labelDiff(["a", "b"], ["b", "c", "d"])).toEqual({ added: ["c", "d"], removed: ["a"] });
-    expect(labelDiff(["x"], ["x"])).toEqual({ added: [], removed: [] });
-    expect(parseLabelSet('["user/hold","priority/high"]')).toEqual(["priority/high", "user/hold"]);
-    expect(parseLabelSet(null)).toBeNull();
-    expect(parseLabelSet("not json")).toBeNull();
-    expect(parseLabelSet("[1,2]")).toBeNull();
-  });
-
-  it("oracle: labeling an issue writes one row with the exact added name and the full set", async () => {
-    const stored = observed(["task/small-fix"]);
-    const payload = {
-      ...issuePayload,
-      action: "labeled",
-      label: { name: "priority/high" },
-      issue: { ...issuePayload.issue, updated_at: T1 },
-      sender: { login: "dezren39" },
-    };
-    let stmts = capturePipelineWithStored(stored);
-    await mirrorIssueEvent(env, payload, REPO);
-    const rows = labelInserts(stmts);
-    expect(rows).toHaveLength(1);
-    expect(labelStarts(stmts)).toHaveLength(0);
-    expect(rows[0].args?.[2]).toEqual({ type: "integer", value: "0" }); // is_pr
-    expect(jsonArg(rows[0], 3)).toEqual(["priority/high"]); // added
-    expect(jsonArg(rows[0], 4)).toEqual([]); // removed
-    expect(jsonArg(rows[0], 5)).toEqual(["priority/high", "task/small-fix"]); // label_set
-    expect(rows[0].args?.[6]).toEqual({ type: "text", value: "labeled" });
-    expect(rows[0].args?.[7]).toEqual({ type: "text", value: "dezren39" });
-    expect(rows[0].args?.[8]).toEqual({ type: "text", value: T1 });
-    // The mirror upsert itself still lands, before the history batch.
-    const upsertAt = stmts.findIndex((s) => s.sql.includes("INSERT INTO github_mirror_issues"));
-    const historyAt = stmts.indexOf(rows[0]);
-    expect(upsertAt).toBeGreaterThanOrEqual(0);
-    expect(historyAt).toBeGreaterThan(upsertAt);
-
-    // Redelivery after the change landed: same set, no second row.
-    stmts = capturePipelineWithStored(observed(["priority/high", "task/small-fix"], T1));
-    await mirrorIssueEvent(env, payload, REPO);
-    expect(labelInserts(stmts)).toHaveLength(0);
-  });
-
-  it("oracle: unlabeling writes one row with the exact removed name", async () => {
-    const stored = observed(["priority/high", "task/small-fix", "user/hold"]);
-    const payload = {
-      ...issuePayload,
-      action: "unlabeled",
-      label: { name: "user/hold" },
-      issue: { ...issuePayload.issue, updated_at: T1 },
-      sender: { login: "drew" },
-    };
-    const stmts = capturePipelineWithStored(stored);
-    await mirrorIssueEvent(env, payload, REPO);
-    const rows = labelInserts(stmts);
-    expect(rows).toHaveLength(1);
-    expect(jsonArg(rows[0], 3)).toEqual([]);
-    expect(jsonArg(rows[0], 4)).toEqual(["user/hold"]);
-    expect(jsonArg(rows[0], 5)).toEqual(["priority/high", "task/small-fix"]);
-    expect(rows[0].args?.[6]).toEqual({ type: "text", value: "unlabeled" });
-  });
-
-  it("a stale delivery writes no label row (its upsert is refused too)", async () => {
-    const stored = observed(["user/hold"], "2026-11-11T05:00:00Z");
-    const stmts = capturePipelineWithStored(stored);
-    await mirrorIssueEvent(env, issuePayload, REPO); // payload is older (T0)
-    expect(labelInserts(stmts)).toHaveLength(0);
-    expect(labelStarts(stmts)).toHaveLength(0);
-  });
-
-  it("a first sight writes the item's start row, read from the landed mirror row", async () => {
-    const stmts = capturePipelineWithStored(null);
-    await mirrorIssueEvent(env, { ...issuePayload, action: "opened", sender: { login: "dezren39" } }, REPO);
-    expect(labelInserts(stmts)).toHaveLength(0);
-    const starts = labelStarts(stmts);
-    expect(starts).toHaveLength(1);
-    expect(starts[0].sql).toContain("FROM github_mirror_issues m");
-    expect(starts[0].sql).toContain("m.gh_updated_at IS NOT NULL");
-    const values = (starts[0].args ?? []).map((a) => a.value);
-    expect(values).toContain("opened");
-    expect(values).toContain("dezren39");
-    expect(values).toContain("8580");
-  });
-
-  it("a minimal seed (labels never observed) gets a start row, not a fictional diff", async () => {
-    const stored: StoredFixture = { ...observed([]), ghUpdatedAt: null };
-    const stmts = capturePipelineWithStored(stored);
-    await mirrorIssueEvent(env, issuePayload, REPO);
-    expect(labelInserts(stmts)).toHaveLength(0);
-    expect(labelStarts(stmts)).toHaveLength(1);
-  });
-
-  it("a PR label change is recorded with is_pr = 1", async () => {
-    const stored = observed([], "2026-11-11T01:30:00Z");
-    const stmts = capturePipelineWithStored(stored);
-    await mirrorPrEvent(env, { ...prPayload, action: "labeled", label: { name: "queue/claimed" } }, REPO);
-    const rows = labelInserts(stmts);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].args?.[2]).toEqual({ type: "integer", value: "1" });
-    expect(jsonArg(rows[0], 3)).toEqual(["queue/claimed"]);
-  });
-
-  it("a comment delivery never writes label history", async () => {
-    const stmts = capturePipelineWithStored(observed(["a"]));
-    await mirrorCommentEvent(
-      env,
-      {
-        action: "created",
-        issue: { number: 8580, comments: 4, updated_at: T1, labels: [{ name: "b" }] },
-        comment: { id: 99, html_url: "u", body: "thanks!" },
-        repository: { full_name: REPO },
-      },
-      REPO,
-    );
-    expect(stmts.some((s) => s.sql.includes("INSERT INTO github_label_history"))).toBe(false);
-  });
-
-  it("the sweep's repo-wide start statement binds no item number", () => {
-    const one = labelStartStmt(REPO, 7, false, "opened", "x");
-    const all = labelStartStmt(REPO, null, true, "backfill", "backfill");
-    expect(one.sql).toContain("AND m.number = ?");
-    expect(all.sql).not.toContain("AND m.number = ?");
-    expect(all.sql).toContain("FROM github_mirror_pull_requests m");
-    expect((one.args ?? []).length).toBe((all.args ?? []).length + 1);
-  });
-
-  it("the label history schema ships in the DDL batch", async () => {
-    const stmts = capturePipelineWithStored(null);
-    await mirrorIssueEvent(env, issuePayload, REPO);
-    const sql = stmts.map((s) => s.sql).join("\n");
-    expect(sql).toContain("CREATE TABLE IF NOT EXISTS github_label_history");
-    expect(sql).toContain("CREATE INDEX IF NOT EXISTS github_label_history_issue");
   });
 });

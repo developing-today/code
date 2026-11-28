@@ -89,7 +89,7 @@ describe("deep-link landings for per-class tests (design §3)", () => {
     expect(notificationTestLanding("quota-wall", ORIGIN)).toBe(`${ORIGIN}/quota`);
     expect(notificationTestLanding("quota-near-wall", ORIGIN)).toBe(`${ORIGIN}/quota`);
     expect(notificationTestLanding("stack-health", ORIGIN)).toBe(`${ORIGIN}/health`);
-    expect(notificationTestLanding("needs-user", ORIGIN)).toBe(`${ORIGIN}/attention#test-needs-user`);
+    expect(notificationTestLanding("needs-drew", ORIGIN)).toBe(`${ORIGIN}/attention#test-needs-drew`);
     expect(notificationTestLanding("blocked-age", ORIGIN)).toBe(`${ORIGIN}/attention#test-blocked-age`);
     for (const c of NOTIFICATION_CLASSES) {
       expect(notificationTestLanding(c.id, ORIGIN)).not.toBe(ORIGIN);
@@ -100,7 +100,7 @@ describe("deep-link landings for per-class tests (design §3)", () => {
   test("the digest landing is the only list-shaped one, and it is filtered to its refs", () => {
     const url = notificationTestLanding("digest", ORIGIN);
     expect(url.startsWith(`${ORIGIN}/attention?refs=`)).toBe(true);
-    expect(decodeURIComponent(url.split("refs=")[1])).toBe("test:needs-user,test:blocked-age");
+    expect(decodeURIComponent(url.split("refs=")[1])).toBe("test:needs-drew,test:blocked-age");
   });
 
   test("a real candidate's own URL wins over the class fallback", () => {
@@ -108,7 +108,7 @@ describe("deep-link landings for per-class tests (design §3)", () => {
     const payload = buildClassTestPayload("quota-wall", ORIGIN, candidate);
     expect(payload.url).toBe(`${ORIGIN}/quota`);
     expect(payload.objectRef).toBe("quota:pool-1");
-    const abs = buildClassTestPayload("needs-user", ORIGIN, {
+    const abs = buildClassTestPayload("needs-drew", ORIGIN, {
       objectRef: "session:s1",
       title: "Session one",
       url: "/sessions?id=s1",

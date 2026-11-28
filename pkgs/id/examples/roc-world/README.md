@@ -111,18 +111,6 @@ row assembly. `Screen.fill` and `Screen.rule` cover rect fills and separators.
 (`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`,
 `join_lines`) for the operations the pinned Roc nightly builds reliably.
 
-`Term.roc` is exposed as `pf.Term`: the three-mode terminal harness
-(#14861). `Mode` names the presentation mode a session negotiates —
-`Alternate` (presenter-owned alternate screen), `Primary` (cursor
-addressing and erase/rewrite in the primary screen), `Text` (low-write
-plain lines). `Term.paint_primary` turns two frames into one
-primary-mode ANSI transition stream and `paint_primary_full` into a
-full repaint; `Term.text_lines` and `Term.diff_lines` render a frame
-as trimmed plain lines and a transition as only the changed lines.
-The currency underneath all three is `Screen.diff_cells`, the minimal
-set of cells a transition must write, so a game never changes when
-the mode does.
-
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
 element of a string list produced by `Str.split_on` returned truncated

@@ -471,7 +471,7 @@ func (p *Pool) resumeUpstreamSession(ctx context.Context, tr mcpclient.Transport
 			"server": p.cfg.Name, "key": rs.Key, "session": rec.SessionID,
 			"reason": err.Error(),
 		})
-		ntr, derr := p.dial(ctx, eff, rs.Root, rs.Key)
+		ntr, derr := p.dial(ctx, eff, rs.Root)
 		if derr != nil {
 			return nil, tr, fmt.Errorf("redial after a refused resume: %w", derr)
 		}

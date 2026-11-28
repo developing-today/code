@@ -7,17 +7,15 @@
 #
 #   source pkgs/fleet/fleet-ctx-init.sh
 #
-# Variable set: the full fixed FLEET_CTX_* list is defined by build 2/5
-# (#14188) in crates/fleet-config/src/ctx.rs and doc/ctx-env-contract.md.
-# This file sets the capture-time subset init sourcing owns:
+# Provisional variable set (the exact FLEET_CTX_* list is owned by build
+# 2/5, #14188 — this file sets the origin/taxonomy subset 1/5 owns and
+# 2/5 extends without renaming):
 #
 #   FLEET_CTX_ORIGIN     one of: drew-interactive | opencode | claude |
 #                        systemd-unit | unknown
 #   FLEET_CTX_TASK_ID    queue task id when launched from the fleet queue
 #                        (inherited when already set; never invented here)
 #   FLEET_CTX_HOST       hostname at capture time
-#   FLEET_CTX_USER       acting OS user at capture time
-#   FLEET_CTX_PID        pid of the capturing shell
 #   FLEET_CTX_ID         join key for stores (task id when known, else
 #                        origin+host+pid; build 5/5 joins on it)
 #
@@ -35,7 +33,7 @@
 # Fail-closed on execution: sourcing is the contract (`init source`,
 # not execute). Refuse to run as a subprocess so a bare
 # `./fleet-ctx-init.sh` cannot silently drop the exports.
-if [[ ${BASH_SOURCE[0]:-} == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   echo "fleet-ctx-init: source this file instead of executing it" >&2
   echo "  source ${BASH_SOURCE[0]}" >&2
   return 2 2>/dev/null || exit 2
@@ -46,14 +44,14 @@ fi
 # so the unit signal wins and the inner origin is kept as a qualifier.
 _fleet_ctx_origin=""
 _fleet_ctx_qualifier=""
-if [[ -n ${INVOCATION_ID:-} || -n ${SYSTEMD_EXEC_PID:-} || -n ${JOURNAL_STREAM:-} ]]; then
+if [[ -n "${INVOCATION_ID:-}" || -n "${SYSTEMD_EXEC_PID:-}" || -n "${JOURNAL_STREAM:-}" ]]; then
   _fleet_ctx_origin="systemd-unit"
-  if [[ -n ${OPENCODE_SESSION_ID:-} || ${OPENCODE:-} == "1" || ${AI_AGENT:-} == "opencode" ]]; then
+  if [[ -n "${OPENCODE_SESSION_ID:-}" || "${OPENCODE:-}" == "1" || "${AI_AGENT:-}" == "opencode" ]]; then
     _fleet_ctx_qualifier="opencode"
   elif [[ -n "${CLAUDECODE:-}${CLAUDE_CODE:-}${ANTHROPIC_SESSION:-}" ]]; then
     _fleet_ctx_qualifier="claude"
   fi
-elif [[ -n ${OPENCODE_SESSION_ID:-} || ${OPENCODE:-} == "1" || ${AI_AGENT:-} == "opencode" || ${MCPX_HARNESS:-} == "opencode" ]]; then
+elif [[ -n "${OPENCODE_SESSION_ID:-}" || "${OPENCODE:-}" == "1" || "${AI_AGENT:-}" == "opencode" || "${MCPX_HARNESS:-}" == "opencode" ]]; then
   _fleet_ctx_origin="opencode"
 elif [[ -n "${CLAUDECODE:-}${CLAUDE_CODE:-}${CLAUDE_SESSION_ID:-}${ANTHROPIC_SESSION:-}" ]]; then
   _fleet_ctx_origin="claude"
@@ -66,8 +64,8 @@ else
 fi
 
 # --- capture once (never overwrite an inherited record) -------------------
-if [[ -z ${FLEET_CTX_ORIGIN:-} ]]; then
-  if [[ -n $_fleet_ctx_qualifier ]]; then
+if [[ -z "${FLEET_CTX_ORIGIN:-}" ]]; then
+  if [[ -n "$_fleet_ctx_qualifier" ]]; then
     export FLEET_CTX_ORIGIN="${_fleet_ctx_origin}:${_fleet_ctx_qualifier}"
   else
     export FLEET_CTX_ORIGIN="$_fleet_ctx_origin"
@@ -75,23 +73,15 @@ if [[ -z ${FLEET_CTX_ORIGIN:-} ]]; then
 fi
 unset _fleet_ctx_origin _fleet_ctx_qualifier
 
-if [[ -z ${FLEET_CTX_HOST:-} ]]; then
+if [[ -z "${FLEET_CTX_HOST:-}" ]]; then
   export FLEET_CTX_HOST="${HOSTNAME:-$(hostname 2>/dev/null || echo unknown)}"
-fi
-
-if [[ -z ${FLEET_CTX_USER:-} ]]; then
-  export FLEET_CTX_USER="${USER:-$(id -un 2>/dev/null || echo unknown)}"
-fi
-
-if [[ -z ${FLEET_CTX_PID:-} ]]; then
-  export FLEET_CTX_PID="$$"
 fi
 
 # FLEET_CTX_TASK_ID is inherited when the launcher sets it (queue
 # worker, `fleet shell --detach` parent). When absent the record is
 # partial by design — never invent one.
-if [[ -z ${FLEET_CTX_ID:-} ]]; then
-  if [[ -n ${FLEET_CTX_TASK_ID:-} ]]; then
+if [[ -z "${FLEET_CTX_ID:-}" ]]; then
+  if [[ -n "${FLEET_CTX_TASK_ID:-}" ]]; then
     export FLEET_CTX_ID="task-${FLEET_CTX_TASK_ID}"
   else
     export FLEET_CTX_ID="${FLEET_CTX_ORIGIN:-unknown}-${FLEET_CTX_HOST:-unknown}-$$"
@@ -100,7 +90,7 @@ fi
 
 # Systemd unit detail (Q3 default, #10357 §3): when running under a
 # unit, record its invocation id alongside — cheap, ids only.
-if [[ -n ${INVOCATION_ID:-} && -z ${FLEET_CTX_INVOCATION:-} ]]; then
+if [[ -n "${INVOCATION_ID:-}" && -z "${FLEET_CTX_INVOCATION:-}" ]]; then
   export FLEET_CTX_INVOCATION="${INVOCATION_ID}"
 fi
 

@@ -1165,10 +1165,7 @@ mod tests {
     fn test_empty_document() {
         let doc = markdown_to_prosemirror("");
         assert_eq!(doc["type"], "doc");
-        assert_ne!(
-            *doc["content"].as_array().unwrap(),
-            [] as [serde_json::Value; 0]
-        );
+        assert!(!doc["content"].as_array().unwrap().is_empty());
     }
 
     #[test]

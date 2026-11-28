@@ -14,9 +14,7 @@ pub fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
     }
     encoded
         .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
+        .chunks_exact(2)
         .map(|pair| Some((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
         .collect()
 }

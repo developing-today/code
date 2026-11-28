@@ -12,8 +12,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use id_currency_registry::grants::{
-    Grant, GrantConfig, GrantError, GrantService, GrantState, GrantStore, GrantStoreError,
-    InMemoryGrantStore, RegisterGrant, StubLedger, steam_key_hash,
+    steam_key_hash, Grant, GrantConfig, GrantError, GrantService, GrantState, GrantStore,
+    GrantStoreError, InMemoryGrantStore, RegisterGrant, StubLedger,
 };
 
 const POOL: u128 = 1001;

@@ -28,6 +28,8 @@
 //!      When the call names a repo or org, that owner's installation
 //!      moves to the front of each App leg — an installation token
 //!      only sees its own installation's scope.
+//!      Additional `[[gh.apps]]` entries follow the built-ins in file
+//!      order, using configured owner lists and named key secrets.
 //!   2. the personal token, LAST (Drew, 2026-11-23, code#13310):
 //!      Drew's `gh` OAuth token, parsed out of the broker secret
 //!      named `github-cli.hosts-yml` (the hosts file itself, stored
@@ -99,7 +101,8 @@
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
 //!                       `personal`, `app:<owner>` (fleet App),
-//!                       `devtoday:<owner>`, `backup:<owner>` entries
+//!                       `devtoday:<owner>`, `backup:<owner>`, or a
+//!                       configured `<slug>:<owner>` entry
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
@@ -136,7 +139,6 @@
 
 use crate::gh_cache;
 use crate::gh_closure;
-use crate::gh_content_ledger;
 use crate::gh_guard;
 use crate::gh_metadata;
 use crate::gh_sync;
@@ -153,11 +155,6 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
-/// The shared content-creation ledger refused the reservation, so
-/// the create did not run (code#2227). Mirrors gh-post's exit 5:
-/// an unledgered filing is the failure mode the ledger exists to
-/// kill, so the refusal is loud and counted, never silent.
-const EXIT_LEDGER: i32 = 5;
 
 fn usage_error(message: &str) -> i32 {
     eprintln!("error: {message}");
@@ -186,7 +183,7 @@ Usage: fleet gh <gh args...>
        fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
-under a token selected from the fleet rotation (the fleet's three
+under a token selected from the fleet rotation (built-in and configured
 GitHub Apps' installation tokens, then the personal token last).
 A rate-limit or
 permission failure fails over to the next token; the caller sees only
@@ -219,55 +216,77 @@ JSON; `sync-comment` posts a comment (`--body` or `--body-file`);
 `sync-label-ensure` and `sync-issue-close` (fleet closure reasons)
 cover the issue writes dispatch composes. See gh_sync.rs.";
 
-/// The fleet's GitHub Apps, in rotation order. Each carries its
-/// private key (and, except the fleet App whose ID is a public
-/// constant, its App ID) as broker secrets resolved by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Built-in and config-defined GitHub Apps. Only secret names and
+/// public IDs are configured; private keys resolve through the broker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum GhApp {
     Fleet,
     DevToday,
     Backup,
+    Configured(String),
 }
 
 impl GhApp {
     const ALL: [GhApp; 3] = [GhApp::Fleet, GhApp::DevToday, GhApp::Backup];
 
     /// The FLEET_GH_ORDER / label prefix for this App's sources.
-    fn slug(&self) -> &'static str {
+    fn slug(&self) -> &str {
         match self {
             GhApp::Fleet => "app",
             GhApp::DevToday => "devtoday",
             GhApp::Backup => "backup",
+            GhApp::Configured(slug) => slug,
         }
     }
 
     /// Parse a slug back to its App (the cache wire names Apps by
     /// slug, so the daemon side resolves them without importing
     /// the rotation's enum spelling twice).
-    fn parse(slug: &str) -> Option<GhApp> {
+    fn parse(slug: &str, config: &Config) -> Option<GhApp> {
         match slug {
             "app" => Some(GhApp::Fleet),
             "devtoday" => Some(GhApp::DevToday),
             "backup" => Some(GhApp::Backup),
-            _ => None,
+            _ => config
+                .gh
+                .apps
+                .iter()
+                .find(|app| app.slug == slug)
+                .map(|app| GhApp::Configured(app.slug.clone())),
         }
     }
 
-    fn key_secret(&self) -> &'static str {
+    fn key_secret<'a>(&self, config: &'a Config) -> &'a str {
         match self {
             GhApp::Fleet => APP_KEY_SECRET_NAME,
             GhApp::DevToday => DEVTODAY_APP_KEY_SECRET_NAME,
             GhApp::Backup => BACKUP_APP_KEY_SECRET_NAME,
+            GhApp::Configured(slug) => {
+                &config
+                    .gh
+                    .apps
+                    .iter()
+                    .find(|app| app.slug == *slug)
+                    .expect("configured gh app")
+                    .key_secret
+            }
         }
     }
 
-    /// The secret carrying the App ID, when the ID is not a public
-    /// constant compiled in (the fleet App's is: 5612056).
-    fn id_secret(&self) -> Option<&'static str> {
+    /// The secret carrying the App ID, unless a public ID is used.
+    fn id_secret<'a>(&self, config: &'a Config) -> Option<&'a str> {
         match self {
             GhApp::Fleet => None,
             GhApp::DevToday => Some(DEVTODAY_APP_ID_SECRET_NAME),
             GhApp::Backup => Some(BACKUP_APP_ID_SECRET_NAME),
+            GhApp::Configured(slug) => config
+                .gh
+                .apps
+                .iter()
+                .find(|app| app.slug == *slug)
+                .expect("configured gh app")
+                .app_id_secret
+                .as_deref(),
         }
     }
 
@@ -276,6 +295,7 @@ impl GhApp {
             GhApp::Fleet => &DEFAULT_APP_OWNERS,
             GhApp::DevToday => &DEVTODAY_DEFAULT_OWNERS,
             GhApp::Backup => &BACKUP_DEFAULT_OWNERS,
+            GhApp::Configured(_) => &[],
         }
     }
 }
@@ -758,11 +778,21 @@ impl Owners {
         }
     }
 
-    fn for_app(&self, app: GhApp) -> Vec<String> {
+    fn for_app(&self, app: &GhApp, config: &Config) -> Vec<String> {
         let over = match app {
             GhApp::Fleet => &self.fleet,
             GhApp::DevToday => &self.devtoday,
             GhApp::Backup => &self.backup,
+            GhApp::Configured(slug) => {
+                return config
+                    .gh
+                    .apps
+                    .iter()
+                    .find(|app| app.slug == *slug)
+                    .expect("configured gh app")
+                    .owners
+                    .clone();
+            }
         };
         over.clone()
             .unwrap_or_else(|| app.default_owners().iter().map(|s| s.to_string()).collect())
@@ -776,17 +806,27 @@ impl Owners {
 /// 2026-11-12 (personal + all three fleet Apps' installations),
 /// hint-first per the installation-scope fact; personal moved last
 /// by Drew 2026-11-23 (code#13310).
-fn rotation(args: &[String]) -> Vec<TokenSource> {
+fn rotation(args: &[String], config: &Config) -> Vec<TokenSource> {
     let order_env = std::env::var("FLEET_GH_ORDER").ok();
-    rotation_with(args, order_env.as_deref(), &Owners::from_env())
+    rotation_with_config(args, order_env.as_deref(), &Owners::from_env(), config)
 }
 
 /// `rotation` with its environment inputs made explicit, so the
 /// order logic is testable without env mutation races.
+#[cfg(test)]
 fn rotation_with(
     args: &[String],
     order_env: Option<&str>,
     owners_env: &Owners,
+) -> Vec<TokenSource> {
+    rotation_with_config(args, order_env, owners_env, &Config::default())
+}
+
+fn rotation_with_config(
+    args: &[String],
+    order_env: Option<&str>,
+    owners_env: &Owners,
+    config: &Config,
 ) -> Vec<TokenSource> {
     if let Some(order) = order_env {
         let parsed: Vec<TokenSource> = order
@@ -794,8 +834,8 @@ fn rotation_with(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
-                for app in GhApp::ALL {
-                    if let Some(owner) = s.strip_prefix(&format!("{}:", app.slug())) {
+                if let Some((slug, owner)) = s.split_once(':') {
+                    if let Some(app) = GhApp::parse(slug, config) {
                         return TokenSource::app(app, owner);
                     }
                 }
@@ -808,15 +848,26 @@ fn rotation_with(
     }
     let hint = owner_hint(args);
     let mut out = Vec::new();
-    for app in GhApp::ALL {
-        let mut owners = owners_env.for_app(app);
+    let apps = GhApp::ALL.into_iter().chain(
+        config
+            .gh
+            .apps
+            .iter()
+            .map(|app| GhApp::Configured(app.slug.clone())),
+    );
+    for app in apps {
+        let mut owners = owners_env.for_app(&app, config);
         if let Some(hint) = &hint {
             if let Some(pos) = owners.iter().position(|o| o.eq_ignore_ascii_case(hint)) {
                 let owner = owners.remove(pos);
                 owners.insert(0, owner);
             }
         }
-        out.extend(owners.into_iter().map(|o| TokenSource::app(app, &o)));
+        out.extend(
+            owners
+                .into_iter()
+                .map(|o| TokenSource::app(app.clone(), &o)),
+        );
     }
     // Drew 2026-11-23 (code#13310): the personal token is the final
     // fallback, never the first identity tried.
@@ -895,25 +946,41 @@ impl RawMinter {
             .map_err(|e| format!("secret '{name}' unresolved: {e}"))
     }
 
-    /// The App ID for one App: the fleet App's is a public constant
-    /// (FLEET_GH_APP_ID may override it); the other Apps carry
-    /// theirs in the broker next to their keys.
-    fn app_id(&self, app: GhApp) -> Result<String, String> {
+    /// Resolve and memoize an App ID. Configured Apps may use a public
+    /// literal or the same named-secret resolver as the built-in Apps.
+    fn app_id(&self, app: &GhApp) -> Result<String, String> {
+        self.app_id_with(app, |name| self.resolve_named(name))
+    }
+
+    fn app_id_with(
+        &self,
+        app: &GhApp,
+        resolve: impl FnOnce(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
         if let Some((_, id)) = self
             .app_ids
             .lock()
             .expect("gh app-id lock")
             .iter()
-            .find(|(a, _)| *a == app)
+            .find(|(a, _)| a == app)
         {
             return Ok(id.clone());
         }
-        let id = match app.id_secret() {
-            None => std::env::var("FLEET_GH_APP_ID")
+        let id = match app.id_secret(&self.config) {
+            None if matches!(app, GhApp::Fleet) => std::env::var("FLEET_GH_APP_ID")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_APP_ID.to_string()),
-            Some(name) => self.resolve_named(name)?.trim().to_string(),
+            Some(name) => resolve(name)?.trim().to_string(),
+            None => self
+                .config
+                .gh
+                .apps
+                .iter()
+                .find(|entry| entry.slug == app.slug())
+                .and_then(|entry| entry.app_id)
+                .expect("configured gh app id")
+                .to_string(),
         };
         if id.is_empty() {
             return Err(format!("app id for {} resolved empty", app.slug()));
@@ -921,7 +988,7 @@ impl RawMinter {
         self.app_ids
             .lock()
             .expect("gh app-id lock")
-            .push((app, id.clone()));
+            .push((app.clone(), id.clone()));
         Ok(id)
     }
 }
@@ -937,9 +1004,10 @@ impl gh_cache::Backend for RawMinter {
     /// The TTL is the JWT's own lifetime minus the cache skew, so
     /// the cache serves it only within expiry.
     fn sign_jwt(&self, app: &str) -> Result<(String, u64), String> {
-        let app = GhApp::parse(app).ok_or_else(|| format!("unknown gh app {app:?}"))?;
-        let app_id = self.app_id(app)?;
-        let key_pem = self.resolve_named(app.key_secret())?;
+        let app =
+            GhApp::parse(app, &self.config).ok_or_else(|| format!("unknown gh app {app:?}"))?;
+        let app_id = self.app_id(&app)?;
+        let key_pem = self.resolve_named(app.key_secret(&self.config))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock before epoch".to_string())?
@@ -1403,7 +1471,7 @@ fn emit(attempt: &Attempt) {
 const TIERS_USAGE: &str = "\
 Usage: fleet gh tiers
 
-Probe every token-rotation source (the fleet's three GitHub Apps'
+Probe every token-rotation source (built-in and configured GitHub Apps'
 installation tokens, then the personal token) and print each one's
 rate-limit headroom. Takes no arguments.";
 
@@ -1420,7 +1488,7 @@ arguments.";
 /// answers, EXIT_UNRESOLVED when any source is down.
 fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&[]);
+    let sources = rotation(&[], config);
     let mut provider = FleetTokenProvider::new(config, addrs);
     let mut any_down = false;
     for source in &sources {
@@ -1630,22 +1698,8 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(prepared) => prepared.args.clone(),
         None => call_args,
     };
-    // Content-creation ledger (code#2227): a classified create
-    // reserves its shared-ledger row BEFORE any GitHub write. The
-    // ledger owns the failure mode — a reservation failure refuses
-    // the create (exit 5), never an unledgered filing.
-    let ledger_pending = match gh_content_ledger::start(&call_args) {
-        Ok(pending) => pending,
-        Err(e) => {
-            eprintln!(
-                "fleet gh: content-ledger reserve failed ({e}); \
-                 refusing to post unledgered (code#2227)"
-            );
-            return EXIT_LEDGER;
-        }
-    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&call_args);
+    let sources = rotation(&call_args, config);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
     let (code, final_stdout) = run_with_provider_capturing(
@@ -1654,25 +1708,8 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         &call_args,
         &sources,
         trace,
-        // The ledger's verify step reads the created item's URL
-        // from stdout (code#2227); capture changes nothing
-        // user-visible — emit() still streams every byte.
-        prepared_create.is_some() || ledger_pending.is_some(),
+        prepared_create.is_some(),
     );
-    // Content-creation ledger (code#2227): finalise the reservation
-    // with what actually happened, on every path below. The row
-    // records the truth; gh's exit code stands either way (the
-    // metadata create path's posture).
-    if let Some(pending) = &ledger_pending {
-        match gh_content_ledger::finish(pending, code, final_stdout.as_deref()) {
-            Ok(Some(notice)) => eprintln!("fleet gh: {notice}"),
-            Ok(None) => {}
-            Err(e) => eprintln!(
-                "fleet gh: content-ledger finalize failed ({e}); \
-                 the create stands, the ledger is short one outcome"
-            ),
-        }
-    }
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -2450,6 +2487,143 @@ mod tests {
         );
     }
 
+    fn configured_apps_fixture() -> Config {
+        let mut config = Config::default();
+        config.gh.apps = vec![
+            fleet_config::GhAppConfig {
+                slug: "extra".to_string(),
+                app_id: Some(123456),
+                app_id_secret: None,
+                key_secret: "github.extra.key".to_string(),
+                owners: vec!["first-org".to_string(), "layercloud".to_string()],
+            },
+            fleet_config::GhAppConfig {
+                slug: "secret-id".to_string(),
+                app_id: None,
+                app_id_secret: Some("github.secret-id.id".to_string()),
+                key_secret: "github.secret-id.key".to_string(),
+                owners: vec!["second-org".to_string()],
+            },
+        ];
+        config
+    }
+
+    // Oracle: #10311's additive App contract: built-ins unchanged,
+    // configured Apps in file order before personal, hint reorders only.
+    #[test]
+    fn configured_apps_rotation_and_order() {
+        let config = configured_apps_fixture();
+        for (hint, expected) in [
+            ("layercloud", vec!["extra:layercloud", "extra:first-org"]),
+            ("LAYERCLOUD", vec!["extra:layercloud", "extra:first-org"]),
+            ("unknown", vec!["extra:first-org", "extra:layercloud"]),
+        ] {
+            let args = vec!["--repo".to_string(), format!("{hint}/repo")];
+            let sources = rotation_with_config(&args, None, &Owners::default(), &config);
+            let builtins = rotation_with(&args, None, &Owners::default());
+            assert_eq!(&sources[..6], &builtins[..6]);
+            assert_eq!(
+                sources[6..8]
+                    .iter()
+                    .map(TokenSource::label)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(sources.last(), Some(&TokenSource::Personal));
+            assert_eq!(sources[8].label(), "secret-id:second-org");
+            assert_eq!(sources.len(), 10);
+        }
+        let fixed = rotation_with_config(
+            &[],
+            Some("secret-id:other,personal,extra:layercloud,app:dezren39"),
+            &Owners::default(),
+            &config,
+        );
+        assert_eq!(
+            fixed.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            [
+                "secret-id:other",
+                "personal",
+                "extra:layercloud",
+                "app:dezren39"
+            ]
+        );
+        let mut no_owners = config.clone();
+        no_owners
+            .gh
+            .apps
+            .iter_mut()
+            .for_each(|app| app.owners.clear());
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &no_owners),
+            rotation_with(&[], None, &Owners::default())
+        );
+    }
+
+    // Oracle: cache requests carry only the stable slug; the daemon's
+    // own config must map it back to the same ID/key secret names.
+    #[test]
+    fn configured_apps_cache_slug_and_credentials() {
+        let config = configured_apps_fixture();
+        for entry in &config.gh.apps {
+            let request = gh_cache::request("token", Some(&entry.slug), Some("layercloud"), None);
+            let wire: serde_json::Value = serde_json::from_str(&request.to_string()).unwrap();
+            let app = GhApp::parse(wire["app"].as_str().unwrap(), &config).unwrap();
+            assert_eq!(app.slug(), entry.slug);
+            assert_eq!(app.key_secret(&config), entry.key_secret);
+            assert_eq!(app.id_secret(&config), entry.app_id_secret.as_deref());
+        }
+        assert_eq!(GhApp::parse("absent", &config), None);
+        assert_eq!(GhApp::parse("extra", &Config::default()), None);
+        let minter = RawMinter::new(&config);
+        let literal = GhApp::parse("extra", &config).unwrap();
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_id(&literal).unwrap(), "123456");
+        assert_eq!(minter.app_ids.lock().unwrap().len(), 1);
+        let secret = GhApp::parse("secret-id", &config).unwrap();
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |name| {
+                    assert_eq!(name, "github.secret-id.id");
+                    Ok(" 789012\n".to_string())
+                })
+                .unwrap(),
+            "789012"
+        );
+        assert_eq!(
+            minter
+                .app_id_with(&secret, |_| panic!("ID must be memoized"))
+                .unwrap(),
+            "789012"
+        );
+        let empty = RawMinter::new(&config);
+        assert_eq!(
+            empty
+                .app_id_with(&secret, |_| Ok(" \n".to_string()))
+                .unwrap_err(),
+            "app id for secret-id resolved empty"
+        );
+    }
+
+    proptest::proptest! {
+        // Oracle: every valid non-reserved configured slug round-trips
+        // through order labels and the existing cache wire's app field.
+        #[test]
+        fn configured_app_slug_round_trip(suffix in "[a-z0-9-]{1,30}") {
+            let mut config = configured_apps_fixture();
+            let slug = format!("custom-{suffix}");
+            config.gh.apps[0].slug = slug.clone();
+            let order = format!("{slug}:layercloud");
+            let sources = rotation_with_config(&[], Some(&order), &Owners::default(), &config);
+            proptest::prop_assert_eq!(sources.len(), 1);
+            proptest::prop_assert_eq!(sources[0].label(), order);
+            let request = gh_cache::request("token", Some(&slug), Some("layercloud"), None);
+            let app = GhApp::parse(request["app"].as_str().unwrap(), &config).unwrap();
+            proptest::prop_assert_eq!(app.slug(), slug.as_str());
+            proptest::prop_assert_eq!(app.key_secret(&config), "github.extra.key");
+        }
+    }
+
     // oracle: gh's hosts.yml shape (user block carrying oauth_token)
     // — the parser takes the token line and nothing else.
     #[test]
@@ -2560,48 +2734,6 @@ mod tests {
             dir.to_string_lossy().to_string(),
             script.to_string_lossy().to_string(),
         )
-    }
-
-    // oracle: the shared-ledger contract in gh_content_ledger — a
-    // reservation must be committed before the external create starts;
-    // empty stdout on exit 0 is finalized failed without rewriting gh's
-    // exit code. CONTENT_LEDGER_PATH points into this test's isolated dir.
-    #[test]
-    fn create_reserves_before_gh_and_empty_output_records_failure() {
-        let dir = std::env::temp_dir().join(format!(
-            "fleet-gh-ledger-e2e-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let ledger = dir.join("ledger.sqlite");
-        let probe = dir.join("probe");
-        let script = format!(
-            "#!/bin/sh\n\
-             python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\"select outcome from events\").fetchall(); assert r == [(\"reserved\",)], r' \"{}\" || exit 91\n\
-             touch \"{}\"\n\
-             exit 0\n",
-            ledger.display(), probe.display()
-        );
-        let script_path = place_script(&dir, "ledger-gh", &script);
-        let args: Vec<String> = ["issue", "create", "--repo", "owner/repo", "--title", "test"]
-            .iter().map(|s| s.to_string()).collect();
-        let pending = gh_content_ledger::start_at(&args, &ledger)
-            .expect("reserve succeeds")
-            .unwrap();
-        let attempt = run_gh_once(&script_path, &[], "test-token").expect("fake gh runs");
-        assert_eq!(attempt.code, 0, "gh's exit code is preserved");
-        assert!(probe.exists(), "fake gh ran after observing reservation");
-        gh_content_ledger::finish(&pending, attempt.code, Some(&attempt.stdout))
-            .expect("finalize reservation");
-        let conn = rusqlite::Connection::open(&ledger).unwrap();
-        let (outcome, detail): (String, String) = conn
-            .query_row("SELECT outcome, detail FROM events", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .unwrap();
-        assert_eq!(outcome, "failed", "empty successful output is not a created item");
-        assert_eq!(detail, "gh exited 0 with empty output");
     }
 
     /// Place an executable script the way fake_gh does: the text

@@ -95,7 +95,7 @@ fn clean_run_reopens_with_every_transaction() {
     let (outcome, trace) = run_one(None, false, &models);
     assert_eq!(outcome.verdict, Verdict::OkAcked, "{}", outcome.detail);
     assert_eq!(outcome.acked, TXNS);
-    assert_ne!(trace, [] as [(Kind, u64, usize); 0]);
+    assert!(!trace.is_empty());
 }
 
 #[test]

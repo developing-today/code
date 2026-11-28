@@ -54,7 +54,6 @@ pub mod creation_outbox;
 #[cfg(any(feature = "client", feature = "queue-broker"))]
 pub mod disposition;
 mod home;
-pub mod lane_share;
 pub mod log;
 pub mod merge_intent;
 pub mod token_file;
@@ -65,7 +64,7 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
 #[cfg(feature = "client")]
-pub mod needs_user;
+pub mod needs_drew;
 pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
@@ -73,17 +72,12 @@ pub mod placement;
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
-#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
-mod tcp_http;
-// BT-3 (#14401): broker TLS Phase 1 — the server half serves
-// the queue broker's TCP leg; the client half validates it
-// against the BT-2 trust store.
-#[cfg(any(feature = "client", feature = "queue-broker"))]
-pub mod broker_tls;
 #[cfg(feature = "queue-broker")]
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub mod uds_http;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+mod tcp_http;
 // The validation library is shared by both surfaces: the broker
 // validates whole packets, and the client validates individual
 // flag values (e.g. `--not-before`) against the same rules, so

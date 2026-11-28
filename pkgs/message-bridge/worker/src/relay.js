@@ -4,7 +4,7 @@
 //
 // Addresses (case-insensitive; a list or a comma-separated string):
 //
-//   owner (or drew, central)   Drew: from a connector, an outbound row on
+//   drew (or owner, central)   Drew: from a connector, an outbound row on
 //                              its own channel (what send_message always
 //                              did); from an agent, a post to central
 //   claude, chatgpt            a connector's channel (also channel:<name>)
@@ -37,7 +37,7 @@
 import { GLOB_SEGMENT, isGlob } from "./glob.js";
 import { CHANNELS, CHANNEL_NAMES, InputError, MAX_BODY } from "./messages.js";
 
-export const ADDRESS_HELP = "owner, claude, chatgpt, connectors, agent:<name or glob>, group:<name>, agents or all";
+export const ADDRESS_HELP = "drew, claude, chatgpt, connectors, agent:<name or glob>, group:<name>, agents or all";
 const DREW = ["drew", "owner", "central"];
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_ADDRESSES = 200;
@@ -148,7 +148,7 @@ export async function relay(store, { from, to, body, kind, sender, limit, broade
   const k = relayKind(kind);
   const where = parseAddresses(to, from);
   if (where.drew && k === "instruction") {
-    throw new InputError("Drew gets messages, not instructions: send kind message to owner");
+    throw new InputError("Drew gets messages, not instructions: send kind message to drew");
   }
   const source = me.channel ? "mcp" : "fleet";
   let fleet = [];
@@ -183,9 +183,5 @@ export async function relay(store, { from, to, body, kind, sender, limit, broade
   return { messages, fleet, unregistered, report };
 }
 
-/**
- * A from_addr as the address that answers it: null (the owner) is
- * "owner". The role term is the shown form (#13507); "drew" and
- * "central" stay accepted aliases in parseAddresses.
- */
-export const replyAddress = (fromAddr) => fromAddr ?? "owner";
+/** A from_addr as the address that answers it: null (Drew) stays "drew". */
+export const replyAddress = (fromAddr) => fromAddr ?? "drew";

@@ -1293,7 +1293,7 @@ mod tests {
         assert!(opts.first.is_none());
         assert!(opts.last.is_none());
         assert!(!opts.count);
-        assert_eq!(opts.exclude, [] as [String; 0]);
+        assert!(opts.exclude.is_empty());
     }
 
     #[test]

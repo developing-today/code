@@ -29,11 +29,9 @@ import type { Json, JsonObject } from "./queue-validate.ts";
 export interface TaskRow {
   id: number;
   queue: string;
-  manual_only: boolean;
   title: string | null;
   body: string | null;
   payload: Json;
-  metadata: Json;
   dedupe_key: string | null;
   priority: number | null;
   status: string;
@@ -168,13 +166,7 @@ export interface QueueStore {
   /** checkpoints upsert keyed (worker_id, key). */
   upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void>;
 
-  appendEvent(
-    workerId: string | null,
-    taskId: number | null,
-    kind: string,
-    detail: Json,
-    createdAt: string,
-  ): Promise<EventRow>;
+  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): Promise<EventRow>;
   allEvents(): Promise<EventRow[]>;
   eventsForTask(taskId: number): Promise<EventRow[]>;
   deleteEventsBefore(cutoffIso: string): Promise<number>;
@@ -332,13 +324,7 @@ export class FixtureQueueStore implements QueueStore {
     this.checkpoints.set(`${workerId} ${key}`, clone(value));
   }
 
-  async appendEvent(
-    workerId: string | null,
-    taskId: number | null,
-    kind: string,
-    detail: Json,
-    createdAt: string,
-  ): Promise<EventRow> {
+  async appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): Promise<EventRow> {
     const row: EventRow = {
       id: this.nextEventId++,
       worker_id: workerId,

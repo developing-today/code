@@ -20,10 +20,8 @@ import type { PendingCommentCounts } from "./comments.ts";
 import type { ConflictInbox } from "./conflicts.ts";
 import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
-import type { EditionDrift } from "./edition-drift.ts";
 import {
   ageMsText,
-  FEED_COLLECTOR_CADENCE_MS,
   FEED_STALE_MS,
   GENERATED_AT_FUTURE_SKEW_MS,
   type FeedSectionStatus,
@@ -69,20 +67,7 @@ export interface ProbeOutcome {
   probedAtMs?: number;
 }
 
-/** "late" (#14062): the fleet feed is past one collector cadence but not yet
- *  past FEED_STALE_MS — a write is overdue, said on the row, but nothing has
- *  failed yet, so it does not degrade the view. */
-export type ServiceState =
-  | "up"
-  | "late"
-  | "down"
-  | "stale"
-  | "absent"
-  | "invalid"
-  | "unknown"
-  | "off"
-  | "self"
-  | "fixtures";
+export type ServiceState = "up" | "down" | "stale" | "absent" | "invalid" | "unknown" | "off" | "self" | "fixtures";
 
 export interface ProbeCache {
   entries: Map<string, { at: number; outcome: ProbeOutcome }>;
@@ -161,38 +146,6 @@ export interface QuotaGathererProviderHealth {
   behindBy: null;
   lagNote: string;
   credentialLabel?: string;
-  /** Why the gatherer could not read the provider, as it reported it
-   *  (#14062: an "error" row with no error text tells the reader nothing). */
-  error?: string;
-}
-
-const GATHERER_STATE_RANK: Record<QuotaGathererProviderHealth["state"], number> = {
-  error: 3,
-  lapsed: 2,
-  stale: 1,
-  ok: 0,
-};
-
-/** One row per provider, service and credential (#14062). The gatherer can
- *  list the same provider more than once in a tick; the row kept is the
- *  worst state among them (an error is never hidden behind an ok twin),
- *  then the latest sync. Order follows each key's first appearance. */
-export function dedupeGathererProviders(
-  providers: readonly QuotaGathererProviderHealth[],
-): QuotaGathererProviderHealth[] {
-  const kept = new Map<string, QuotaGathererProviderHealth>();
-  for (const provider of providers) {
-    const key = JSON.stringify([provider.providerId, provider.serviceId, provider.credentialLabel ?? null]);
-    const held = kept.get(key);
-    if (held === undefined) {
-      kept.set(key, provider);
-      continue;
-    }
-    const rank = GATHERER_STATE_RANK[provider.state] - GATHERER_STATE_RANK[held.state];
-    const newer = (provider.lastSyncAt ?? "") > (held.lastSyncAt ?? "");
-    if (rank > 0 || (rank === 0 && newer)) kept.set(key, provider);
-  }
-  return [...kept.values()];
 }
 
 export interface PageHealth {
@@ -236,10 +189,8 @@ export interface ConflictsHealth {
 }
 
 export interface HealthView {
-  /** The aggregator process is up if it assembled this view; the
-   *  status says whether everything it checks is well (#14062): "ok"
-   *  exactly when `degraded` is false, "degraded" when it is true. */
-  status: "ok" | "degraded";
+  /** The aggregator process itself is up if it assembled this view. */
+  status: "ok";
   mode: "live" | "fixtures";
   /** Deployed build marker (#1150): the commit install.sh deployed,
    *  carried into the process via PM_AGG_BUILD_VERSION in the service
@@ -248,12 +199,6 @@ export interface HealthView {
    *  when this does not match the tree it just deployed — a deploy
    *  that cannot prove it is live is a failed deploy. */
   version: string;
-  /** CF-9 (#14949): the laptop edition's drift vs origin/main,
-   *  measured from this process's deployed build marker against the
-   *  primary checkout's refs (src/edition-drift.ts); null when the
-   *  server did not assemble it (fixtures/tests) — never an invented
-   *  in-sync. */
-  edition?: EditionDrift | null;
   generatedAt: string;
   bootAt: string;
   degraded: boolean;
@@ -474,9 +419,6 @@ export interface HealthInputs {
   pushHealth?: PushHealthView | null;
   /** #9988: SLO budget summaries from the journal (server.ts supplies them in live mode). */
   slo?: SloFacetSummary[] | null;
-  /** CF-9 (#14949): the edition-drift measurement (server.ts supplies
-   *  it in live mode); absent/null renders as unassembled. */
-  edition?: EditionDrift | null;
 }
 
 export interface HealthDeps {
@@ -527,18 +469,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
               ? {
                   state: "stale",
                   ok: false,
-                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the ${FEED_STALE_MS / 60_000}m freshness threshold`,
+                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold`,
                 }
-              : feedAgeMs !== null && feedAgeMs >= FEED_COLLECTOR_CADENCE_MS
-                ? {
-                    // #1116: a stopped collector shows on this row within one
-                    // interval; #14062: it degrades the view only once a whole
-                    // write has been missed.
-                    state: "late",
-                    ok: true,
-                    detail: `feed ${ageMsText(feedAgeMs)} — past the ${FEED_COLLECTOR_CADENCE_MS / 60_000}m collector cadence, a write is overdue; stale at ${FEED_STALE_MS / 60_000}m`,
-                  }
-                : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
+              : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
         outcome = { state: "unknown", ok: null, detail: "this source reports no section diagnosis" };
@@ -621,16 +554,12 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       // #1203: a harness whose GraphQL cannot be read (or whose backend
       // is not READY) is a degraded dependency, not an invisible one.
       rfa.state === "down" ||
-      // CF-9 (#14949): an edition stale past the drift threshold is a
-      // degraded stack, named as such — never smoothed over.
-      (inputs.edition != null && inputs.edition.stale) ||
       sectionHealth.some((section) => section.status === "error"));
 
   return {
-    status: degraded ? "degraded" : "ok",
+    status: "ok",
     mode: inputs.mode,
     version: inputs.version ?? resolveBuildVersion(),
-    edition: inputs.edition ?? null,
     generatedAt: new Date(now).toISOString(),
     bootAt: new Date(BOOT_AT).toISOString(),
     degraded,
@@ -655,7 +584,6 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
             behindBy: null,
             lagNote: "provider does not report a comparable expected entry total",
             ...(provider.credentialLabel ? { credentialLabel: provider.credentialLabel } : {}),
-            ...(provider.error ? { error: provider.error } : {}),
           })),
         }
       : null,

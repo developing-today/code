@@ -2658,16 +2658,6 @@ export function awayState(health) {
   };
 }
 
-/** What the Cloudflare screen says of where the repository-described
- * configuration was last applied from (#13495): the latest successful
- * apply's source, commit and completion time, or that provenance is
- * unavailable when no successful apply is on record. The run's page is
- * linked from the screen itself, beside this line. */
-export function applySaid(apply, now = Date.now()) {
-  if (!apply) return "Apply provenance is unavailable: no successful apply is on record.";
-  return `Last applied from ${apply.source}, at commit ${String(apply.commit).slice(0, 12)}, ${ago(apply.at, now)}.`;
-}
-
 /** Cloudflare: whether it does the core itself, what that covers, how
  * its own reads are going, and the switch. The switch can be turned off
  * because it is what puts two of the owner's tokens in the Worker. */
@@ -2687,15 +2677,6 @@ async function viewAway() {
         h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so this is the laptop doing everything."),
       ),
     ];
-  }
-  // The last successful apply's provenance, read from the workflow's
-  // runs: a read that dispatches nothing. Unreadable says so by itself
-  // and leaves the rest of the screen as it was.
-  let provenance = null;
-  try {
-    provenance = await api("cloudflare-apply");
-  } catch {
-    provenance = null;
   }
   const flip = async (e) => {
     const done = await act(
@@ -2732,14 +2713,6 @@ async function viewAway() {
       ),
       checked,
       s.on && s.checkedAt ? h("p", { class: "meta" }, `Tried ${ago(new Date(s.checkedAt).toISOString())}.`) : null,
-      provenance
-        ? h(
-            "p",
-            { class: "meta" },
-            applySaid(provenance.apply),
-            provenance.apply ? [" ", ext(provenance.apply.url, "See the run")] : null,
-          )
-        : h("p", { class: "meta" }, "Apply provenance could not be read."),
       s.refused.length > 0
         ? h(
             "p",
@@ -2860,51 +2833,6 @@ export function differsSaid(d) {
   return `For ${what} it says ${show(d.machine)}, and main says ${show(d.platform)}. Cloudflare goes by this machine's until it runs main's${why}.`;
 }
 
-/** The settings the owner may change from the app (src/settings.ts's
- * OWNER_CHANGEABLE): Cloudflare refuses any other name, so no other is
- * offered as if it could be changed. */
-export const OWNER_CHANGEABLE = ["promptLabel", "needsRepos"];
-
-/** A setting's value in words: a list said as one, nothing as "nothing". */
-const settingValue = (value) => {
-  if (Array.isArray(value)) return value.length ? listed(value.map(String)) : "none";
-  return value === null || value === undefined || value === "" ? "nothing" : String(value);
-};
-
-/** One of the platform's settings as the Machines screen says it
- * (#14956): what it is, the value in force, whose it is and since when,
- * main's beside a change of the owner's, and whether the owner may
- * change it from here. A setting only main decides is said as main's,
- * with nothing to press. */
-export function settingSaid(s, now = Date.now()) {
-  const name = typeof s?.name === "string" ? s.name : "";
-  const what = Object.hasOwn(SETTING_SAID, name) ? SETTING_SAID[name] : name || "a setting";
-  const changed = s?.source === "owner";
-  const when = changed && typeof s.since === "number" ? ago(new Date(s.since).toISOString(), now) : "";
-  const whose = changed
-    ? `Yours: changed ${when || "earlier"}${typeof s.by === "string" && s.by ? ` by ${s.by}` : ""}.`
-    : s?.source === "machine"
-      ? "The machine's: Cloudflare goes by the list it reports until it runs main's."
-      : "Main's.";
-  return {
-    name,
-    what: capital(what),
-    value: settingValue(s?.value),
-    whose,
-    main: changed ? `Main says ${settingValue(s.repository)}.` : null,
-    changeable: OWNER_CHANGEABLE.includes(name),
-    changed,
-  };
-}
-
-/** What the owner typed for a list of repositories, as the list: owner/name
- * entries separated by commas, spaces or lines. */
-export function reposTyped(text) {
-  return String(text ?? "")
-    .split(/[\s,]+/)
-    .filter(Boolean);
-}
-
 /** One machine as the Machines screen says it: whether it is
  * reporting, what it runs, and what only it reports and does. What the
  * platform does itself (`platform`, null when nothing is in front of
@@ -2931,18 +2859,7 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
     otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
     // The platform's settings it runs with others of, each in a sentence.
     differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
-    settings: settingsTakenSaid(machine.settingsRev, platform?.settingsRev),
   };
-}
-
-/** Whether a machine runs with the owner's latest change to the
- * settings, in a sentence; empty when it does, or when the owner has
- * changed none (#14957). Until it has, Cloudflare goes by the change
- * all the same: a machine is told it with its next report. */
-export function settingsTakenSaid(machineRev, platformRev) {
-  if (!Number.isSafeInteger(platformRev) || platformRev < 1 || machineRev === platformRev) return "";
-  if (!Number.isSafeInteger(machineRev)) return "Its console is older than changing the settings from here: it runs with its own.";
-  return "It has not taken your latest change to the settings yet: it will with its next report.";
 }
 
 /** What the Machines screen shows that can change with nothing else
@@ -2953,9 +2870,7 @@ export function settingsTakenSaid(machineRev, platformRev) {
  * no longer what it was drawn from. */
 export function machinesMark(m, now = Date.now()) {
   return JSON.stringify({
-    platform: m?.platform
-      ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length, m.platform.settingsRev ?? null]
-      : null,
+    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
     machines: (m?.machines || []).map((x) => [
       x.name,
       x.quiet,
@@ -2964,7 +2879,6 @@ export function machinesMark(m, now = Date.now()) {
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
       Array.isArray(x.differs) ? x.differs : [],
-      x.settingsRev ?? null,
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -3033,7 +2947,6 @@ async function viewMachines() {
       platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
       platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
     ),
-    ...platformSettingsPart(platform),
     h("h2", {}, `Machines (${m.machines.length})`),
   ];
   if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
@@ -3044,7 +2957,6 @@ async function viewMachines() {
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
-        s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
           ? h(
               "details",
@@ -3091,62 +3003,6 @@ async function viewMachines() {
   return out;
 }
 
-/** The Machines screen's Platform settings: each setting in force, from
- * where and since when, and for the ones the owner may change, a way to
- * change it and, once changed, to put it back to main's. A change is
- * made from the revision the screen was drawn at: if the settings were
- * changed meanwhile somewhere else, Cloudflare refuses it and the
- * screen is drawn again from what they are now. */
-function platformSettingsPart(platform) {
-  if (!platform || !Array.isArray(platform.settings)) return [];
-  const rev = Number.isSafeInteger(platform.settingsRev) ? platform.settingsRev : undefined;
-  const change = async (entry, said, e) => {
-    const list = entry.name === "needsRepos";
-    const value = await ask({
-      title: `Change ${said.what.toLowerCase()}`,
-      text: list
-        ? "Each repository as owner/name, separated by commas or spaces. Cloudflare goes by this list from now on, until you put it back to main's."
-        : "Cloudflare goes by this label from now on, until you put it back to main's.",
-      label: list ? "Repositories" : "Label",
-      okLabel: "Change",
-      required: true,
-      value: list ? (Array.isArray(entry.value) ? entry.value.join(", ") : "") : String(entry.value ?? ""),
-    });
-    if (value === null || value === "") return;
-    await act("settings.set", { name: entry.name, value: list ? reposTyped(value) : value, baseRev: rev }, `${said.what} changed`, e.target);
-    draw();
-  };
-  const putBack = async (entry, said, e) => {
-    const sure = await ask({
-      title: `Put ${said.what.toLowerCase()} back to main's?`,
-      text: `${said.main} Cloudflare goes by that again from now on.`,
-      okLabel: "Put back",
-    });
-    if (sure === null) return;
-    await act("settings.clear", { name: entry.name, baseRev: rev }, `${said.what} is main's again`, e.target);
-    draw();
-  };
-  return [
-    h("h2", {}, "Platform settings"),
-    ...platform.settings.map((entry) => {
-      const said = settingSaid(entry);
-      return card(
-        h("h3", {}, said.what),
-        h("p", {}, said.value),
-        h("p", { class: "meta" }, [said.whose, said.main].filter(Boolean).join(" ")),
-        said.changeable
-          ? h(
-              "div",
-              { class: "row end" },
-              said.changed ? h("button", { class: "small ghost", onclick: (e) => putBack(entry, said, e) }, "Put back to main's") : null,
-              h("button", { class: "small", onclick: (e) => change(entry, said, e) }, "Change"),
-            )
-          : null,
-      );
-    }),
-  ];
-}
-
 const GROUP_SAID = { platform: "The platform", fleet: "Fleet", data: "Data", id: "id", lab: "Lab" };
 
 /** One Worker's line on how it gets into service and how its last
@@ -3176,51 +3032,6 @@ export function workerSaid(w, now = Date.now()) {
   return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
 }
 
-/** One store token's line on the Platform screen: when it runs out and
- * whether that needs looking at. Only its name and its date are ever
- * known here, never the token. */
-export function tokenSaid(t, now = Date.now()) {
-  const day = typeof t.expiresAt === "string" ? t.expiresAt.slice(0, 10) : "";
-  const left = day ? Math.floor((Date.parse(t.expiresAt) - now) / 86_400_000) : 0;
-  switch (t.state) {
-    case "expired":
-      return { text: `Ran out on ${day}. What uses it cannot reach its store until it is rotated.`, tone: "warn" };
-    case "soon":
-      return { text: `Runs out on ${day}, in ${left <= 0 ? "less than a day" : left === 1 ? "1 day" : `${left} days`}. Rotate it before then.`, tone: "warn" };
-    case "fine":
-      return { text: `Runs out on ${day}.`, tone: "good" };
-    case "none":
-      return { text: "Carries no date: it does not run out by itself.", tone: "" };
-    default:
-      return { text: "Could not be read from here, so when it runs out is not known.", tone: "" };
-  }
-}
-
-/** One store's line on the Platform screen (#14254): whether it
- * answered this asking, and what it said — its size, the rows in the
- * tables the app reads, and its schema version. A store that did not
- * answer is said as that, with the error plainly; nothing of an
- * earlier asking is shown for it. */
-export function storeSaid(s) {
-  if (!s.answers) return { text: `Not answering: ${s.error || "the store could not be asked"}.`, tone: "warn", lines: [] };
-  const size =
-    typeof s.sizeBytes === "number"
-      ? s.sizeBytes < 1024
-        ? `${s.sizeBytes} B`
-        : s.sizeBytes < 1024 * 1024
-          ? `${(s.sizeBytes / 1024).toFixed(1)} KiB`
-          : `${(s.sizeBytes / (1024 * 1024)).toFixed(1)} MiB`
-      : "not said";
-  const lines = Object.entries(s.rows || {}).map(
-    ([table, n]) => `${table}: ${typeof n === "number" ? n.toLocaleString("en-US") : "not counted"}`,
-  );
-  return {
-    text: `Answers. Size ${size}. Schema version ${s.liveSchemaVersion ?? "not recorded"}.`,
-    tone: "good",
-    lines,
-  };
-}
-
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -3238,13 +3049,7 @@ export function platformCounts(workers) {
  * how its last deploy went; and what joining the one platform means
  * for each that has not yet. */
 async function viewPlatform() {
-  // When the store tokens run out is a machine's to read; with none
-  // reporting, the Workers still show.
-  const [p, held, live] = await Promise.all([
-    api(freshly("platform")),
-    api("tokens").catch((error) => ({ error: error.message })),
-    api(freshly("stores")).catch((error) => ({ error: error.message })),
-  ]);
+  const p = await api(freshly("platform"));
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -3265,48 +3070,6 @@ async function viewPlatform() {
       p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
     ),
   ];
-  const stores = Array.isArray(live?.stores) ? live.stores : [];
-  out.push(h("h2", {}, `Stores${stores.length ? ` (${stores.length})` : ""}`));
-  if (live?.error) out.push(card(h("p", { class: "why" }, `The stores could not be asked: ${live.error}`)));
-  if (!live?.error && stores.length === 0) out.push(card(h("p", { class: "meta" }, "The list of stores names none.")));
-  if (live?.malformed) {
-    out.push(
-      card(
-        h(
-          "p",
-          { class: "why" },
-          `${live.malformed} entr${live.malformed === 1 ? "y" : "ies"} in the list of stores could not be read and ${live.malformed === 1 ? "is" : "are"} not shown.`,
-        ),
-      ),
-    );
-  }
-  for (const s of stores) {
-    const said = storeSaid(s);
-    out.push(
-      card(
-        h("div", { class: "row" }, chip(s.answers ? "answers" : "not answering", said.tone)),
-        h("h3", {}, s.title),
-        h("p", {}, s.does),
-        h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
-        ...said.lines.map((line) => h("p", { class: "meta" }, line)),
-        h("p", { class: "meta" }, `Used by ${(s.usedBy || []).join(", ")}.`),
-      ),
-    );
-  }
-  const tokens = Array.isArray(held?.tokens) ? held.tokens : [];
-  out.push(h("h2", {}, `Store tokens${tokens.length ? ` (${tokens.length})` : ""}`));
-  if (held?.error) out.push(card(h("p", { class: "why" }, `When the store tokens run out could not be read: ${held.error}`)));
-  for (const t of tokens) {
-    const s = tokenSaid(t);
-    out.push(
-      card(
-        h("div", { class: "row" }, chip(t.state === "fine" ? "in date" : t.state === "soon" ? "runs out soon" : t.state === "expired" ? "ran out" : t.state === "none" ? "no date" : "not read", s.tone)),
-        h("h3", {}, t.name),
-        h("p", { class: "meta" }, `Used by ${(t.stores || []).join(", ")}.`),
-        h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
-      ),
-    );
-  }
   for (const group of Object.keys(GROUP_SAID)) {
     const rows = workers.filter((w) => w.group === group);
     if (rows.length === 0) continue;
@@ -3348,83 +3111,6 @@ export function keptGroups(entries) {
   ].filter((g) => g.entries.length > 0);
 }
 
-/** Read every screen once, so the device has a copy of each. One at a
- * time, and unhurried: some of it is searched for. Says how many could
- * not be read; `step(i, n)` is told as each one starts. */
-async function keepEveryScreen(step = () => {}) {
-  const caps = await api("roadmaps").catch(() => []);
-  const reads = everyRead(caps, me.edge);
-  let failed = 0;
-  for (const [i, path] of reads.entries()) {
-    step(i, reads.length);
-    await api(path).catch(() => failed++);
-    if (offline) break;
-    await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
-  }
-  await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
-  return failed;
-}
-
-/** Where this browser notes when it last kept every screen unasked. */
-const KEPT_ALL_KEY = "pm-console-kept-all";
-
-/** After a sign-in, on Wi-Fi or a cable, keep a copy of every screen in
- * the background, so a screen never visited still has one when the
- * connection goes (#13501). Once in a while, not on every page load;
- * never on a metered connection; and only once this browser keeps
- * copies at all (the worker has taken the page). Quiet: nothing is
- * said unless the owner asks, on More, On this device. */
-async function keepAllInBackground() {
-  if (!navigator.serviceWorker?.controller || offline || signedOut) return;
-  if (!unmetered(navigator.connection)) return;
-  let last = null;
-  try {
-    last = localStorage.getItem(KEPT_ALL_KEY);
-  } catch {
-    return;
-  }
-  if (!keepAllDue(last)) return;
-  // After the first screen has been drawn and read, not in its way.
-  await new Promise((resolve) => setTimeout(resolve, 30_000));
-  if (offline || signedOut || document.visibilityState !== "visible" || !unmetered(navigator.connection)) return;
-  const failed = await keepEveryScreen();
-  // Kept whole, it is not kept again for a while. Part-way, it is tried
-  // again on the next load.
-  if (failed === 0 && !offline) {
-    try {
-      localStorage.setItem(KEPT_ALL_KEY, String(Date.now()));
-    } catch {
-      // Nowhere to note it: it is kept again on the next load.
-    }
-  }
-}
-
-/** Whether the connection is one to read every screen on unasked: one
- * the browser says is Wi-Fi or a cable, or, where it does not say which,
- * a fast one. A metered one, one the owner asked to save data on, and
- * one the browser says nothing of (Safari, Firefox) are left alone: the
- * owner can still keep every screen by hand (#13501). */
-export function unmetered(connection) {
-  if (!connection || connection.saveData === true) return false;
-  const type = typeof connection.type === "string" ? connection.type : "unknown";
-  if (["wifi", "ethernet", "wimax"].includes(type)) return true;
-  if (type !== "unknown") return false;
-  return connection.effectiveType === "4g";
-}
-
-/** How long a copy of every screen kept unasked stands before it is
- * kept again unasked. */
-export const KEEP_ALL_EVERY_MS = 12 * 60 * 60_000;
-
-/** Whether every screen is due to be kept unasked: never yet on this
- * browser, or not for a while. A time that cannot be read, or one ahead
- * of the clock, is taken as never. */
-export function keepAllDue(last, now = Date.now()) {
-  const at = Number(last);
-  if (last === null || last === undefined || last === "" || !Number.isFinite(at) || at > now) return true;
-  return now - at >= KEEP_ALL_EVERY_MS;
-}
-
 /** Everything the app's screens read, by the address each asks for it
  * under: what "keep a copy of every screen" fetches. What is read only
  * for one item when it is opened (a question's background, a pull
@@ -3442,7 +3128,6 @@ export function everyRead(caps, edge) {
     ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
     "releases",
     "platform",
-    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -3519,13 +3204,20 @@ async function viewDevice() {
     toast("Forgotten. It keeps again from the next thing you look at.");
   };
   // Before a flight: read every screen once, so the device has a copy
-  // of each.
+  // of each. One at a time, and unhurried: some of it is searched for.
   const keepAll = async (e) => {
     const button = e.target;
     button.disabled = true;
-    const failed = await keepEveryScreen((i, n) => {
-      button.textContent = `${i + 1} of ${n}…`;
-    });
+    const caps = await api("roadmaps").catch(() => []);
+    const reads = everyRead(caps, me.edge);
+    let failed = 0;
+    for (const [i, path] of reads.entries()) {
+      button.textContent = `${i + 1} of ${reads.length}…`;
+      await api(path).catch(() => failed++);
+      if (offline) break;
+      await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
+    }
+    await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
     button.textContent = "Keep a copy of every screen now";
     button.disabled = false;
     toast(
@@ -5120,9 +4812,6 @@ if (typeof document !== "undefined" && view) {
     .then((m) => {
       me = m;
       connectLive();
-      // Signed in: a copy of every screen, in the background, where the
-      // connection allows it.
-      keepAllInBackground().catch(() => {});
     })
     .catch(() => {});
   // The worker shows notifications, keeps the app and what it last saw

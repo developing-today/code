@@ -18,7 +18,6 @@ use fleet_proxy::tunnel::{
 };
 
 use crate::ladder::{Ladder, Leg, LegError, Reply, Request};
-use crate::tls::AgentTls;
 use crate::{CF_ACCESS_SECRET, TARGET_HOST, TARGET_PORT, broker_socket, read_token, token_file};
 
 /// The proxy port the Python tailnet CONNECT dials (`PROXY_PORT`).
@@ -201,24 +200,9 @@ pub fn cf_access_headers(json_text: &str) -> Option<Vec<(String, String)>> {
 }
 
 /// Tailscale: a CONNECT through the tailnet egress proxy to the
-/// laptop's daemon port. With a trust store configured
-/// (`LAPTOP_AGENT_TLS_TRUST_STORE`, BT-4 #14402) the tunnel carries
-/// TLS validated against the fleet trust bundle; a posture that
-/// cannot be built (unreadable store, misspelt break-glass) makes
-/// this leg absent rather than plaintext, so the ladder moves on.
+/// laptop's daemon port.
 pub struct TailscaleLeg {
     pub token: String,
-    pub tls: Result<AgentTls, String>,
-}
-
-impl TailscaleLeg {
-    /// The leg with its TLS posture resolved from the environment.
-    pub fn from_env(token: String) -> TailscaleLeg {
-        TailscaleLeg {
-            token,
-            tls: AgentTls::from_env(),
-        }
-    }
 }
 
 impl Leg for TailscaleLeg {
@@ -227,10 +211,8 @@ impl Leg for TailscaleLeg {
     }
 
     fn call(&self, req: &Request) -> Result<Reply, LegError> {
-        let tls = self.tls.as_ref().map_err(|e| LegError::Absent(e.clone()))?;
         let egress = egress_from_env(TAILNET_PROXY_PORT).map_err(LegError::Absent)?;
-        let conn = connect_tunnel(Some(&egress), TARGET_HOST, TARGET_PORT)
-            .and_then(|tcp| tls.connect(tcp, TARGET_HOST));
+        let conn = connect_tunnel(Some(&egress), TARGET_HOST, TARGET_PORT).and_then(HttpConn::new);
         let host = format!("{TARGET_HOST}:{TARGET_PORT}");
         exchange(conn, req, &self.token, &host, &[])
     }
@@ -710,7 +692,9 @@ pub fn ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
             cf_host: config.cf_host().to_string(),
             cache: Mutex::new(CfCache::default()),
         }),
-        Box::new(TailscaleLeg::from_env(token.clone())),
+        Box::new(TailscaleLeg {
+            token: token.clone(),
+        }),
         Box::new(SshLeg::new()),
     ];
     Ok(Ladder::new(legs))
@@ -731,7 +715,9 @@ pub fn http_ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
             cf_host: config.cf_host().to_string(),
             cache: Mutex::new(CfCache::default()),
         }),
-        Box::new(TailscaleLeg::from_env(token.clone())),
+        Box::new(TailscaleLeg {
+            token: token.clone(),
+        }),
     ];
     Ok(Ladder::new(legs))
 }

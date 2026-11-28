@@ -4137,7 +4137,7 @@ mod serve_tests {
         session(&node, &addr, &capability, 2, 2);
         let namespace_path = server_dir.path().join(".id-worlds/lobby/records.namespace");
         let namespace_before = fs::read(&namespace_path).unwrap();
-        assert_ne!(namespace_before, [] as [u8; 0]);
+        assert!(!namespace_before.is_empty());
         server.stop();
 
         // Same data directory, same module flag: the module is not re-installed

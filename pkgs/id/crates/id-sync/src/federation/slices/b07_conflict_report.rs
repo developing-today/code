@@ -183,10 +183,8 @@ impl VersionHeader {
         }
         let (parent_bytes, body) = rest.split_at(parent_bytes);
         let parents: Vec<EventId> = parent_bytes
-            .as_chunks::<32>()
-            .0
-            .iter()
-            .map(|chunk| *chunk)
+            .chunks_exact(32)
+            .map(|chunk| chunk.try_into().unwrap_or([0; 32]))
             .collect();
         if parents.windows(2).any(|pair| pair[0] >= pair[1]) {
             return None;

@@ -816,7 +816,7 @@ mod tests {
         let page = admission.list().page(1, 1);
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].sequence, 2);
-        assert_eq!(admission.list().page(3, 10), []);
-        assert_eq!(admission.list().page(u64::MAX, 10), []);
+        assert!(admission.list().page(3, 10).is_empty());
+        assert!(admission.list().page(u64::MAX, 10).is_empty());
     }
 }

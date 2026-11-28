@@ -328,10 +328,9 @@ pub enum Received {
     Duplicate,
 }
 
-/// The shared boundary gate used by account actions and account-bound
-/// world membership (#7787, design `doc/2026-11-08_design_id5683.md` §8).
-/// A caller names the enforcement point; the implementation runs the
-/// shared evaluator and renders its outcome.
+/// The boundary gate for the signup/login surface (#7787, design
+/// `doc/2026-11-08_design_id5683.md` §8): the one seam through which
+/// account creation and login consult the shared boundary evaluator.
 ///
 /// The directory owns no boundary semantics. An implementation runs the
 /// one shared adapter, [`id_core::boundary_surfaces::check_surface`],
@@ -3579,7 +3578,7 @@ mod tests {
         .unwrap();
         assert_eq!(away.receive_artifact(&future).unwrap(), Stored::New);
         assert_eq!(away.artifacts().head_seq(&ann), 1);
-        assert_eq!(away.friends_of(&ann), [] as [String; 0]);
+        assert!(away.friends_of(&ann).is_empty());
         assert_eq!(away.receive_artifact(&future).unwrap(), Stored::Duplicate);
     }
 
@@ -4046,7 +4045,7 @@ mod tests {
         assert_eq!(directory.friends_of(&ann), vec![bo.clone()]);
         assert_eq!(directory.friends_of(&bo), vec![ann.clone()]);
         directory.remove_friend(&ann_credential, &bo).unwrap();
-        assert_eq!(directory.friends_of(&ann), [] as [String; 0]);
+        assert!(directory.friends_of(&ann).is_empty());
     }
 
     #[test]

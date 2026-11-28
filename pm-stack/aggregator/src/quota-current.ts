@@ -37,15 +37,7 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
-import {
-  arrayOf,
-  isFiniteNumber,
-  isIsoDate,
-  isNonEmptyString,
-  isNonNegative,
-  isRecord,
-  isTimestampNotFuture,
-} from "./validate.ts";
+import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord, isTimestampNotFuture } from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
@@ -65,11 +57,7 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
   const finiteOrNull = (v: unknown) => v === null || isFiniteNumber(v);
   return (
     isNonEmptyString(value.name) &&
-    // Range gate mirrors isUsageMetric (#5188): a negative window value
-    // is never legitimate usage data, so refuse it here, at the ingest
-    // boundary, instead of letting overlayTursoUsage render it as a
-    // negative `used` (#15162).
-    (value.value === null || isNonNegative(value.value)) &&
+    finiteOrNull(value.value) &&
     finiteOrNull(value.pctOfLimit) &&
     (value.valueLabel === null || typeof value.valueLabel === "string") &&
     finiteOrNull(value.windowSeconds) &&

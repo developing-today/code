@@ -6,7 +6,7 @@
 // routing context the front door would have set. This file is never an
 // application entry point; wrangler.toml does not reference it.
 
-import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED } from "./user-do.ts";
+import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
 
@@ -31,7 +31,6 @@ export default {
     let name = url.searchParams.get("name");
     let binding = url.searchParams.get("binding") ?? "";
     let iroh = url.searchParams.get("iroh");
-    let cse = url.searchParams.get("cse");
     let jurisdiction = url.searchParams.get("jurisdiction") ?? "";
     let routed = url.searchParams.get("routed");
     let pathname = url.pathname;
@@ -55,7 +54,6 @@ export default {
       forwarded.headers.set(HDR_BINDING, binding);
       forwarded.headers.set(HDR_JURISDICTION, jurisdiction);
       if (iroh !== null) forwarded.headers.set(HDR_IROH, iroh);
-      if (cse !== null) forwarded.headers.set(HDR_CSE, cse);
       if (routed !== "no") forwarded.headers.set(HDR_ROUTED, "restricted");
       return await stub.fetch(forwarded);
     }
@@ -63,7 +61,6 @@ export default {
     headers.set(HDR_BINDING, binding);
     headers.set(HDR_JURISDICTION, jurisdiction);
     if (iroh !== null) headers.set(HDR_IROH, iroh);
-    if (cse !== null) headers.set(HDR_CSE, cse);
     if (routed !== "no") headers.set(HDR_ROUTED, "restricted");
     const forwarded = new Request("https://do" + pathname, {
       method: req.method,

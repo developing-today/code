@@ -638,34 +638,17 @@ export class IngestionStore {
     let failed = 0;
     const failedIds: string[] = [];
     let dirty = false;
-    // A replay batch may contain thousands of deliveries; build each persisted
-    // seen list's lookup index once instead of rescanning it for every delivery.
-    // A singleton stays on the scan path without allocating an unused index.
-    const seenBySource = deliveries.length > 1 ? new Map<string, Map<string, number>>() : undefined;
     for (const d of deliveries) {
-      let seen = this.data.seen[d.source];
-      if (!seen) this.data.seen[d.source] = seen = [];
-      let seenCounts = seenBySource?.get(d.source);
-      if (!seenCounts && seenBySource) {
-        seenCounts = new Map();
-        // Loaded lists may contain repeated ids; counts preserve membership
-        // until the last copy is evicted, just like the persisted array.
-        for (const id of seen) seenCounts.set(id, (seenCounts.get(id) ?? 0) + 1);
-        seenBySource.set(d.source, seenCounts);
-      }
-      let cp = this.data.checkpoints[d.source];
-      if (!cp) {
-        cp = {
-          source: d.source,
-          lastSourceId: null,
-          lastEventAt: null,
-          deliveries: 0,
-          duplicates: 0,
-          updatedAt: new Date().toISOString(),
-        };
-        this.data.checkpoints[d.source] = cp;
-      }
-      if (seenCounts ? seenCounts.has(d.sourceId) : seen.includes(d.sourceId)) {
+      const seen = (this.data.seen[d.source] ??= []);
+      const cp = (this.data.checkpoints[d.source] ??= {
+        source: d.source,
+        lastSourceId: null,
+        lastEventAt: null,
+        deliveries: 0,
+        duplicates: 0,
+        updatedAt: new Date().toISOString(),
+      });
+      if (seen.includes(d.sourceId)) {
         duplicates++;
         cp.duplicates++;
         cp.updatedAt = new Date().toISOString();
@@ -699,17 +682,7 @@ export class IngestionStore {
         continue;
       }
       seen.push(d.sourceId);
-      seenCounts?.set(d.sourceId, 1);
-      if (seen.length > SEEN_RETENTION_MAX) {
-        const evicted = seen.splice(0, seen.length - SEEN_RETENTION_MAX);
-        if (seenCounts) {
-          for (const sourceId of evicted) {
-            const remaining = seenCounts.get(sourceId)! - 1;
-            if (remaining) seenCounts.set(sourceId, remaining);
-            else seenCounts.delete(sourceId);
-          }
-        }
-      }
+      if (seen.length > SEEN_RETENTION_MAX) seen.splice(0, seen.length - SEEN_RETENTION_MAX);
       cp.deliveries++;
       cp.lastSourceId = d.sourceId;
       if (!cp.lastEventAt || Date.parse(d.at) >= Date.parse(cp.lastEventAt)) cp.lastEventAt = d.at;

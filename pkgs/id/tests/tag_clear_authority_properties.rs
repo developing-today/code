@@ -94,7 +94,6 @@ impl Chains {
             checkpoint: None,
             rotation: None,
             anchor: None,
-            thread: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));

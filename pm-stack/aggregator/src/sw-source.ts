@@ -56,27 +56,17 @@ self.addEventListener('notificationclick', (event) => {
   const nd = event.notification.data || {};
   // #8568: an answer-action tap answers the question in place — POST
   // the chosen option to the answer endpoint (the per-question token
-  // is the authority), close, done. #13469: when the stack itself is
-  // unreachable and the answer link points at the edge relay, the
-  // same POST goes to the edge, which keeps it until the stack drains
-  // it. Errors are silent: the answer page remains one tap away on
-  // the notification body.
+  // is the authority), close, done. Errors are silent: the answer
+  // page remains one tap away on the notification body.
   if (event.action && nd.answerLedgerId && nd.answerToken) {
     event.notification.close();
     event.waitUntil((async () => {
-      const path = '/api/needs-drew/' + encodeURIComponent(nd.answerLedgerId) + '/answer';
-      const init = {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: nd.answerToken, optionId: event.action }),
-      };
       try {
-        const res = await fetch(path, init);
-        if (res.ok || (res.status >= 400 && res.status < 500)) return;
-      } catch {}
-      try {
-        const edge = nd.answerUrl ? new URL(path, nd.answerUrl) : null;
-        if (edge && edge.origin !== self.location.origin) await fetch(edge.href, init);
+        await fetch('/api/needs-drew/' + encodeURIComponent(nd.answerLedgerId) + '/answer', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: nd.answerToken, optionId: event.action }),
+        });
       } catch {}
     })());
     return;

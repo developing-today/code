@@ -81,7 +81,7 @@ pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.as_chunks::<2>().0 {
+    for pair in bytes.chunks_exact(2) {
         let nibble = |b: u8| char::from(b).to_digit(16);
         out.push(u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?);
     }
@@ -94,7 +94,7 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0_u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
+    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
         let nibble = |b: u8| char::from(b).to_digit(16);
         *slot = u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?;
     }

@@ -7,8 +7,8 @@
 // health-page-derived stack-health candidate for that service is
 // suppressed (see src/notifications.ts).
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { requireHome } from "./home.ts";
 
 /** Service ids the stack sentinel covers — its word overrides /health. */
 export const SENTINEL_SERVICE_IDS = [
@@ -45,7 +45,7 @@ export interface StackHealthInput {
 /** Default state path (mirrors src/config.ts stackHealthFile). */
 export function defaultStackHealthFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_STACK_HEALTH_FILE?.trim();
-  return v ? v : join(requireHome("PM_AGG_STACK_HEALTH_FILE"), ".local", "state", "pm-aggregator", "stack-health.json");
+  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json");
 }
 
 /** Validate the intake `stackHealth` extension object (#8568 contract). */

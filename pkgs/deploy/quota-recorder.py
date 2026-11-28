@@ -59,13 +59,7 @@ OUT_DIR = os.path.expanduser(
     "/hidden_files/visibility"
 )
 SUBSCRIPTION_STATUS = "/opt/hatch/bin/subscription-status"
-# FLEET_PLATFORM_URL may name another https origin (the Turso store) to
-# stage or roll back the move to D1.
-TURSO_URL = (
-    os.environ.get("FLEET_PLATFORM_URL", "").strip()
-    if re.fullmatch(r"https://[^/@\s]+(/[^@\s]*)?", os.environ.get("FLEET_PLATFORM_URL", "").strip())
-    else "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
-)
+TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
 TURSO_TOKEN_SECRET = "turso.fleet-platform-rw-token"
 TABLE = "agent_quota_records"
 

@@ -889,7 +889,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1180,7 +1179,6 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
-                thread: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
@@ -1544,7 +1542,6 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
-            thread: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1653,10 +1650,7 @@ mod tests {
         // arrive.
         assert_eq!(answered.received.duplicates, 1, "seq 1 is a proof header");
         assert_eq!(answered.received.voided, 1, "seq 2 is above the fork point");
-        assert_eq!(
-            answered.received.refused, 0,
-            "seq 2 is retained as evidence"
-        );
+        assert_eq!(answered.received.refused, 0, "seq 2 is retained as evidence");
         assert_eq!(answered.received.accepted, 5, "every event of y arrives");
         assert_eq!(outcome.metrics.sent_operations, 7);
         let refs = [&y];

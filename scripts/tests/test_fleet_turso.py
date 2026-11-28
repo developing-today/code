@@ -72,9 +72,8 @@ class Tests(unittest.TestCase):
     def test_destination_rejected_before_secret_lookup(self):
         for url in (
             "https://other.turso.io",
-            "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
-            "https://d1-gateway.developing-today.workers.dev@evil.example/db/fleet-platform",
-            "https://d1-gateway.developing-today.workers.dev/db/fleet-queue",
+            "https://fleet-platform-dezren39.aws-us-east-1.turso.io@evil.example",
+            "https://fleet-platform-dezren39.aws-us-east-1.turso.io/x",
         ):
             with (
                 patch.dict("os.environ", {"FLEET_TURSO_URL": url}),

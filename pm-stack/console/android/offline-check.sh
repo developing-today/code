@@ -32,7 +32,6 @@ set -euo pipefail
 APK=""
 EDGE_URL=""
 ACT_LOG=""
-SITE_URL=""
 ANSWER_LABEL="Build new attachment storage"
 QUESTION_TEXT="For S7 attachments and multimedia, build new storage, or reuse a mechanism outside pm-stack that you name?"
 NEXT_QUESTION_TEXT="Which checks must pass before a batch merges?"
@@ -40,7 +39,7 @@ PKG="today.developing.pmconsole"
 LAUNCHER="today.developing.pmconsole/com.google.androidbrowserhelper.trusted.LauncherActivity"
 
 usage() {
-  echo "usage: offline-check.sh --apk <apk> --edge-url <url> --act-log <file> [--site-url <url>] [--answer-label <text>] [--question-text <text>] [--next-question-text <text>]" >&2
+  echo "usage: offline-check.sh --apk <apk> --edge-url <url> --act-log <file> [--answer-label <text>] [--question-text <text>] [--next-question-text <text>]" >&2
   exit 2
 }
 
@@ -52,10 +51,6 @@ while [ $# -gt 0 ]; do
     ;;
   --edge-url)
     EDGE_URL="${2:-}"
-    shift 2
-    ;;
-  --site-url)
-    SITE_URL="${2:-}"
     shift 2
     ;;
   --act-log)
@@ -86,20 +81,15 @@ done
   exit 2
 }
 
-# uiautomator follows the XML with a line of its own ("UI hierchary
-# dumped to: ..."), so the parses below keep only the document, from
-# "<hierarchy" through "</hierarchy>": with the trailer left on, every
-# parse fails and every screen reads as empty.
 # The screen as the emulator sees it, one text per line.
 screen_text() {
-  timeout 120 adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
+  adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
 import sys, xml.etree.ElementTree as ET
 raw = sys.stdin.buffer.read()
 start = raw.find(b"<hierarchy")
 if start < 0:
     sys.exit(0)
-end = raw.find(b"</hierarchy>", start)
-root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
+root = ET.fromstring(raw[start:].decode("utf-8", "replace"))
 for node in root.iter("node"):
     text = node.get("text") or ""
     if text:
@@ -110,84 +100,30 @@ for node in root.iter("node"):
 # The centre of the first element whose text is exactly the needle,
 # or nothing.
 tap_xy() {
-  timeout 120 adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
+  adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
 import sys, xml.etree.ElementTree as ET
 needle = sys.argv[1]
 raw = sys.stdin.buffer.read()
 start = raw.find(b"<hierarchy")
 if start < 0:
     sys.exit(1)
-end = raw.find(b"</hierarchy>", start)
-root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
-def tap_point(node):
-    bounds = node.get("bounds") or ""
-    nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
-    if len(nums) != 4:
-        return None
-    x1, y1, x2, y2 = (int(n) for n in nums)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return bounds, (x1 + x2) // 2, (y1 + y2) // 2
-
-def label_of(node):
-    return node.get("text") or node.get("content-desc") or ""
-
-# A match only counts with a real box: the screen read holds the
-# whole page, and a node off the screen reports bounds [0,0][0,0] —
-# the answer tap of run 45578833900 matched such a node and tapped
-# the corner of the screen. First pass: the label at the start of
-# the node text. Second pass: the label anywhere in it — a
-# recommended option names its button with the word RECOMMENDED in
-# front of the label, so the answer the check taps never starts
-# the text of its button.
-for mode in ("prefix", "contains"):
-    for node in root.iter("node"):
-        label = label_of(node)
-        hit = label.startswith(needle) if mode == "prefix" else needle in label
-        if not hit:
-            continue
-        got = tap_point(node)
-        if got is None:
-            continue
-        bounds, cx, cy = got
-        print("tap_xy: %r -> (%s) text=%r bounds=%s tap=%d,%d" % (
-            needle, mode, label, bounds, cx, cy), file=sys.stderr)
-        print(cx, cy)
-        sys.exit(0)
-# No tappable node matched: say what the screen did hold, so a miss
-# is diagnosable from the run log (run 45574682050 missed a tab five
-# times that the failure dump, seconds later, showed plainly).
-seen = [n.get("text") for n in root.iter("node") if n.get("text")]
-print("tap_xy: no tappable node names %r; screen texts: %s" % (needle, seen[:40]), file=sys.stderr)
+root = ET.fromstring(raw[start:].decode("utf-8", "replace"))
+for node in root.iter("node"):
+    if (node.get("text") or "") == needle:
+        bounds = node.get("bounds") or ""
+        nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
+        if len(nums) == 4:
+            x1, y1, x2, y2 = (int(n) for n in nums)
+            print((x1 + x2) // 2, (y1 + y2) // 2)
+            sys.exit(0)
 sys.exit(1)
 ' "$1"
 }
 
-# The device reads here and in the screen helpers carry timeouts:
-# in run 45568729971 the check failed in its second minute and the
-# dump's own read then hung on the wedged emulator for forty, until
-# the run was cancelled — a diagnostic must never hold the run.
 dump_for_log() {
-  # A system dialog — the launcher's "isn't responding", under this
-  # emulator's load — may be all that covers the app at the moment
-  # of failure (run 45563986699's dump showed only the dialog, with
-  # the app's browser tab already open behind it). Dismiss it the
-  # way wait_text does and read the screen again, so the dump names
-  # the app's own state, not the dialog's.
-  if screen_text | grep -qF "isn't responding"; then
-    dismiss_anr
-    sleep 2
-  fi
   echo "--- screen ---" >&2
   screen_text >&2 || true
   echo "--- end screen ---" >&2
-  echo "--- foreground: $(timeout 60 adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
-  echo "--- logcat (app, launcher and activity lines) ---" >&2
-  timeout 60 adb logcat -d -t 8000 2>/dev/null | grep -aE 'FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager' | grep -avE 'uiautomator|tachyon' | tail -40 >&2 || true
-  echo "--- end logcat ---" >&2
-  echo "--- activity events for the app ---" >&2
-  timeout 60 adb logcat -b events -d 2>/dev/null | grep -aE 'am_create_activity|am_finish_activity|am_destroy_activity|am_proc_died|am_crash|am_anr' | grep -a 'pmconsole' | tail -20 >&2 || true
-  echo "--- end activity events ---" >&2
 }
 
 fail() {
@@ -196,31 +132,10 @@ fail() {
   exit 1
 }
 
-# Dismiss a system "isn't responding" dialog. Tapping Wait does not
-# clear the launcher's: in run 45580772520 five landed Wait taps left
-# it standing, the launcher wedged under the emulator's load and the
-# dialog back at once each time. Stopping the launcher clears it —
-# the system starts the launcher again when it is wanted, and the
-# check never needs it: the app is started by name, and the recents
-# screen is the system's, not the launcher's. The Wait tap stays for
-# a dialog that is some other app's.
-dismiss_anr() {
-  adb shell am force-stop com.google.android.apps.nexuslauncher >/dev/null 2>&1 || true
-  tap_text "Wait" || true
-}
-
 wait_text() {
-  local needle="$1" timeout="${2:-60}" i=0 screen=""
+  local needle="$1" timeout="${2:-60}" i=0
   while [ "$i" -lt "$timeout" ]; do
-    screen="$(screen_text)"
-    if printf '%s' "$screen" | grep -qF "$needle"; then return 0; fi
-    # A system "isn't responding" dialog — the launcher's, under a
-    # loaded emulator — is scenery standing between the check and
-    # the app, not the app itself: tell it to wait and keep waiting
-    # for the app's own text, which is what decides.
-    if printf '%s' "$screen" | grep -qF "isn't responding"; then
-      dismiss_anr
-    fi
+    if screen_text | grep -qF "$needle"; then return 0; fi
     sleep 2
     i=$((i + 2))
   done
@@ -241,44 +156,6 @@ tap_text() {
   local needle="$1" xy
   xy="$(tap_xy "$needle")" || return 1
   adb shell input tap "$xy"
-}
-
-# Waits for words, scrolling the page down between looks: a list
-# can run past the fold, and a screen read only holds what is on
-# the screen. A swipe up, a breath, another look.
-wait_text_scrolling() {
-  local tries=0 texts
-  until texts="$(screen_text)" && printf '%s' "$texts" | grep -qF "$1"; do
-    tries=$((tries + 1))
-    [ "$tries" -gt 10 ] && return 1
-    # Say where the page stands, so a stuck scroll is diagnosable:
-    # run 45575646271 scrolled ten times and the failure dump still
-    # showed the top of the page.
-    echo "offline-check: scroll $tries: page shows '$(printf '%s' "$texts" | head -3 | tr '\n' ' ')' … '$(printf '%s' "$texts" | tail -2 | tr '\n' ' ')'" >&2
-    adb shell input swipe 540 1600 540 600 300 >/dev/null 2>&1 || true
-    sleep 2
-  done
-}
-
-# Taps, retrying while the page settles: a single look can race the
-# rendering — in run 45567951938 the tab bar was on the screen in the
-# failure dump seconds after the stage-2 tap's own look had missed
-# it. Five looks, a breath between.
-tap_text_retry() {
-  local tries=0
-  until tap_text "$1"; do
-    tries=$((tries + 1))
-    [ "$tries" -ge 5 ] && return 1
-    # A system dialog may be all that covers the app — in run
-    # 45579940065 the launcher's "isn't responding" dialog came back
-    # after the dismissal in wait_text, and every tap look saw only
-    # it. Dismiss it the same way and look again.
-    if screen_text | grep -qF "isn't responding"; then
-      dismiss_anr
-      sleep 2
-    fi
-    sleep 3
-  done
 }
 
 # One action arriving at the demo edge, counted from its log.
@@ -322,30 +199,9 @@ airplane() {
   return 1
 }
 
-# Open the app at its launcher activity. This used monkey, the way
-# the home screen does, until run 45558906810: monkey's launches
-# never brought the app up at all (its output was thrown away, so
-# it failed silently), the waits sat on the launcher, and the
-# launcher's own long-press menu ended up covering the screen. An
-# explicit start names the activity the icon names, waits for it,
-# and says on the log what happened.
+# Open the app the way the home screen does.
 launch_from_icon() {
-  adb shell am start -W -n "$LAUNCHER" 2>&1 | grep -v '^$' || true
-}
-
-# Open the app and wait for its text, opening it again while the
-# text has not appeared: a launch fired while the launcher is still
-# settling is lost without a trace — run 45557841422 waited out its
-# whole first wait on the home screen — and one lost launch is the
-# launcher failing, not the app.
-launch_and_wait_text() {
-  local needle="$1" timeout="${2:-60}" i=0
-  while [ "$i" -lt "$timeout" ]; do
-    launch_from_icon
-    if wait_text "$needle" 20; then return 0; fi
-    i=$((i + 20))
-  done
-  return 1
+  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 }
 
 echo "offline-check: waiting for the emulator"
@@ -359,19 +215,8 @@ done
 [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ] || fail "emulator did not finish booting"
 
 # Chrome's first-run screen would stand between the app and its page:
-# tell it not to show, before it first starts. And where the app is
-# opened from a plain-http address (the emulator's name for this
-# machine), tell Chrome to treat that one address as secure: the
-# app's worker — the part that sends what was done offline once the
-# connection is back, which stage 4 tests — only exists on secure
-# origins, and without this the check tests a browser with no worker
-# in it (run 45582639147: the answer was kept, and never sent). On
-# the app's real https address nothing is added.
-CHROME_FLAGS="chrome --no-first-run --disable-fre"
-case "$SITE_URL" in
-http://*) CHROME_FLAGS="$CHROME_FLAGS --unsafely-treat-insecure-origin-as-secure=$SITE_URL" ;;
-esac
-adb shell "echo \"$CHROME_FLAGS\" > /data/local/tmp/chrome-command-line" 2>/dev/null || true
+# tell it not to show, before it first starts.
+adb shell 'echo "chrome --no-first-run --disable-fre" > /data/local/tmp/chrome-command-line' 2>/dev/null || true
 adb shell am force-stop com.android.chrome 2>/dev/null || true
 
 echo "offline-check: installing the APK"
@@ -379,27 +224,18 @@ adb install -r -g "$APK" || fail "could not install $APK"
 adb shell am force-stop "$PKG" 2>/dev/null || true
 
 echo "offline-check: 1. the app opens against the demo edge"
-launch_and_wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
-tap_text_retry "Needs me" || fail "could not open the Needs me tab"
-# The Needs me page opens on whichever list leads; the questions are
-# their own segment of it, behind the "Questions" button (app.js:
-# viewNeeds' seg buttons), not further down the page — ten scrolls
-# in run 45576589239 moved nothing because there was nothing to
-# scroll to.
-tap_text_retry "Questions" || fail "could not open the Questions segment"
-wait_text_scrolling "$QUESTION_TEXT" || fail "the demo question is not shown"
+launch_from_icon
+wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
+tap_text "Needs me" || fail "could not open the Needs me tab"
+wait_text "$QUESTION_TEXT" 60 || fail "the demo question is not shown"
 
 echo "offline-check: 2. with no connection, opened again it shows what it kept"
 airplane on || fail "could not turn aeroplane mode on"
-if ! launch_and_wait_text "$QUESTION_TEXT" 60; then
-  launch_from_icon
-  tap_text_retry "Questions" || true
-  wait_text_scrolling "$QUESTION_TEXT" || fail "opened with no connection, the app does not show the question it last saw"
-fi
+launch_from_icon
+wait_text "$QUESTION_TEXT" 60 || fail "opened with no connection, the app does not show the question it last saw"
 
 echo "offline-check: 3. answered while offline, app swiped away, network back"
-wait_text_scrolling "$ANSWER_LABEL" || fail "the answer '$ANSWER_LABEL' is not shown"
-tap_text_retry "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
+tap_text "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
 wait_no_text "$QUESTION_TEXT" 30 || fail "the answered question is still listed"
 # The answer is only written to the outbox when its 4.5-second undo
 # window runs out (app.js: later), so the app stays open past that
@@ -414,7 +250,7 @@ adb shell input keyevent KEYCODE_APP_SWITCH
 sleep 2
 adb shell input swipe 540 1300 540 200 300
 sleep 2
-if timeout 60 adb shell dumpsys activity activities 2>/dev/null | grep -q "$PKG"; then
+if adb shell dumpsys activity activities 2>/dev/null | grep -q "$PKG"; then
   adb shell am force-stop "$PKG" 2>/dev/null || true
   sleep 2
 fi
@@ -433,10 +269,10 @@ while [ "$i" -lt 60 ]; do
   i=$((i + 2))
 done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
-launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
-tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
-tap_text_retry "Questions" || fail "could not reopen the Questions segment"
-wait_text_scrolling "$NEXT_QUESTION_TEXT" || fail "the Needs me list did not load after the answer was sent"
+launch_from_icon
+wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
+tap_text "Needs me" || fail "could not open the Needs me tab again"
+wait_text "$NEXT_QUESTION_TEXT" 60 || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
 fi

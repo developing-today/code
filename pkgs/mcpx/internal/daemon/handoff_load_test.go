@@ -32,10 +32,6 @@ import (
 // not bind a new one.
 func handoffPaths(t *testing.T) Paths {
 	t.Helper()
-	// NewServer mirrors daemon records into the XDG default state dir. Keep
-	// these lifecycle fixtures from publishing into the runner's shared state
-	// directory while the e2e package checks that directory concurrently.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	dir, err := os.MkdirTemp("", "mxh")
 	if err != nil {
 		t.Fatal(err)

@@ -45,7 +45,7 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Client,
-    class: cap_class::CLASS_FS_READ_SELECTED,
+    class: cap_class::CLASS_UNKNOWN,
 };
 
 /// The name of the client-side notification provider for the mobile
@@ -99,7 +99,7 @@ pub const CLIENT_NOTIFY_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Client,
-    class: cap_class::CLASS_DEVICE_NOTIFY,
+    class: cap_class::CLASS_UNKNOWN,
 };
 
 /// Production client-side entries, assembled into the registry after

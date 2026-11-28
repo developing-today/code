@@ -24,9 +24,10 @@
 # Shape note (#1973 landed after the budget design): the budget
 # evaluates the `test` leg on pushes and the `stress-pr` leg on PRs.
 # The nightly `stress-nightly` legs are out of budget scope on
-# schedule and manual runs (gating a 60-minute race/shuffle/repeat suite on
-# a basic-test budget would corrupt the flake signal). Manual tiny-budget
-# demos still gate the owned basic-test legs, never the nightly suites.
+# schedule runs (gating a 60-minute race/shuffle/repeat suite on a
+# PR-test budget would corrupt the flake signal); on manual
+# workflow_dispatch runs every completed leg is evaluated, so the
+# tiny-budget demo gates whatever the dispatch ran.
 # ────────────────────────────────────────────────────────────────────
 name: mcpx
 # CI tier policy: see .github/ci-policy.md
@@ -238,9 +239,6 @@ jobs:
           rc=0
           python3 scripts/test_gotest_report.py || rc=1
           python3 scripts/test_conformance_record.py || rc=1
-          # The e2e package runs one full pass in this binary; allow it the
-          # same 25m bound as the PR stress leg instead of Go's 10m default.
-          # Keep the test-binary timeout below this job's 30m runner limit.
           go test ./... -count=1 -timeout 25m -json >"$RUNNER_TEMP/gotest.json" || rc=$?
           # Readable output for the log, from the same run. Package-level
           # output first, then the full output of every failing test, so a
@@ -771,9 +769,8 @@ jobs:
                       by_name[j["name"]] = j
               jobs = list(by_name.values())
               legs = completed_legs(jobs)
-          # Manual dispatch also runs the nightly stress matrix. Use the
-          # same owned-leg scope as scheduled runs and historical medians.
-          legs = [l for l in legs if l[0] in OWNED_LEGS]
+          if os.environ.get("EVENT") != "workflow_dispatch":
+              legs = [l for l in legs if l[0] in OWNED_LEGS]
           if legs:
               longest_name, longest, _ = legs[-1]
               queue = max((s - run_created).total_seconds() for _, _, s in legs)

@@ -441,8 +441,6 @@ func TestWriteInfoDoesNotMirrorTheEnvDefaultDaemon(t *testing.T) {
 // digest is "schemaHash"; the daemon key (the /v1/resolve configHash) is
 // "daemonKey". Neither may appear under the old shared "configHash" name.
 func TestInfoFileNamesBothDigests(t *testing.T) {
-	// WriteInfo mirrors custom-state records into the XDG default state dir.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	dir := t.TempDir()
 	paths := daemon.Paths{State: dir, Cache: dir, Info: filepath.Join(dir, "daemon-k.json")}
 	want := daemon.Info{

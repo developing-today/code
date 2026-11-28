@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -168,63 +167,6 @@ func TestInlineDaemonNeverAnswersStillTimesOut(t *testing.T) {
 			_ = os.RemoveAll(dir)
 			t.Fatalf("inlineDaemon left its in-process daemon's directory %s behind after the timeout", dir)
 		}
-	}
-}
-
-// Regression for #13595: the inline readiness timeout names how many
-// probes ran, and the poll interval decides that count at a fixed start
-// budget. A counting stand-in for inlineDaemonPing records every
-// attempt; with a 700ms poll the loop must not sleep past the 800ms
-// deadline either, so the whole wait stays near the budget instead of
-// running a full extra poll past it.
-func TestInlineDaemonPollIntervalChangesRetryCount(t *testing.T) {
-	run := func(poll string) (attempts int, elapsed time.Duration, err error) {
-		t.Helper()
-		orig := inlineDaemonPing
-		count := 0
-		inlineDaemonPing = func(*Client, context.Context) bool {
-			count++
-			return false
-		}
-		t.Cleanup(func() { inlineDaemonPing = orig })
-		a := inlineDaemonApp(t)
-		if err := a.Settings().SetRuntime("daemon.inlineStartTimeout", "800ms"); err != nil {
-			t.Fatal(err)
-		}
-		if err := a.Settings().SetRuntime("daemon.inlineStartPoll", poll); err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		c, err := a.inlineDaemon(context.Background())
-		if c != nil {
-			t.Fatalf("inlineDaemon(poll=%s) returned a client %v, want none", poll, c)
-		}
-		return count, time.Since(start), err
-	}
-
-	shortAttempts, shortElapsed, shortErr := run("100ms")
-	if shortErr == nil || !strings.Contains(shortErr.Error(), "after "+strconv.Itoa(shortAttempts)+" readiness probes") {
-		t.Fatalf("inlineDaemon(poll=100ms) = %v, want the timeout naming its %d probes", shortErr, shortAttempts)
-	}
-	if shortAttempts < 5 {
-		t.Fatalf("inlineDaemon(poll=100ms) ran %d probes in 800ms, want at least 5", shortAttempts)
-	}
-	if shortElapsed > 2*time.Second {
-		t.Fatalf("inlineDaemon(poll=100ms) took %v, want near the 800ms budget", shortElapsed)
-	}
-
-	longAttempts, longElapsed, longErr := run("700ms")
-	if longErr == nil || !strings.Contains(longErr.Error(), "after "+strconv.Itoa(longAttempts)+" readiness probes") {
-		t.Fatalf("inlineDaemon(poll=700ms) = %v, want the timeout naming its %d probes", longErr, longAttempts)
-	}
-	if longAttempts > 3 {
-		t.Fatalf("inlineDaemon(poll=700ms) ran %d probes in 800ms, want at most 3", longAttempts)
-	}
-	if longAttempts >= shortAttempts {
-		t.Fatalf("poll=700ms ran %d probes, want fewer than poll=100ms (%d)", longAttempts, shortAttempts)
-	}
-	if longElapsed > 1200*time.Millisecond {
-		t.Fatalf("inlineDaemon(poll=700ms) took %v, want the last wait bounded to the 800ms budget, not a full 700ms poll past it", longElapsed)
 	}
 }
 

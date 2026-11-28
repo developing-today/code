@@ -133,25 +133,6 @@ cache fallbacks remain performance optimizations, not correctness verdicts.
 The empty `.gitlab-ci.yml` defines no GitLab pipeline here; no cross-provider
 settings or other repositories were changed.
 
-## Nix cache backend (#13953 ask 2)
-
-Decision (2026-11-24, queue task 23293): keep **Magic Nix Cache**
-(`DeterminateSystems/magic-nix-cache-action`) as the CI nix cache backend.
-
-Reasons:
-
-- It is wired into every nix-building workflow already (13 uses on main);
-  Cachix would need a new secret and a rewrite of each job with no measured
-  gain for this repo's CI shape.
-- The known failure (HTTP 418 throttling under load, #774) is handled by
-  `fallback = true` in the nix-installer `extra-conf` of every workflow
-  (PR #8946 for id; PR #14314 for mcpx), so a throttled substituter degrades
-  to a source build instead of failing the job.
-- GitHub's `actions/cache` is not a nix store cache and is not adopted here.
-
-Revisit only if throttling reappears after the fallback lands: record the
-run evidence on #13953 and file the migration as its own follow-on.
-
 ## Release gate (#1782)
 
 Tag-based publishing is fail-closed. Before GoReleaser or the mcpx release

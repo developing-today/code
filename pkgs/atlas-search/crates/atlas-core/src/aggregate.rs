@@ -396,7 +396,12 @@ fn write_shard(
         ))
     })?;
     let part = next_shard_part(shard_dir, tier, topic)?;
-    let shard_name = format!("atlas-core-{}-{}-{:02}", tier.name(), topic, part);
+    let shard_name = format!(
+        "atlas-core-{}-{}-{:02}",
+        tier.name(),
+        topic,
+        part
+    );
     let shard_path = shard_dir.join(format!("{shard_name}.db"));
     if shard_path.exists() {
         return Err(Error::fatal(format!(
@@ -475,9 +480,7 @@ fn write_shard(
                     c.observed_at
                 ],
             )
-            .map_err(|e| {
-                Error::backend(format!("aggregator: {label} shard occurrence {id}: {e}"))
-            })?;
+            .map_err(|e| Error::backend(format!("aggregator: {label} shard occurrence {id}: {e}")))?;
         }
         let manifest: [(&str, String); 9] = [
             ("shard", shard_name.clone()),

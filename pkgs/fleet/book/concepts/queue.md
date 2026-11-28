@@ -117,13 +117,6 @@ omitting it leaves such tasks unclaimed. No claimable task is
 `{"task": null}`, exit **5**, with counts (`queued`, `at_cap_queued`,
 `queued_not_yet_due`, `parked_due`) explaining why.
 
-An enqueue may set the task's top-level `manual_only` flag. It defaults to
-false and is persisted on the task row with the enqueue audit event. Automatic
-default and handoff picks always skip flagged tasks, regardless of priority or
-queue depth; an explicit by-ID claim can still take one. The task remains in
-listings with a `(manual-only)` status marker, distinct from parked or blocked
-work. Changes to this flag must be audit logged.
-
 ## Leases and heartbeat
 
 A _lease_ is the claim's expiry. Claim's default lease is **2700 s

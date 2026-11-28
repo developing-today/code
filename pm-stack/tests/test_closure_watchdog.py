@@ -19,7 +19,6 @@ Run:  python3 pm-stack/tests/test_closure_watchdog.py
 import importlib.util
 import sys
 import unittest
-import urllib.parse
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "closure-watchdog.py"
@@ -243,30 +242,6 @@ class ProcessRepoTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertTrue(actions[0]["dry_run"])
         self.assertEqual(gh.calls, [])
-
-
-class RecentlyClosedIssuesUrlTests(unittest.TestCase):
-    def test_since_query_is_percent_encoded(self):
-        """Regression (2026-11-25, #10105): the since timestamp's
-        "+00:00" offset must reach GitHub percent-encoded. A raw "+"
-        in the query string decodes as a space, the issues list comes
-        back empty, and the watchdog silently processes nothing --
-        the fake-boundary tests cannot see this, so capture the real
-        GhClient path here."""
-        captured = {}
-
-        class CapturingGh(wd.GhClient):
-            def api(self, path):
-                captured["path"] = path
-                return []
-
-        CapturingGh().recently_closed_issues(
-            "developing-today/code", "2026-11-25T10:25:59+00:00"
-        )
-        query = captured["path"].split("?", 1)[1]
-        params = urllib.parse.parse_qs(query)
-        self.assertEqual(params["since"], ["2026-11-25T10:25:59+00:00"])
-        self.assertNotIn("+", query)
 
 
 if __name__ == "__main__":

@@ -60,20 +60,16 @@ Prints all 16 kinds with their groups, seats, and enrolment notes as one JSON ob
 ```
 fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
 fleet agent enroll --kind K --name N --bootstrap TOKEN
-                     [--model-provider P] [--model-id M] [--model-variant V]
 ```
 
-| Flag               | Argument | Default                | Meaning                                                                                                                                                                              |
-| ------------------ | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--kind`           | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                                                 |
-| `--name`           | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value.                            |
-| `--groups`         | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                                            |
-| `--dry-run`        | —        | off                    | Probe nothing and register nothing.                                                                                                                                                  |
-| `--profile`        | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                                           |
-| `--bootstrap`      | `TOKEN`  | —                      | Provision from the owner's single-use bootstrap token instead of the shared fleet token (binary seats only; never with `--dry-run` — the exchange burns the token).                  |
-| `--model-provider` | `P`      | —                      | The lane's serving-model provider, recorded in the profile as its model stamp (#4919). Requires `--model-id`; re-enrolling without the model flags keeps a recorded stamp.           |
-| `--model-id`       | `M`      | —                      | The lane's serving model (or the `muse-lane` marker for a lane that cannot name a leaf). Requires `--model-provider`.                                                                |
-| `--model-variant`  | `V`      | —                      | The lane's effort variant. Requires `--model-provider` and `--model-id`. This is the effort producer: `next` stamps it on every queue claim, so completions carry a non-null effort. |
+| Flag          | Argument | Default                | Meaning                                                                                                                                                   |
+| ------------- | -------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`      | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                      |
+| `--name`      | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value. |
+| `--groups`    | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                 |
+| `--dry-run`   | —        | off                    | Probe nothing and register nothing.                                                                                                                       |
+| `--profile`   | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                |
+| `--bootstrap` | `TOKEN`  | —                      | Provision from the owner's single-use bootstrap token instead of the shared fleet token (binary seats only; never with `--dry-run` — the exchange burns the token). |
 
 ### Behaviour
 
@@ -135,26 +131,25 @@ Probes all four legs in parallel and prints the legs, the rungs map, and the bui
 ## fleet agent next
 
 ```
-fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--shortlist PATH] [--platform P] [--pool P] [--remaining-budget-minutes N] [--filter EXPR] [--queue Q] [--model-provider P] [--model-id M] [--model-variant V] [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
+fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--shortlist PATH] [--platform P] [--pool P] [--remaining-budget-minutes N] [--filter EXPR] [--queue Q] [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
 ```
 
-| Flag                                                  | Argument        | Default                     | Meaning                                                                                                                                                          |
-| ----------------------------------------------------- | --------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--agent`                                             | `N`             | profile / `$FLEET_AGENT`    | Agent taking the work.                                                                                                                                           |
-| `--lane`                                              | `L`             | derived from the agent name | Queue lane for the queue rung's claim.                                                                                                                           |
-| `--repo`                                              | `OWNER/NAME`    | `developing-today/code`     | Repo the priority/shortlist rungs draw from.                                                                                                                     |
-| `--low-water`                                         | `N`             | `3`                         | Shortlist low-water mark for this call.                                                                                                                          |
-| `--shortlist`                                         | `PATH`          | profile/state default       | Shortlist file path.                                                                                                                                             |
-| `--platform`                                          | `P`             | —                           | Carried into the queue claim.                                                                                                                                    |
-| `--pool`                                              | `P`             | —                           | Carried into the queue claim.                                                                                                                                    |
-| `--remaining-budget-minutes`                          | `N`             | —                           | Carried into the queue claim.                                                                                                                                    |
-| `--filter`                                            | `EXPR`          | —                           | Carried into the queue claim.                                                                                                                                    |
-| `--queue`                                             | `Q`             | —                           | Queue name for the queue rung's claim.                                                                                                                           |
-| `--model-provider` / `--model-id` / `--model-variant` | `P` / `M` / `V` | profile stamp               | The claim's model stamp (#4919). Explicit flags win as given; with none, the stamp recorded in the agent's profile at enrolment is carried into the claim whole. |
-| `--no-push`                                           | —               | off                         | Skip rung 1 (recorded as `skipped` in `tried`).                                                                                                                  |
-| `--no-queue`                                          | —               | off                         | Skip rung 2.                                                                                                                                                     |
-| `--no-shortlist`                                      | —               | off                         | Skip rung 3.                                                                                                                                                     |
-| `--no-priority`                                       | —               | off                         | Skip rung 4.                                                                                                                                                     |
+| Flag                         | Argument     | Default                     | Meaning                                         |
+| ---------------------------- | ------------ | --------------------------- | ----------------------------------------------- |
+| `--agent`                    | `N`          | profile / `$FLEET_AGENT`    | Agent taking the work.                          |
+| `--lane`                     | `L`          | derived from the agent name | Queue lane for the queue rung's claim.          |
+| `--repo`                     | `OWNER/NAME` | `developing-today/code`     | Repo the priority/shortlist rungs draw from.    |
+| `--low-water`                | `N`          | `3`                         | Shortlist low-water mark for this call.         |
+| `--shortlist`                | `PATH`       | profile/state default       | Shortlist file path.                            |
+| `--platform`                 | `P`          | —                           | Carried into the queue claim.                   |
+| `--pool`                     | `P`          | —                           | Carried into the queue claim.                   |
+| `--remaining-budget-minutes` | `N`          | —                           | Carried into the queue claim.                   |
+| `--filter`                   | `EXPR`       | —                           | Carried into the queue claim.                   |
+| `--queue`                    | `Q`          | —                           | Queue name for the queue rung's claim.          |
+| `--no-push`                  | —            | off                         | Skip rung 1 (recorded as `skipped` in `tried`). |
+| `--no-queue`                 | —            | off                         | Skip rung 2.                                    |
+| `--no-shortlist`             | —            | off                         | Skip rung 3.                                    |
+| `--no-priority`              | —            | off                         | Skip rung 4.                                    |
 
 ### Behaviour
 

@@ -174,9 +174,6 @@ func TestRegistryHandoffThatIsNotCommittedRestoresTheChild(t *testing.T) {
 }
 
 func TestAFailedHandoffLeavesTheDaemonServing(t *testing.T) {
-	// NewServer mirrors daemon records into the XDG default state dir; keep
-	// this fixture isolated from the runner's shared state directory.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	dir, err := os.MkdirTemp("", "mxh")
 	if err != nil {
 		t.Fatal(err)

@@ -193,16 +193,6 @@ More, Machines shows:
 
 - **Cloudflare's own part**: whether it does the core itself, and what
   it was turned away for lately.
-- **Platform settings**: each of the platform's settings with the value
-  in force, whose it is (main's, a machine's list, or the owner's) and
-  since when. The two the owner may change, the prompt label and the
-  repositories looked in, have "Change" (`settings.set`) and, once
-  changed, "Put back to main's" (`settings.clear`), with main's value
-  beside the change. Cloudflare does both itself and never hands them
-  to a machine; it checks the value whole, and refuses a change made
-  from an older look (another tab changed it meanwhile) with what the
-  settings are now. The log keeps which setting changed and who
-  changed it, never the value.
 - **Each machine**: whether it is reporting and when it was last heard
   from, the commit it runs, and what only it reports and only it can
   do, in words. What Cloudflare does itself is not counted as the
@@ -385,11 +375,7 @@ the Android app alike (which is the same site in Chrome).
   the header then says `offline` and how old the state is, and a line
   under the header says there is no connection. A screen the device
   has never seen says it has no copy of it. More, On this device has
-  "Keep a copy of every screen now", for before a flight. Signed in on
-  Wi-Fi or a cable (or a fast connection the browser does not name),
-  the app also keeps every screen once in the background, at most every
-  twelve hours; never on a metered connection, with data saving on, or
-  where the browser says nothing of the connection (Safari, Firefox).
+  "Keep a copy of every screen now", for before a flight.
 - **What the owner does is kept and sent once.** Every action is given
   a name on the device (a UUID) and written to the browser's own
   database before it is sent (`public/outbox.js`), and before it waits
@@ -451,13 +437,7 @@ the Android app alike (which is the same site in Chrome).
   unblock and a service action act on something that may have changed:
   they are kept too, sent by themselves only within ten minutes of
   being asked for, and after that wait under "kept back" until the
-  owner looks again and says to send them. The platform holds every
-  sender to the same ten minutes: a device says when the owner did it
-  and what its own clock read as it sent it, and the edge (and the
-  laptop, sent straight to it) refuses one older than ten minutes by
-  either clock unless it says the owner looked again. A device keeps a
-  refused one back as if it had kept it back itself. One that says
-  nothing of when it was done is taken as done now. A merge also carries the
+  owner looks again and says to send them. A merge also carries the
   commit the owner was shown, and GitHub merges only that. What sets
   the connection up or carries a secret (notifications, phones,
   sign-in, the Cloudflare switch) is never kept: it says it needs a

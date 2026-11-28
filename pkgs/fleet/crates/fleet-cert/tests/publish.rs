@@ -7,7 +7,9 @@
 
 use fleet_cert::engine;
 use fleet_cert::graph::CrossSigningMode;
-use fleet_cert::model::{PublishPlanRequest, PublishVerifyRequest, RootCreateRequest};
+use fleet_cert::model::{
+    PublishPlanRequest, PublishVerifyRequest, RootCreateRequest,
+};
 use fleet_cert::timeparse::Rfc3339;
 use std::path::{Path, PathBuf};
 

@@ -102,8 +102,7 @@ pub struct Event {
     #[serde(with = "wire::opt_hash")]
     pub group: Option<Hash>,
     /// The author's asserted Unix-seconds timestamp. `None` for events written before
-    /// timestamps existed. A bounded grant carries no chain to an untimestamped action
-    /// (#14876); unbounded grants are unaffected.
+    /// timestamps existed; expiry never cuts a chain at an untimestamped action (D1).
     #[serde(default)]
     pub at: Option<u64>,
     /// What it does.

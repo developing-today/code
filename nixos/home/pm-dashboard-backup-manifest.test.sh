@@ -246,11 +246,11 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 47 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 41 else 1)
 '; then
-  ok "missing-optional: manifest lists all 47 expected members"
+  ok "missing-optional: manifest lists all 41 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 47-member set"
+  fail "missing-optional: manifest expected list is not the full 41-member set"
 fi
 
 # --- decisions ledger is required (#10293) -----------------------------------
@@ -373,7 +373,7 @@ cat >"$EXPORTER" <<'STUBEOF'
 set -eu
 [[ "$1" == --output-dir && $# == 2 ]]
 mkdir -p "$2"
-for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs push_endpoints push_preferences push_item_stages push_item_stage_events push_registry_meta; do
+for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs; do
   printf '[]' >"$2/$table.json"
 done
 STUBEOF
@@ -389,7 +389,6 @@ if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: 
 assert_member turso-export turso/agg_actions.json required present
 assert_member turso-export turso/alerts_push_subscriptions.json required present
 assert_member turso-export turso/orch_runs.json required present
-assert_member turso-export turso/push_endpoints.json optional present
 
 setup_home turso-missing
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \

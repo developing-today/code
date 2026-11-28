@@ -1233,65 +1233,6 @@ impl WorldClient {
         Ok(requested_profile)
     }
 
-    /// Replace the world's presentation policy (design #5970 slice 2b).
-    /// Returns the policy the host now holds.
-    ///
-    /// # Errors
-    ///
-    /// Fails with the host's message if the admin token or the policy is
-    /// refused, or if the reply carries no policy.
-    pub async fn set_presentation_policy(
-        &mut self,
-        admin_token: &str,
-        policy: &id_core::presentation_policy::PresentationPolicy,
-    ) -> Result<serde_json::Value> {
-        self.send_json(&serde_json::json!({
-            "type": "set_presentation_policy",
-            "admin_token": admin_token,
-            "policy": policy,
-        }))
-        .await?;
-        let reply = self
-            .recv_json()
-            .await?
-            .context("host closed without replying")?;
-        Self::presentation_policy_from_reply(&reply, "host refused the presentation policy change")
-    }
-
-    /// Read the world's presentation policy. It needs no token: the
-    /// policy is public pre-join metadata (#5970 §5).
-    ///
-    /// # Errors
-    ///
-    /// Fails with the host's message if the query is refused, or if the
-    /// reply carries no policy.
-    pub async fn presentation_policy(&mut self) -> Result<serde_json::Value> {
-        self.send_json(&serde_json::json!({"type": "presentation_policy_info"}))
-            .await?;
-        let reply = self
-            .recv_json()
-            .await?
-            .context("host closed without replying")?;
-        Self::presentation_policy_from_reply(&reply, "host refused the presentation policy query")
-    }
-
-    /// The `policy` object of a `presentation_policy` reply. Any other
-    /// reply is the host's refusal, and a reply without an object
-    /// `policy` is a host that did not confirm one.
-    fn presentation_policy_from_reply(
-        reply: &serde_json::Value,
-        refused: &str,
-    ) -> Result<serde_json::Value> {
-        if reply["type"] != "presentation_policy" {
-            bail!("{}", reply["message"].as_str().unwrap_or(refused));
-        }
-        let policy = reply
-            .get("policy")
-            .filter(|policy| policy.is_object())
-            .context("host returned a malformed presentation policy")?;
-        Ok(policy.clone())
-    }
-
     /// Let other unisolated worlds write into this world, with the admin token.
     /// Returns the world's policy after the change.
     ///
@@ -3766,93 +3707,6 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn presentation_policy_is_public_to_read_and_admin_only_to_set_over_iroh() {
-        if crate::test_transport::skip_if_no_udp_loopback(
-            "world_net::tests::presentation_policy_is_public_to_read_and_admin_only_to_set_over_iroh",
-        ) {
-            return;
-        }
-        let host = host(Some("admin")).await;
-        let client_ep = endpoint().await;
-
-        // A fresh world holds the default policy, readable with no token:
-        // the policy is pre-join metadata (#5970 §5).
-        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-        let fresh = outsider.presentation_policy().await.unwrap();
-        assert_eq!(fresh["assets"]["max_rung"], "rich");
-        assert_eq!(fresh["shaders"]["enabled"], false);
-        outsider.close();
-
-        let mut policy = id_core::presentation_policy::PresentationPolicy::default();
-        policy.assets.max_rung = id_core::presentation_policy::Rung::Tileset;
-        policy.assets.user_uploads = id_core::presentation_policy::Permit::Deny;
-
-        // A wrong admin token is refused and changes nothing.
-        let mut intruder = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-        let refused = intruder.set_presentation_policy("wrong", &policy).await;
-        assert!(refused.is_err());
-        intruder.close();
-        assert_eq!(
-            host.world.presentation_policy().await.unwrap(),
-            Default::default()
-        );
-
-        // The admin sets it; the reply and a later read both carry it.
-        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-        let saved = admin
-            .set_presentation_policy("admin", &policy)
-            .await
-            .unwrap();
-        assert_eq!(saved["assets"]["max_rung"], "tileset");
-        assert_eq!(saved["assets"]["user_uploads"], "deny");
-        admin.close();
-        assert_eq!(host.world.presentation_policy().await.unwrap(), policy);
-
-        let mut reader = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-        let read = reader.presentation_policy().await.unwrap();
-        assert_eq!(read, saved);
-        reader.close();
-
-        client_ep.close().await;
-        host.router.shutdown().await.unwrap();
-    }
-
-    #[test]
-    fn a_presentation_policy_reply_must_carry_a_policy_object() {
-        let ok = WorldClient::presentation_policy_from_reply(
-            &serde_json::json!({"type": "presentation_policy", "policy": {"assets": {}}, "message": "ok"}),
-            "refused",
-        )
-        .unwrap();
-        assert_eq!(ok, serde_json::json!({"assets": {}}));
-        for bad in [
-            serde_json::json!({"type": "presentation_policy", "message": "ok"}),
-            serde_json::json!({"type": "presentation_policy", "policy": null, "message": "ok"}),
-            serde_json::json!({"type": "presentation_policy", "policy": 3, "message": "ok"}),
-        ] {
-            let error = WorldClient::presentation_policy_from_reply(&bad, "refused").unwrap_err();
-            assert!(
-                error.to_string().contains("malformed presentation policy"),
-                "{bad}: {error}"
-            );
-        }
-        let error = WorldClient::presentation_policy_from_reply(
-            &serde_json::json!({"type": "error", "message": "admin denied"}),
-            "refused",
-        )
-        .unwrap_err();
-        assert_eq!(error.to_string(), "admin denied");
-    }
-
     #[test]
     fn a_caps_report_from_before_ceilings_still_deserializes() {
         let old = serde_json::json!({
@@ -4285,7 +4139,7 @@ mod tests {
             .await
             .unwrap();
         let capability = ok.invite("admin", "ann", None, None).await.unwrap();
-        assert_ne!(capability, "");
+        assert!(!capability.is_empty());
 
         let mut bad = WorldClient::connect(&client_ep, host.addr.clone())
             .await

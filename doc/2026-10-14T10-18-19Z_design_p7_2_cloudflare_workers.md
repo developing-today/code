@@ -123,7 +123,3 @@ Repository research is the source index; it contains file/version evidence and d
 - [Official Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [pricing](https://developers.cloudflare.com/workers/platform/pricing/), [DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/), [KV limits](https://developers.cloudflare.com/kv/platform/limits/), [KV consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/), [Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/), and [rate-limit binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/). Research read 2026-10-11; re-check current docs.
 - [pkarr relay specification](https://github.com/pubky/pkarr/blob/main/design/relays.md); iroh `iroh-dns`/`iroh-dns-server` 1.3.0 and `pkarr-relay` 2.1.0 sources, as cited with paths in research §D.
 - In-repository integration points: [`pkgs/id/src/connectivity.rs`](../pkgs/id/src/connectivity.rs), [Task 08](./2026-10-11T11-08-42Z_design_remaining_work/task-08-connectivity-extensions.md), and [phase 7 record](./2026-10-12T21-22-53Z_phase_7_connectivity/2026-10-12T21-22-53Z_phase_7_connectivity.md).
-
-## Tracking
-
-This record predates the tracking-issue convention, and no issue was filed for the deferred Worker. The nearest live work on pkarr publication and relays is #14719 (self-hosted iroh relay and pkarr/DNS under our zones) and #10706 (publish-to-pkarr for world announcements). (Pointer added 2026-11-25 for #13881.)

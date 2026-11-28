@@ -458,7 +458,6 @@ pub fn sign_authorisation(
 
             chat: None,
             anchor: None,
-            thread: None,
         },
     )?)
 }
@@ -495,7 +494,6 @@ pub fn sign_revoke(
 
             chat: None,
             anchor: None,
-            thread: None,
         },
     )?)
 }
@@ -548,7 +546,6 @@ impl std::error::Error for SignError {}
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     fn lp_key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
@@ -981,112 +978,5 @@ mod tests {
             fold_authorisation(7, &issuer_id(&key), &[(author_id(&decoded), body)], &[]),
             Some(AuthorisationState::Live(auth))
         );
-    }
-
-    fn callers_strategy() -> impl Strategy<Value = AuthorisedCallers> {
-        prop_oneof![
-            Just(AuthorisedCallers::Any),
-            any::<[u8; 32]>().prop_map(AuthorisedCallers::Single),
-            proptest::collection::vec(any::<[u8; 32]>(), 0..3)
-                .prop_map(AuthorisedCallers::Allowlist),
-        ]
-    }
-
-    /// Small domains so every `validate` rule is hit both ways.
-    fn ledger_strategy() -> impl Strategy<Value = String> {
-        proptest::sample::select(vec!["", "ABC", "123", "XYZ"]).prop_map(str::to_owned)
-    }
-
-    fn rate_part_strategy() -> impl Strategy<Value = u128> {
-        prop_oneof![0u128..3, any::<u128>()]
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
-
-        /// #6487: whatever `sign_authorisation` signs, the receipt side
-        /// accepts. The event decodes as a `currency.rate_authorisation`
-        /// event by the signer that commits to the body, the body decodes
-        /// back unchanged and names its author, and the fold reports it
-        /// live. Every refusal is the `validate` rule the fold applies.
-        #[test]
-        fn signed_authorisations_are_authorisations_the_fold_accepts(
-            seed in any::<[u8; 32]>(),
-            other_seed in any::<[u8; 32]>(),
-            names_signer in any::<bool>(),
-            authorisation_id in any::<u128>(),
-            version in any::<u64>(),
-            source_ledger in ledger_strategy(),
-            dest_ledger in ledger_strategy(),
-            rate_num in rate_part_strategy(),
-            rate_den in rate_part_strategy(),
-            min_amount in 0u128..4,
-            max_amount in 0u128..4,
-            total_cap in 0u128..3,
-            authorised_callers in callers_strategy(),
-            not_before in 0u64..4,
-            expires_at in 0u64..4,
-            reversal_window_secs in proptest::option::of(any::<u64>()),
-            fee_bps in proptest::option::of(9_998u32..10_003),
-        ) {
-            let key = SigningKey::from_bytes(&seed);
-            let issuer = if names_signer {
-                issuer_id(&key)
-            } else {
-                issuer_id(&SigningKey::from_bytes(&other_seed))
-            };
-            let auth = RateAuthorisation {
-                authorisation_id,
-                version,
-                issuer_id: issuer,
-                source_ledger,
-                dest_ledger,
-                rate_num,
-                rate_den,
-                min_amount,
-                max_amount,
-                total_cap,
-                authorised_callers,
-                not_before,
-                expires_at,
-                reversal_window_secs,
-                fee_bps,
-            };
-            let expected = auth.validate(&issuer_id(&key));
-            match sign_authorisation(&key, 0, None, &auth, vec![]) {
-                Ok(event) => {
-                    prop_assert_eq!(expected, Ok(()), "signed a body validate refuses");
-                    let decoded = chain::decode(&event.bytes)
-                        .map_err(|err| TestCaseError::fail(format!("decode: {err:?}")))?;
-                    prop_assert_eq!(
-                        decoded.header.extensions.kind.as_str(),
-                        RATE_AUTHORISATION_KIND
-                    );
-                    let body = auth
-                        .body()
-                        .map_err(|err| TestCaseError::fail(format!("body: {err}")))?;
-                    prop_assert_eq!(decoded.header.payload_hash, Some(Hash::digest(&body)));
-                    let received = RateAuthorisation::from_body(&body)
-                        .map_err(|err| TestCaseError::fail(format!("from_body: {err}")))?;
-                    prop_assert_eq!(&received, &auth);
-                    prop_assert_eq!(author_id(&decoded), received.issuer_id);
-                    prop_assert_eq!(
-                        fold_authorisation(
-                            authorisation_id,
-                            &issuer_id(&key),
-                            &[(author_id(&decoded), received)],
-                            &[],
-                        ),
-                        Some(AuthorisationState::Live(auth))
-                    );
-                }
-                Err(SignError::Validate(error)) => {
-                    prop_assert_eq!(expected, Err(error));
-                }
-                Err(other) => {
-                    return Err(TestCaseError::fail(format!("unexpected sign error {other:?}")));
-                }
-            }
-        }
     }
 }

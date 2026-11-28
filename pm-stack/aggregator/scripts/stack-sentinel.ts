@@ -29,17 +29,16 @@
 // (postedState !== state) is retried every round; the throat dedupes
 // by (source, key).
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 import { checkPrimaryCheckout } from "../src/primary-checkout.ts";
-import { computeEditionDrift, editionDriftVerdict } from "../src/edition-drift.ts";
 import {
   normalizeHookDispatchState,
   shouldDispatchHealthHook,
   type HealthHookState,
 } from "../src/health-hook-dispatch.ts";
-import { requireHome } from "../src/home.ts";
 
 const LOOP_MS = 30_000;
 
@@ -90,55 +89,14 @@ interface Target {
  * names the dirt in its incident detail.
  */
 interface LocalCheck extends Target {
-  run: () => { state: ServiceState; detail: string } | Promise<{ state: ServiceState; detail: string }>;
+  run: () => { state: ServiceState; detail: string };
 }
 
 const LOCAL_CHECKS: LocalCheck[] = [
   {
     id: "primary-checkout",
     name: "Primary checkout",
-    run: () =>
-      checkPrimaryCheckout(
-        process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(requireHome("PM_PRIMARY_CHECKOUT_DIR"), "git", "code"),
-      ),
-  },
-  {
-    // Edition drift (CF-9, #14949): the laptop PM edition deploys by
-    // merge -> switch and is stamped with its build commit, which the
-    // aggregator serves as `version` in /api/health. When main has
-    // carried newer code past the drift threshold without the
-    // edition flipping to it, the fallback tier has silently become
-    // the stale tier (#14059) — this check raises that as ONE
-    // stack-health incident through the same damped machinery. An
-    // unmeasurable drift (aggregator unreachable, unstamped build)
-    // is up with the reason: the aggregator probe owns the outage,
-    // and the alarm never fires on ignorance.
-    id: "edition-drift",
-    name: "Edition drift",
-    run: async () => {
-      const base = (process.env.ALERTS_INTAKE_URL ?? "http://127.0.0.1:4870").replace(/\/+$/, "");
-      let version: unknown;
-      try {
-        const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(10_000) });
-        if (!res.ok) {
-          return {
-            state: "up" as const,
-            detail: `edition drift unmeasured: aggregator health HTTP ${res.status} (the aggregator probe owns that outage)`,
-          };
-        }
-        const body: unknown = await res.json().catch(() => null);
-        version = (body as { version?: unknown } | null)?.version;
-      } catch (err) {
-        return {
-          state: "up" as const,
-          detail: `edition drift unmeasured: aggregator health unreachable (${err instanceof Error ? err.message : String(err)})`,
-        };
-      }
-      const repoDir =
-        process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(requireHome("PM_PRIMARY_CHECKOUT_DIR"), "git", "code");
-      const drift = await computeEditionDrift(typeof version === "string" ? version : "", repoDir);
-      return editionDriftVerdict(drift);
-    },
+    run: () => checkPrimaryCheckout(process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(homedir(), "git", "code")),
   },
 ];
 
@@ -150,13 +108,7 @@ interface SentinelStateFile {
 
 const STATE_FILE =
   process.env.PM_AGG_STACK_SENTINEL_STATE_FILE?.trim() ||
-  join(
-    requireHome("PM_AGG_STACK_SENTINEL_STATE_FILE"),
-    ".local",
-    "state",
-    "pm-aggregator",
-    "stack-sentinel-state.json",
-  );
+  join(homedir(), ".local", "state", "pm-aggregator", "stack-sentinel-state.json");
 
 let writeSeq = 0;
 
@@ -272,14 +224,7 @@ async function round(state: SentinelStateFile): Promise<void> {
       console.log(`stack-sentinel: ${hookTarget} hook still running; ${entry.state} dispatch waits`);
     } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
       const caller = "stack-sentinel";
-      const hookPath = join(
-        requireHome("the health hooks directory"),
-        "git",
-        "code",
-        "pm-stack",
-        "health-hooks",
-        `${hookTarget}.sh`,
-      );
+      const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
       try {
         const proc = Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
           stdout: "ignore",
@@ -312,7 +257,7 @@ async function round(state: SentinelStateFile): Promise<void> {
     await fold(probe, await probeOne(probe));
   }
   for (const check of LOCAL_CHECKS) {
-    await fold(check, await check.run());
+    await fold(check, check.run());
   }
   await saveState(state);
 }

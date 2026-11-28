@@ -48,25 +48,11 @@
  * values). Restores that keep failing raise the attention alert
  * after RESTORE_ALERT_AFTER_ATTEMPTS attempts: a restore that does
  * not revive the session becomes a signal, not a silent loop.
- *
- * Stale-readings alert (#15114): STALE_MS was declared for this
- * keeper but never consulted, so a valid stored credential made
- * every cycle report "valid" while the exporter's last good read
- * aged for hours — in the 2026-11-21 incident the readings were
- * ~4 days stale (408 consecutive exporter failures) before the
- * watchdog escalation surfaced it, and the restore-stuck alert
- * alone needs ~2.5 h of backoff (30 min + 2 h) to fire. Now, when
- * the last good exporter read is older than STALE_MS and the
- * current exporter document is not a fresh ok read, the keeper
- * raises the attention alert (state file + push on the new
- * episode) in that same cycle, naming the exporter status and
- * the last good read — session expiry becomes a loud, owned
- * alert at the staleness bound, not a discovery days later.
  */
 
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { requireHome } from "./home.ts";
 
 /** The portal team the quota read targets (exporter's DEFAULT_TEAM_ID, #1167). */
 export const META_DEFAULT_TEAM_ID = "1073226932208501";
@@ -212,8 +198,7 @@ export interface MetaRenewalDeps {
   log?: (line: string) => void;
 }
 
-export const defaultLatestPath = (): string =>
-  join(requireHome("the meta quota export's latest.json"), "atlas", "meta-quota-export", "latest.json");
+export const defaultLatestPath = (): string => join(homedir(), "atlas", "meta-quota-export", "latest.json");
 
 export const defaultCredentialPath = (statePath: string): string => join(dirname(statePath), "meta-credential.json");
 
@@ -507,17 +492,6 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   const doc = await readLatest().catch(() => null);
   const lastGoodAt = doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
 
-  // Stale readings (#15114): the last good exporter read is older
-  // than the stale bound and this cycle's document is not a fresh
-  // ok read (a fresh ok read sets lastGoodAt to ~now above, so it
-  // can never trip this). Unknown/unparseable lastGoodAt never
-  // trips it — no evidence of staleness is not staleness.
-  const staleMs = deps.staleMs ?? STALE_MS;
-  const lastGoodMs = lastGoodAt ? Date.parse(lastGoodAt) : Number.NaN;
-  const readingsStale = Number.isFinite(lastGoodMs) && now.getTime() - lastGoodMs > staleMs;
-  const staleAlertText = (): string =>
-    `Meta portal quota readings are stale: the exporter last produced a good read ${lastGoodAt} (older than the ${Math.round(staleMs / 60_000)} min stale bound) and its current status is ${doc?.status ?? "not reporting"}, though the stored credential itself still validates against the portal API. The live browser session the exporter rides is not producing readings; last-resort fallback: re-login to dev.meta.ai in the laptop Helium profile (Meta emails a login code).`;
-
   // Jar-restore episode state (#10839): carried across cycles via the
   // state file. A healthy exporter read closes any open episode; the
   // per-cycle fields (attempted/result) restart every cycle.
@@ -657,17 +631,6 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
           alert: restoreAlertText(),
         });
       }
-      if (readingsStale) {
-        return finish({
-          status: "attention",
-          sessionExpiresAt: stored.expiresAt,
-          horizonHours: horizon,
-          credential: { present: true, capturedAt: stored.capturedAt || null },
-          capture: { attempted: false, result: "not-attempted" },
-          notification: { attempted: false, result: null },
-          alert: staleAlertText(),
-        });
-      }
       return finish({
         status: "valid",
         sessionExpiresAt: stored.expiresAt,
@@ -710,17 +673,6 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
             alert: restoreAlertText(),
           });
         }
-      }
-      if (readingsStale) {
-        return finish({
-          status: "attention",
-          sessionExpiresAt: stored.expiresAt,
-          horizonHours: horizon,
-          credential: { present: true, capturedAt: stored.capturedAt || null },
-          capture: { attempted: true, result: attempt.result },
-          notification: { attempted: false, result: null },
-          alert: staleAlertText(),
-        });
       }
       return finish({
         status: "valid",

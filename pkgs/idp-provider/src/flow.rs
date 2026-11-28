@@ -72,15 +72,6 @@ pub struct FlowState {
     pub issuer: String,
 }
 
-/// An account tokens can be issued for, resolved by id: the
-/// config account (the owner's), or an enrolled account from the
-/// identity store (#15249).
-pub struct ResolvedAccount {
-    pub account_id: String,
-    pub display_name: String,
-    pub roles: Vec<String>,
-}
-
 impl FlowState {
     pub fn new(
         registry: ProviderConfig,
@@ -93,7 +84,6 @@ impl FlowState {
         // The config's identity list is the store's seed (#13415);
         // after seeding, the store is authoritative.
         let _ = identities.seed(&registry.account.account_id, &registry.account.identities);
-        let _ = identities.seed_account(&registry.account);
         FlowState {
             registry,
             signer,
@@ -105,43 +95,6 @@ impl FlowState {
             codes: Mutex::new(HashMap::new()),
             issuer,
         }
-    }
-
-    /// Resolve an account id to the row tokens are issued for:
-    /// the config account when the id is the owner's, otherwise
-    /// the enrolled account in the identity store (#15249).
-    /// `None` for an id this provider has never heard of — token
-    /// issuance and userinfo fail closed on it.
-    ///
-    /// A merged account's id reads through its `merged_into` pointer
-    /// (#13975): an earlier token's `sub` naming a merged secondary
-    /// resolves to the primary, and a store error fails closed. The
-    /// config account is never a merge secondary, so its own id is
-    /// answered from config without the store.
-    pub fn account_by_id(&self, account_id: &str) -> Option<ResolvedAccount> {
-        let resolved;
-        let account_id = if account_id == self.registry.account.account_id {
-            account_id
-        } else {
-            resolved = self.identities.resolve_account_id(account_id).ok()?;
-            resolved.as_str()
-        };
-        if account_id == self.registry.account.account_id {
-            return Some(ResolvedAccount {
-                account_id: account_id.to_string(),
-                display_name: self.registry.account.display_name.clone(),
-                roles: self.registry.account.roles.clone(),
-            });
-        }
-        self.identities
-            .account(account_id)
-            .ok()
-            .flatten()
-            .map(|row| ResolvedAccount {
-                account_id: row.account_id,
-                display_name: row.display_name,
-                roles: row.roles,
-            })
     }
 }
 
@@ -296,18 +249,14 @@ pub(crate) fn validate_authorize_request(
 }
 
 /// Mint a single-use authorization code bound to an already-gated
-/// identity and the account that identity resolved to (the config
-/// account for the owner's declared identities, the enrolled
-/// account for a first-login enrollment, #15249), and audit the
-/// issuance under `audit_endpoint` (`authorize` for the local
-/// door, `door/{name}` for a federated door). A failed audit write
-/// burns the code and fails closed.
+/// identity, and audit the issuance under `audit_endpoint`
+/// (`authorize` for the local door, `door/{name}` for a federated
+/// door). A failed audit write burns the code and fails closed.
 pub(crate) fn issue_code(
     flow: &FlowState,
     client_id: &str,
     redirect_uri: &str,
     code_challenge: &str,
-    account_id: &str,
     identity_key: &str,
     nonce: Option<&str>,
     scope: &str,
@@ -318,7 +267,7 @@ pub(crate) fn issue_code(
         client_id: client_id.to_string(),
         redirect_uri: redirect_uri.to_string(),
         code_challenge: code_challenge.to_string(),
-        account_id: account_id.to_string(),
+        account_id: flow.registry.account.account_id.clone(),
         identity_key: identity_key.to_string(),
         nonce: nonce.map(|s| s.to_string()),
         scope: scope.to_string(),
@@ -477,33 +426,18 @@ fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
             "identity is not on the allowlist",
         );
     }
-    // The local door serves only the config account: its credential
-    // is that account's credential, so the identity must be actively
-    // linked to THAT account (an identity enrolled into its own
-    // account at a federated door, #15249, does not open here).
-    let account_id = match flow
-        .identities
-        .account_id_for(LOCAL_DOOR_PROVIDER, &login_id)
-    {
-        Ok(Some(id))
-            if id == flow.registry.account.account_id
-                && flow.identities.is_active(LOCAL_DOOR_PROVIDER, &login_id) =>
-        {
-            id
-        }
-        _ => {
-            return denied(
-                flow,
-                "authorize",
-                "identity_not_linked",
-                &client_id,
-                &identity_key,
-                StatusCode::FORBIDDEN,
-                "access_denied",
-                "identity is not linked to an account",
-            );
-        }
-    };
+    if !flow.identities.is_active(LOCAL_DOOR_PROVIDER, &login_id) {
+        return denied(
+            flow,
+            "authorize",
+            "identity_not_linked",
+            &client_id,
+            &identity_key,
+            StatusCode::FORBIDDEN,
+            "access_denied",
+            "identity is not linked to an account",
+        );
+    }
     if !verify_credential(
         p.credential.as_deref().unwrap_or(""),
         &flow.registry.account.local_credential_hash,
@@ -526,7 +460,6 @@ fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
         &valid.client_id,
         &valid.redirect_uri,
         &valid.code_challenge,
-        &account_id,
         &identity_key,
         p.nonce.as_deref(),
         &valid.scope,
@@ -675,30 +608,12 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
         );
     }
 
-    // The code names its account: tokens carry THAT account's
-    // roles, never the config account's by default (#15249).
-    let account = match flow.account_by_id(&record.account_id) {
-        Some(a) => a,
-        None => {
-            return denied(
-                flow,
-                "token",
-                "account_unknown",
-                &client_id,
-                &identity,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "the code's account is not known to this provider",
-            );
-        }
-    };
+    let account = &flow.registry.account;
     let iat = now_unix();
     let exp = iat + TOKEN_TTL_SECS;
-    // A code issued just before a merge (#13975) names the secondary;
-    // tokens issued after the merge carry the account it reads as.
     let mut id_claims = serde_json::json!({
         "iss": flow.issuer,
-        "sub": account.account_id,
+        "sub": record.account_id,
         "aud": client_id,
         "iat": iat,
         "exp": exp,
@@ -801,32 +716,19 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
             "access token is expired or not valid for this issuer",
         );
     }
-    // The token's subject names its account (the owner's, or an
-    // enrolled account, #15249); an unknown subject is not valid
-    // for this provider.
-    let subject = claims["sub"].as_str().unwrap_or("");
-    let account = match flow.account_by_id(subject) {
-        Some(a) => a,
-        None => {
-            return err_json(
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "access token subject is not a known account",
-            );
-        }
-    };
-    // OIDC requires userinfo's `sub` to equal the token's. A token
-    // issued before a merge (#13975) keeps naming the secondary, so
-    // `sub` stays as issued and `merged_into` names the account it
-    // now reads as; the account fields are the primary's.
-    let mut info = serde_json::json!({
-        "sub": subject,
+    let account = &flow.registry.account;
+    if claims["sub"] != account.account_id {
+        return err_json(
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "access token subject is not the account",
+        );
+    }
+    Json(serde_json::json!({
+        "sub": account.account_id,
         "name": account.display_name,
         "preferred_username": claims["preferred_username"],
         "roles": account.roles,
-    });
-    if account.account_id != subject {
-        info["merged_into"] = serde_json::Value::String(account.account_id);
-    }
-    Json(info).into_response()
+    }))
+    .into_response()
 }

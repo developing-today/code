@@ -79,12 +79,7 @@ function fixPacket(issue = 4242, payloadExtra: JsonObject = {}, packetExtra: Jso
   };
 }
 
-async function enqueue(
-  store: QueueStore,
-  env: QueueEnv,
-  packet: JsonObject,
-  extra: JsonObject = {},
-): Promise<JsonObject> {
+async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
   return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
@@ -133,11 +128,9 @@ test("hrana store: the full QueueStore surface round-trips over the transport se
   try {
     const row = await t.store.insertTask({
       queue: "repo-health",
-      manual_only: false,
       title: "fix issue 4242",
       body: "b",
       payload: fixPacket().payload,
-      metadata: {},
       dedupe_key: "repo-health:v1:fix:developing-today/code:issue:4242",
       priority: 30,
       status: "queued",
@@ -172,10 +165,7 @@ test("hrana store: the full QueueStore surface round-trips over the transport se
     });
     assert.equal(row.id > 0, true);
     assert.deepEqual(await t.store.getTask(row.id), row);
-    assert.deepEqual(
-      (await t.store.tasksByDedupe("repo-health", row.dedupe_key as string)).map((r) => r.id),
-      [row.id],
-    );
+    assert.deepEqual((await t.store.tasksByDedupe("repo-health", row.dedupe_key as string)).map((r) => r.id), [row.id]);
     assert.equal((await t.store.allTasks()).length, 1);
 
     // The conditional update is the claim primitive: a stale guard
@@ -183,11 +173,7 @@ test("hrana store: the full QueueStore surface round-trips over the transport se
     assert.equal(await t.store.conditionalUpdateTask(row.id, { status: "claimed" }, { status: "claimed" }), false);
     assert.equal((await t.store.getTask(row.id))?.status, "queued");
     assert.equal(
-      await t.store.conditionalUpdateTask(
-        row.id,
-        { status: "queued", worker_id: null },
-        { status: "claimed", worker_id: "w" },
-      ),
+      await t.store.conditionalUpdateTask(row.id, { status: "queued", worker_id: null }, { status: "claimed", worker_id: "w" }),
       true,
     );
     assert.equal((await t.store.getTask(row.id))?.worker_id, "w");
@@ -358,9 +344,7 @@ async function wireEndpoint(): Promise<WireEndpoint | null> {
         const res = await fetch(`${url}/v2/pipeline`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            requests: [{ type: "execute", stmt: { sql: "SELECT 1", args: [] } }, { type: "close" }],
-          }),
+          body: JSON.stringify({ requests: [{ type: "execute", stmt: { sql: "SELECT 1", args: [] } }, { type: "close" }] }),
         });
         if (res.ok) return;
       } catch {
@@ -427,11 +411,7 @@ test("wire: two doors over real Hrana HTTP enqueue, claim and complete on one DB
     seen.map((e) => e.kind).filter((k) => ["claimed", "completed"].includes(k)),
     ["claimed", "completed"],
   );
-  assert.deepEqual(await doorA.describe(), {
-    backend: "libsql",
-    projectSource: "fleet-queue",
-    netloc: new URL(ep.url).host,
-  });
+  assert.deepEqual(await doorA.describe(), { backend: "libsql", projectSource: "fleet-queue", netloc: new URL(ep.url).host });
 });
 
 test("wire: cross-door file interop — Hrana-written rows read identically through the embedded store", async (t) => {

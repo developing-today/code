@@ -199,46 +199,6 @@ fn test_delegate_sets_the_delegation_mode_that_policy_shows() {
     );
 }
 
-/// A refused grant with `--mode` records neither event (#14877): the mode change and the grant
-/// are one atomic pair, so the group's delegation mode never changes under a grant that did not
-/// happen. A grant to oneself is refused by the fold as `BadGrantee`.
-#[test]
-fn test_a_refused_grant_with_a_mode_change_records_neither_event() {
-    let root = TempDir::new().unwrap();
-    let log = root.path().join("groups.jsonl");
-    let owner = node(root.path(), "owner", &log);
-    let ann = node(root.path(), "ann", &log);
-    let group = group_with_reader(&owner, &ann);
-    let before = GroupLog::open(&log).unwrap().events().len();
-
-    let refused = owner.run(&[
-        "delegate",
-        &group,
-        &owner.key(),
-        "--scope",
-        "read",
-        "--mode",
-        "keep_prior",
-    ]);
-    assert!(!refused.status.success(), "a grant to oneself was accepted");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("BadGrantee"), "{stderr}");
-    assert!(
-        !String::from_utf8_lossy(&refused.stdout).contains("policy"),
-        "a mode change was reported for a refused grant"
-    );
-    assert_eq!(
-        GroupLog::open(&log).unwrap().events().len(),
-        before,
-        "a refused grant with --mode recorded an event"
-    );
-    assert_eq!(
-        group_view(&log, &group).policy.delegation_mode(),
-        Delegation::Cascade,
-        "the mode change stayed in the log after the grant was refused"
-    );
-}
-
 /// Attenuation (design §7.2): a grantor passes on no more than it holds at that position. Ann
 /// holds a delegated Read, so the real `id delegate ... --scope write` is refused by the fold as
 /// `Attenuated`, and no grant is recorded for Bob.
@@ -410,43 +370,4 @@ fn test_a_device_may_not_grant_above_its_scope() {
         Outcome::Refused(Refusal::Attenuated),
         "a Read-scoped device granted Write"
     );
-}
-
-#[test]
-fn test_delegate_prints_the_expiry_bound_and_refuses_a_past_one() {
-    let root = TempDir::new().unwrap();
-    let log = root.path().join("groups.jsonl");
-    let owner = node(root.path(), "owner", &log);
-    let ann = node(root.path(), "ann", &log);
-    let group = group_with_reader(&owner, &ann);
-
-    // A future bound is recorded and shown in the confirmation (#14221 C1).
-    let line = owner.ok(&[
-        "delegate",
-        &group,
-        &ann.key(),
-        "--scope",
-        "read",
-        "--expires-at",
-        "99999999999",
-    ]);
-    assert_eq!(field(&line, "expires_at"), "99999999999");
-    let grant = hash(&field(&line, "event"));
-    assert_eq!(projection(&log).outcome(&grant), Some(&Outcome::Applied));
-
-    // A bound that has already passed is refused before anything is written (#14221 C2).
-    let before = GroupLog::open(&log).unwrap().events().len();
-    let output = owner.run(&[
-        "delegate",
-        &group,
-        &ann.key(),
-        "--scope",
-        "read",
-        "--expires-at",
-        "1",
-    ]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not after now"), "{stderr}");
-    assert_eq!(GroupLog::open(&log).unwrap().events().len(), before);
 }

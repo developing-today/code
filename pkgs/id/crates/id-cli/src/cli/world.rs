@@ -427,31 +427,6 @@ pub struct WorldProfileArgs {
     pub no_relay: bool,
 }
 
-/// The arguments of `id world presentation`, extracted into
-/// their own `Args` struct for the same reason as `ServeArgs`
-/// (#4751).
-#[derive(Args, Debug)]
-pub struct WorldPresentationArgs {
-    /// The host's node ID (64 hex characters).
-    pub node: String,
-    /// Replace the policy with the one in this JSON file (needs
-    /// `--admin-token`). A duplicated key is refused.
-    #[arg(long, value_name = "FILE")]
-    pub set: Option<PathBuf>,
-    /// Admin secret configured with `serve --world-admin-token`.
-    #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
-    pub admin_token: Option<String>,
-    /// World on the host to use (default: the host's default world).
-    #[arg(long, env = "ID_WORLD")]
-    pub world: Option<String>,
-    /// Direct socket address of the host (repeatable); skips discovery.
-    #[arg(long = "addr")]
-    pub addrs: Vec<SocketAddr>,
-    /// Disable relay servers (direct connection only).
-    #[arg(long)]
-    pub no_relay: bool,
-}
-
 /// The arguments of `id world doctor`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`
 /// (#4751): keeping clap's derive-generated construction in its
@@ -985,14 +960,6 @@ pub enum WorldCommand {
     /// are specified, prints the current persisted profile (requires either
     /// `--admin-token` or a guest `--capability`).
     Profile(WorldProfileArgs),
-    /// View or replace a world's presentation policy.
-    ///
-    /// Without `--set` it prints the policy: what appearances the world
-    /// lets render (user uploads, the richest rung, filters, shaders,
-    /// its fallback art). Reading needs no token, because the policy is
-    /// public before anyone joins. `--set FILE` replaces it with the
-    /// policy in a JSON file and needs `--admin-token`.
-    Presentation(WorldPresentationArgs),
     /// Scaffold a new Roc world app directory.
     ///
     /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
@@ -1166,67 +1133,6 @@ pub enum WorldCommand {
     /// Inspect or copy a durable world's journal file (F11.12 journal
     /// format management). Local only; no host is contacted.
     Journal(WorldJournalArgs),
-    /// Publish a signed world announcement to pkarr relays (#10706).
-    ///
-    /// Signs with the world key in `--key-file` (an owner-only file,
-    /// created on first use) and prints one JSON line per publish.
-    /// With `--watch` it stays up and republishes on the heartbeat.
-    Announce(WorldAnnounceArgs),
-    /// Fetch a world's announcement from pkarr relays by its world id,
-    /// verify it, and print it as JSON (#10706).
-    Lookup(WorldLookupArgs),
-}
-
-/// The arguments of `id world announce` (#10706).
-#[derive(Args, Debug)]
-pub struct WorldAnnounceArgs {
-    /// File holding the world's signing key (created on first use).
-    /// The world id is this key's public half.
-    #[arg(long)]
-    pub key_file: String,
-    /// The node id (64 hex characters) that hosts the world.
-    #[arg(long)]
-    pub node: String,
-    /// A relay URL that reaches the node (never a raw IP and port).
-    #[arg(long)]
-    pub relay_hint: Option<String>,
-    /// Display name (at most 64 characters).
-    #[arg(long)]
-    pub name: String,
-    /// Short description (at most 200 characters).
-    #[arg(long, default_value = "")]
-    pub description: String,
-    /// A tag (repeatable, at most 8).
-    #[arg(long = "tag")]
-    pub tags: Vec<String>,
-    /// Mark the world listed, so registries may include it. Unlisted
-    /// worlds are found only by their id.
-    #[arg(long)]
-    pub listed: bool,
-    /// Coarse occupancy.
-    #[arg(long, default_value = "has_room", value_parser = ["has_room", "near_full", "full"])]
-    pub occupancy: String,
-    /// A pkarr relay base URL (repeatable). Defaults to the
-    /// developing-today relay.
-    #[arg(long = "relay")]
-    pub relays: Vec<String>,
-    /// How long each announcement stays valid, such as 3h.
-    #[arg(long, default_value = "3h", value_parser = crate::helpers::parse_duration_secs)]
-    pub lifetime: u64,
-    /// Stay up and republish on the heartbeat until interrupted.
-    #[arg(long)]
-    pub watch: bool,
-}
-
-/// The arguments of `id world lookup` (#10706).
-#[derive(Args, Debug)]
-pub struct WorldLookupArgs {
-    /// The world id (64 hex characters).
-    pub world_id: String,
-    /// A pkarr relay base URL (repeatable). Defaults to the
-    /// developing-today relay.
-    #[arg(long = "relay")]
-    pub relays: Vec<String>,
 }
 
 /// The arguments of `id world journal`: a subcommand over a world

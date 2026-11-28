@@ -54,7 +54,6 @@
 - [Design: MCP and programmatic access, next steps](design/access-evolution.md)
   - [Consumer, cache and recommendation acceptance](design/consumer-acceptance.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
-- [Design: renaming the sensitivity ladder in code](design/sensitivity-ladder-rename.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
 - [High-level roadmap](design/high-level-roadmap.md)
 

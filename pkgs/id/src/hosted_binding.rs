@@ -2123,7 +2123,7 @@ mod tests {
         assert_eq!(record.sub, SUB);
         assert_eq!(record.status, BindingStatus::Active);
         assert_eq!(record.version, 1);
-        assert_eq!(record.history, [] as [HistoryEntry; 0]);
+        assert!(record.history.is_empty());
         // CSE default is ON absent an explicit choice (#2046 ruling).
         assert!(record.client_side_encryption);
 
@@ -3171,7 +3171,7 @@ mod tests {
             service.rebind_request(&other_request.rebind_id),
             Some(&other_request_before)
         );
-        assert_eq!(service.rebind_records(), [] as [RebindRecord; 0]);
+        assert!(service.rebind_records().is_empty());
     }
 
     #[test]
@@ -3205,7 +3205,7 @@ mod tests {
         );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
-        assert_eq!(service.rebind_records(), [] as [RebindRecord; 0]);
+        assert!(service.rebind_records().is_empty());
     }
 
     #[test]
@@ -3456,7 +3456,7 @@ mod tests {
             service.rebind_request(&request.rebind_id).unwrap().status,
             RebindRequestStatus::Pending
         );
-        assert_eq!(service.rebind_records(), [] as [RebindRecord; 0]);
+        assert!(service.rebind_records().is_empty());
     }
 
     #[test]

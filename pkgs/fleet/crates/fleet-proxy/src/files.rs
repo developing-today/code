@@ -347,8 +347,6 @@ impl FilesTransport for BrokerFilesTransport {
             trip: None,
             transport: None,
             cf_ok: None,
-            // #14188: the caller's FLEET_CTX_* record rides the frame.
-            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             ClientError::Transport(format!("broker socket {}: {e}", self.socket.display()))

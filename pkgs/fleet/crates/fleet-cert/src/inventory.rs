@@ -205,7 +205,8 @@ fn cert_status(
     } else {
         leaf_horizon
     };
-    let (status, days_remaining) = expiry_status(record.not_before, record.not_after, horizon, at);
+    let (status, days_remaining) =
+        expiry_status(record.not_before, record.not_after, horizon, at);
     CertStatus {
         role: record.role.clone(),
         subject_dn: record.subject_dn.clone(),
@@ -311,8 +312,7 @@ fn audit_one(
                     drift.push(DriftFinding {
                         kind: "orphaned-file".to_string(),
                         path: rel.clone(),
-                        detail: "on disk but absent from the manifest file index (§7.1)"
-                            .to_string(),
+                        detail: "on disk but absent from the manifest file index (§7.1)".to_string(),
                     });
                 }
             }
@@ -323,12 +323,11 @@ fn audit_one(
     // verified: extra on-disk files do not break `load_bundle`'s
     // checksum check, but they are still unindexed material.
     {
-        let indexed: BTreeSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+        let indexed: BTreeSet<&str> =
+            manifest.files.iter().map(|f| f.path.as_str()).collect();
         for rel in disk_files(dir) {
             if !indexed.contains(rel.as_str())
-                && !drift
-                    .iter()
-                    .any(|d| d.kind == "orphaned-file" && d.path == rel)
+                && !drift.iter().any(|d| d.kind == "orphaned-file" && d.path == rel)
             {
                 drift.push(DriftFinding {
                     kind: "orphaned-file".to_string(),
@@ -344,7 +343,11 @@ fn audit_one(
     // the record; every indexed certificate/key file must be claimed
     // by a record. Runs whether or not the bundle verified: a
     // checksum-clean bundle can still reference the wrong bytes.
-    let indexed: BTreeSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    let indexed: BTreeSet<&str> = manifest
+        .files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
     let mut claimed_cert_paths: BTreeSet<&str> = BTreeSet::new();
     let mut claimed_key_paths: BTreeSet<&str> = BTreeSet::new();
     let mut certs = Vec::new();
@@ -364,38 +367,40 @@ fn audit_one(
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
                     match pem_decode_all(&text) {
-                        Ok(blocks) => match blocks.into_iter().find(|(l, _)| l == "CERTIFICATE") {
-                            Some((_, der)) => {
-                                if sha256_hex(&der) != record.fingerprint_sha256 {
-                                    drift.push(DriftFinding {
-                                        kind: "fingerprint-mismatch".to_string(),
-                                        path: record.cert_path.clone(),
-                                        detail: format!(
-                                            "on-disk SHA-256 {} != record {} ({})",
-                                            sha256_hex(&der),
-                                            record.fingerprint_sha256,
-                                            record.subject_dn
-                                        ),
-                                    });
-                                } else if let Ok(info) = parse_cert(&der) {
-                                    if info.subject_dn != record.subject_dn {
+                        Ok(blocks) => {
+                            match blocks.into_iter().find(|(l, _)| l == "CERTIFICATE") {
+                                Some((_, der)) => {
+                                    if sha256_hex(&der) != record.fingerprint_sha256 {
                                         drift.push(DriftFinding {
-                                            kind: "subject-mismatch".to_string(),
+                                            kind: "fingerprint-mismatch".to_string(),
                                             path: record.cert_path.clone(),
                                             detail: format!(
-                                                "on-disk subject '{}' != record '{}'",
-                                                info.subject_dn, record.subject_dn
+                                                "on-disk SHA-256 {} != record {} ({})",
+                                                sha256_hex(&der),
+                                                record.fingerprint_sha256,
+                                                record.subject_dn
                                             ),
                                         });
+                                    } else if let Ok(info) = parse_cert(&der) {
+                                        if info.subject_dn != record.subject_dn {
+                                            drift.push(DriftFinding {
+                                                kind: "subject-mismatch".to_string(),
+                                                path: record.cert_path.clone(),
+                                                detail: format!(
+                                                    "on-disk subject '{}' != record '{}'",
+                                                    info.subject_dn, record.subject_dn
+                                                ),
+                                            });
+                                        }
                                     }
                                 }
+                                None => drift.push(DriftFinding {
+                                    kind: "cert-unparseable".to_string(),
+                                    path: record.cert_path.clone(),
+                                    detail: "no CERTIFICATE PEM block".to_string(),
+                                }),
                             }
-                            None => drift.push(DriftFinding {
-                                kind: "cert-unparseable".to_string(),
-                                path: record.cert_path.clone(),
-                                detail: "no CERTIFICATE PEM block".to_string(),
-                            }),
-                        },
+                        }
                         Err(e) => drift.push(DriftFinding {
                             kind: "cert-unparseable".to_string(),
                             path: record.cert_path.clone(),
@@ -639,11 +644,7 @@ pub fn render_show(b: &BundleInventory, at: Rfc3339) -> (String, serde_json::Val
 
 /// Render `inventory search` hits.
 pub fn render_search(hits: &[SearchHit], at: Rfc3339) -> (String, serde_json::Value) {
-    let mut text = format!(
-        "Inventory search: {} match(es) (as of {}):\n",
-        hits.len(),
-        at
-    );
+    let mut text = format!("Inventory search: {} match(es) (as of {}):\n", hits.len(), at);
     if hits.is_empty() {
         text.push_str("  (none)\n");
     }
@@ -679,10 +680,7 @@ pub fn render_audit(report: &InventoryReport) -> (String, serde_json::Value) {
     );
     for b in &report.bundles {
         let interesting = b.drift.len()
-            + b.certs
-                .iter()
-                .filter(|c| c.status != ExpiryStatus::Ok)
-                .count();
+            + b.certs.iter().filter(|c| c.status != ExpiryStatus::Ok).count();
         if interesting == 0 {
             text.push_str(&format!(
                 "  {} — {} ({}): clean\n",

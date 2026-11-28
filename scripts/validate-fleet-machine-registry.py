@@ -33,32 +33,6 @@ standard (doc/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1,
   `status: healthy` is a fabricated pass and fails here. `last_seen`,
   when present, must be ISO-8601.
 
-Transport offers and enrollment (#14714, transport & pooling design
-doc/2026-11-23T21-10-36Z_design_fleet-transport-pooling §1.2), both
-optional per record:
-
-- `transports` is a list of offers, one per transport the host serves.
-  Each offer carries exactly `name` (unique within the record), `kind`
-  (commander-door|laptop-agent|ssh|tsnet|iroh), `endpoint` (the kind's
-  endpoint data) and `credentials` (the authenticating credentials BY
-  NAME). Any other key is an error: a `token`, `secret` or `bearer`
-  beside the offer is a credential value in the registry.
-- endpoint keys come from url|address|port|target|node_id|relay, values
-  are scalars, URLs are http(s) with no userinfo, query or fragment, and
-  each kind names its own required keys (commander-door and laptop-agent
-  a door `url`, ssh a `target`, tsnet an `address` and `port`, iroh a
-  `node_id`).
-- a credential is a dotted/dashed lowercase name (the secrets broker's
-  naming, e.g. `desktop-commander.machine-bearer`); a long digit-bearing
-  run, anything with `:`, `/`, `=`, `_` or capitals, or a non-string is
-  value-shaped and rejected. Every offer but iroh names at least one
-  credential (iroh authenticates by the NodeId in its endpoint).
-- `enrollment` maps an agent class (lowercase slug: opencode-lanes,
-  muse-seats, external-mcp-clients, ...) to the non-empty list of offer
-  names it may use; every name must be an offer of the same record, and
-  `enrollment` without `transports` is an error.
-- liveness is not part of an offer (that is the watchdog's health block).
-
 Exit 0 and one `ok:` line per record on success; exit 1 with one
 `error:` line per violation otherwise. Requires PyYAML.
 """
@@ -83,22 +57,6 @@ HEALTH_CHECKS = {
 CHECK_STATES = {"ok", "failed", "unknown"}
 CAPABILITIES = {"queue_worker", "opencode_sessions", "builds", "gpu"}
 SECRET_CLASS = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-TRANSPORT_KINDS = {"commander-door", "laptop-agent", "ssh", "tsnet", "iroh"}
-OFFER_FIELDS = {"name", "kind", "endpoint", "credentials"}
-ENDPOINT_KEYS = {"url", "address", "port", "target", "node_id", "relay"}
-ENDPOINT_REQUIRED = {
-    "commander-door": {"url"},
-    "laptop-agent": {"url"},
-    "ssh": {"target"},
-    "tsnet": {"address", "port"},
-    "iroh": {"node_id"},
-}
-CREDENTIAL_NAME = re.compile(r"^[a-z0-9]+([.-][a-z0-9]+)*$")
-# A name segment this long that also carries a digit reads as a token,
-# not a name; any segment past the hard cap is value-shaped outright.
-VALUE_SEGMENT_WITH_DIGIT = 20
-VALUE_SEGMENT_MAX = 32
-URL = re.compile(r"^https?://[^/@?#\s]+(/[^?#\s]*)?$")
 REQUIRED_FIELDS = {
     "id",
     "hostname",
@@ -197,120 +155,6 @@ def validate(doc):
             errors.append(f"{where}: health.source must name who reports (§1.5)")
         if isinstance(health, dict):
             errors.extend(_health_earned_errors(where, health))
-        errors.extend(_transport_errors(where, rec))
-    return errors
-
-
-def _is_credential_name(value):
-    if not isinstance(value, str) or not CREDENTIAL_NAME.match(value):
-        return False
-    for segment in re.split(r"[.-]", value):
-        if len(segment) > VALUE_SEGMENT_MAX:
-            return False
-        if len(segment) >= VALUE_SEGMENT_WITH_DIGIT and re.search(r"\d", segment):
-            return False
-    return True
-
-
-def _offer_errors(at, offer):
-    errors = []
-    if not isinstance(offer, dict):
-        return [f"{at}: offer is not a mapping"]
-    extra = set(offer) - OFFER_FIELDS
-    if extra:
-        errors.append(
-            f"{at}: unexpected keys {sorted(extra)} (an offer names its "
-            "credentials under `credentials`; values never live here)"
-        )
-    missing = OFFER_FIELDS - set(offer)
-    if missing:
-        errors.append(f"{at}: missing keys {sorted(missing)}")
-    kind = offer.get("kind")
-    if kind not in TRANSPORT_KINDS:
-        errors.append(f"{at}: kind {kind!r} not in {sorted(TRANSPORT_KINDS)}")
-    endpoint = offer.get("endpoint")
-    if "endpoint" in offer:
-        if not isinstance(endpoint, dict) or not endpoint:
-            errors.append(f"{at}: endpoint must be a non-empty mapping")
-        else:
-            unknown = set(endpoint) - ENDPOINT_KEYS
-            if unknown:
-                errors.append(
-                    f"{at}: endpoint keys {sorted(unknown)} not in {sorted(ENDPOINT_KEYS)}"
-                )
-            for key, value in endpoint.items():
-                if isinstance(value, bool) or not isinstance(value, (str, int)):
-                    errors.append(f"{at}: endpoint.{key} must be a scalar")
-                elif key in ("url", "relay") and not (
-                    isinstance(value, str) and URL.match(value)
-                ):
-                    errors.append(
-                        f"{at}: endpoint.{key} must be an http(s) URL with no "
-                        "userinfo, query or fragment"
-                    )
-                elif key == "port" and not (
-                    isinstance(value, int) and 0 < value < 65536
-                ):
-                    errors.append(f"{at}: endpoint.port must be 1-65535")
-            if kind in ENDPOINT_REQUIRED:
-                need = ENDPOINT_REQUIRED[kind] - set(endpoint)
-                if need:
-                    errors.append(f"{at}: {kind} endpoint must name {sorted(need)}")
-    credentials = offer.get("credentials")
-    if "credentials" in offer:
-        if not isinstance(credentials, list):
-            errors.append(f"{at}: credentials must be a list of credential names")
-        else:
-            for j, cred in enumerate(credentials):
-                if not _is_credential_name(cred):
-                    errors.append(
-                        f"{at}: credentials[{j}] is not a credential name "
-                        "(value-shaped; the registry carries names only)"
-                    )
-            if not credentials and kind != "iroh":
-                errors.append(f"{at}: a {kind} offer must name its credential")
-    return errors
-
-
-def _transport_errors(where, rec):
-    """The §1.2 offer + enrollment shape (#14714)."""
-    errors = []
-    transports = rec.get("transports")
-    enrollment = rec.get("enrollment")
-    names = set()
-    if transports is not None:
-        if not isinstance(transports, list) or not transports:
-            return [f"{where}: transports must be a non-empty list of offers"]
-        for i, offer in enumerate(transports):
-            at = f"{where}: transports[{i}]"
-            errors.extend(_offer_errors(at, offer))
-            name = offer.get("name") if isinstance(offer, dict) else None
-            if not (isinstance(name, str) and SECRET_CLASS.match(name)):
-                errors.append(f"{at}: name must be a lowercase slug")
-            elif name in names:
-                errors.append(f"{at}: duplicate offer name {name!r}")
-            else:
-                names.add(name)
-    if enrollment is not None:
-        if transports is None:
-            errors.append(f"{where}: enrollment without transports enrolls nothing")
-        elif not isinstance(enrollment, dict) or not enrollment:
-            errors.append(f"{where}: enrollment must be a non-empty mapping")
-        else:
-            for agent_class, offers in enrollment.items():
-                at = f"{where}: enrollment.{agent_class}"
-                if not (
-                    isinstance(agent_class, str) and SECRET_CLASS.match(agent_class)
-                ):
-                    errors.append(f"{at}: agent class must be a lowercase slug")
-                if not isinstance(offers, list) or not offers:
-                    errors.append(f"{at}: must list at least one offer name")
-                    continue
-                for offer_name in offers:
-                    if offer_name not in names:
-                        errors.append(
-                            f"{at}: {offer_name!r} is not an offer of this machine"
-                        )
     return errors
 
 

@@ -2,8 +2,6 @@
 
 The detector and warning-only intake are implemented and covered by local fixtures. **They have no production caller.** No route, startup hook, timer, environment setting, data reader, schema change, or notification class is added. The only intake is dependency-injected, and unless its caller explicitly enables it, it does not read evidence or call the alert store. This does not complete #4825.
 
-The evidence producer now exists (`src/cost-anomaly-producer.ts`): it reads the rollup store through an injected reader, reduces records with `selectRollups` (one consistent attribution version per window), pairs adjacent unattributed windows, and assembles `CostEvidence` for all four classes, with the certified auxiliary facts below supplied through injected seams that return null when uncertified. It performs no I/O of its own and the server does not call it; the end-to-end store → producer → intake → alert-ledger path is covered by `test/cost-anomaly-producer-4825.test.ts`.
-
 ## Evidence a future producer must certify
 
 Use elapsed UTC calendar weeks (Monday–Monday) or months. Both sides of each comparison must cover the whole exact period. An empty cache, filtered Project view, absent observation or stale source does not certify a zero.
@@ -17,4 +15,4 @@ The warning includes the scope, UTC interval, compared values and a link to the 
 
 ## Still needed
 
-Production rollup ingestion and the certified auxiliary sources above are not wired by the current repository: the producer's seams (closure counts, busiest root session, source-population totals, monthly matched-charge totals, service activity) have no in-repository implementations yet. Before activation, implement those sources against the contracts above (including missing/partial-data cases), verify the source-to-rollup reconciliation, and verify warning presentation in Needs-you and Today/brief against the live application architecture without sending pushes. Do not turn on a producer merely because the detector tests pass.
+Production rollup ingestion and the certified auxiliary sources above are not wired by the current repository. Before activation, demonstrate those source contracts (including missing/partial-data cases), verify the source-to-rollup reconciliation, and verify warning presentation in Needs-you and Today/brief against the live application architecture without sending pushes. Do not turn on a producer merely because the detector tests pass.

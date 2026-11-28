@@ -8,7 +8,6 @@
 import type { Docs } from "./docs.ts";
 import type { Class, Push } from "./push.ts";
 import type { Store } from "./store.ts";
-import type { TokenExpiry } from "./tokens.ts";
 
 export interface Seen {
   primed: boolean;
@@ -21,10 +20,6 @@ export interface Seen {
    * and whether the owner has been told. Absent in a state written
    * before units that run on a timer were told apart. */
   failing?: Record<string, { since: number; told: boolean; last?: number }>;
-  /** Store tokens the owner has been told are running out, by name, and
-   * what he was told: that it soon will, or that it has. Absent in a
-   * state written before tokens were watched. */
-  tokens?: Record<string, "soon" | "expired">;
 }
 export const NOTHING_SEEN: Seen = { primed: false, asks: {}, hands: [], questions: 0, failed: [] };
 
@@ -72,7 +67,6 @@ interface State {
   sessions?: { waiting: { id: string; title: string }[] } | null;
   questionCount?: { total: number } | null;
   services?: { unit: string; active: string; description?: string }[] | null;
-  tokens?: TokenExpiry[] | null;
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -98,7 +92,6 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     questions: seen.questions,
     failed: seen.failed,
     ...(seen.failing ? { failing: seen.failing } : {}),
-    ...(seen.tokens ? { tokens: seen.tokens } : {}),
   };
   const messages: Message[] = [];
   for (const ask of now.asks ?? []) {
@@ -239,42 +232,6 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     next.failing = failing;
     next.failed = Object.keys(failing);
   }
-  if (now.tokens) {
-    // Once for each token as it comes within two weeks of running out,
-    // and once more when it has run out: not on every reading. A token
-    // seen fine again was rotated, and may be told of again later. One
-    // that could not be read says nothing either way.
-    const told: Record<string, "soon" | "expired"> = { ...(seen.tokens ?? {}) };
-    const listed = new Set<string>();
-    for (const t of now.tokens) {
-      listed.add(t.name);
-      if (t.state === "fine" || t.state === "none") {
-        delete told[t.name];
-        continue;
-      }
-      if (t.state !== "soon" && t.state !== "expired") continue;
-      if (told[t.name] === t.state || (told[t.name] === "expired" && t.state === "soon")) continue;
-      told[t.name] = t.state;
-      const stores = t.stores.join(", ");
-      const day = t.expiresAt ? t.expiresAt.slice(0, 10) : "";
-      messages.push({
-        cls: "trouble",
-        title: t.state === "expired" ? "A store token has run out" : "A store token runs out soon",
-        // Which token, what uses it and when: never the token.
-        body: clip(
-          t.state === "expired"
-            ? `${t.name} (${stores}) ran out on ${day}.`
-            : `${t.name} (${stores}) runs out on ${day}.`,
-          300,
-        ),
-        url: "/console/#more/platform",
-        tag: `token-${t.name}`,
-        actions: [{ action: "open", title: "Look", url: "/console/#more/platform" }],
-      });
-    }
-    for (const name of Object.keys(told)) if (!listed.has(name)) delete told[name];
-    next.tokens = told;
-  }
   return { messages: seen.primed ? messages : [], seen: next };
 }
 
@@ -291,9 +248,6 @@ export class Notifier {
     private push: Push,
     private store: Store,
     private now: () => number = Date.now,
-    /** When the store tokens run out, where this side can read every
-     * token (a machine); absent where it cannot. */
-    private tokens?: () => Promise<TokenExpiry[]>,
   ) {}
 
   private async load(): Promise<Seen> {
@@ -316,8 +270,6 @@ export class Notifier {
       if ((await this.push.status()).devices === 0) return 0;
       await this.docs.touch(WATCHED.filter((n) => !skip.includes(n)));
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
-      // Tokens that could not be read this pass change nothing.
-      if (this.tokens) now.tokens = await this.tokens().catch(() => null);
       // The services as of when they were last read, not as of now.
       const { messages, seen } = changes(await this.load(), now, this.docs.goodAt("services") || this.now());
       for (const m of messages) await this.push.send(m.cls, m);

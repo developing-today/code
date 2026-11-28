@@ -115,6 +115,45 @@ describe("sign-in", () => {
     expect(w.calls).toEqual([]);
   });
 
+  test("the owner's switch for the edge acting by itself runs the setup script here, on or off", async () => {
+    const w = setup((argv) => ({
+      stdout: argv.includes("on")
+        ? "changed: edge direct: upload the GitHub and queue tokens and turn direct actions on\n"
+        : "changed: edge direct: turn direct actions off and take the two tokens away\n",
+    }));
+    const docs = new Docs(
+      Object.fromEntries(SECTION_NAMES.map((name) => [name, { ttlMs: 1000, load: async () => ({}) }])),
+    );
+    expect(await perform(w.table, docs, "edge.direct", { on: true })).toEqual({
+      on: true,
+      changed: ["edge direct: upload the GitHub and queue tokens and turn direct actions on"],
+    });
+    expect(await perform(w.table, docs, "edge.direct", { on: false })).toMatchObject({ on: false });
+    expect(w.calls.map((c) => c.argv.slice(2))).toEqual([
+      ["--edge-direct", "on"],
+      ["--edge-direct", "off"],
+    ]);
+    // Nothing is handed to it: the tokens are read by the script, by name.
+    expect(w.calls.every((c) => c.stdin === undefined)).toBe(true);
+    // What it records is the choice. It is the laptop's to do, so it is never held for later.
+    expect(w.table["edge.direct"].audit({ on: true })).toEqual({ on: true });
+    expect(HOLDABLE.has("edge.direct")).toBe(false);
+    // Anything but true or false is refused before the script is run.
+    for (const on of ["on", 1, undefined, null]) {
+      const refused = await w.ops.edgeDirect(on).catch((error) => error);
+      expect(refused).toBeInstanceOf(OpError);
+      expect(refused.status).toBe(400);
+    }
+    expect(w.calls).toHaveLength(2);
+    // A script that fails says why.
+    const failing = setup(() => ({ code: 1, stderr: "secret turso.fleet-queue-rw-token is not readable here\n" }));
+    const failed = await failing.ops.edgeDirect(true).catch((error) => error);
+    expect(failed.status).toBe(502);
+    expect(failed.message).toBe(
+      "Cloudflare was not given the tokens: secret turso.fleet-queue-rw-token is not readable here",
+    );
+  });
+
   test("the message log is a list whatever the fleet printed for an empty one", async () => {
     const two = [
       { ts: "2026-11-22T10:00:00Z", direction: "out", agent: "conductor", kind: "message", body: "one" },

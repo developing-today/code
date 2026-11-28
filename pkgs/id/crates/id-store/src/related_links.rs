@@ -38,9 +38,8 @@
 //!   shape for callers that want it; nothing in this module rejects
 //!   a link over its relation.
 //! - [`PathRef`] is a path, not an ID (design §3): UTF-8 text with
-//!   `/` as the only separator, stored with the author's spelling
-//!   (never Unicode-normalised at write — A-9121.1; a namespace that
-//!   opts in compares through [`PathComparison::Nfc`]), relative to the
+//!   `/` as the only separator, stored in Unicode NFC (a non-NFC
+//!   input is normalised at write, never rejected), relative to the
 //!   namespace root of the sidecar's `namespace_id` — never to the
 //!   sidecar's own location. A leading `/`, an empty segment, or a
 //!   `.` / `..` segment is a write-time [`LinkError::InvalidPathRef`]
@@ -299,43 +298,28 @@ fn content_id_from(value: &Value, field: &'static str) -> Result<ContentId, Link
     Ok(ContentId::new(profile, digest))
 }
 
-/// How a namespace compares path references (design §3, A-9121.1).
-/// Comparison never changes the stored spelling of a [`PathRef`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PathComparison {
-    /// Byte-for-byte: `é` (U+00E9) and `e` + U+0301 name different
-    /// targets. The default when a namespace has not opted in.
-    Exact,
-    /// Unicode NFC equivalence, for a namespace that opts in to
-    /// normalisation.
-    Nfc,
-}
-
 /// A path reference (design §3): a path relative to the namespace
 /// root, naming things that may have no hash — a file in a
 /// namespace, a folder, a not-yet-hashed object. The stored form is
-/// the author's UTF-8 text, unnormalised, with `/` as the only
-/// separator, no leading `/`, and no empty, `.` or `..` segments.
-/// Construction is the only way in, so a `PathRef` value always
-/// satisfies the syntax.
+/// Unicode NFC text with `/` as the only separator, no leading `/`,
+/// and no empty, `.` or `..` segments. Construction is the only way
+/// in, so a `PathRef` value always satisfies the syntax.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PathRef(String);
 
 impl PathRef {
-    /// Validates `raw` against the §3 syntax and the
-    /// [`MAX_PATH_REF_BYTES`] cap and stores it verbatim. The
-    /// spelling is never normalised at write (A-9121.1): in a
-    /// namespace without the Unicode opt-in, a decomposed and a
-    /// composed spelling name different targets.
+    /// Validates `raw` into its stored form: NFC-normalised (never
+    /// rejected for being non-NFC), then checked against the §3
+    /// syntax and the [`MAX_PATH_REF_BYTES`] cap.
     ///
     /// # Errors
     ///
     /// [`LinkError::ResourceLimit`] (class `resource_limit`) when
-    /// the path is over the cap;
+    /// the normalised form is over the cap;
     /// [`LinkError::InvalidPathRef`] (class `invalid_path_ref`) for
     /// a leading `/` or an empty, `.` or `..` segment.
     pub fn new(raw: &str) -> Result<Self, LinkError> {
-        let stored = raw.to_owned();
+        let stored: String = raw.nfc().collect();
         if stored.len() > MAX_PATH_REF_BYTES {
             return Err(LinkError::ResourceLimit {
                 limit: MAX_PATH_REF_BYTES,
@@ -370,27 +354,10 @@ impl PathRef {
         Ok(Self(stored))
     }
 
-    /// The stored form of the path: the author's spelling.
+    /// The stored (NFC) form of the path.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// The key this path compares by under a namespace's
-    /// [`PathComparison`] policy. The stored spelling is unchanged.
-    #[must_use]
-    pub fn comparison_key(&self, comparison: PathComparison) -> String {
-        match comparison {
-            PathComparison::Exact => self.0.clone(),
-            PathComparison::Nfc => self.0.nfc().collect(),
-        }
-    }
-
-    /// Whether this path and `other` name the same target under a
-    /// namespace's [`PathComparison`] policy.
-    #[must_use]
-    pub fn same_target(&self, other: &Self, comparison: PathComparison) -> bool {
-        self.comparison_key(comparison) == other.comparison_key(comparison)
     }
 }
 

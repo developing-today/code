@@ -194,7 +194,7 @@ impl Cast {
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .create(&view, &DeviceSets::new(), &self.rng)
+            .create(&view, &self.rng)
             .expect("create")
     }
 
@@ -217,7 +217,7 @@ impl Cast {
             .sessions
             .get_mut(&id(by))
             .expect("session")
-            .add(&view, &DeviceSets::new(), id(who), &self.rng)
+            .add(&view, id(who), &self.rng)
             .expect("add");
         Self::alone(messages)
     }
@@ -234,7 +234,7 @@ impl Cast {
             .sessions
             .get_mut(&id(by))
             .expect("session")
-            .remove(&view, &DeviceSets::new(), id(who), &self.rng)
+            .remove(&view, id(who), &self.rng)
             .expect("remove");
         Self::alone(messages)
     }
@@ -252,7 +252,7 @@ impl Cast {
             .sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_with_history(&view, &DeviceSets::new(), id(who), mode, &self.rng)
+            .add_with_history(&view, id(who), mode, &self.rng)
             .expect("add_with_history");
         Self::alone(messages)
     }
@@ -269,7 +269,7 @@ impl Cast {
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_from_join(&view, &DeviceSets::new(), id(who), &self.rng)
+            .add_from_join(&view, id(who), &self.rng)
             .expect("add_from_join")
     }
 
@@ -340,11 +340,11 @@ fn test_create_rejects_a_device_outside_the_model() {
     let mut cast = Cast::new(&[1, 2]);
     let view = view_of(&std::iter::once(id(2)).collect());
     let rng = Rng::default();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .create(&view, &DeviceSets::new(), &rng);
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .create(&view, &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert!(
         !cast.session(1).is_welcomed(),
@@ -367,7 +367,7 @@ fn test_operations_before_create_are_rejected_without_poisoning() {
     ));
     let view = view_of(&[id(1), id(2)].into_iter().collect());
     assert!(
-        session.create(&view, &DeviceSets::new(), &rng).is_ok(),
+        session.create(&view, &rng).is_ok(),
         "the session still creates"
     );
 }
@@ -400,11 +400,11 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
 
     let view = cast.view();
     let rng = Rng::default();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -1185,12 +1185,11 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
 
     let view = cast.view();
     let rng = Rng::default();
-    let result = cast.sessions.get_mut(&id(1)).expect("session").remove(
-        &view,
-        &DeviceSets::new(),
-        id(3),
-        &rng,
-    );
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .remove(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
 
@@ -1275,15 +1274,7 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(
-            &without,
-            &DeviceSets::new(),
-            &with,
-            &DeviceSets::new(),
-            id(3),
-            id(3),
-            &cast.rng,
-        )
+        .recover(&without, &with, id(3), id(3), &cast.rng)
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1337,9 +1328,7 @@ fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
     let view = cast.view();
     let result = cast.sessions.get_mut(&id(1)).expect("session").recover(
         &view,
-        &DeviceSets::new(),
         &view,
-        &DeviceSets::new(),
         id(3),
         id(3),
         &cast.rng,
@@ -1373,12 +1362,11 @@ fn test_an_add_outside_the_model_gives_the_voided_reason() {
     let create = cast.create(1, &[1, 2]);
     cast.deliver(&create, &[2]);
     let view = cast.view();
-    let result = cast.sessions.get_mut(&id(1)).expect("session").add(
-        &view,
-        &DeviceSets::new(),
-        id(3),
-        &cast.rng,
-    );
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &cast.rng);
     assert_eq!(reason_of(result), Some(Reason::Voided));
 }
 
@@ -1390,11 +1378,11 @@ fn test_a_roster_the_crate_does_not_match_gives_the_frozen_reason_then_the_poiso
     // is poisoned.
     let view = view_of(&[id(1), id(2), id(3), id(4)].into_iter().collect());
     let rng = Rng::default();
-    let mismatch =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .add(&view, &DeviceSets::new(), id(3), &rng);
+    let mismatch = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
     assert_eq!(reason_of(mismatch), Some(Reason::Frozen));
     let poisoned = cast
         .sessions
@@ -1441,15 +1429,7 @@ fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(
-            &without,
-            &DeviceSets::new(),
-            &with,
-            &DeviceSets::new(),
-            id(3),
-            id(4),
-            &cast.rng,
-        )
+        .recover(&without, &with, id(3), id(4), &cast.rng)
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1632,7 +1612,7 @@ fn test_from_join_rejects_a_key_the_model_does_not_list() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add_from_join(&view, &DeviceSets::new(), id(4), &rng);
+        .add_from_join(&view, id(4), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -1759,7 +1739,7 @@ fn test_a_joiner_sees_the_control_message_it_missed_and_drains_when_it_arrives()
 
     // The add arrives: the stall drains and the joiner is welcomed.
     cast.deliver(&add, &[4]);
-    assert_eq!(cast.session(4).stalled_delivery(), [] as [StalledDelivery; 0]);
+    assert!(cast.session(4).stalled_delivery().is_empty());
     assert!(cast.session(4).is_welcomed());
 }
 
@@ -1796,7 +1776,7 @@ fn test_an_application_message_stalled_on_a_concurrent_add_reports_exactly_the_m
         cast.deliver(&add_by_2, &[3]),
         vec![vec![text("names both adds")]]
     );
-    assert_eq!(cast.session(3).stalled_delivery(), [] as [StalledDelivery; 0]);
+    assert!(cast.session(3).stalled_delivery().is_empty());
 }
 
 #[test]
@@ -1989,11 +1969,11 @@ fn test_a_view_that_disagrees_with_the_roster_is_refused_and_poisons_the_session
     view.members.insert(id(3), Role::Admin);
     view.members.insert(id(4), Role::Admin);
     let rng = Rng::default();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
     assert!(
         matches!(result, Err(SchemeError::RosterMismatch(_))),
         "a mismatch is refused: {result:?}"
@@ -2021,11 +2001,11 @@ fn test_a_view_whose_policy_names_no_scheme_is_refused_without_poisoning() {
     view.policy = Policy::default();
     view.members.insert(id(3), Role::Admin);
     let rng = Rng::default();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
     assert_eq!(
         cast.members_of(1),
@@ -2165,7 +2145,7 @@ fn concurrent_add(cast: &mut Cast, by: u8, who: u8, members: &[u8]) -> Envelope 
     let rng = Rng::default();
     let messages = cast
         .session_mut(by)
-        .add(&view_of(&members), &DeviceSets::new(), id(who), &rng)
+        .add(&view_of(&members), id(who), &rng)
         .expect("concurrent add");
     Cast::alone(messages)
 }
@@ -2376,9 +2356,7 @@ fn test_a_refused_change_above_the_cap_loses_no_merge() {
     let mut view = cast.view();
     view.members.remove(&id(33));
     view.policy = Policy::default();
-    let result = cast
-        .session_mut(1)
-        .remove(&view, &DeviceSets::new(), id(33), &rng);
+    let result = cast.session_mut(1).remove(&view, id(33), &rng);
     assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
 
     // The merge is still member 1's to publish: its next update returns the merge and then the
@@ -2822,9 +2800,7 @@ fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
     .expect("session");
 
     let started = Instant::now();
-    let create = session
-        .create(&view_of(&model), &DeviceSets::new(), &rng)
-        .expect("create");
+    let create = session.create(&view_of(&model), &rng).expect("create");
     let create_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let create_bytes = wire_bytes(&create);
 
@@ -2873,166 +2849,4 @@ fn bench_update_cost() {
     for members in [100, 1_000, 5_000] {
         println!("{}", measure_update_cost(members, 5).report());
     }
-}
-
-// --- keyset device sets (#2380 packet 3) ---------------------------------------------------------
-
-/// The device sets of a two-member group whose members speak through keysets: member 1 through
-/// devices 11 and 12, member 2 through device 21. The member keys themselves (1 and 2) hold no
-/// session — they are identity (genesis admin) keys, not device keys.
-fn keyset_sets() -> DeviceSets {
-    let mut sets = DeviceSets::new();
-    sets.insert(id(1), BTreeSet::from([id(11), id(12)]));
-    sets.insert(id(2), BTreeSet::from([id(21)]));
-    sets
-}
-
-#[test]
-fn test_keyset_expand_uses_recorded_sets_and_the_identity_fallback() {
-    let view = view_of(&BTreeSet::from([id(1), id(2)]));
-    assert_eq!(
-        DeviceSets::new().expand(&view),
-        BTreeSet::from([id(1), id(2)]),
-        "with nothing recorded, a member is its own only device"
-    );
-    assert_eq!(
-        keyset_sets().expand(&view),
-        BTreeSet::from([id(11), id(12), id(21)]),
-        "a recorded set replaces the member key with its device keys"
-    );
-    let mut drained = keyset_sets();
-    drained.insert(id(1), BTreeSet::new());
-    assert_eq!(
-        drained.expand(&view),
-        BTreeSet::from([id(21)]),
-        "a member whose devices are all revoked holds no session"
-    );
-    assert_eq!(
-        keyset_sets().devices_of(&id(9)),
-        BTreeSet::from([id(9)]),
-        "an unrecorded key is its own only device"
-    );
-}
-
-#[test]
-fn test_keyset_create_gives_every_device_of_a_member_a_session() {
-    let mut cast = Cast::new(&[11, 12, 21]);
-    let view = view_of(&BTreeSet::from([id(1), id(2)]));
-    let sets = keyset_sets();
-
-    let create = cast
-        .sessions
-        .get_mut(&id(11))
-        .expect("session")
-        .create(&view, &sets, &cast.rng)
-        .expect("create");
-    cast.deliver(&create, &[12, 21]);
-
-    let roster = BTreeSet::from([id(11), id(12), id(21)]);
-    for who in [11, 12, 21] {
-        assert!(cast.session(who).is_welcomed(), "device {who} is welcomed");
-        assert_eq!(cast.members_of(who), roster, "device {who} roster");
-    }
-
-    // The member's second device sends; its first device and the other member read.
-    let message = cast.send(12, "from the second device");
-    let read = cast.deliver(&message, &[11, 21]);
-    assert_eq!(
-        read,
-        vec![
-            vec![text("from the second device")],
-            vec![text("from the second device")]
-        ]
-    );
-}
-
-#[test]
-fn test_keyset_newly_enrolled_device_is_added_without_a_membership_change() {
-    // Member 1 starts with device 11 only; device 12 enrols in the keyset later. The group view
-    // never changes — the add is driven by the folded device set alone.
-    let mut cast = Cast::new(&[11, 12, 21]);
-    let view = view_of(&BTreeSet::from([id(1), id(2)]));
-    let mut sets = DeviceSets::new();
-    sets.insert(id(1), BTreeSet::from([id(11)]));
-    sets.insert(id(2), BTreeSet::from([id(21)]));
-    let create = cast
-        .sessions
-        .get_mut(&id(11))
-        .expect("session")
-        .create(&view, &sets, &cast.rng)
-        .expect("create");
-    // The create goes to the whole cast, as in the other tests: a joiner needs the control
-    // history to take its welcome, so device 12 hears the create before it is added.
-    cast.deliver(&create, &[12, 21]);
-
-    sets.insert(id(1), BTreeSet::from([id(11), id(12)]));
-    let add = cast
-        .sessions
-        .get_mut(&id(11))
-        .expect("session")
-        .add(&view, &sets, id(12), &cast.rng)
-        .expect("add");
-    let add = Cast::alone(add);
-    cast.deliver(&add, &[12, 21]);
-
-    let roster = BTreeSet::from([id(11), id(12), id(21)]);
-    for who in [11, 12, 21] {
-        assert_eq!(cast.members_of(who), roster, "device {who} roster");
-    }
-    let message = cast.send(21, "welcome to the group");
-    assert_eq!(
-        cast.deliver(&message, &[12]),
-        vec![vec![text("welcome to the group")]],
-        "the newly enrolled device reads what the group sends after its add"
-    );
-}
-
-#[test]
-fn test_keyset_revoked_device_is_removed_while_its_member_stays() {
-    let mut cast = Cast::new(&[11, 12, 21]);
-    let view = view_of(&BTreeSet::from([id(1), id(2)]));
-    let create = cast
-        .sessions
-        .get_mut(&id(11))
-        .expect("session")
-        .create(&view, &keyset_sets(), &cast.rng)
-        .expect("create");
-    cast.deliver(&create, &[12, 21]);
-
-    // Member 1 revokes device 12 in its keyset: the member stays in the group, the device
-    // leaves the folded device set, and the view is unchanged.
-    let mut after = DeviceSets::new();
-    after.insert(id(1), BTreeSet::from([id(11)]));
-    after.insert(id(2), BTreeSet::from([id(21)]));
-    let remove = cast
-        .sessions
-        .get_mut(&id(11))
-        .expect("session")
-        .remove(&view, &after, id(12), &cast.rng)
-        .expect("remove");
-    let remove = Cast::alone(remove);
-    let read = cast.deliver(&remove, &[12, 21]);
-    assert_eq!(
-        read[0],
-        vec![Received::Removed],
-        "the revoked device learns it was removed"
-    );
-    let roster = BTreeSet::from([id(11), id(21)]);
-    assert_eq!(
-        cast.members_of(11),
-        roster,
-        "the roster drops the revoked device, not the member's other device"
-    );
-    assert_eq!(cast.members_of(21), roster, "the other member agrees");
-
-    let message = cast.send(11, "after the revocation");
-    assert_eq!(
-        cast.deliver(&message, &[21]),
-        vec![vec![text("after the revocation")]]
-    );
-    assert_eq!(
-        cast.deliver(&message, &[12]),
-        vec![vec![Received::Withheld(message.id())]],
-        "the revoked device cannot read a message sent under the new epoch"
-    );
 }

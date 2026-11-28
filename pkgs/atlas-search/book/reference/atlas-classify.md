@@ -21,7 +21,7 @@ usage:
   defaults: --window-days 90; --actor atlas-classify/remainder-sweep; --schema-version 1; --reviewer-model atlas-classify; --reviewer-model-version the crate version; --now the current time; --max-decisions unbounded
 ```
 
-**`--help` / `-h`** prints the usage text to **stdout** and exits **0**, from any position in the argv; **`--version` / `-V`** prints `atlas-classify 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history), exit 0. Every other invocation shape other than the three documented actions — bare invocation, unknown flags, unknown actions, a flag given twice, a missing flag value — prints the usage text to **stderr** and exits **2**.
+**`--help` / `-h`** prints the usage text to **stdout** and exits **0**, from any position in the argv; **`--version` / `-V`** prints `atlas-classify 0.1.0`, exit 0. Every other invocation shape other than the three documented actions — bare invocation, unknown flags, unknown actions, a flag given twice, a missing flag value — prints the usage text to **stderr** and exits **2**.
 
 The global flag:
 

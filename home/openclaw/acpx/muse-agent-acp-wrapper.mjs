@@ -44,21 +44,19 @@
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { homePath } from "./home-dir.mjs";
 import { randomFillSync } from "node:crypto";
 
 const MUSE_BIN = process.env.MUSE_ACP_MUSE_BIN || "muse";
 const PROVIDER = process.env.MUSE_ACP_PROVIDER || "meta";
 const TURN_BUDGET = Number(process.env.MUSE_ACP_TURN_BUDGET || 20);
 const POOL_FILE =
-  process.env.MUSE_ACP_POOL_FILE ||
-  homePath(process.env, "the Meta pool file (MUSE_ACP_POOL_FILE)", "atlas", "meta-quota-export", "latest.json");
+  process.env.MUSE_ACP_POOL_FILE || join(homedir(), "atlas", "meta-quota-export", "latest.json");
 const POOL_MAX_AGE_MS = Number(process.env.MUSE_ACP_POOL_MAX_AGE_MS || 3_600_000);
 const LEDGER_FILE =
-  process.env.MUSE_ACP_LEDGER ||
-  homePath(process.env, "the muse ACP ledger file (MUSE_ACP_LEDGER)", ".local", "state", "muse-acp", "ledger.jsonl");
-const AUTH_FILE = homePath(process.env, "the muse auth file", ".config", "muse", "auth.json");
+  process.env.MUSE_ACP_LEDGER || join(homedir(), ".local", "state", "muse-acp", "ledger.jsonl");
+const AUTH_FILE = join(homedir(), ".config", "muse", "auth.json");
 const LOGIN_REQUIRED = "muse login required on laptop";
 const AUTH_RE = /auth|login|unauthor|forbidden|\b401\b|\b403\b|oauth|credential/i;
 

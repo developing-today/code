@@ -135,10 +135,7 @@ mod tests {
         )
         .unwrap();
         let served = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
-        assert_eq!(
-            served.list(&ListQuery::default()),
-            [] as [id_worlds::program_bundle::BundleRecord; 0]
-        );
+        assert!(served.list(&ListQuery::default()).is_empty());
         assert_eq!(served.admission().list().len(), 1);
 
         run(

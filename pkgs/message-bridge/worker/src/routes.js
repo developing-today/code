@@ -27,17 +27,6 @@
 //   GET  /api/<token>/agents          unified connected-agents list:
 //                                     fleet registry + note identities,
 //                                     each row marked by surface
-//   POST /api/<token>/backup-export   owner: dump the whole MessageStore
-//                                     to the BRIDGE_BACKUP R2 bucket
-//                                     (backup.js; the cron's run, on
-//                                     demand)
-//   GET  /api/<token>/backup-latest   owner: the latest export's
-//                                     summary (stamp, rows, tables)
-//   POST /api/<token>/backup-import   owner: restore an export object
-//                                     ({key}, default the latest) into
-//                                     this namespace's store — the
-//                                     restore drill's verb, run on a
-//                                     scratch deployment
 //   POST /api/<token>/messages        JSON {body, sender, to, kind}: store
 //                                     an inbound message per recipient; to
 //                                     is "claude" (default), "chatgpt" or
@@ -139,7 +128,6 @@ import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
 import { handleNotes, handleSignal } from "./notes.js";
 import { notesOwnerFeed, pipelineFeed, unifiedAgents } from "./pipeline.js";
-import { latestBackup, readBackup, runBackup } from "./backup.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 
@@ -228,7 +216,7 @@ async function handleOwnerLink(request, env) {
   return res;
 }
 
-async function handleApi(request, store, rest, url, delivered, env) {
+async function handleApi(request, store, rest, url, delivered) {
   const [what, ...more] = rest;
   if (more.length) return notFound();
   if (what === "messages") {
@@ -281,35 +269,6 @@ async function handleApi(request, store, rest, url, delivered, env) {
   if (what === "agents") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
     return json(await unifiedAgents(store));
-  }
-  // State backup (#14951; backup.js): the same run the cron trigger
-  // makes, on demand; the latest export's summary; and the restore —
-  // import an export object from the bucket into THIS namespace's
-  // store (the drill runs it on a scratch deployment, never here).
-  if (what === "backup-export") {
-    if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
-    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
-    return json(await runBackup(env, store), 201);
-  }
-  if (what === "backup-latest") {
-    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
-    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
-    return json((await latestBackup(env)) ?? { exported_at: null });
-  }
-  if (what === "backup-import") {
-    if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
-    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
-    let data = {};
-    try {
-      const text = await readBody(request);
-      if (text.trim()) data = JSON.parse(text);
-    } catch (err) {
-      if (err instanceof InputError) throw err;
-      throw new InputError("body must be JSON");
-    }
-    const key = typeof data?.key === "string" && data.key ? data.key : undefined;
-    const payload = await readBackup(env, key);
-    return json({ imported: await store.backupImport(payload), from: key ?? "exports/latest.json", exported_at: payload.exported_at ?? null });
   }
   if (what === "oauth-events") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
@@ -431,7 +390,7 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
     if (m.area === "p" && m.rest.length === 0) {
       return withHeaders(await handleOwnerLink(request, env));
     }
-    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url, delivered, env));
+    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url, delivered));
   } catch (err) {
     if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400));
     throw err;

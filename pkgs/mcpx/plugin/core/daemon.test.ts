@@ -17,10 +17,7 @@ import { join } from "node:path";
 
 import {
   DaemonClient,
-  checkAnswer,
   discover,
-  parseHealth,
-  parseResolution,
   withDaemonAuth,
   goDurationMs,
   liveCandidates,
@@ -78,10 +75,6 @@ type FakeOptions = {
   servers?: number;
   operationFingerprint?: string;
   missingOperationFingerprint?: boolean;
-  /** What /v1/namespaces answers. Defaults to an empty list. */
-  namespaces?: unknown;
-  /** Replaces the whole /v1/health answer. */
-  health?: unknown;
 };
 
 const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
@@ -92,7 +85,6 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
       const url = new URL(req.url);
       seen.push(url.pathname);
       if (url.pathname === "/v1/health") {
-        if (opts.health !== undefined) return Response.json(opts.health);
         return Response.json({
           status: "ok",
           version: opts.version ?? "test",
@@ -122,7 +114,7 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
         if (!opts.resolve) return new Response("not found", { status: 404 });
         return Response.json(opts.resolve(url.searchParams.get("dir") ?? ""));
       }
-      if (url.pathname === "/v1/namespaces") return Response.json(opts.namespaces === undefined ? [] : opts.namespaces);
+      if (url.pathname === "/v1/namespaces") return Response.json([]);
       return new Response("not found", { status: 404 });
     },
   });
@@ -610,104 +602,5 @@ describe("stateDir home resolution (#11205, contract #5762)", () => {
       expect(() => stateDir(env)).toThrow(/HOME is not set or is empty: mcpx requires a non-empty HOME/);
       expect(() => socketDirs(env)).toThrow(/HOME is not set or is empty/);
     }
-  });
-});
-
-describe("answer shapes (#7983 item 7)", () => {
-  const resolution = {
-    socket: "/s.sock",
-    endpoint: "",
-    configPath: "/proj/.mcpx.json",
-    configHash: "abc",
-    running: true,
-    sources: null,
-  };
-
-  test("a resolve answer is checked before discovery acts on it", () => {
-    const { sources: _null, ...rest } = resolution;
-    expect(parseResolution(resolution)).toStrictEqual(rest);
-    expect(parseResolution({ ...resolution, sources: ["/proj/.mcpx.json"] })?.sources).toEqual(["/proj/.mcpx.json"]);
-    // Older shapes: absent strings read as empty.
-    expect(parseResolution({ socket: "/s.sock", running: false })).toEqual({
-      socket: "/s.sock",
-      endpoint: "",
-      configPath: "",
-      configHash: "",
-      running: false,
-    });
-    for (const bad of [
-      null,
-      [],
-      "ok",
-      { ...resolution, socket: 1 },
-      { ...resolution, running: "yes" },
-      { ...resolution, configPath: 7 },
-      { ...resolution, sources: "x" },
-      { ...resolution, sources: [1] },
-      { running: true },
-    ]) {
-      expect(parseResolution(bad)).toBeUndefined();
-    }
-  });
-
-  test("a health answer is checked before compatibility reads it", () => {
-    expect(parseHealth({ status: "ok", pid: 1, operationFingerprint: "f" })).toEqual({
-      status: "ok",
-      pid: 1,
-      operationFingerprint: "f",
-    });
-    for (const bad of [null, [], { pid: 1 }, { status: 1 }, { status: "ok", pid: "1" }, { status: "ok", version: 2 }]) {
-      expect(parseHealth(bad)).toBeUndefined();
-    }
-  });
-
-  test("top-level shapes refuse the wrong kind and name the route", () => {
-    expect(checkAnswer("/v1/namespaces", null, "array")).toEqual([]);
-    expect(checkAnswer("/v1/namespaces", [1], "array")).toEqual([1]);
-    expect(() => checkAnswer("/v1/namespaces", { a: 1 }, "array")).toThrow(
-      "mcpx /v1/namespaces: expected a JSON array",
-    );
-    expect(() => checkAnswer("/v1/status", [], "object")).toThrow(
-      "mcpx /v1/status: expected a JSON object from the daemon, got an array",
-    );
-    expect(() => checkAnswer("/v1/status", null, "object")).toThrow("got null");
-    expect(checkAnswer("/v1/log", "anything")).toBe("anything");
-  });
-
-  test("a daemon with a malformed health answer is not alive", async () => {
-    const state = tempRoot();
-    const sock = join(state, "d.sock");
-    fake(sock, { health: { status: 1 } });
-    const client = new DaemonClient({ kind: "socket", path: sock });
-    expect(await client.health()).toBeUndefined();
-    expect(await client.alive()).toBe(false);
-  });
-
-  test("namespaces: a Go nil slice reads as empty, an object is refused", async () => {
-    const state = tempRoot();
-    const nil = join(state, "n.sock");
-    const obj = join(state, "o.sock");
-    fake(nil, { namespaces: null });
-    fake(obj, { namespaces: { oops: true } });
-    expect(await new DaemonClient({ kind: "socket", path: nil }).namespaces()).toEqual([]);
-    await expect(new DaemonClient({ kind: "socket", path: obj }).namespaces()).rejects.toThrow(
-      "mcpx /v1/namespaces?_: expected a JSON array",
-    );
-  });
-
-  test("a malformed resolve answer is ignored, so discovery guesses and says so", async () => {
-    const state = tempRoot();
-    const mine = join(state, "d-mine.sock");
-    const other = join(state, "d-other.sock");
-    const answer = () => ({ socket: 42, running: "yes" });
-    fake(mine, { config: "/proj/.mcpx.json", resolve: answer, servers: 1 });
-    fake(other, { config: "/elsewhere/.mcpx.json", resolve: answer, servers: 9 });
-    writeInfo(state, "mine", { socket: mine, configPath: "/proj/.mcpx.json" });
-    writeInfo(state, "other", { socket: other, configPath: "/elsewhere/.mcpx.json" });
-
-    const got = await discover({ env: envFor(state), bin: "", directory: "/proj/sub" });
-    expect(got.reason).toBe("guess");
-    expect(got.ambiguous).toBe(true);
-    expect(targetKey(got.target!)).toBe("unix://" + mine);
   });
 });

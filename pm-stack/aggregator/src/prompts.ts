@@ -12,11 +12,6 @@
 // for the answer via waitForAnswer (design §3.5/§3.7), and sync-ws streams the
 // record over /ws/prompt/:id (see prompt-ws.ts).
 //
-// S5 (#10037) adds the specialized task variants: a submission may name a
-// variant (reprioritize, detail-gather, compare-options, integrate-insights,
-// report), whose template pre-fills the widget and whose default target and
-// mode apply when the submission leaves them out (design §2, §3.2).
-//
 // S7 (#10036) adds attachments: a record carries the storage refs of the
 // files uploaded with the submission (see prompt-attachments.ts). The
 // blobs themselves live in the attachments directory, never in this file.
@@ -28,87 +23,16 @@ import { normalizeAttachments, type PromptAttachment } from "./prompt-attachment
 export type { PromptAttachment } from "./prompt-attachments.ts";
 
 export const PROMPT_SCOPES = ["section", "page", "stack", "agent"] as const;
-// #10038 S2 (design §3.3) adds the pool tiers next to pool:auto.
-export const PROMPT_TARGETS = [
-  "claude",
-  "muse",
-  "pool:auto",
-  "pool:low",
-  "pool:medium",
-  "pool:high",
-  "decision",
-] as const;
-/** #10038 S2: the effort override; absent means the target picks (auto). */
-export const PROMPT_EFFORTS = ["low", "medium", "high"] as const;
+export const PROMPT_TARGETS = ["claude", "muse", "pool:auto", "decision"] as const;
 export const PROMPT_MODES = ["async", "sync-block", "sync-ws"] as const;
 export const PROMPT_STATUSES = ["queued", "running", "answered", "failed"] as const;
 export const PROMPT_DECISION_CONTEXT_LEVELS = ["low", "medium", "high"] as const;
 
-export const PROMPT_VARIANTS = [
-  "free",
-  "reprioritize",
-  "detail-gather",
-  "compare-options",
-  "integrate-insights",
-  "report",
-] as const;
-
 export type PromptScope = (typeof PROMPT_SCOPES)[number];
 export type PromptTarget = (typeof PROMPT_TARGETS)[number];
 export type PromptMode = (typeof PROMPT_MODES)[number];
-export type PromptEffort = (typeof PROMPT_EFFORTS)[number];
 export type PromptStatus = (typeof PROMPT_STATUSES)[number];
 export type PromptDecisionContextLevel = (typeof PROMPT_DECISION_CONTEXT_LEVELS)[number];
-export type PromptVariant = (typeof PROMPT_VARIANTS)[number];
-export type SpecializedPromptVariant = Exclude<PromptVariant, "free">;
-
-/** #10037 S5 (design #9539 §2 "Specialized task variants"): what a variant
- *  pre-fills and which target and mode it defaults to. Every default can
- *  be overridden by the submission. "auto/workhorse" in the design is the
- *  pool:auto target. */
-export interface PromptVariantSpec {
-  label: string;
-  template: string;
-  target: PromptTarget;
-  mode: PromptMode;
-}
-
-export const PROMPT_VARIANT_SPECS: Readonly<Record<SpecializedPromptVariant, PromptVariantSpec>> = {
-  reprioritize: {
-    label: "Reprioritize",
-    template: "Reprioritize the following items: ",
-    target: "pool:auto",
-    mode: "async",
-  },
-  "detail-gather": {
-    label: "Gather details",
-    template: "Gather details on ",
-    target: "muse",
-    mode: "async",
-  },
-  "compare-options": {
-    label: "Compare options",
-    template: "Compare these options: ",
-    target: "claude",
-    mode: "sync-block",
-  },
-  "integrate-insights": {
-    label: "Integrate insights",
-    template: "Integrate new insights since last review: ",
-    target: "claude",
-    mode: "async",
-  },
-  report: {
-    label: "Report",
-    template: "Generate a report / refresh view of ",
-    target: "pool:auto",
-    mode: "async",
-  },
-};
-
-export function isSpecializedVariant(v: unknown): v is SpecializedPromptVariant {
-  return typeof v === "string" && v !== "free" && PROMPT_VARIANTS.includes(v as PromptVariant);
-}
 
 /** #10034 S4 (design #9539 §3.4): the `decision` variant's fields. The
  *  advanced constraints are conditional-clause objects, stored as given. */
@@ -133,10 +57,6 @@ export interface NewPrompt {
   attachments?: PromptAttachment[];
   /** #10034 S4: present when target is "decision". */
   decision?: PromptDecisionSpec;
-  /** #10037 S5: the variant the submission came from; absent means free. */
-  variant?: PromptVariant;
-  /** #10038 S2: effort override; absent means auto. */
-  effort?: PromptEffort;
 }
 
 export interface PromptRecord extends NewPrompt {
@@ -177,8 +97,6 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     notify: raw.notify === true,
     attachments: normalizeAttachments(raw.attachments),
     ...(raw.decision && typeof raw.decision === "object" ? { decision: raw.decision as PromptDecisionSpec } : {}),
-    ...(PROMPT_VARIANTS.includes(raw.variant as PromptVariant) ? { variant: raw.variant as PromptVariant } : {}),
-    ...(PROMPT_EFFORTS.includes(raw.effort as PromptEffort) ? { effort: raw.effort as PromptEffort } : {}),
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
     threadId:
       typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
@@ -195,29 +113,11 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { ok: false, error: "body must be a JSON object" };
   }
-  const b = { ...(body as Record<string, unknown>) };
-  // #10037 S5: a specialized variant supplies the target and mode the
-  // submission leaves out; an explicit target or mode always wins.
-  if (b.variant !== undefined && !PROMPT_VARIANTS.includes(b.variant as PromptVariant)) {
-    return { ok: false, error: `variant must be one of ${PROMPT_VARIANTS.join(", ")}` };
-  }
-  const variantSpec = isSpecializedVariant(b.variant) ? PROMPT_VARIANT_SPECS[b.variant] : null;
-  if (variantSpec) {
-    if (b.target === undefined || b.target === "") b.target = variantSpec.target;
-    if (b.mode === undefined || b.mode === "") b.mode = variantSpec.mode;
-  }
+  const b = body as Record<string, unknown>;
   if (!PROMPT_SCOPES.includes(b.scope as PromptScope))
     return { ok: false, error: "scope must be section, page, stack or agent" };
   if (!PROMPT_TARGETS.includes(b.target as PromptTarget))
-    return { ok: false, error: `target must be one of ${PROMPT_TARGETS.join(", ")}` };
-  // #10038 S2: an empty effort (the form's "auto" option) or null means auto.
-  if (
-    b.effort !== undefined &&
-    b.effort !== null &&
-    b.effort !== "" &&
-    !PROMPT_EFFORTS.includes(b.effort as PromptEffort)
-  )
-    return { ok: false, error: "effort must be low, medium, high or left out for auto" };
+    return { ok: false, error: "target must be claude, muse, pool:auto or decision" };
   if (!PROMPT_MODES.includes(b.mode as PromptMode))
     return { ok: false, error: "mode must be async, sync-block or sync-ws" };
   if (typeof b.page !== "string" || !PAGE_ID.test(b.page)) return { ok: false, error: "page must be a page id" };
@@ -230,9 +130,6 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (typeof b.prompt !== "string" || b.prompt.trim() === "")
     return { ok: false, error: "prompt must be non-empty text" };
   if (b.prompt.length > MAX_PROMPT_CHARS) return { ok: false, error: `prompt exceeds ${MAX_PROMPT_CHARS} characters` };
-  if (variantSpec && b.prompt.trim() === variantSpec.template.trim()) {
-    return { ok: false, error: `${String(b.variant)} prompt needs text after its template` };
-  }
 
   // S6 optional fields
   let replyTo: string | null | undefined;
@@ -268,8 +165,6 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (replyTo !== undefined) value.replyTo = replyTo;
   if (refs !== undefined) value.refs = refs;
   if (notify !== undefined) value.notify = notify;
-  if (b.variant !== undefined) value.variant = b.variant as PromptVariant;
-  if (PROMPT_EFFORTS.includes(b.effort as PromptEffort)) value.effort = b.effort as PromptEffort;
   if (b.target === "decision") {
     const decision = validateDecisionSpec(b.decision);
     if (!decision.ok) return decision;
@@ -355,8 +250,6 @@ export class PromptsStore {
       notify: input.notify ?? false,
       attachments: normalizeAttachments(input.attachments),
       ...(input.decision ? { decision: input.decision } : {}),
-      ...(input.variant ? { variant: input.variant } : {}),
-      ...(input.effort ? { effort: input.effort } : {}),
       id: `prompt:${randomUUID()}`,
       threadId,
       status: "queued",

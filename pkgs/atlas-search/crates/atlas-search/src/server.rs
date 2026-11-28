@@ -347,9 +347,9 @@ pub fn load_service_settings(
                 c.name
             ));
         }
-        let cap = ProtoSensitivity::from_ceiling_name(&c.ceiling_cap).ok_or_else(|| {
+        let cap = ProtoSensitivity::from_name(&c.ceiling_cap).ok_or_else(|| {
             format!(
-                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing (or public, internal, private, sensitive)",
+                "client {}: ceiling_cap must be one of shareable, personal, local-only, secret-bearing",
                 c.name
             )
         })?;

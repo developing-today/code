@@ -300,27 +300,10 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  /** "unavailable" (#14065): live mode could not read the source and
-   * withheld the fixtures rather than render invented rows.
-   * "partial-unavailable" (#14065 slice 3): items served live for the
-   * project pool, with refs outside it left unresolved. */
-  state:
-    | "live"
-    | "partial-fixtures"
-    | "partial-unavailable"
-    | "fixtures"
-    | "stale"
-    | "absent"
-    | "invalid"
-    | "error"
-    | "unavailable";
+  state: "live" | "partial-fixtures" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
-  /** #14065: when the facet last turned "unavailable" or
-   * "partial-unavailable" in this process (ISO time). Set only while it
-   * still is, so a reader can say since when the source has been gone. */
-  unavailableSince?: string;
 }
 
 /** Per-facet freshness detail, keyed exactly like Provenance. */

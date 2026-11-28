@@ -322,41 +322,6 @@ describe("snapshot rotation + delta", () => {
     expect(delta.get("developing-today/code")?.openIssues).toBeNull();
     expect(delta.get("developing-today/code")?.poolItems).toBe(0);
   });
-
-  test("stale-count delta tracks the drop and is null where either side is uncounted (#1224)", () => {
-    const mkStale = (at: string, stale: number | null): CoverageReport => ({
-      generatedAt: at,
-      repos: [
-        {
-          repo: "dezren39/darwin-nix",
-          openIssues: 55,
-          gateNow: 1,
-          gateNext: 2,
-          poolItems: 10,
-          poolUnsetStatus: 3,
-          poolUnsetArea: 4,
-          staleOpenIssues: stale,
-          staleIssuesCollectedAt: at,
-          staleIssuesError: null,
-        },
-      ],
-    });
-    // The #1224 campaign metric: 267 stale in the baseline week, 0 now.
-    expect(
-      diffCoverage(mkStale("2026-11-01T00:00:00Z", 0), mkStale("2026-10-24T00:00:00Z", 267)).get("dezren39/darwin-nix")
-        ?.staleOpenIssues,
-    ).toBe(-267);
-    // Uncounted on either side stays null — never a fake drop or rise.
-    expect(
-      diffCoverage(mkStale("2026-11-01T00:00:00Z", null), mkStale("2026-10-24T00:00:00Z", 267)).get(
-        "dezren39/darwin-nix",
-      )?.staleOpenIssues,
-    ).toBeNull();
-    expect(
-      diffCoverage(mkStale("2026-11-01T00:00:00Z", 0), mkStale("2026-10-24T00:00:00Z", null)).get("dezren39/darwin-nix")
-        ?.staleOpenIssues,
-    ).toBeNull();
-  });
 });
 
 describe("snapshot rotation — poisoned anchorAt (#5196)", () => {

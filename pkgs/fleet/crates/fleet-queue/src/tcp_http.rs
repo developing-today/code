@@ -18,73 +18,25 @@ where
     F: Fn(&HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
     G: Fn(&HttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync + 'static,
 {
-    serve_connections(
-        listener.incoming(),
-        |stream: TcpStream| prepare(stream),
-        precheck,
-        handler,
-    );
+    serve_connections(listener.incoming(), precheck, handler);
 }
 
-/// BT-3 (#14401): the same admission and dispatch with the
-/// broker's TLS server wrapped around each accepted connection
-/// (dual-accept: TLS handshakes are terminated, plaintext
-/// Phase 0 connections are served as before — design rule M2).
-#[cfg(feature = "queue-broker")]
-pub(crate) fn serve_tls<F, G>(
-    listener: TcpListener,
-    tls: Arc<crate::broker_tls::BrokerTlsServer>,
-    precheck: G,
-    handler: F,
-) where
-    F: Fn(&HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
-    G: Fn(&HttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync + 'static,
-{
-    serve_connections(
-        listener.incoming(),
-        move |stream: TcpStream| {
-            let stream = prepare(stream)?;
-            tls.accept(stream)
-        },
-        precheck,
-        handler,
-    );
-}
-
-/// Install the bounded I/O timeouts every served connection
-/// runs under. If installation fails, fail closed (drop the
-/// connection) rather than serving an unbounded blocking
-/// read/write.
-fn prepare(stream: TcpStream) -> Option<TcpStream> {
-    if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err()
-        || stream.set_write_timeout(Some(READ_TIMEOUT)).is_err()
-    {
-        return None;
-    }
-    Some(stream)
-}
-
-fn serve_connections<S, W, F, G>(
+fn serve_connections<F, G>(
     connections: impl Iterator<Item = std::io::Result<TcpStream>>,
-    wrap: W,
     precheck: G,
     handler: F,
 ) where
-    S: Read + Write + Send + 'static,
-    W: Fn(TcpStream) -> Option<S> + Send + Sync + 'static,
     F: Fn(&HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
     G: Fn(&HttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync + 'static,
 {
-    let wrap = Arc::new(wrap);
     let precheck = Arc::new(precheck);
     let handler = Arc::new(handler);
     let in_flight = Arc::new(AtomicUsize::new(0));
     for stream in connections {
-        let Ok(stream) = stream else { continue };
+        let Ok(mut stream) = stream else { continue };
         let Some(slot) = InFlightSlot::try_acquire(&in_flight) else {
             continue;
         };
-        let wrap = Arc::clone(&wrap);
         let precheck = Arc::clone(&precheck);
         let handler = Arc::clone(&handler);
         // Builder::spawn failure drops the closure, stream and slot as well.
@@ -92,20 +44,24 @@ fn serve_connections<S, W, F, G>(
             .name("broker-tcp".into())
             .spawn(move || {
                 let _slot = slot;
-                let Some(mut stream) = wrap(stream) else {
+                // If timeout installation fails, fail closed rather than serving
+                // an unbounded blocking read/write.
+                if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err()
+                    || stream.set_write_timeout(Some(READ_TIMEOUT)).is_err()
+                {
                     return;
-                };
+                }
                 if let Some((status, body)) = respond(&mut stream, &*precheck, &*handler) {
                     uds_http::write_response(&mut stream, status, &body);
                 }
-                // Drop the connection before releasing the admission slot.
+                // Drop the raw socket before releasing the admission slot.
                 drop(stream);
             });
     }
 }
 
-fn respond<S: Read + Write>(
-    stream: &mut S,
+fn respond(
+    stream: &mut TcpStream,
     precheck: &impl Fn(&HttpRequest) -> Option<(u16, Vec<u8>)>,
     handler: &impl Fn(&HttpRequest) -> (u16, Vec<u8>),
 ) -> Option<(u16, Vec<u8>)> {

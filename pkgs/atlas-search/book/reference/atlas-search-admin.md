@@ -15,7 +15,7 @@ atlas-search traces <COMMAND>
 atlas-search feedback [OPTIONS] --query <QUERY>
 ```
 
-`-V, --version` prints `atlas-search 0.1.0+g<source revision>` (the crate version plus the 12-hex source revision baked at build time; `+gunknown` when built without git history) and exits 0. `-h, --help` prints help. An unknown subcommand is a clap error, exit 2.
+`-V, --version` prints `atlas-search 0.1.0` and exits 0. `-h, --help` prints help. An unknown subcommand is a clap error, exit 2.
 
 ## `serve`: the Atlas service
 
