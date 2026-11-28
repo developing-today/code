@@ -206,6 +206,22 @@ class EvaluateTests(unittest.TestCase):
             any("during" in gap for gap in verdict["gaps"]), verdict["gaps"]
         )
 
+    def test_observation_without_ordered_timestamps_is_rejected(self):
+        stripped = dict(DURING)
+        stripped["observations"] = [
+            {k: v for k, v in obs.items() if k not in ("startedAt", "finishedAt")}
+            for obs in DURING["observations"]
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_evaluate(*self.package(directory, during=stripped))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        verdict = json.loads(result.stdout)
+        self.assertEqual(verdict["verdict"], "incomplete")
+        self.assertTrue(
+            any("startedAt/finishedAt" in gap for gap in verdict["gaps"]),
+            verdict["gaps"],
+        )
+
     def test_strict_arguments_before_file_reads(self):
         cases = [
             ["--typo"],

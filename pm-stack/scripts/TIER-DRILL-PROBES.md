@@ -46,7 +46,8 @@ separate controlled queue drill; this GET-only collector cannot prove them.
 
 This read-only evaluator checks package completeness only: the same explicit
 surface set in all three records, every record labelled `provesDrill: false`
-(a `true` is rejected as a false completion claim), and an honestly ordered
+(a `true` is rejected as a false completion claim), every observation carrying
+an ordered `startedAt`/`finishedAt` pair, and an honestly ordered
 outage window with the during record inside it and the after record after
 restoration. Exit 0 with `verdict: complete`, exit 1 with named `gaps`,
 exit 2 for invalid arguments or unreadable evidence. A complete verdict is
