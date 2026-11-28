@@ -1,10 +1,11 @@
 //! The shared content-creation ledger writer for `fleet gh`
-//! (developing-today/code#2227, slice: route the gh-shim bypass
-//! through the shared gate).
+//! (developing-today/code#2227, slice: ledger every `pr review`
+//! submit shape, not just `--comment`).
 //!
 //! Every `fleet gh` content-creating call — `issue create`,
-//! `pr create`, `issue comment`, `pr comment`, `pr review
-//! --comment`, `release create`, `gist create`, and POST-class
+//! `pr create`, `issue comment`, `pr comment`, the `pr review`
+//! submit shapes (`--comment`/`--approve`/`--request-changes`),
+//! `release create`, `gist create`, and POST-class
 //! `api` calls — reserves a row in
 //! the shared creation ledger
 //! (`~/.local/state/fleet/content-ledger.sqlite`, override with
@@ -31,22 +32,24 @@
 //!     circuit breaker, no verify-by-search. Those are the warn-mode
 //!     throttle (hatch#13) and later slices; this slice makes the
 //!     bypass visible in the ledger first.
-//!   - Scope is issues/PRs/comments, plus `pr review --comment`
-//!     (kind `review`, already in the reference vocabulary),
-//!     `release create` (kind `release`), `gist create` (kind
-//!     `gist`), and `api --method POST` (kind `other`, the
-//!     reference `KINDS` catch-all). The reference `KINDS`
-//!     has neither a `release` nor a `gist` entry — the reference
-//!     filing path files neither shape — so both extend this
-//!     writer's vocabulary by one kind each, while `other` is
-//!     byte-identical to the reference. The shared read paths do
-//!     not gate on kind (`counts` groups by outcome, `tail`
-//!     reads kind as data), so `release`/`gist`/`other` rows
-//!     reconcile in the one DB exactly like the existing kinds.
-//!     Non-POST `api` calls and the non-comment `pr review`
-//!     shapes (`--approve`, `--request-changes`) pass through
-//!     unledgered as today; routing them is the named follow-up
-//!     slice (see the PR body).
+//!   - Scope is issues/PRs/comments, plus the `pr review`
+//!     submit shapes (`--comment`, `--approve`/`-a`,
+//!     `--request-changes`/`-r`; kind `review`, already in the
+//!     reference vocabulary), `release create` (kind `release`),
+//!     `gist create` (kind `gist`), and `api --method POST`
+//!     (kind `other`, the reference `KINDS` catch-all). The
+//!     reference `KINDS` has neither a `release` nor a `gist`
+//!     entry — the reference filing path files neither shape —
+//!     so both extend this writer's vocabulary by one kind each,
+//!     while `other` is byte-identical to the reference. The
+//!     shared read paths do not gate on kind (`counts` groups by
+//!     outcome, `tail` reads kind as data), so
+//!     `release`/`gist`/`other` rows reconcile in the one DB
+//!     exactly like the existing kinds. Non-POST `api` calls and
+//!     bare `pr review` with no submit flag (interactive-only,
+//!     files nothing non-interactively) pass through unledgered
+//!     as today; pacing budgets, the circuit breaker, and
+//!     verify-by-search stay later slices.
 //!
 //! Oracle: the hatch spec's shared-ledger invariant — every
 //! content-creating call has a reservation row written before the
@@ -131,6 +134,22 @@ pub struct Pending {
     row: i64,
 }
 
+/// A `pr review` submit flag is present: any of `--comment` /
+/// `--approve` / `--request-changes` or their short forms `-c` /
+/// `-a` / `-r` (gh's review flags per `cli/cli`
+/// `pkg/cmd/pr/review/review.go`: `BoolVarP` long+short pairs).
+/// A trailing `=value` suffix is tolerated so `--approve=false`
+/// style spellings still count as a submit shape.
+fn is_review_submit(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let base = a.split('=').next().unwrap_or(a.as_str());
+        matches!(
+            base,
+            "--comment" | "-c" | "--approve" | "-a" | "--request-changes" | "-r"
+        )
+    })
+}
+
 /// Classify `args` (the canonical gh argv, post sync-rewrite) as a
 /// ledgered create or not. Anything unrecognised is not a create —
 /// reads and the deferred shapes pass through untouched.
@@ -153,10 +172,13 @@ pub fn classify(args: &[String]) -> Option<Classified> {
         ("pr", "create") => CreateKind::Pr,
         ("issue", "comment") => CreateKind::IssueComment,
         ("pr", "comment") => CreateKind::PrComment,
-        // Only the comment-bearing review shape is ledgered: it is
-        // the one that files new content with a body. `--approve`
-        // and `--request-changes` stay unledgered in this slice.
-        ("pr", "review") if args.iter().any(|a| a == "--comment") => CreateKind::PrReview,
+        // Every non-interactive `pr review` submit shape files a
+        // review object (comment, approval, or requested changes —
+        // gh requires one of the three outside interactive mode),
+        // so all three ledger as kind `review`. A bare
+        // `pr review <n>` with no submit flag is interactive-only
+        // and files nothing, so it stays unledgered.
+        ("pr", "review") if is_review_submit(args) => CreateKind::PrReview,
         ("release", "create") => CreateKind::Release,
         ("gist", "create") => CreateKind::Gist,
         _ => return None,
@@ -579,6 +601,26 @@ mod tests {
         let c = classify(&args(&["pr", "review", "12", "--comment", "--body", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::PrReview);
         assert_eq!(c.kind.as_ledger_kind(), "review");
+        // All three submit shapes file a review object, so all
+        // three ledger — including the short flags.
+        let c = classify(&args(&["pr", "review", "12", "--approve"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&[
+            "pr",
+            "review",
+            "12",
+            "--request-changes",
+            "--body",
+            "x",
+        ]))
+        .unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-c", "--body", "x"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-a"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
+        let c = classify(&args(&["pr", "review", "12", "-r", "--body", "x"])).unwrap();
+        assert_eq!(c.kind.as_ledger_kind(), "review");
         let c = classify(&args(&["release", "create", "v1.0.0", "--title", "x"])).unwrap();
         assert_eq!(c.kind, CreateKind::Release);
         assert_eq!(c.kind.as_ledger_kind(), "release");
@@ -603,19 +645,8 @@ mod tests {
         assert_eq!(c.repo, "o/r");
 
         assert!(classify(&args(&["issue", "list"])).is_none());
-        // Non-comment review shapes stay unledgered in this slice.
-        assert!(classify(&args(&["pr", "review", "12", "--approve"])).is_none());
-        assert!(
-            classify(&args(&[
-                "pr",
-                "review",
-                "12",
-                "--request-changes",
-                "--body",
-                "x"
-            ]))
-            .is_none()
-        );
+        // A bare review with no submit flag is interactive-only and
+        // files nothing, so it stays unledgered.
         assert!(classify(&args(&["pr", "review", "12"])).is_none());
         assert!(classify(&args(&["issue", "view", "12"])).is_none());
         assert!(classify(&args(&["pr", "merge", "12"])).is_none());
@@ -626,17 +657,15 @@ mod tests {
         // POST with no endpoint to file against.
         assert!(classify(&args(&["api", "repos/o/r/issues"])).is_none());
         assert!(classify(&args(&["api", "repos/o/r/issues", "--method", "GET"])).is_none());
-        assert!(
-            classify(&args(&[
-                "api",
-                "repos/o/r/issues/1",
-                "--method",
-                "PUT",
-                "-f",
-                "title=x"
-            ]))
-            .is_none()
-        );
+        assert!(classify(&args(&[
+            "api",
+            "repos/o/r/issues/1",
+            "--method",
+            "PUT",
+            "-f",
+            "title=x"
+        ]))
+        .is_none());
         assert!(classify(&args(&["api", "--method", "POST", "-f", "title=x"])).is_none());
         // Deferred shapes stay unledgered in this slice.
         assert!(classify(&args(&["gist", "view", "abc123"])).is_none());
