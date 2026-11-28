@@ -13,6 +13,9 @@ name: bench 100x 16266
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 1837l/16266-100x-rerun
 
 permissions:
   contents: read
