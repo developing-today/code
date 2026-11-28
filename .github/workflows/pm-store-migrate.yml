@@ -24,10 +24,6 @@
 # entry.
 
 name: pm-store-migrate
-# The store is in each run's title: GitHub's run list does not return a
-# run's inputs, and the console's Stores section reads the last run per
-# store by this title (pm-stack/console/src/store-migrate.ts).
-run-name: pm-store-migrate ${{ inputs.store }}
 
 on:
   workflow_dispatch:

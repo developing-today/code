@@ -47,9 +47,6 @@ export async function platformRead(
       // answers as not answering; the others still show.
       case "stores":
         return ops.platformStores();
-      // The last migration started from here, per store (#14256).
-      case "store-migrations":
-        return ops.storeMigrations();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":
