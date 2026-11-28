@@ -1,0 +1,53 @@
+name: fleet-rust-tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Runs the pkgs/fleet Rust workspace unit and integration tests
+# (#8941; test-suite registry row fleet.rust). Before this workflow
+# the workspace's tests ran in no CI venue, so regressions in the
+# queue, dispatch, proxy, config, and registry crates could merge
+# without their Rust tests running — the #8941 baseline run on main
+# found exactly that (a stale dep-wiring oracle and a parallel-spawn
+# flake in fleet-queue, both fixed in the same PR).
+#
+# No `cargo fmt --check` step: formatting is not a merge gate
+# (auto-fixed on main by auto-format.yml), so this basic-tier job
+# runs tests only. #6400's per-variant smoke suite
+# (pkgs/fleet/smoke.sh) is a separate venue and is NOT part of
+# this job (its venue is .github/workflows/fleet-smoke.yml).
+
+on:
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # This workflow has no push trigger (nightly schedule +
+  # workflow_dispatch only), so every run shares a per-ref group and
+  # a new run supersedes the stale one.
+  group: fleet-rust-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fleet-rust-tests:
+    name: "basic: fleet Rust workspace tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Contract — wiring matches registry, policy, and toolchain pin (#8941)
+        run: |
+          bash .github/scripts/check-fleet-rust-tests.sh
+          bash .github/scripts/check-fleet-rust-tests.test.sh
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+
+      - name: Test the fleet Rust workspace
+        run: cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked

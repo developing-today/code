@@ -1,0 +1,8 @@
+{
+  "basis": "synthetic counters; rates copied from cited docs, not a quote",
+  "d1_synthetic_usd": 0.0,
+  "label": "synthetic-not-measured",
+  "measurement_status": "not measured",
+  "r2_synthetic_usd": 21.3,
+  "winner": null
+}

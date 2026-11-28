@@ -1,0 +1,13 @@
+## pairs: chains=1000, base 50000 events, repeats=3
+| case | dialer K,T | acceptor K,T | new events, dialer / acceptor | flights A+B | control B | data B | wall ms, median | commit ms, median | index ms, median | checks |
+|---|---|---|---|---|---|---|---|---|---|---|
+| calibration: 40 new on the dialer only (S7's N=40 row) | K16 T16 | K16 T16 | 40 / 0 | 7 (4+3) | 90654 | 19616 | 31.5 | 9.3 | 33.5 | exact; 3 runs identical; wire = in-memory |
+| S7 default on both sides | K16 T16 | K16 T16 | 20 / 20 | 7 (4+3) | 89698 | 19616 | 23.2 | 15.3 | 11.5 | exact; 3 runs identical; wire = in-memory |
+| mixed: dialer K16 T16, acceptor K4 T8 | K16 T16 | K4 T8 | 20 / 20 | 9 (5+4) | 72062 | 19616 | 42.8 | 24.4 | 32.5 | exact; 3 runs identical; wire = in-memory |
+| mixed: dialer K4 T8, acceptor K16 T16 | K4 T8 | K16 T16 | 20 / 20 | 8 (4+4) | 79200 | 19616 | 24.0 | 14.2 | 13.8 | exact; 3 runs identical; wire = in-memory |
+| K2 T4 on both sides | K2 T4 | K2 T4 | 20 / 20 | 18 (9+9) | 66001 | 19616 | 30.4 | 14.7 | 18.5 | exact; 3 runs identical; wire = in-memory |
+| K4 T8 on both sides (S7's bulk setting) | K4 T8 | K4 T8 | 20 / 20 | 11 (6+5) | 56761 | 19616 | 42.2 | 25.4 | 11.8 | exact; 3 runs identical; wire = in-memory |
+| K32 T32 on both sides | K32 T32 | K32 T32 | 20 / 20 | 7 (4+3) | 125180 | 19616 | 24.4 | 13.5 | 10.7 | exact; 3 runs identical; wire = in-memory |
+| mixed: dialer K2 T4, acceptor K32 T32 | K2 T4 | K32 T32 | 20 / 20 | 8 (4+4) | 99603 | 19616 | 26.5 | 16.6 | 17.5 | exact; 3 runs identical; wire = in-memory |
+| mixed: dialer K32 T32, acceptor K2 T4 | K32 T32 | K2 T4 | 20 / 20 | 9 (5+4) | 100639 | 19616 | 36.4 | 37.9 | 12.3 | exact; 3 runs identical; wire = in-memory |
+base store: 50000 events per side before the new events

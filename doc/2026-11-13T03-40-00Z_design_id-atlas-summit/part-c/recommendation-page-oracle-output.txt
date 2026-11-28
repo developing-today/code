@@ -1,0 +1,15 @@
+{
+  "cryptographic_signature_verification": false,
+  "cursor_parent_and_position": "matched",
+  "fixture": "synthetic-recommendation-page/v1",
+  "page_envelope_ids": [
+    "sha256:e67e1aa7ad2343411ec8019ec1bef037ee0c8e8d27d01f305df641a2d957fc7d",
+    "sha256:50edb5f8e6dfb49b16580b44dffd8932998f4f21bee6836a951698f01c2de0a2"
+  ],
+  "parent_snapshot_id": "sha256:8797b6bd7f4821dfb8273ee23cad9dacd50e9361b06d8a4e686f2515b8cf5c91",
+  "post_cutoff_candidate": "excluded",
+  "production_state_claim": false,
+  "restart_same_page_envelope": "matched",
+  "tie_order": "score DESC, immutable ID ASC",
+  "wrong_parent_cursor": "rejected"
+}

@@ -1,0 +1,515 @@
+# laptop-backups — the laptop's backup system of record, declared in the
+# flake (Drew, 2026-10-27; developing-today/code#1516, dezren39/nix#976).
+#
+# Home-manager module: import it from the host config that manages the
+# laptop user's services (the NixOS config in developing-today/code does)
+# and set `services.laptop-backups.enable = true`.
+#
+# Relocated 2026-10-28 from dezren39/nix (Drew's Darwin flake) into
+# this flake, per Drew's rule that all laptop services are made by
+# the code flake (code#1723).
+#
+# Jobs:
+# - pm-dashboard-backup (daily ~04:30): the PM dashboard / orchestration
+#   state set as a dated tar.zst with a sha256 manifest to the local
+#   backup dir, Cloudflare R2 (bucket supabase-backups, a legacy R2
+#   bucket name) and Google Drive
+#   (Cloud/cold-store/db-backups/pm-aggregator/<date>/), every copy
+#   sha256-verified, 30-day retention. Runs the code#1514 DB-dump script
+#   first when it exists at ~/tools/pm-stack-db-backup.sh, and its dumps
+#   ride the same archive. Script: ./pm-dashboard-backup.sh (vendored
+#   here; credentials from Bitwarden by name at runtime, never in the
+#   store).
+# - repo-archive-backup (daily ~05:15): the pre-existing restic job
+#   (~/repo-archive -> local + R2 + Drive). The unit + timer are declared
+#   here so the schedule lives in the flake; the script itself stays at
+#   ~/tools/repo-archive-backup.sh, the path its author maintains.
+# - laptop-state-backup (daily ~05:40): the small irreplaceable laptop
+#   state no other routine covers (code#1849) — ~/.local/state/opencode,
+#   ~/secrets/*.sops.yaml, ~/.ssh — as restic snapshots to a dedicated
+#   restic-laptop-state repository on each backend (local + R2 +
+#   Drive), same password key as repo-archive, independent
+#   retention/listing. Script: ./laptop-state-backup.sh (vendored here;
+#   same Bitwarden-at-runtime credential pattern).
+# - opencode-db-backup (daily ~06:05): the OpenCode session database
+#   (~/.local/share/opencode/opencode.db, ~25G and the fleet's working
+#   memory; code#10297) snapshotted with a consistent sqlite snapshot (VACUUM INTO; .backup restarts indefinitely on this write-hot DB)
+#   against the running server), integrity-checked, then restic-backed
+#   up to local + R2 + Drive (restic-opencode-db repositories),
+#   keep-last 7 / keep-daily 7 / keep-weekly 4 / keep-monthly 12.
+#   Script: ./opencode-db-backup.sh (vendored here; same
+#   Bitwarden-at-runtime credential pattern).
+# - openclaw-backup (daily ~04:05): the OpenClaw state dir (~/.openclaw,
+#   minus the tmp/ and cache/ scratch trees) as a dated tar.zst with a
+#   sha256 manifest to the local backup dir, R2 (supabase-backups,
+#   openclaw/<date>/) and Google Drive (Cloud/cold-store/db-backups/
+#   openclaw/<date>/), every copy sha256-verified, 30-day retention.
+#   The agent state DB is snapshotted with sqlite3 .backup so the
+#   archived copy is transaction-consistent. Script:
+#   ./openclaw-backup.sh (vendored here; same credential pattern).
+# - atlas-backup (daily ~04:47): the canonical local atlas.db
+#   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
+#   .backup, gzipped deterministically, and filed to the local backup
+#   dir, R2 (supabase-backups, atlas/<date>/) and Google Drive
+#   (Cloud/cold-store/db-backups/local-atlas/), every copy
+#   sha256-verified, content-hash dedupe against the backup log,
+#   7/7/4 retention (laptop/R2 dates, Drive archives). Migrated from
+#   the sandbox cron 2026-10-30 per Drew's laptop-only execution rule
+#   (code#1515). Script: ./atlas-backup.sh (vendored here; credentials
+#   from Bitwarden by name at runtime, never in the store).
+# - cold-store-nightly (daily 03:12): the cold-store reaper's nightly
+#   backup set (D1 exports, Turso exports) to Google
+#   Drive. Migrated from the sandbox 2026-10-28 (code#1723). Script:
+#   ~/tools/cold-store-nightly.sh (wrapper; the job script itself lives
+#   in developing-today/code, pkgs/cold-store-reaper).
+# - cold-store-drill (monthly, day 1, 05:12; the script self-gates to
+#   Jan/Apr/Jul/Oct): restore drill for the cold-store backups.
+#   Script: ~/tools/cold-store-drill.sh (code#1723).
+#
+# - laptop-backups-watchdog (a few times daily): the freshness check
+#   from code#1841 (design dezren39/nix#1024 phase 3, implementation
+#   ported from dezren39/nix#1026) — read-only, attempts no repair.
+#   It names a stopped backup: pm-dashboard-backup's durable run
+#   record (.last-run.json, written on every exit path by its script)
+#   must be complete and fresher than services.laptop-backups.
+#   watchdog.maxAgeHours, and both backup timers must have triggered
+#   within the same threshold; any violation exits non-zero naming
+#   the job/timer. laptop-state-backup is covered via its timer's
+#   last-trigger time AND its success marker
+#   (~/backups/restic/.laptop-state-last-success-epoch, written only
+#   after all three backends succeed) — code#10294: its 12-day stall
+#   was silent because the watchdog did not name this job.
+#   repo-archive-backup is covered via its timer's
+#   last-trigger time ONLY: its script (~/tools/repo-archive-
+#   backup.sh) and its restic credentials live outside this repo, so
+#   no run record is required of it.
+#   With watchdog.meshEnable (code#13463), it also reads the backup
+#   mesh's restore-verification records: one per leg x store pair
+#   under ~/backups/mesh/restore-verification, each successful and no
+#   older than watchdog.meshMaxAgeHours (a quarter), so a stalled
+#   rotation is named by leg and store.
+#
+# Pruning discipline: each job prunes only the dated directories it
+# created itself. The sandbox's backup job writes into its own tree under
+# ~/backups on this host; nothing here rotates files it did not create.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+let
+  cfg = config.services.laptop-backups;
+  home = config.home.homeDirectory;
+  pmAggregator = pkgs.callPackage ../../pkgs/pm-aggregator/package.nix { };
+  dashboardPkg = pkgs.writeShellScriptBin "pm-dashboard-backup" (
+    builtins.readFile ./pm-dashboard-backup.sh
+  );
+  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
+  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
+    builtins.readFile ./laptop-state-backup.sh
+  );
+  opencodeDbPkg = pkgs.writeShellScriptBin "opencode-db-backup" (
+    builtins.readFile ./opencode-db-backup.sh
+  );
+  watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
+    builtins.readFile ./laptop-backups-watchdog.sh
+  );
+  # The watchdog checks only the jobs that are enabled: a disabled job
+  # has no run record and no timer, so requiring them would fail the
+  # watchdog forever in a supported configuration.
+  watchdogJobs = lib.concatStringsSep "," (
+    (lib.optional cfg.dashboard.enable "dashboard")
+    ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+    ++ (lib.optional cfg.state.enable "state")
+    ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
+    ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
+    ++ (lib.optional cfg.watchdog.meshEnable "mesh")
+  );
+  watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
+  servicePath = lib.makeBinPath [
+    pkgs.coreutils
+    pkgs.findutils
+    pkgs.gnutar
+    pkgs.zstd
+    pkgs.python3
+    pkgs.rclone
+    pkgs.sqlite
+    pkgs.util-linux
+    pkgs.systemd
+  ];
+in
+{
+  options.services.laptop-backups = {
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, cold-store, atlas)";
+
+    dashboard = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily PM dashboard backup to local dir + R2 + Google Drive (code#1516).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "04:30";
+        description = "Daily run time (local) for the dashboard backup.";
+      };
+    };
+
+    repoArchive = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic repo-archive backup (pre-existing script, unit declared here).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "05:15";
+        description = "Daily run time (local) for the repo-archive backup.";
+      };
+      script = lib.mkOption {
+        type = lib.types.str;
+        default = "${home}/tools/repo-archive-backup.sh";
+        description = "Path of the repo-archive backup script to run.";
+      };
+    };
+
+    openclaw = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily OpenClaw state backup (~/.openclaw) to local dir + R2 + Google Drive.";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "04:05";
+        description = "Daily run time (local) for the OpenClaw backup.";
+      };
+    };
+
+    atlas = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily atlas.db backup to local dir + R2 + Google Drive (code#1515).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "04:47";
+        description = "Daily run time (local) for the atlas backup.";
+      };
+    };
+
+    state = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic backup of the small irreplaceable laptop state (opencode state, secrets, ssh) to local + R2 + Drive (code#1849).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "05:40";
+        description = "Daily run time (local) for the laptop-state backup.";
+      };
+    };
+
+    opencodeDb = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic backup of the OpenCode session database (sqlite VACUUM INTO snapshot, local + R2 + Drive) (code#10297).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "06:05";
+        description = "Daily run time (local) for the opencode-db backup.";
+      };
+    };
+
+    coldStoreNightly = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily cold-store nightly backup set to Google Drive (code#1723).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "03:12";
+        description = "Daily run time (local) for the cold-store nightly backup.";
+      };
+      script = lib.mkOption {
+        type = lib.types.str;
+        default = "${home}/tools/cold-store-nightly.sh";
+        description = "Path of the cold-store nightly wrapper script to run.";
+      };
+    };
+
+    coldStoreDrill = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Monthly cold-store restore drill; the script self-gates to Jan/Apr/Jul/Oct (code#1723).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "*-*-01 05:12:00";
+        description = "Monthly run time (local, day 1) for the cold-store restore drill.";
+      };
+      script = lib.mkOption {
+        type = lib.types.str;
+        default = "${home}/tools/cold-store-drill.sh";
+        description = "Path of the cold-store drill wrapper script to run.";
+      };
+    };
+
+    watchdog = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Freshness watchdog for the laptop backups (code#1841): names a stopped or failing backup.";
+      };
+      maxAgeHours = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 26;
+        description = "Maximum age (hours) of pm-dashboard-backup's last complete run record and of both backup timers' last triggers before the watchdog fails naming the job.";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "*-*-* 06,12,18:30:00";
+        description = "Times of day the watchdog runs (systemd calendar).";
+      };
+      meshEnable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Also report the backup mesh's restore-verification rotation records (code#13463): every leg x store pair under ~/backups/mesh/restore-verification must have a successful record no older than a quarter. Off until the rotation runners exist; enabling it before then fails naming every unverified pair, which is the intended reading.";
+      };
+      meshMaxAgeHours = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 2200;
+        description = "Maximum age (hours) of a leg x store restore-verification record before the watchdog names it (default 2200h, a little over a quarter).";
+      };
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    systemd.user.services = lib.mkMerge [
+      (lib.mkIf cfg.dashboard.enable {
+        pm-dashboard-backup = {
+          Unit.Description = "Daily PM dashboard backup - local + R2 + Drive (code#1516, nix#976)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${dashboardPkg}/bin/pm-dashboard-backup";
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "PM_AGG_STORE_BACKEND=turso"
+              "PM_AGG_TURSO_EXPORT_BIN=${pmAggregator}/bin/pm-aggregator-export-turso-stores"
+            ];
+          };
+        };
+      })
+      (lib.mkIf cfg.repoArchive.enable {
+        repo-archive-backup = {
+          Unit.Description = "Daily repo-archive backup (restic: local + R2 + Google Drive)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = cfg.repoArchive.script;
+          };
+        };
+      })
+      (lib.mkIf cfg.openclaw.enable {
+        openclaw-backup = {
+          Unit.Description = "Daily OpenClaw state backup - local + R2 + Drive";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${openclawPkg}/bin/openclaw-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+          };
+        };
+      })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Daily atlas.db backup - local + R2 + Drive (code#1515)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${atlasPkg}/bin/atlas-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            TimeoutStartSec = "90m";
+          };
+        };
+      })
+      (lib.mkIf cfg.state.enable {
+        laptop-state-backup = {
+          Unit.Description = "Daily small-state restic backup - local + R2 + Drive (code#1849)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${statePkg}/bin/laptop-state-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            TimeoutStartSec = "90m";
+          };
+        };
+      })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Daily OpenCode session DB backup - sqlite snapshot + restic local + R2 + Drive (code#10297)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${opencodeDbPkg}/bin/opencode-db-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # 240m: the snapshot alone copies ~25G, then integrity_check
+            # plus three restic legs each run backup + check + prune.
+            TimeoutStartSec = "240m";
+          };
+        };
+      })
+      (lib.mkIf cfg.coldStoreNightly.enable {
+        cold-store-nightly = {
+          Unit.Description = "Cold-store nightly backup set (D1 + Turso exports to Drive) (code#1723)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = cfg.coldStoreNightly.script;
+            # 360m, not 120m: on 2026-11-20 the atlas Turso dump
+            # (past 10 GB) was still downloading when the 120m
+            # timeout killed the run, and nothing after it was
+            # filed. export-turso.sh now keeps itself inside a 3h
+            # budget (TURSO_EXPORT_DEADLINE_SECONDS) and exports
+            # atlas last; this leaves room for that plus the D1
+            # backup, prune, manifest sync and status steps.
+            # Earlier: 30m -> 120m after 2026-11-08/09/10
+            # (darwin-nix#373).
+            TimeoutStartSec = "360m";
+          };
+        };
+      })
+      (lib.mkIf cfg.coldStoreDrill.enable {
+        cold-store-drill = {
+          Unit.Description = "Cold-store restore drill (quarterly months; script self-gates) (code#1723)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = cfg.coldStoreDrill.script;
+            TimeoutStartSec = "15m";
+          };
+        };
+      })
+      (lib.mkIf watchdogWanted {
+        laptop-backups-watchdog = {
+          Unit.Description = "Freshness watchdog for the laptop backups - names a stopped backup (code#1841)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
+            # LAPTOP_BACKUPS_OFFSITE_CHECK (#3914): the watchdog also
+            # asserts the dashboard backup's date dir exists on R2.
+            # servicePath carries rclone and ~/tools/bin carries bws.
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+              "LAPTOP_BACKUPS_MESH_MAX_AGE_HOURS=${toString cfg.watchdog.meshMaxAgeHours}"
+            ];
+          };
+        };
+      })
+    ];
+
+    systemd.user.timers = lib.mkMerge [
+      (lib.mkIf cfg.dashboard.enable {
+        pm-dashboard-backup = {
+          Unit.Description = "Run the PM dashboard backup daily (code#1516)";
+          Timer = {
+            OnCalendar = cfg.dashboard.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.repoArchive.enable {
+        repo-archive-backup = {
+          Unit.Description = "Run the repo-archive backup daily";
+          Timer = {
+            OnCalendar = cfg.repoArchive.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.openclaw.enable {
+        openclaw-backup = {
+          Unit.Description = "Run the OpenClaw backup daily";
+          Timer = {
+            OnCalendar = cfg.openclaw.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Run the atlas backup daily (code#1515)";
+          Timer = {
+            OnCalendar = cfg.atlas.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.state.enable {
+        laptop-state-backup = {
+          Unit.Description = "Run the laptop-state backup daily (code#1849)";
+          Timer = {
+            OnCalendar = cfg.state.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Run the OpenCode session DB backup daily (code#10297)";
+          Timer = {
+            OnCalendar = cfg.opencodeDb.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.coldStoreNightly.enable {
+        cold-store-nightly = {
+          Unit.Description = "Run the cold-store nightly backup daily";
+          Timer = {
+            OnCalendar = cfg.coldStoreNightly.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.coldStoreDrill.enable {
+        cold-store-drill = {
+          Unit.Description = "Run the cold-store restore drill monthly (script self-gates to quarterly months)";
+          Timer = {
+            OnCalendar = cfg.coldStoreDrill.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf watchdogWanted {
+        laptop-backups-watchdog = {
+          Unit.Description = "Run the laptop-backups freshness watchdog a few times daily (code#1841)";
+          Timer = {
+            OnCalendar = cfg.watchdog.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "10m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+    ];
+  };
+}

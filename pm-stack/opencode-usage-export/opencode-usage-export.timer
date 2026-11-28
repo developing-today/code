@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the OpenCode usage exporter every 15 minutes — code#2072 slice 1
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=20
+Persistent=true
+Unit=opencode-usage-export.service
+
+[Install]
+WantedBy=timers.target

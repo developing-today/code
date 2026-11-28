@@ -1,0 +1,31 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "data_source",
+      "id": "source-alpha",
+      "parent": { "type": "database_id", "database_id": "db-alpha" },
+      "properties": { "Name": { "id": "title", "type": "title", "title": {} } }
+    },
+    {
+      "object": "data_source",
+      "id": "source-beta",
+      "parent": { "type": "database_id", "database_id": "db-alpha" },
+      "properties": { "Name": { "id": "title", "type": "title", "title": {} } }
+    },
+    {
+      "object": "page",
+      "id": "page-root",
+      "parent": { "type": "workspace", "workspace": true },
+      "cover": {
+        "type": "file",
+        "file": {
+          "url": "https://files.notion.so/signed-secret?token=fixture-secret",
+          "expiry_time": "2026-11-21T00:00:00Z"
+        }
+      },
+      "last_edited_time": "2026-11-01T10:00:00.000Z"
+    }
+  ],
+  "has_more": false
+}

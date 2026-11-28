@@ -1,0 +1,31 @@
+{
+  // Queue transport alert Worker (code#6369), for local `wrangler dev`.
+  // Deploys go through cloudflare.config.ts and the cf versions flow:
+  //   nix run .#queue-transport-alert-deploy [-- --dry-run]
+  "name": "queue-transport-alert",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-25",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "vars": {
+    "BROKER_URL": "https://queue-broker.security.cab",
+    "REPO": "developing-today/code",
+    "THRESHOLD": "2",
+    "PROBE_TIMEOUT_MS": "10000",
+    "QUEUE": "repo-health-code-pilot",
+    // Drew's Telegram user id (DM with @shed_openclaw_bot); also in home/openclaw.
+    "TELEGRAM_CHAT_ID": "8290042325",
+    "PUBLIC_URL": "https://queue-transport-alert.developing-today.workers.dev",
+    // "true" files/comments on incidents, pushes and enqueues; anything else only logs.
+    "APPLY": "true"
+  },
+  // Secrets (uploaded with each version by deploy.mjs from Bitwarden, never in this file):
+  //   ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET  Access service token for the broker route
+  //   GITHUB_TOKEN                           token that may write issues in REPO
+  //   TELEGRAM_BOT_TOKEN                     OpenClaw's Telegram bot, for the phone push
+  //   BROKER_AGENT_TOKEN                     the broker's X-Agent-Token, for /enqueue
+  "durable_objects": {
+    "bindings": [{ "name": "TRANSPORT_STATE", "class_name": "TransportState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TransportState"] }]
+}

@@ -1,0 +1,36 @@
+digraph {
+	graphs
+	nodes
+	identifiers
+	nodes_identifiers
+	links
+	links_identifiers
+	identifiers_links_elements
+	links_elements
+	links_elements_identifiers
+	graphs -> graphs [label=graph_id]
+	nodes -> graphs [label=graph_id]
+	nodes -> nodes [label=parent_id]
+	identifiers -> graphs [label=graph_id]
+	identifiers -> identifiers [label=parent_id]
+	nodes_identifiers -> graphs [label=graph_id]
+	nodes_identifiers -> nodes_identifiers [label=parent_id]
+	nodes_identifiers -> identifiers [label=identifier_id]
+	nodes_identifiers -> nodes [label=node_id]
+	links -> graphs [label=graph_id]
+	links -> links [label=parent_id]
+	links_identifiers -> graphs [label=graph_id]
+	links_identifiers -> links_identifiers [label=parent_id]
+	links_identifiers -> identifiers [label=identifier_id]
+	links_identifiers -> links [label=link_id]
+	identifiers_links_elements -> graphs [label=graph_id]
+	identifiers_links_elements -> identifiers_links_elements [label=parent_id]
+	identifiers_links_elements -> identifiers [label=identifier_id]
+	identifiers_links_elements -> links_elements [label=link_element_id]
+	links_elements -> graphs [label=graph_id]
+	links_elements -> links_elements [label=parent_id]
+	links_elements_identifiers -> graphs [label=graph_id]
+	links_elements_identifiers -> links_elements_identifiers [label=parent_id]
+	links_elements_identifiers -> links_elements [label=link_element_id]
+	links_elements_identifiers -> identifiers [label=identifier_id]
+}

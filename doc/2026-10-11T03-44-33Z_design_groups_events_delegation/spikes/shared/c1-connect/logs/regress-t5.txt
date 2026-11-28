@@ -1,0 +1,45 @@
+publisher's record on the testnet 194.10234ms after online
+A dht only: connected 115.58113ms, replied 129.072385ms, echoed true, handshake over relay http://localhost:34063/
+  path after reply: * relay http://localhost:34063/
+2026-10-11T10:41:03.821017Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:04.865090Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+  C before dial, item: memory_lookup: 1 relay, 0 direct
+  C before dial, item: pkarr: 1 relay, 0 direct
+C memory: wrong relay, dht: right relay: connected 1.031397333s, replied 1.044850847s, echoed true, handshake over relay http://localhost:34063/
+  path after reply: * relay http://localhost:34063/
+2026-10-11T10:41:06.994848Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:06.994848Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+  D before dial, item: memory_lookup: 0 relay, 1 direct
+  D before dial, item: pkarr: 1 relay, 0 direct
+D memory: dead direct, dht: right relay: connected 1.030943721s, replied 1.044568948s, echoed true, handshake over relay http://localhost:34063/
+  path after reply: * relay http://localhost:34063/
+2026-10-11T10:41:09.131085Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:10.258924Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:11.306937Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:13.357821Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:13.357821Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:15.408401Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:16.542475Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:17.591326Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:19.648793Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:19.648793Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:21.695875Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+E control (only a wrong relay known): failed after 30.00268979s: timed out
+2026-10-11T10:41:52.706151Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+case, round, reply time, attempts, selected path
+A dht only                                 1     129.1 ms  1 attempt(s)  relay http://localhost:34063/
+B memory only (Q)                          1      39.9 ms  1 attempt(s)  relay http://localhost:34063/
+C memory: wrong relay, dht: right relay    1    1044.9 ms  1 attempt(s)  relay http://localhost:34063/
+D memory: dead direct, dht: right relay    1    1044.6 ms  1 attempt(s)  relay http://localhost:34063/
+A dht only                                 2     123.4 ms  1 attempt(s)  relay http://localhost:34063/
+B memory only (Q)                          2      43.3 ms  1 attempt(s)  relay http://localhost:34063/
+C memory: wrong relay, dht: right relay    2    1046.7 ms  1 attempt(s)  relay http://localhost:34063/
+D memory: dead direct, dht: right relay    2    1045.2 ms  1 attempt(s)  relay http://localhost:34063/
+A dht only                                 3     127.0 ms  1 attempt(s)  relay http://localhost:34063/
+B memory only (Q)                          3      43.5 ms  1 attempt(s)  relay http://localhost:34063/
+C memory: wrong relay, dht: right relay    3    1052.9 ms  1 attempt(s)  relay http://localhost:34063/
+D memory: dead direct, dht: right relay    3    1043.3 ms  1 attempt(s)  relay http://localhost:34063/
+2026-10-11T10:41:52.707165Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:53.709654Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:41:53.711366Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+RESULT t5: PASS

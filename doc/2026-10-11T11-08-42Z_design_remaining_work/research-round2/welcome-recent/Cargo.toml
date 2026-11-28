@@ -1,0 +1,20 @@
+[package]
+name = "welcome-recent"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# Standalone crate, not a member of the spikes workspace (BRIEF rule 6). The serde_bytes path copy is
+# excluded so that cargo does not treat it as a workspace member named `p2panda-encryption`.
+[workspace]
+exclude = ["variants/serde-bytes/p2panda-encryption"]
+
+[dependencies]
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+cbor-core = "=0.10.1"
+serde = { version = "1", features = ["derive"] }
+# Stock crate, as pinned.
+p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["data_scheme", "test_utils"] }
+# serde_bytes variant: the S3 path copy plus `serde_bytes` on the two welcome fields (copied from S12).
+p2panda-encryption-sb = { package = "p2panda-encryption", path = "variants/serde-bytes/p2panda-encryption", features = ["data_scheme", "test_utils"] }

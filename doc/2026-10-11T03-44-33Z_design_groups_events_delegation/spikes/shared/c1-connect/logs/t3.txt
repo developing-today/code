@@ -1,0 +1,12 @@
+publisher: 1 relay(s), policy RelayOnly, mainline(bootstrap=1, publish=true)
+publisher online after 3.013169994s
+publisher's own address: 1 relay, 2 direct (the record must hold none of the direct ones)
+record readable on the testnet 167.500401ms after online
+  record text: _iroh46aibibu87massfam8njoybw1m3frsf5q3e37crsfru8q5if4f8po
+  record text: relay=http://localhost:35839/
+  parsed: 1 relay URL(s), 0 direct address(es); IP literals in record bytes: 0
+resolver online after 3.011920775s
+resolve and dial by ID: 1 attempt(s), 88.926507ms from the first attempt
+resolver dial by ID: connected 78.679474ms, replied 88.791647ms, echoed true, handshake over relay http://localhost:35839/
+  path after reply: * relay http://localhost:35839/
+RESULT t3: PASS

@@ -1,0 +1,24 @@
+Nov 11 decisions batch
+
+0 questions open across 0 items · 11 answered · 7 deferred · 6 sent back for more information so far. Fill in what you want — you can submit a partially-filled item; what you filled in is recorded and the rest stays here.
+
+All caught up — every question in this set has been answered or sent back. Nothing left on this page.
+
+ Show submitted items (15)
+
+Bulk actions
+
+Submit everything I've filled in Submit defaults
+
+Submit defaults records the raiser's recommended preselection for every open question that has one (plus any "my own answer" text you typed on those questions). Preselected defaults are shown selected, but they are NOT an answer until you submit them.
+
+Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:
+
+Defer
+Defer — leaning no
+Defer — leaning yes
+ Defer checked to orchestrator Defer ALL remaining
+
+Or request more information for the checked items — they leave this page and come back in a later set once the information has been gathered:
+
+ Request more info for checked items

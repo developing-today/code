@@ -1,0 +1,4 @@
+.wrangler/
+.generated/
+.cloudflare/
+node_modules/

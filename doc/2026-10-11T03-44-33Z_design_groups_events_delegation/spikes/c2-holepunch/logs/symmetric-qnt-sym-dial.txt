@@ -1,0 +1,24 @@
+profile home_qad=true n0=true standin=None
+   3021 ms online home_relays=["http://10.0.0.1:3340/"]
+ticket relays=["http://10.0.0.1:3340/"] direct=0
+2026-10-11T12:40:17.271610Z DEBUG iroh::_events::path::open: remote=355676b532 conn_id=107441257298352 path_id=0 network_path=Relay(http://10.0.0.1:3340/, 355676b532)
+2026-10-11T12:40:17.271740Z DEBUG iroh::_events::path::set_status: remote=355676b532 conn_id=107441257298352 path_id=0 network_path=Relay(http://10.0.0.1:3340/, 355676b532) status=Backup prev_status=Available
+2026-10-11T12:40:17.271839Z DEBUG iroh::_events::qnt::init: remote=355676b532 local_candidates={10.0.0.3:51554, 192.168.2.2:4444} remote_candidates={}
+2026-10-11T12:40:17.271882Z DEBUG iroh::_events::path::selected: remote=355676b532 network_path=Relay(http://10.0.0.1:3340/, 355676b532) prev_network_path=None
+2026-10-11T12:40:17.271914Z DEBUG iroh::_events::path::set_status: remote=355676b532 conn_id=107441257298352 path_id=0 network_path=Relay(http://10.0.0.1:3340/, 355676b532) status=Available prev_status=Backup
+     24 ms handshake done, selected=relay http://10.0.0.1:3340/
+     39 ms first reply (27 bytes), selected=relay http://10.0.0.1:3340/
+2026-10-11T12:40:17.286947Z DEBUG iroh::_events::qnt::init: remote=355676b532 local_candidates={10.0.0.3:51554, 192.168.2.2:4444} remote_candidates={10.0.0.2:21499, 192.168.1.2:4444}
+2026-10-11T12:40:22.287947Z DEBUG iroh::_events::qnt::init: remote=355676b532 local_candidates={10.0.0.3:51554, 192.168.2.2:4444} remote_candidates={10.0.0.2:21499, 192.168.1.2:4444}
+--- summary (dial)
+connected_ms=24 handshake_path=relay http://10.0.0.1:3340/
+first_data_ms=39 first_data_path=relay http://10.0.0.1:3340/
+first_direct_selected_ms=none
+selections=[]
+window_s=12 echoes_ok=48 echoes_failed=0 echoes_on_direct=0 echoes_on_relay=48
+rtt_ms_median_relay=Some(2.6)
+rtt_ms_median_direct=None
+selected_at_end=relay http://10.0.0.1:3340/
+holepunch_attempts=3
+own_ip_candidates=["10.0.0.3:51554", "192.168.2.2:4444"]
+  12243 ms dial path closed: relay http://10.0.0.1:3340/

@@ -1,0 +1,7 @@
+
+thread 'main' (2130857) panicked at src/range.rs:97:9:
+K must be at least 2, or a split makes no progress
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (2130857) panicked at src/range.rs:327:9:
+reconciliation did not terminate
