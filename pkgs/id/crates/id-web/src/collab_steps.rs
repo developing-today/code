@@ -60,6 +60,16 @@
 //! (`Node.fromJSON`). A stored src-less image therefore throws on
 //! every receiving client.
 //!
+//! Node attrs with a declared type are checked the same way:
+//! `prosemirror-schema-basic` gives `heading` a `level` attr with
+//! `validate: "number"` and `prosemirror-schema-list` gives
+//! `ordered_list` an `order` attr the same way (`editor.ts` keeps
+//! both validations), so `prosemirror-model` refuses a heading or
+//! ordered list whose `level`/`order` is present but not a number
+//! when a client parses the step (`Node.fromJSON`). Both attrs
+//! declare defaults, so an absent attr is fine — only a present,
+//! wrongly-typed one poisons the step.
+//!
 //! This does not yet prove that a structurally plausible step applies
 //! against the evolving document. Full server-side application is the
 //! later stage of #1618.
@@ -551,23 +561,38 @@ fn check_content_marks(kind: &str, children: &[Value]) -> Result<(), String> {
     Ok(())
 }
 
-/// Check a slice node's own required attrs. Only `image` has one:
-/// `editor.ts` declares its `src` attr with no default (`src: {}`,
-/// where every other node attr in either schema declares one), so
-/// `prosemirror-model` refuses an image whose `src` is missing or
-/// not a string when a client parses the step (`Node.fromJSON`
-/// throws, as slice 7 established for the `link` mark's `href`).
+/// Check a slice node's own attrs against the types its schema
+/// declares. `image` is the required case: `editor.ts` declares its
+/// `src` attr with no default (`src: {}`, where every other node
+/// attr in either schema declares one), so `prosemirror-model`
+/// refuses an image whose `src` is missing or not a string when a
+/// client parses the step (`Node.fromJSON` throws, as slice 7
+/// established for the `link` mark's `href`). `heading` (`level`)
+/// and `ordered_list` (`order`) are the typed case: both declare
+/// `validate: "number"` (`prosemirror-schema-basic` /
+/// `prosemirror-schema-list`; `editor.ts` keeps the validation), so
+/// a present-but-non-number value throws the same way, while an
+/// absent attr falls back to the declared default and stays valid.
 fn check_node_attrs(kind: &str, node: &Map<String, Value>) -> Result<(), String> {
-    if kind != "image" {
-        return Ok(());
-    }
-    let has_string_src = node
-        .get("attrs")
-        .and_then(Value::as_object)
-        .and_then(|attrs| attrs.get("src"))
-        .is_some_and(Value::is_string);
-    if !has_string_src {
-        return Err("node `image` needs a string `src` attr".to_owned());
+    let attrs = node.get("attrs").and_then(Value::as_object);
+    match kind {
+        "image" => {
+            let has_string_src = attrs
+                .and_then(|attrs| attrs.get("src"))
+                .is_some_and(Value::is_string);
+            if !has_string_src {
+                return Err("node `image` needs a string `src` attr".to_owned());
+            }
+        }
+        "heading" | "ordered_list" => {
+            let field = if kind == "heading" { "level" } else { "order" };
+            if let Some(value) = attrs.and_then(|attrs| attrs.get(field))
+                && !value.is_number()
+            {
+                return Err(format!("node `{kind}` needs a numeric `{field}` attr"));
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1140,6 +1165,77 @@ mod tests {
                 {"type": "image", "attrs": {"src": "x.png"}}]}),
             json!({"type": "hard_break"}),
             json!({"type": "horizontal_rule"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn numeric_node_attrs_must_be_numbers() {
+        // Oracle: `prosemirror-schema-basic` declares the heading
+        // node `attrs: {level: {default: 1, validate: "number"}}`
+        // and `prosemirror-schema-list` declares `ordered_list`
+        // `attrs: {order: {default: 1, validate: "number"}}`;
+        // `editor.ts` keeps both validations. prosemirror-model
+        // (verified against 1.25.12, the version in web/package.json)
+        // throws in `Node.fromJSON` for a present attr of the wrong
+        // type — "Expected value of type number for attribute level
+        // on type heading, got string" — while an absent attr takes
+        // the default and any JSON number parses.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for (node, field) in [
+            // A string, null and boolean level/order all fail the
+            // client's parse.
+            (json!({"type": "heading", "attrs": {"level": "2"}}), "level"),
+            (
+                json!({"type": "heading", "attrs": {"level": null}}),
+                "level",
+            ),
+            (
+                json!({"type": "heading", "attrs": {"level": true}}),
+                "level",
+            ),
+            (
+                json!({"type": "ordered_list", "attrs": {"order": "3"}}),
+                "order",
+            ),
+            (
+                json!({"type": "ordered_list", "attrs": {"order": null}}),
+                "order",
+            ),
+            // Nested inside a blockquote, the natural block parent.
+            (
+                json!({"type": "blockquote", "content": [
+                    {"type": "heading", "attrs": {"level": "2"}}]}),
+                "level",
+            ),
+        ] {
+            let reason = refused(node.clone());
+            assert!(reason.contains(field), "{reason}");
+            assert!(reason.contains("numeric"), "{reason}");
+        }
+        // Valid controls: no attrs (the declared defaults apply), an
+        // empty attrs object, and JSON numbers — including a
+        // fractional one, since `validate: "number"` checks the type
+        // only, never the range or integrality.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "heading"}),
+            json!({"type": "heading", "attrs": {}}),
+            json!({"type": "heading", "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "x"}]}),
+            json!({"type": "heading", "attrs": {"level": 2.5}}),
+            json!({"type": "ordered_list"}),
+            json!({"type": "ordered_list", "attrs": {"order": 3}, "content": [
+                {"type": "list_item", "content": [{"type": "paragraph"}]}]}),
         ] {
             assert!(valid(node.clone()), "refused valid {node}");
         }
