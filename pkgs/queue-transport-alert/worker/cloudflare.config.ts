@@ -29,6 +29,12 @@ export default defineConfig({
       PUBLIC_URL: bindings.text("https://queue-transport-alert.developing-today.workers.dev"),
       // "true" files/comments on incidents, pushes and enqueues; anything else only logs.
       APPLY: bindings.text("true"),
+      // The deployed commit the /version route names (#15793). This
+      // config runs at build time: deploy.mjs hands the cf build the
+      // git HEAD it tags as GITHUB_SHA (both the nix and the GHA
+      // upload paths), so each uploaded version names the commit it
+      // was built from; a build without it answers "unknown", honestly.
+      VERSION: bindings.text(process.env.GITHUB_SHA ?? "unknown"),
       // Uploaded with each version by deploy.mjs (--secrets-file from
       // stdin); a secret missing from that upload inherits the previous
       // version's value.
