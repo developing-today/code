@@ -52,6 +52,15 @@
 //! throws on every receiving client, in a step's `mark` field and in
 //! a slice node's `marks` alike.
 //!
+//! The same mark's optional `title` attr is type-checked the same
+//! way: `prosemirror-schema-basic` declares it `validate:
+//! "string|null"` (and `editor.ts` never updates the link mark, so
+//! the validation is live in the editor schema), so
+//! `prosemirror-model` refuses a link mark whose `title` is present
+//! but neither a string nor null when a client parses the step. An
+//! absent `title` falls back to the declared default and stays
+//! valid — only a present, wrongly-typed one poisons the step.
+//!
 //! A node's own required attrs are checked the same way: the
 //! `image` node of `editor.ts` declares `attrs: {src: {}, alt:
 //! {default: null}, …}` — `src` is the only node attr in either
@@ -385,6 +394,20 @@ fn check_mark(schema: StepSchema, mark: Option<&Value>) -> Result<(), String> {
             .is_some_and(Value::is_string);
         if !has_string_href {
             return Err("mark `link` needs a string `href` attr".to_owned());
+        }
+        // The link mark's `title` attr declares `validate:
+        // "string|null"` in `prosemirror-schema-basic` (kept by
+        // `editor.ts`, which never updates the link mark), so a
+        // present title of any other type cannot be parsed by any
+        // client (`Mark.fromJSON` throws). An absent title takes
+        // the declared default (`null`) and stays valid.
+        if let Some(title) = mark
+            .get("attrs")
+            .and_then(Value::as_object)
+            .and_then(|attrs| attrs.get("title"))
+            && !(title.is_string() || title.is_null())
+        {
+            return Err("mark `link` needs a string or null `title` attr".to_owned());
         }
     }
     Ok(())
@@ -1113,6 +1136,65 @@ mod tests {
             json!({"stepType": "replace", "from": 12, "to": 12,
                    "slice": {"content": [{"type": "text", "text": "!",
                        "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]}]}}),
+        ] {
+            assert!(
+                check_steps(rich(), size, &[step.clone()]).is_ok(),
+                "refused valid {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_mark_titles_must_be_strings_or_null() {
+        // Oracle: `prosemirror-schema-basic` declares the link mark
+        // `attrs: {href: {validate: "string"}, title: {default: null,
+        // validate: "string|null"}}`, and `editor.ts` never updates
+        // the link mark (its marks are the basic marks plus
+        // `strikethrough`), so the validation is live in the editor
+        // schema. prosemirror-model (verified against 1.25.12, the
+        // version in web/package.json) throws in `Mark.fromJSON` for
+        // a present title of the wrong type — "Expected value of
+        // type string,null for attribute title on type link, got
+        // number" — while an absent title takes the default. Every
+        // step shape that carries a mark is refused the same way.
+        let size = document_content_size(&hello_doc(), ContentMode::Markdown);
+        let refused = |step: Value| check_steps(rich(), size, &[step]).unwrap_err().reason;
+        for step in [
+            // A numeric, boolean, object and array title all fail
+            // the client's parse, in step marks and slice marks.
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": true}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": {}}}}),
+            json!({"stepType": "removeMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": []}}}),
+            json!({"stepType": "addNodeMark", "pos": 0,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com", "title": 42}}]}]}}),
+        ] {
+            let reason = refused(step.clone());
+            assert!(reason.contains("link"), "{reason}");
+            assert!(reason.contains("title"), "{reason}");
+        }
+        // Valid controls: a string title, an explicit null title and
+        // no title at all (the declared default applies), plus a
+        // mark with no typed attrs carrying a title-shaped field
+        // nowhere.
+        for step in [
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": null}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6,
+                   "mark": {"type": "link", "attrs": {"href": "https://example.com"}}}),
+            json!({"stepType": "addMark", "from": 1, "to": 6, "mark": {"type": "strong"}}),
+            json!({"stepType": "replace", "from": 12, "to": 12,
+                   "slice": {"content": [{"type": "text", "text": "!",
+                       "marks": [{"type": "link", "attrs": {"href": "https://example.com", "title": "x"}}]}]}}),
         ] {
             assert!(
                 check_steps(rich(), size, &[step.clone()]).is_ok(),

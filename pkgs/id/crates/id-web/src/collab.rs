@@ -2575,6 +2575,42 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_rejects_link_mark_with_non_string_title() {
+        // Oracle: prosemirror-schema-basic gives the link mark's
+        // `title` attr `validate: "string|null"`, so a link mark
+        // whose `title` is present but neither a string nor null
+        // throws in `Mark.fromJSON` on every client. It is refused
+        // before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": 42}}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("title"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            7
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control: the same step with a string title is accepted.
+        let valid = vec![serde_json::json!({
+            "stepType": "addMark", "from": 1, "to": 6,
+            "mark": {"type": "link", "attrs": {"href": "https://example.com", "title": "Example"}}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_rejects_image_without_src() {
         // Oracle: `editor.ts` gives the image node's `src` attr no
         // default, so an image without a string `src` throws in
