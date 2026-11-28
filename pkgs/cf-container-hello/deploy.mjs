@@ -159,6 +159,18 @@ function readVersionBindings(id) {
   return { version_id: version?.id ?? id, bindings: names };
 }
 
+// The commit being deployed, for the VERSION stamp below: CFH_VERSION
+// when the caller knows it (the deploy CLI / flake path stages this
+// script from a read-only store copy with no .git), else the checkout's
+// own HEAD. Null when neither knows — deploy proceeds unstamped.
+function gitHead() {
+  try {
+    return execFileSync("git", ["-C", here, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function emit(obj, human) {
   if (json) {
     console.log(JSON.stringify(obj));
@@ -186,6 +198,11 @@ if (verb === "status") {
 } else {
   const wranglerArgs = ["deploy"];
   if (dryRun) wranglerArgs.push("--dry-run");
+  // #15793: stamp the deployed commit as the VERSION var the public
+  // GET /version route reads. Unknown commit = no stamp, and /version
+  // answers "unknown" honestly.
+  const version = process.env.CFH_VERSION ?? gitHead();
+  if (version) wranglerArgs.push("--var", `VERSION:${version}`);
   runWrangler(wranglerArgs);
   if (dryRun) {
     console.log("dry run: config builds, nothing uploaded");
