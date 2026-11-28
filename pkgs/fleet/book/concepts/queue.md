@@ -128,8 +128,9 @@ operation and reports a per-task outcome — `claimed`,
 `failed` with a reason. Tasks claimed by another worker are skipped
 with their claims unchanged; `--take-over` transfers a named
 live-claimed task directly from its recorded holder session, with
-both sides of the transfer on the claimed event. The named form
-never picks: it combines with neither `--task`, `--count`,
+both sides of the transfer on the claimed event. Repeating
+`--task <id>` names the same batch. The named form
+never picks: it combines with neither a single `--task`, `--count`,
 `--from-session`, `--manual-override`, `--handoff`, nor `--bind`.
 
 An enqueue may set the task's top-level `manual_only` flag. It defaults to
