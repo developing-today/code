@@ -68,27 +68,52 @@ meanwhile. Outcomes: found → 200; definitely absent → 404
 `{error: "bitwarden read-through failed"}` — never a silent
 404-as-if-absent.
 
-## Refresh: startup, TTL, and per-secret install
+## Refresh: startup, TTL, and the one-call delta install
 
 A background thread runs a full refresh immediately at startup, then sleeps
 the TTL and repeats — stale-while-revalidate: the cache keeps serving
-during a refresh, and a failed refresh keeps the old values. One refresh is
-`bws secret list` (parsed strictly — a malformed entry fails the parse
-loudly rather than silently dropping a secret), then one `bws secret get`
-per secret, fetched **8-way parallel** (an 8-worker pool over the name
-list). Each `bws` child has a deadline, so a hung child fails its fetch
-instead of wedging the refresh — and the `refreshing` flag — forever. The authenticated
-`POST /refresh` acknowledges the request with 202. If a sweep is already
-running, the worker skips the overlapping sweep. Use `last_refresh_unix`
-and `refreshing` on `/health` to follow progress.
+during a refresh, and a failed refresh keeps the old values. One upstream
+refresh is a single `bws secret list` call carrying the whole vault as
+id/key/value triples (S1, #13948) — there is no per-secret `bws secret get`
+pool in the refresh path; the only `bws secret get` the broker runs is the
+single-name read-through on a cache miss. The list is parsed strictly:
+every entry must carry a valid id, key and value, and a malformed entry
+fails the whole refresh loudly rather than silently dropping a secret.
+The `bws` child has a 60-second deadline, so a hung child fails its fetch
+instead of wedging the refresh — and the `refreshing` flag — forever. The
+authenticated `POST /refresh` acknowledges the request with 202. If a sweep
+is already running, the worker skips the overlapping sweep. Use
+`last_refresh_unix` and `refreshing` on `/health` to follow progress.
 
-A refresh installs **per secret**, not all-or-nothing: fetches that succeed
-land immediately with the batch's install time; a secret whose fetch fails
-keeps its previous value _and age_; deletions follow the authoritative
-list. Only a refresh in which _every_ fetch fails keeps the whole previous
-cache untouched. Net effect: a rotation lands within one TTL of the edit,
-bounded and observable via the exposed age, and one broken fetch cannot
-block every rotation in the vault.
+Refresh cost is the list call, not a spawn per secret: PR #14021 measured a
+cold refresh of 244 secrets from broker start to serving in 2.52 s (the
+first-ever list call itself took 9.15 s), against 242 `bws` spawns and
+160–220 s for the per-secret path it replaced.
+
+**Install is atomic, then delta.** The complete list is validated before
+any cache mutation, and the new set is swapped in under one write lock
+together with the watermark advance: a failed or partial list preserves
+the previous cache _and_ watermark untouched, so one broken list cannot
+evict or half-rotate the vault (#5504).
+
+The watermark is the start of the last successful refresh minus a
+60-second skew overlap (`WATERMARK_SKEW_S`), persisted atomically
+(write-temp-then-rename) to `~/.config/secrets-broker/watermark`
+(`SECRETS_BROKER_WATERMARK_FILE`) and reloaded at startup;
+`last_refresh_unix` _is_ the watermark — there is no second, un-skewed
+timestamp. On a refresh that has a watermark (S2, #13948 §5.1), only
+entries whose `revisionDate` is after the watermark are installed; an
+entry with a missing or unparseable stamp is applied conservatively, and
+every other entry is untouched — its cached value _and_ fetch time
+survive, so its age keeps telling the truth. Ids absent from the
+authoritative list are deleted; a cached entry whose id is unknown (a
+read-through install) is retained, because an unknown id can never prove
+absence. With no watermark yet, the refresh is a full apply: every entry
+is installed, all stamped with the one refresh time.
+
+Net effect: a rotation lands within one TTL of the edit, bounded and
+observable via the exposed age, and a failed refresh leaves the last good
+set serving.
 
 **TTL.** `SECRETS_BROKER_TTL_S`: default **900 s (15 minutes)**, minimum
 **30 s**. Unset → 900, no warning. Unparseable → 900 with a warning naming
@@ -118,11 +143,18 @@ The resolution chain (`Resolver::default_chain`):
    transits fleet's own memory on this leg. Exactly one broker leg owns the
    retry budget; when a direct leg exists, the session-broker leg behind it
    gets no retries.
-2. **`bws` fallback.** `bws secret list` + `get`, the same shape the broker
-   itself uses. The fallback carries its own credential: the
-   `BWS_ACCESS_TOKEN` environment variable when non-empty, else the on-disk
-   machine-account token file, handed to the `bws` child via its
-   environment.
+2. **`bws` fallback.** `bws secret list` + `get` for the one name (the
+   broker's own refresh, by contrast, fills its cache from the list call
+   alone, because the list carries the values). The fallback carries its
+   own credential: the `BWS_ACCESS_TOKEN` environment variable when
+   non-empty, else the on-disk machine-account token file, handed to the
+   `bws` child via its environment. Every wait on a fallback child is
+   bounded: the runners spawn through `run_command_bounded`, which drains
+   the child's pipes on threads, polls it, and kills it at the deadline —
+   `SUBPROCESS_ATTEMPT_TIMEOUT`, 10 s per invocation for both the `bws`
+   and `op` tiers, plus a 5 s probe bound (`PROGRAM_PROBE_TIMEOUT`) on the
+   `bws --version` check that gates program resolution (PR #14362). A
+   wedged child therefore fails its tier instead of hanging the client.
 3. At library level, a 1Password source exists for seats that keep secrets
    there; the same names resolve without a broker or a Bitwarden token. It
    is not part of the `fleet secrets` command's headline chain.
@@ -132,7 +164,14 @@ chain moves on — the budget is sized to real restart windows (a full switch
 restarts broker and tunnel together; the broker is back in about 16 s)
 without making a genuinely dead broker a hang: the first pause doubles per
 attempt up to a cap, with a per-attempt ceiling on a single exchange. A
-broker **404 is definitive** about the name and is not retried. If the
+broker **404 is definitive** about the name and is not retried. One broker
+answer is fast-failed instead of retried: the cold-broker 503, `secrets not
+loaded yet`, while the broker's first refresh is still in flight —
+`resolve_with_retry` returns it at once and the chain falls through to its
+next source, rather than wedging the client behind a
+healthy-but-not-yet-serving broker for the whole restart budget (S1's
+client bound; the broker answers that 503 immediately — 0.0005 s in PR
+#14021's live measurement). If the
 session-broker socket file does not exist at all, the leg does not burn the
 retry budget — no broker on this box is not a broker mid-restart.
 
