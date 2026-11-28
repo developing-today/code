@@ -1070,12 +1070,41 @@ export interface AaCatalogEntry {
 }
 
 /** The AA explorer section as the collector embeds it in the fleet feed. */
+/** One selectable AA workbook version (#3302): a row of the ainventory
+ * sources register. ingest_batches is optional metadata only. Carriers
+ * (re-imports of the same workbook) collapse by content fingerprint. */
+export interface AaBatchSummary {
+  /** ainventory import batch id (the ?batch= value). */
+  importBatch: string;
+  /** Workbook file name from sources.name. */
+  name: string | null;
+  /** When ainventory imported the workbook. */
+  importedAt: string | null;
+  /** The workbook file's own Drive modification time. */
+  driveModifiedAt: string | null;
+  /** ingest_batches.ran_at when a metadata row exists, else null. */
+  ranAt: string | null;
+  /** ingest_batches.inserted_counts when a metadata row exists. */
+  insertedCounts: Record<string, number> | null;
+  /** Human label: date + short file name. */
+  label: string;
+  /** sha256 of the batch-bound semantic payload; null until built. */
+  fingerprint: string | null;
+  /** Whether a usable per-batch payload file exists. */
+  cached: boolean;
+  /** True for the newest surviving entry. */
+  latest: boolean;
+}
+
 export interface AaSection {
   status: "ok";
   /** ISO timestamp of the collector run that built the section. */
   generatedAt: string;
   /** ainventory import batch (v_latest_import_batch) the rows came from. */
   batch: string;
+  /** Selectable workbook versions, newest first, carrier duplicates
+   * collapsed by content fingerprint (#3302). Absent in older feeds. */
+  batches?: AaBatchSummary[];
   sources: AaSourceInfo[];
   rankings: AaRanking[];
   thresholds: AaThreshold[];
