@@ -649,9 +649,29 @@ pub struct Resolver {
     sources: Vec<Box<dyn SecretSource>>,
 }
 
+/// How far down the broker cache stack a `get` bypasses (#13948
+/// S5 §5.4): `None` is the default chain; `Upstream` skips the
+/// local direct leg and resolves through the broker network path
+/// and the stores; `NoCache` skips every broker leg and goes
+/// straight to the stores (the primary store under an `Auto` or
+/// `Bitwarden` selection, the op vault under `OnePassword`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheBypass {
+    #[default]
+    None,
+    Upstream,
+    NoCache,
+}
+
 impl Resolver {
     pub fn new(sources: Vec<Box<dyn SecretSource>>) -> Resolver {
         Resolver { sources }
+    }
+
+    /// The source names in chain order, for bypass-contract tests
+    /// and diagnostics: never values, only leg names.
+    pub fn source_names(&self) -> Vec<&'static str> {
+        self.sources.iter().map(|s| s.source_name()).collect()
     }
 
     /// The default chain for a resolved fleet config. On a host
@@ -701,19 +721,60 @@ impl Resolver {
     ///   usable vault the chain is empty and every resolve fails as a
     ///   chain error rather than falling back to another store.
     pub fn chain_for(config: &fleet_config::Config, selection: &StoreSelection) -> Resolver {
-        match selection.store {
-            StoreKind::Auto => Self::default_chain(config),
-            StoreKind::Bitwarden => {
-                let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
-                let mut broker_retry = RetryPolicy::default();
+        Self::chain_for_with_bypass(config, selection, CacheBypass::None)
+    }
+
+    /// The chain for a store selection with a cache bypass (#13948
+    /// S5 §5.4). `Upstream` drops the local direct leg (the laptop
+    /// socket cache) while keeping the session-broker network path;
+    /// `NoCache` drops every broker leg so the resolve goes
+    /// straight to the stores. A `OnePassword` selection holds no
+    /// broker legs, so either bypass leaves it unchanged.
+    pub fn chain_for_with_bypass(
+        config: &fleet_config::Config,
+        selection: &StoreSelection,
+        bypass: CacheBypass,
+    ) -> Resolver {
+        // The session-broker leg keeps the retry budget unless a
+        // direct leg precedes it (see default_chain): with the
+        // direct leg bypassed, the session leg owns the budget.
+        let session_retry = match (DirectBrokerSource::from_config(config), bypass) {
+            (Some(_), CacheBypass::None) => RetryPolicy::NONE,
+            _ => RetryPolicy::default(),
+        };
+        let mut broker_legs: Vec<Box<dyn SecretSource>> = Vec::new();
+        match bypass {
+            CacheBypass::None => {
+                let mut first_owns_budget = RetryPolicy::default();
                 if let Some(direct) = DirectBrokerSource::from_config(config) {
-                    sources.push(Box::new(direct));
-                    broker_retry = RetryPolicy::NONE;
+                    broker_legs.push(Box::new(direct));
+                    first_owns_budget = RetryPolicy::NONE;
                 }
-                sources.push(Box::new(
+                broker_legs.push(Box::new(
                     BrokerSource::new(config.broker_socket(), config.secrets_token_file())
-                        .with_retry_policy(broker_retry),
+                        .with_retry_policy(first_owns_budget),
                 ));
+            }
+            CacheBypass::Upstream | CacheBypass::NoCache => {
+                if bypass == CacheBypass::Upstream {
+                    broker_legs.push(Box::new(
+                        BrokerSource::new(config.broker_socket(), config.secrets_token_file())
+                            .with_retry_policy(session_retry),
+                    ));
+                }
+            }
+        }
+        match selection.store {
+            StoreKind::Auto => {
+                let mut sources = broker_legs;
+                sources.push(Box::new(BwsSource::new()));
+                if let Some(op) = OpSource::from_config(config) {
+                    sources.push(Box::new(op));
+                }
+                Resolver::new(sources)
+            }
+            StoreKind::Bitwarden => {
+                let mut sources = broker_legs;
                 let bws = match selection.vault.as_deref() {
                     Some(project) => BwsSource::with_project(project.to_string()),
                     None => BwsSource::new(),
@@ -822,10 +883,21 @@ impl BrokerSource {
 
     /// One framed request/response over a fresh session-broker
     /// connection — the exchange [`BrokerSource::resolve`] and
-    /// [`BrokerSource::list_names`] share.
+    /// [`BrokerSource::list_names`] share. `GET` is the historical
+    /// shape; S5's `refresh` verb posts `POST /refresh` through the
+    /// same frame and polls health through it.
     fn request(&self, path: &str, name: &str) -> Result<Response, SecretError> {
+        self.request_with_method("GET", path, name)
+    }
+
+    fn request_with_method(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<Response, SecretError> {
         let request = Request {
-            method: "GET".to_string(),
+            method: method.to_string(),
             path: path.to_string(),
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
@@ -875,6 +947,22 @@ impl BrokerSource {
     ) -> Result<Vec<String>, SecretError> {
         let response = self.request(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(response.status, &response.body, scope)
+    }
+
+    /// Trigger a broker refresh now (#13948 S5 §5.4): `POST
+    /// /refresh` answers 202 with the refresh running on a broker
+    /// thread; the caller polls [`BrokerSource::health`] until it
+    /// settles. Name-free: a refresh names no secret, so the
+    /// pseudo-name is the verb.
+    pub fn post_refresh(&self) -> Result<Response, SecretError> {
+        self.request_with_method("POST", "/refresh", "refresh")
+    }
+
+    /// The broker's health record (`GET /health`), unauthenticated
+    /// by broker design. The S5 `refresh` verb polls this until
+    /// `refreshing` clears, then reports the serving leg.
+    pub fn health(&self) -> Result<Response, SecretError> {
+        self.request_with_method("GET", "/health", "health")
     }
 
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
@@ -1017,8 +1105,16 @@ impl DirectBrokerSource {
         }
     }
 
-    /// One GET exchange over the broker socket: status + JSON body.
-    fn get(&self, path: &str, name: &str) -> Result<(u16, serde_json::Value), SecretError> {
+    /// One raw exchange over the broker socket (#13948 S5): the
+    /// HTTP method and path with the token header, answered as
+    /// status + JSON body. `GET` is the historical shape; `POST
+    /// /refresh` is the S5 manual-refresh trigger.
+    fn exchange(
+        &self,
+        method: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<(u16, serde_json::Value), SecretError> {
         use std::io::{Read, Write};
         let unavailable = |detail: String| SecretError::Unavailable {
             source: "secrets-broker",
@@ -1050,7 +1146,7 @@ impl DirectBrokerSource {
         // headers (empty when there is no context).
         let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
         let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
             token.trim()
         );
         stream
@@ -1093,8 +1189,26 @@ impl DirectBrokerSource {
         scope: &Scope,
         selection: &StoreSelection,
     ) -> Result<Vec<String>, SecretError> {
-        let (status, body) = self.get(&list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
+        let (status, body) =
+            self.exchange("GET", &list_path_scoped(scope, selection), LIST_PSEUDO_NAME)?;
         names_from_listing(status, &body, scope)
+    }
+
+    /// Trigger a broker refresh now (#13948 S5 §5.4): `POST
+    /// /refresh` answers 202 with the refresh running on a broker
+    /// thread; the caller polls [`DirectBrokerSource::health`]
+    /// until it settles. Name-free: a refresh names no secret, so
+    /// the pseudo-name is the verb.
+    pub fn post_refresh(&self) -> Result<(u16, serde_json::Value), SecretError> {
+        self.exchange("POST", "/refresh", "refresh")
+    }
+
+    /// The broker's health record (`GET /health`), unauthenticated
+    /// by broker design: `{ok, serving, secrets, last_refresh_unix,
+    /// last_refresh_leg, refreshing, ...}`. The S5 `refresh` verb
+    /// polls this until `refreshing` clears, then reports the leg.
+    pub fn health(&self) -> Result<(u16, serde_json::Value), SecretError> {
+        self.exchange("GET", "/health", "health")
     }
 }
 
@@ -1114,7 +1228,7 @@ impl DirectBrokerSource {
     /// mapping — the same shapes as [`BrokerSource::resolve_once`]
     /// (404 definitive, everything else retryable `Unavailable`).
     fn resolve_once(&self, name: &str) -> Result<SecretValue, SecretError> {
-        let (status, body) = self.get(&format!("/secret/{name}"), name)?;
+        let (status, body) = self.exchange("GET", &format!("/secret/{name}"), name)?;
         match status {
             200 => {
                 let value = body.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -2432,6 +2546,87 @@ mod tests {
         assert_eq!(names(&Resolver::chain_for(&config, &op)), ["op"]);
     }
 
+    #[test]
+    fn bypass_chains_drop_only_broker_legs() {
+        // Oracle (#13948 S5 §5.4): bypass drops broker legs and
+        // keeps store legs. Names are the observable composition;
+        // no values are involved.
+        let config = fleet_config::Config::default();
+        let names = |r: &Resolver| r.source_names();
+        let auto = StoreSelection::auto();
+        let full = names(&Resolver::chain_for_with_bypass(
+            &config,
+            &auto,
+            CacheBypass::None,
+        ));
+        assert_eq!(full, names(&Resolver::default_chain(&config)));
+        assert!(full.contains(&"secrets-broker"), "{full:?}");
+        assert!(full.contains(&"bws"), "{full:?}");
+
+        let upstream = names(&Resolver::chain_for_with_bypass(
+            &config,
+            &auto,
+            CacheBypass::Upstream,
+        ));
+        // The network broker path stays; the store legs stay.
+        assert!(upstream.contains(&"secrets-broker"), "{upstream:?}");
+        assert!(upstream.contains(&"bws"), "{upstream:?}");
+        // At most the local direct leg drops out: whether a direct
+        // leg exists depends on the host's broker transport choice
+        // (#6218), so the suite asserts the invariant, not the count.
+        let broker_legs =
+            |ns: &[&'static str]| ns.iter().filter(|n| **n == "secrets-broker").count();
+        let full_brokers = broker_legs(&full);
+        let up_brokers = broker_legs(&upstream);
+        assert!(
+            up_brokers == full_brokers || up_brokers + 1 == full_brokers,
+            "{upstream:?} vs {full:?}"
+        );
+
+        let no_cache = names(&Resolver::chain_for_with_bypass(
+            &config,
+            &auto,
+            CacheBypass::NoCache,
+        ));
+        assert!(!no_cache.contains(&"secrets-broker"), "{no_cache:?}");
+        assert!(no_cache.contains(&"bws"), "{no_cache:?}");
+
+        // Bitwarden selection: same shape, broker legs + bws only.
+        let bw = StoreSelection {
+            store: StoreKind::Bitwarden,
+            vault: Some("proj-1".to_string()),
+        };
+        let bw_full = names(&Resolver::chain_for_with_bypass(
+            &config,
+            &bw,
+            CacheBypass::None,
+        ));
+        assert!(bw_full.contains(&"secrets-broker"), "{bw_full:?}");
+        let bw_none = names(&Resolver::chain_for_with_bypass(
+            &config,
+            &bw,
+            CacheBypass::NoCache,
+        ));
+        assert_eq!(bw_none, ["bws"]);
+
+        // 1Password selection holds no broker legs: bypass is a no-op.
+        let op = StoreSelection {
+            store: StoreKind::OnePassword,
+            vault: Some("vault-a".to_string()),
+        };
+        for bypass in [
+            CacheBypass::None,
+            CacheBypass::Upstream,
+            CacheBypass::NoCache,
+        ] {
+            assert_eq!(
+                names(&Resolver::chain_for_with_bypass(&config, &op, bypass)),
+                ["op"],
+                "{bypass:?}"
+            );
+        }
+    }
+
     /// A chain source that records the name it was asked for.
     struct RecordingSource(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -2688,16 +2883,7 @@ mod tests {
                     self.entries.borrow_mut().retain(|(i, _, _)| i != id);
                     Ok("{}".to_string())
                 }
-                [
-                    "secret",
-                    "create",
-                    "-o",
-                    "json",
-                    "--",
-                    name,
-                    value,
-                    _project,
-                ] => {
+                ["secret", "create", "-o", "json", "--", name, value, _project] => {
                     if self.fail_create {
                         return Err("exit status 1".to_string());
                     }

@@ -20,13 +20,19 @@
 //!     write goes through fleet-secrets' `BwsStore`. `--store` /
 //!     `--vault` select the write store for this call; a
 //!     `1password` write exits 3 until an `op` write path exists.
+//!   * `refresh` — force the local broker through its peer/upstream
+//!     legs now (#13948 S5 §5.4) instead of at the next tick, wait
+//!     for it to settle, and report which leg served it (`peer` |
+//!     `upstream-delta` | `upstream-full`) with the resulting set
+//!     size. A broker predating the leg field reports `unknown`.
 //!
 //! Exit codes: 0 ok · 2 usage · 3 unresolved / broker unavailable
 //! (3 matches the dispatch domain's unresolved-token exit, #5432).
 
 use fleet_config::Config;
 use fleet_secrets::{
-    BrokerSource, BwsStore, OpSource, Resolver, Scope, SecretError, StoreKind, StoreSelection,
+    BrokerSource, BwsStore, DirectBrokerSource, OpSource, Resolver, Scope, SecretError, StoreKind,
+    StoreSelection,
 };
 
 const EXIT_OK: i32 = 0;
@@ -78,6 +84,7 @@ fn usage() -> i32 {
     eprintln!(
         "  set <name>   Store a secret in Bitwarden; the value is read from stdin, never argv"
     );
+    eprintln!("  refresh      Force the local broker to refresh now; report the serving leg");
     eprintln!();
     eprintln!("get and list accept --store <bitwarden|1password> and --vault <vault>");
     EXIT_USAGE
@@ -88,6 +95,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some("get") => cmd_get(config, &args[1..]),
         Some("list") => cmd_list(config, &args[1..]),
         Some("set") => cmd_set(config, &args[1..]),
+        Some("refresh") => cmd_refresh(config, &args[1..]),
         _ => usage(),
     }
 }
@@ -105,7 +113,12 @@ starts with `<prefix>.` is used as is.
 --store (bitwarden|1password) and --vault select the store for this
 call, over $FLEET_SECRETS_STORE/$FLEET_SECRETS_VAULT, over `[secrets]
 store`/`vault` in fleet.toml. A vault with no store, or an unknown
-store, is a usage error (exit 2).";
+store, is a usage error (exit 2).
+
+--upstream bypasses the local broker cache and resolves through the
+broker network path and the stores (#13948 S5 §5.4); --no-cache
+bypasses every broker leg and goes straight to the stores. The two
+are mutually exclusive.";
 
 const LIST_USAGE: &str = "\
 Usage: fleet secrets list [--store <store>] [--vault <vault>]
@@ -138,6 +151,21 @@ bws_project_id` / $FLEET_BWS_PROJECT_ID. The $FLEET_SECRETS_STORE and
 $FLEET_SECRETS_VAULT variables are the flag fallbacks. Writing to
 1password exits 3: no `op` write path exists yet.";
 
+const REFRESH_USAGE: &str = "\
+Usage: fleet secrets refresh
+
+Force the local secrets broker to refresh now — through its peer
+leg first, then the upstream store legs — wait for it to settle,
+and report which leg served it with the resulting set size:
+
+    refresh complete: leg=peer secrets=244 last_refresh_unix=1764123456
+
+The leg is `peer`, `upstream-delta`, or `upstream-full` (#13948 S5
+§5.4); a broker predating the leg field reports `unknown`. Output
+carries counts only, never secret names or values. Exit 3 when the
+broker is unreachable, the refresh fails, or it does not settle
+within the wait bound.";
+
 /// The usage a `--help`/`-h` flag anywhere in a leaf verb's arguments
 /// asks for, if any (#5627). Every other fleet leaf verb answers a help
 /// flag with its usage on stdout at exit 0 (dispatch, search, proxy —
@@ -153,6 +181,7 @@ fn leaf_help_usage(verb: &str, args: &[String]) -> Option<&'static str> {
         "get" => Some(GET_USAGE),
         "list" => Some(LIST_USAGE),
         "set" => Some(SET_USAGE),
+        "refresh" => Some(REFRESH_USAGE),
         _ => None,
     }
 }
@@ -160,10 +189,15 @@ fn leaf_help_usage(verb: &str, args: &[String]) -> Option<&'static str> {
 /// The `--store` / `--vault` flags of a leaf verb (#10358 S3),
 /// separated from its positional arguments. A flag missing its
 /// value, or an unknown flag, is `Err(())` — a usage error.
+/// `get` additionally accepts `--upstream` and `--no-cache`
+/// (#13948 S5 §5.4), which are mutually exclusive: both together
+/// is a usage error.
 #[derive(Debug)]
 struct StoreFlags {
     store: Option<String>,
     vault: Option<String>,
+    upstream: bool,
+    no_cache: bool,
     positional: Vec<String>,
 }
 
@@ -171,6 +205,8 @@ fn parse_store_flags(args: &[String]) -> Result<StoreFlags, ()> {
     let mut flags = StoreFlags {
         store: None,
         vault: None,
+        upstream: false,
+        no_cache: false,
         positional: Vec::new(),
     };
     let mut i = 0;
@@ -184,10 +220,19 @@ fn parse_store_flags(args: &[String]) -> Result<StoreFlags, ()> {
                 i += 1;
                 flags.vault = Some(args.get(i).ok_or(())?.clone());
             }
+            "--upstream" => {
+                flags.upstream = true;
+            }
+            "--no-cache" => {
+                flags.no_cache = true;
+            }
             other if other.starts_with('-') => return Err(()),
             other => flags.positional.push(other.to_string()),
         }
         i += 1;
+    }
+    if flags.upstream && flags.no_cache {
+        return Err(());
     }
     Ok(flags)
 }
@@ -210,7 +255,9 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
     let flags = match parse_store_flags(args) {
         Ok(flags) => flags,
         Err(()) => {
-            eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
+            eprintln!(
+                "usage: fleet secrets get [--store <store>] [--vault <vault>] [--upstream | --no-cache] <name>"
+            );
             return EXIT_USAGE;
         }
     };
@@ -218,13 +265,24 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
     // caller bug (help flags are answered above), never a secret
     // name worth resolving.
     if flags.positional.len() != 1 || flags.positional[0].starts_with('-') {
-        eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
+        eprintln!(
+            "usage: fleet secrets get [--store <store>] [--vault <vault>] [--upstream | --no-cache] <name>"
+        );
         return EXIT_USAGE;
     }
     let name = &flags.positional[0];
     let selection = match selection_for(config, &flags) {
         Ok(selection) => selection,
         Err(code) => return code,
+    };
+    // #13948 S5 §5.4: explicit cache controls ride the same store
+    // selection — only the broker legs drop out.
+    let bypass = if flags.upstream {
+        fleet_secrets::CacheBypass::Upstream
+    } else if flags.no_cache {
+        fleet_secrets::CacheBypass::NoCache
+    } else {
+        fleet_secrets::CacheBypass::None
     };
     // #10358 S1: a configured prefix maps the name once, before any
     // source sees it; with none configured the scope is the identity.
@@ -235,7 +293,7 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    match Resolver::chain_for(config, &selection).resolve_scoped(&scope, name) {
+    match Resolver::chain_for_with_bypass(config, &selection, bypass).resolve_scoped(&scope, name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
@@ -444,6 +502,145 @@ fn cmd_set(config: &Config, args: &[String]) -> i32 {
     run_set_with_writer(&writer, &scope, &parsed.name, stdin_value(&raw))
 }
 
+/// The parsed arguments of `fleet secrets refresh`: none. A
+/// refresh names no secret and takes no flags — anything past a
+/// help flag is a usage error, so a mistyped secret name can never
+/// be mistaken for a refresh.
+fn refresh_args_ok(args: &[String]) -> bool {
+    args.is_empty()
+}
+
+/// How long `refresh` waits for the broker to settle: a full
+/// upstream list lands in seconds (§3: 0.89 s for 244 secrets), so
+/// two minutes is a generous bound, not a hang.
+const REFRESH_DEADLINE_SECS: u64 = 120;
+const REFRESH_POLL_INTERVAL_MS: u64 = 500;
+
+/// The settled refresh `refresh` reports (#13948 S5 §5.4): the
+/// serving leg and the resulting set size. Counts only — never
+/// names or values.
+#[derive(Debug, PartialEq, Eq)]
+struct RefreshReport {
+    leg: String,
+    secrets: u64,
+    last_refresh_unix: Option<u64>,
+}
+
+/// Read a broker `/health` body as a settled report. A non-serving
+/// broker is an error, never a report; a broker predating the S5
+/// leg field reports `unknown` rather than failing, so `refresh`
+/// keeps working across a mixed-fleet rollout.
+fn refresh_report_from_health(body: &serde_json::Value) -> Result<RefreshReport, String> {
+    if body.get("serving").and_then(|v| v.as_bool()) != Some(true) {
+        return Err("broker is not serving".to_string());
+    }
+    Ok(RefreshReport {
+        leg: body
+            .get("last_refresh_leg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        secrets: body.get("secrets").and_then(|v| v.as_u64()).unwrap_or(0),
+        last_refresh_unix: body.get("last_refresh_unix").and_then(|v| v.as_u64()),
+    })
+}
+
+/// The broker exchange `refresh` drives: trigger plus health poll.
+/// Two transports, one contract — the direct socket on the laptop
+/// (#6218), the framed session-broker route elsewhere.
+enum RefreshExchange {
+    Direct(fleet_secrets::DirectBrokerSource),
+    Framed(fleet_secrets::BrokerSource),
+}
+
+impl RefreshExchange {
+    fn post_refresh(&self) -> Result<(u16, serde_json::Value), fleet_secrets::SecretError> {
+        match self {
+            RefreshExchange::Direct(d) => d.post_refresh(),
+            RefreshExchange::Framed(f) => f.post_refresh().map(|r| (r.status, r.body)),
+        }
+    }
+
+    fn health(&self) -> Result<(u16, serde_json::Value), fleet_secrets::SecretError> {
+        match self {
+            RefreshExchange::Direct(d) => d.health(),
+            RefreshExchange::Framed(f) => f.health().map(|r| (r.status, r.body)),
+        }
+    }
+}
+
+fn cmd_refresh(config: &Config, args: &[String]) -> i32 {
+    if let Some(usage_text) = leaf_help_usage("refresh", args) {
+        println!("{usage_text}");
+        return EXIT_OK;
+    }
+    if !refresh_args_ok(args) {
+        eprintln!("usage: fleet secrets refresh");
+        return EXIT_USAGE;
+    }
+    // #6218: on the laptop the broker's own socket answers
+    // directly (no session broker exists there); elsewhere the
+    // session-broker source reads the same route.
+    let exchange = match fleet_secrets::DirectBrokerSource::from_config(config) {
+        Some(direct) => RefreshExchange::Direct(direct),
+        None => RefreshExchange::Framed(fleet_secrets::BrokerSource::new(
+            config.broker_socket(),
+            config.secrets_token_file(),
+        )),
+    };
+    match exchange.post_refresh() {
+        Ok((202, _)) => {}
+        Ok((status, _)) => {
+            eprintln!("fleet secrets: broker refused the refresh (status {status})");
+            return EXIT_UNRESOLVED;
+        }
+        Err(e) => {
+            eprintln!("fleet secrets: {e}");
+            return EXIT_UNRESOLVED;
+        }
+    }
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(REFRESH_DEADLINE_SECS);
+    loop {
+        match exchange.health() {
+            Ok((_, body)) => {
+                let refreshing = body
+                    .get("refreshing")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !refreshing {
+                    return match refresh_report_from_health(&body) {
+                        Ok(report) => {
+                            let unix = report
+                                .last_refresh_unix
+                                .map(|u| u.to_string())
+                                .unwrap_or_else(|| "none".to_string());
+                            println!(
+                                "refresh complete: leg={} secrets={} last_refresh_unix={unix}",
+                                report.leg, report.secrets
+                            );
+                            EXIT_OK
+                        }
+                        Err(detail) => {
+                            eprintln!("fleet secrets: refresh settled but {detail}");
+                            EXIT_UNRESOLVED
+                        }
+                    };
+                }
+            }
+            Err(e) => {
+                eprintln!("fleet secrets: {e}");
+                return EXIT_UNRESOLVED;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("fleet secrets: refresh did not settle within {REFRESH_DEADLINE_SECS}s");
+            return EXIT_UNRESOLVED;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(REFRESH_POLL_INTERVAL_MS));
+    }
+}
+
 /// The names a scoped `list` prints (#10358 D5): only stored names
 /// under the prefix, each shown as [`Scope::display`] gives it, in the
 /// broker's order.
@@ -467,6 +664,14 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
         }
     };
     if !flags.positional.is_empty() {
+        eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
+        return EXIT_USAGE;
+    }
+    // Cache controls are a `get` surface (#13948 S5 §5.4): a
+    // broker names listing is already the cache contents, so
+    // `--upstream` / `--no-cache` on `list` is a usage error,
+    // never a silently ignored flag.
+    if flags.upstream || flags.no_cache {
         eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
         return EXIT_USAGE;
     }
@@ -605,6 +810,26 @@ mod tests {
         assert!(parse_store_flags(&args(&["--store"])).is_err());
         assert!(parse_store_flags(&args(&["--bogus", "x"])).is_err());
         assert!(parse_store_flags(&args(&[])).is_ok());
+    }
+
+    #[test]
+    fn get_cache_flags_parse_and_conflict() {
+        // #13948 S5 §5.4: each cache control parses in any
+        // position; both together is a usage error, never a
+        // silent precedence.
+        let flags = parse_store_flags(&args(&["--upstream", "alpha"])).unwrap();
+        assert!(flags.upstream);
+        assert!(!flags.no_cache);
+        assert_eq!(flags.positional, ["alpha"]);
+        let flags = parse_store_flags(&args(&["alpha", "--no-cache"])).unwrap();
+        assert!(flags.no_cache);
+        assert!(!flags.upstream);
+        assert!(parse_store_flags(&args(&["alpha", "--upstream", "--no-cache"])).is_err());
+        assert!(parse_store_flags(&args(&["--upstream", "--no-cache"])).is_err());
+        // Plain calls default to no bypass.
+        let flags = parse_store_flags(&args(&["alpha"])).unwrap();
+        assert!(!flags.upstream);
+        assert!(!flags.no_cache);
     }
 
     #[test]
@@ -825,6 +1050,76 @@ mod tests {
         assert_eq!(
             run_set_with_writer(&fake, &Scope::none(), "alpha", "fixture-value"),
             EXIT_UNRESOLVED
+        );
+    }
+
+    #[test]
+    fn refresh_help_forms_name_the_refresh_usage() {
+        for form in [args(&["--help"]), args(&["-h"]), args(&["--help", "stray"])] {
+            assert_eq!(leaf_help_usage("refresh", &form), Some(REFRESH_USAGE));
+        }
+    }
+
+    #[test]
+    fn refresh_takes_no_arguments() {
+        // A refresh names no secret and takes no flags: anything
+        // past a help flag is a usage error, so a mistyped name is
+        // never mistaken for a refresh.
+        assert!(refresh_args_ok(&[]));
+        assert!(!refresh_args_ok(&args(&["some-name"])));
+        assert!(!refresh_args_ok(&args(&["--upstream"])));
+    }
+
+    #[test]
+    fn refresh_report_reads_the_settled_health_body() {
+        // #13948 S5 §5.4: the settled body becomes the report —
+        // leg, set size, watermark — carrying counts only.
+        let body = serde_json::json!({
+            "serving": true,
+            "secrets": 244,
+            "last_refresh_unix": 1764123456,
+            "last_refresh_leg": "peer",
+            "refreshing": false,
+        });
+        assert_eq!(
+            refresh_report_from_health(&body).unwrap(),
+            RefreshReport {
+                leg: "peer".to_string(),
+                secrets: 244,
+                last_refresh_unix: Some(1764123456),
+            }
+        );
+    }
+
+    #[test]
+    fn refresh_report_tolerates_a_predate_leg_broker() {
+        // Mixed-fleet rollout: a broker predating the S5 leg field
+        // reports `unknown` instead of failing the verb.
+        let body = serde_json::json!({
+            "serving": true,
+            "secrets": 10,
+            "last_refresh_unix": null,
+            "refreshing": false,
+        });
+        let report = refresh_report_from_health(&body).unwrap();
+        assert_eq!(report.leg, "unknown");
+        assert_eq!(report.last_refresh_unix, None);
+    }
+
+    #[test]
+    fn refresh_report_refuses_a_non_serving_broker() {
+        // A settled-but-not-serving broker is exit 3, never a
+        // report claiming a leg that did not serve.
+        let body = serde_json::json!({
+            "serving": false,
+            "secrets": 0,
+            "last_refresh_unix": null,
+            "last_refresh_leg": null,
+            "refreshing": false,
+        });
+        assert_eq!(
+            refresh_report_from_health(&body).unwrap_err(),
+            "broker is not serving"
         );
     }
 
