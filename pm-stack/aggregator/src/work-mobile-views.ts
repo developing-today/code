@@ -31,8 +31,8 @@
 //   `matchesSavedFilters` (record D1, D4, D6) are slice 2 in this
 //   same module below. `repo` groups by the primary source ref's
 //   `repository_id`, `project` by the project fact value (absent rows
-//   form "No repo" / "No project" groups); `owner` stays a single
-//   "Unknown author" bucket until MOB-01 carries an author fact (F5).
+//   form "No repo" / "No project" groups); `owner` groups by the carried
+//   `github_author` fact, absent rows form "Unknown author" (F5).
 
 // V1 deviations from the record, all named so a later slice can lift
 // them (see the record section 9 gates and section 10 non-goals):
@@ -51,10 +51,10 @@
 // - D5 orders by column, then `updated_at` descending; `updated_at` is
 //   not in `WorkView`, so V1 orders by column, then
 //   `(authority_id, work_id)` (F1 covers the missing key).
-// - `groupWorkViews` by `repo`/`project` and `matchesSavedFilters`
-//   are slice 2 below. `owner` grouping stays a single "Unknown author"
-//   bucket: `WorkView` carries no author fact (follow-up F5; the
-//   saved-view `owner` dimension means the GitHub author on main).
+// - `groupWorkViews` by `repo`/`project`/`owner` and `matchesSavedFilters`
+//   are slice 2 below. `owner` groups by the carried `github_author` fact
+//   (F5; the saved-view `owner` dimension means the GitHub author);
+//   rows with no author fact form "Unknown author" and never match a filter.
 
 import type { BoardColumn, WorkView } from "./work-projection.ts";
 import { itemMatchesView, type ViewFilters, type ViewItemLike } from "./views.ts";
@@ -95,6 +95,7 @@ export type MobileFactKey =
   | "github"
   | "github.labels"
   | "github.updated_at"
+  | "github_author"
   | "intrinsic_urgency"
   | "claim"
   | "session"
@@ -330,10 +331,10 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
 //   Rows with no source ref form a "No repo" group, never merged.
 // - `project` groups by the `project` fact value; rows with no
 //   project fact form a "No project" group, never merged.
-// - `owner` is a single "Unknown author" bucket: `WorkView` carries no
-//   author fact, and the saved-view `owner` dimension means the GitHub
-//   author on main (follow-up F5). A later slice lifts this once
-//   MOB-01 carries the author; the bucket shape stays the same.
+// - `owner` groups by the carried `github_author` fact value; rows with
+//   no author fact form the "Unknown author" bucket (F5, #9201 MOB-01
+//   slice 5). The saved-view `owner` dimension means the GitHub author,
+//   and `workViewLike` carries the same value, so one rule serves both.
 // - `area` / `horizon` / `epic` / `kind` are likewise absent from
 //   `WorkView`: `workViewLike` maps them to `null`, so a saved filter
 //   on one of those dimensions excludes the row (D6), never matches
@@ -391,10 +392,12 @@ export function groupWorkViews(views: readonly WorkView[], by: GroupBy): WorkGro
       key = "project:" + (value ?? "none");
       label = value ?? "No project";
     } else {
-      // F5: no author fact on `WorkView`; one bucket until MOB-01
-      // carries it. The key/label shape is stable for that lift.
-      key = "owner:unknown";
-      label = "Unknown author";
+      // F5 (#9201 MOB-01 slice 5): group by the carried `github_author`
+      // fact; rows with no author fact form the "Unknown author" bucket.
+      const author = view.facts.github_author;
+      const value = "value" in author ? author.value : null;
+      key = "owner:" + (value ?? "unknown");
+      label = value ?? "Unknown author";
     }
     const bucket = buckets.get(key);
     if (bucket) {
@@ -422,13 +425,14 @@ export function workViewLike(view: WorkView): ViewItemLike {
     : view.work.authority_id + "/" + view.work.work_id;
   const github = view.facts.github_state;
   const project = view.facts.project;
+  const author = view.facts.github_author;
   return {
     ref,
     repo: primary?.repository_id ?? null,
     area: null,
     horizon: null,
-    // F5: no author fact on `WorkView` yet; never guess.
-    owner: null,
+    // F5 (#9201 MOB-01 slice 5): carried `github_author` fact; absent stays null (D6), never guessed.
+    owner: "value" in author ? author.value : null,
     state: "value" in github ? github.value : null,
     epic: null,
     status: "value" in project ? project.value : null,

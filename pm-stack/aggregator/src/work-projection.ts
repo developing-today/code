@@ -91,6 +91,8 @@ export interface WorkProjectionInput {
   workflow_state?: Sourced<string>;
   project_status?: Sourced<string>;
   github_state?: Sourced<"open" | "closed" | "merged">;
+  /** F5 (#9201 MOB-01 slice 5): author identity facet for owner grouping and saved-filter owner. */
+  github_author?: Sourced<string>;
   /** Queue/eligibility facet, from the fleet-queue broker read. */
   queue?: {
     eligible?: boolean;
@@ -136,6 +138,7 @@ export interface WorkView {
     workflow_state: Fact<string>;
     project: Fact<string>;
     github_state: Fact<string>;
+    github_author: Fact<string>;
     eligibility: Fact<string> & { hard_blocker_refs: string[] };
     claim: Fact<string> & { worker?: string; lane?: string };
     session: Fact<string>;
@@ -197,6 +200,7 @@ export function projectWorkView(
       })()
     : ({ state: "absent", freshness: "absent" } as Fact<string>);
   const github = toFact(input.github_state);
+  const githubAuthor = toFact(input.github_author);
 
   const manualOnly = input.queue?.manual_only === true;
   const eligible = input.queue?.eligible === true && hardBlockers.length === 0;
@@ -318,6 +322,7 @@ export function projectWorkView(
     workflow_state: factFreshness(workflow),
     project: factFreshness(project),
     github_state: factFreshness(github),
+    github_author: factFreshness(githubAuthor),
   };
   const overall = Object.values(facetFreshness).reduce<FactFreshness>(
     (worst, f) => (FRESHNESS_RANK[f] > FRESHNESS_RANK[worst] ? f : worst),
@@ -338,6 +343,7 @@ export function projectWorkView(
       workflow_state: workflow,
       project,
       github_state: github,
+      github_author: githubAuthor,
       eligibility,
       claim,
       session,
