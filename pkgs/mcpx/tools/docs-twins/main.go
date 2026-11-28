@@ -404,18 +404,22 @@ func parseFlags(args []string) (config, error) {
 	var cfg config
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--docs":
+		case "--docs", "--agents", "--out", "--history-bin":
+			flag := args[i]
+			if i+1 >= len(args) {
+				return cfg, fmt.Errorf("%s requires a value", flag)
+			}
 			i++
-			cfg.docsDir = args[i]
-		case "--agents":
-			i++
-			cfg.agentsDir = args[i]
-		case "--out":
-			i++
-			cfg.outDir = args[i]
-		case "--history-bin":
-			i++
-			cfg.historyBin = args[i]
+			switch flag {
+			case "--docs":
+				cfg.docsDir = args[i]
+			case "--agents":
+				cfg.agentsDir = args[i]
+			case "--out":
+				cfg.outDir = args[i]
+			case "--history-bin":
+				cfg.historyBin = args[i]
+			}
 		default:
 			return cfg, fmt.Errorf("unknown argument %q", args[i])
 		}
