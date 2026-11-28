@@ -171,11 +171,17 @@ const message = `deploy ${sha} via nix run .#cold-store-rehydrator-deploy`;
 // it exists; the bootstrap stays for a fresh account or a rename.
 if (!workerExists()) {
   console.log(`worker ${WORKER} does not exist yet; bootstrapping with wrangler deploy`);
-  runWrangler(["deploy"], { stdio: "inherit" });
+  // #15793: stamp the deployed commit as the VERSION var the public
+  // GET /version route reads (bootstrap path; the versions upload
+  // below stamps it the same way).
+  runWrangler(["deploy", "--var", `VERSION:${sha}`], { stdio: "inherit" });
 }
 
 console.log(`uploading version (tag ${tag})`);
-runWrangler(["versions", "upload", "--name", WORKER, "--tag", tag, "--message", message], { stdio: "inherit" });
+runWrangler(
+  ["versions", "upload", "--name", WORKER, "--tag", tag, "--message", message, "--var", `VERSION:${sha}`],
+  { stdio: "inherit" },
+);
 
 // Uploads are not deduplicated; pick the newest version with our tag.
 const version = listVersions()
