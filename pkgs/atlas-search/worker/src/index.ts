@@ -12,6 +12,7 @@
  *
  * Routes:
  *   GET  /health                    (open; liveness only)
+ *   GET  /version                   (open; deployed commit, #15793)
  *   POST /v1/search  {query, k?, session?} (gated) -> miss or hit envelope
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
  *   POST /v1/cache/purge {query, k?} (gated) -> delete one cached query
@@ -36,6 +37,7 @@ import { RetainedObjectError } from "./retained_object";
 import { promoteClass, RetentionReportError, runRetentionReport, runScheduledCycle } from "./retention_report";
 import { recordSearch, validSession } from "./search_history";
 import { CEILING, CONTEXT } from "./space";
+import { versionAnswer } from "./version";
 
 export { QueryCache };
 
@@ -58,6 +60,11 @@ export interface Env {
    * ceilings (#8625 slice: ceilings); absent entries default to the
    * surface pin. Malformed policy fails the MCP route closed. */
   AGENT_POLICY?: string;
+  /** The commit this deployment was built from, stamped per deploy at
+   * build time (cloudflare.config.ts; #15793 criterion 1); absent or
+   * blank when the deploy was unstamped, in which case /version
+   * answers "unknown". */
+  VERSION?: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;
   ACCESS_CLIENT_ID: string;
@@ -172,6 +179,13 @@ export default {
 
     if (req.method === "GET" && url.pathname === "/health") {
       return Response.json({ status: "ok", service: "atlas-search-worker" });
+    }
+
+    if (url.pathname === "/version") {
+      // #15793 criterion 1: unauthenticated, with /health ahead of every
+      // gated route — it reads no state and no secret.
+      if (req.method !== "GET") return errorJson(405, "method_not_allowed", "use GET for /version");
+      return Response.json(versionAnswer(env));
     }
 
     if (req.method === "POST" && url.pathname === "/v1/search") {
