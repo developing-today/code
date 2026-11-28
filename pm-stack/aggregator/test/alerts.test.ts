@@ -990,12 +990,12 @@ describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
   };
 
   function stubStore(subs: PushSubscriptionRow[]) {
-    const sends: { class: string; objectRef: string; outcome: string }[] = [];
+    const sends: { class: string; objectRef: string; outcome: string; endpointId?: string }[] = [];
     const gone: string[] = [];
     const alive: string[] = [];
     const store = {
       listSubscriptions: async () => subs,
-      logSend: async (e: { class: string; objectRef: string; outcome: "sent" | "gone" | "error" }) => {
+      logSend: async (e: { class: string; objectRef: string; outcome: "sent" | "gone" | "error"; endpointId?: string }) => {
         sends.push(e);
       },
       noteSubscriptionGone: async (endpoint: string) => {
@@ -1013,7 +1013,7 @@ describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
     const { store, sends, alive } = stubStore([row]);
     const summary = await sendTestPush(store, "https://amd-6.example.ts.net", async () => ({ ok: true, status: 201 }));
     expect(summary).toEqual({ subscriptions: 1, sent: 1, gone: 0, errors: 0 });
-    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent" }]);
+    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent", endpointId: "99999999-8888-7777-6666-555555555555" }]);
     expect(alive).toEqual([row.endpoint]);
   });
 
@@ -1033,7 +1033,7 @@ describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
       error: "gone",
     }));
     expect(summary).toEqual({ subscriptions: 1, sent: 0, gone: 1, errors: 0 });
-    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" }]);
+    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone", endpointId: "99999999-8888-7777-6666-555555555555" }]);
     expect(gone).toEqual([row.endpoint]);
   });
 });
