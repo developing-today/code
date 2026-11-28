@@ -249,4 +249,28 @@ describe("work_mobile_views/v1 grouping and saved filters (slice 2)", () => {
   test("work_mobile_views_group_dedupe_is_a_validation_error", () => {
     expect(() => groupWorkViews([backlog("b1"), ready("b1")], "repo")).toThrow("work_mobile_views_duplicate_input");
   });
+
+  test("work_mobile_views_owner_groups_by_carried_author", () => {
+    // MOB-03 D1/D4 (F5): owner grouping follows the carried GitHub
+    // author fact; rows with no author fact form one named bucket,
+    // never one bucket per row and never merged into an author.
+    const alice = base("a1", { github_author: { value: "alice", source: "github" } });
+    const bob = base("b1", { github_author: { value: "bob", source: "github" } });
+    const unknown = backlog("c1");
+    const groups = groupWorkViews([bob, unknown, alice], "owner");
+    expect(groups.map((g) => g.label)).toEqual(["Unknown author", "alice", "bob"]);
+    expect(groups.map((g) => g.refs.map((r) => r.work_id))).toEqual([["c1"], ["a1"], ["b1"]]);
+  });
+
+  test("work_mobile_views_saved_filters_see_carried_author", () => {
+    // F5: the carried author maps onto the saved-view `owner`
+    // dimension with the same meaning as the #1276 item field; an
+    // absent dimension stays null so a filter on it excludes the row
+    // (record D6), never matches it on a guess.
+    const carried = base("a1", { github_author: { value: "alice", source: "github" } });
+    expect(workViewLike(carried).owner).toBe("alice");
+    expect(matchesSavedFilters(carried, { owner: "alice" })).toBe(true);
+    expect(matchesSavedFilters(carried, { owner: "bob" })).toBe(false);
+    expect(matchesSavedFilters(backlog("b1"), { owner: "alice" })).toBe(false);
+  });
 });

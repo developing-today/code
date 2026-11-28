@@ -209,4 +209,26 @@ describe("column projection matrix (oracle: design §3.1)", () => {
     expect(projectWorkView(input)).toEqual(projectWorkView(input));
     expect(projectWorkView(input).facts.relations.hard_blocker_refs).toEqual(["a", "b"]);
   });
+
+  test("github_author_is_carried_as_fact_with_provenance", () => {
+    // MOB-01 F5 (#9468 follow-up): the GitHub issue/PR author rides
+    // the read model so MOB-03 owner grouping and saved-filter owner
+    // matching are decidable. Omitted = not read (never guessed);
+    // stale is carried, never zeroed.
+    const view = projectWorkView({
+      ...base,
+      github_author: { value: "octocat", source: "github", revision: "sha-1", observed_at: GEN },
+    });
+    expect(view.facts.github_author).toMatchObject({ value: "octocat", source: "github", revision: "sha-1" });
+    expect(view.freshness.facets.github_author).toBe("live");
+    // Absent stays absent, never guessed.
+    const absent = projectWorkView(base);
+    expect(absent.facts.github_author).toEqual({ state: "absent", freshness: "absent" });
+    // Stale is carried, never zeroed.
+    const stale = projectWorkView({
+      ...base,
+      github_author: { value: "octocat", source: "github", freshness: "stale" },
+    });
+    expect(stale.facts.github_author).toMatchObject({ value: "octocat", freshness: "stale" });
+  });
 });
