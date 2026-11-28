@@ -6,6 +6,9 @@
 // GET  /queue         Bearer DRAIN_BEARER. Returns a page; ?cursor follows.
 // POST /queue/ack     Bearer DRAIN_BEARER. Body {"ids":[...]} deletes them.
 // GET  /health        Liveness.
+// GET  /version       Unauthenticated; {ok, service, version} naming
+//                     the deployed commit from the VERSION var
+//                     (#15793 criterion 1; "unknown" unstamped).
 //
 // Events are a freshness signal only; the weekly reconcile sweep in
 // ../bin/reconcile.py is the correctness floor, so a lost event is not
@@ -56,6 +59,15 @@ async function hmacHex(secret, body) {
   return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+// The /version answer (#15793 criterion 1): the deployed commit from
+// the VERSION var deploy.mjs stamps per deploy, or "unknown" when a
+// deploy carried no stamp (the wrangler.toml [vars] default) — the
+// edge probe records the commit only when one is named.
+export function versionAnswer(env) {
+  const version = typeof env?.VERSION === "string" && env.VERSION.trim() ? env.VERSION.trim() : "unknown";
+  return { ok: true, service: "developing-today-backup", version };
+}
+
 function authed(req, env) {
   const h = req.headers.get("Authorization") || "";
   return env.DRAIN_BEARER && h === `Bearer ${env.DRAIN_BEARER}`;
@@ -64,6 +76,12 @@ function authed(req, env) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    if (url.pathname === "/version") {
+      // Unauthenticated and ahead of every gated route: it reads no
+      // KV and no secret, so no gate rationale is touched (#15793).
+      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+      return Response.json(versionAnswer(env));
+    }
     if (url.pathname === "/health") return new Response("ok");
     if (url.pathname === "/github" && req.method === "POST") {
       // Fail closed on a misconfigured deployment (#6951): without a

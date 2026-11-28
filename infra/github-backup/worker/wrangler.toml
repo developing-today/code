@@ -12,3 +12,10 @@ id = "46b1fe46e6434c5fa509556ed3a53ea2"
 # Secrets (never in this file):
 #   wrangler secret put GITHUB_WEBHOOK_SECRET   # same value as on the App
 #   wrangler secret put DRAIN_BEARER            # laptop drainer authenticates with this
+
+# VERSION names the deployed commit for GET /version (#15793
+# criterion 1); deploy.mjs stamps the real SHA per deploy — this
+# default keeps an unstamped deploy (e.g. the GHA cf release flow)
+# honest.
+[vars]
+VERSION = "unknown"

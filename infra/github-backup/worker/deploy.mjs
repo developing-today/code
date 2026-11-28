@@ -150,11 +150,13 @@ const message = `deploy ${sha} via nix run .#developing-today-backup-deploy`;
 // the tagged versions flow below then proceeds as normal.
 if (!workerExists()) {
   console.log(`worker ${WORKER} does not exist yet; bootstrapping with wrangler deploy`);
-  runWrangler(["deploy"], { stdio: "inherit" });
+  // #15793: stamp the deployed commit as the VERSION var the Worker's
+  // GET /version route reads (the fleet-git-rehost deploy.sh pattern).
+  runWrangler(["deploy", "--var", `VERSION:${sha}`], { stdio: "inherit" });
 }
 
 console.log(`uploading version (tag ${tag})`);
-runWrangler(["versions", "upload", "--name", WORKER, "--tag", tag, "--message", message], { stdio: "inherit" });
+runWrangler(["versions", "upload", "--name", WORKER, "--tag", tag, "--message", message, "--var", `VERSION:${sha}`], { stdio: "inherit" });
 
 // Uploads are not deduplicated; pick the newest version with our tag.
 const version = listVersions()
