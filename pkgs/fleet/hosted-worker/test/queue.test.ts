@@ -1213,3 +1213,56 @@ test("the fallback verbs answer through the router with the native result shapes
   assert.equal(rival.status, 409);
   assert.equal(((await rival.json()) as JsonObject)["reason"], "live_claim");
 });
+
+// ---------------------------------------------------------------------------
+// Parked-term exclusion on the default pick (#16424, port of #13091)
+// ---------------------------------------------------------------------------
+
+const PAST_NOT_BEFORE = "2025-12-31T00:00:00Z";
+
+async function parkWithCondition(
+  store: QueueStore,
+  env: QueueEnv,
+  issue: number,
+  readyCondition: JsonObject,
+): Promise<number> {
+  const enq = await enqueue(store, env, fixPacket(issue));
+  assert.equal(enq["ok"], true);
+  const id = (enq["row"] as JsonObject)["id"] as number;
+  const held = await claim(store, env, { worker: "worker-a" });
+  assert.equal(((held["row"] as JsonObject)["id"] as number), id);
+  const parked = await verb(store, env, "park", {
+    task_id: id,
+    worker: "worker-a",
+    ready_condition: readyCondition,
+    not_before: PAST_NOT_BEFORE,
+  });
+  assert.equal(parked["ok"], true);
+  return id;
+}
+
+test("ordinary time parks still release on the timer", async () => {
+  const { store } = setup();
+  const env = hostedEnv();
+  const id = await parkWithCondition(store, env, 164241, { kind: "time", until: PAST_NOT_BEFORE });
+  const served = await claim(store, env, { worker: "worker-b" });
+  assert.equal(((served["row"] as JsonObject)["id"] as number), id);
+});
+
+for (const kind of ["task_terminal", "task_status", "event_seen", "person_answer"]) {
+  test(`a ${kind} park is withheld from the default pick until woken (#16424)`, async () => {
+    const { store } = setup();
+    const env = hostedEnv();
+    const id = await parkWithCondition(store, env, 164242, { kind });
+    // The timer has lapsed, but the default pick must not serve it.
+    const skipped = await claim(store, env, { worker: "worker-b" });
+    assert.equal(skipped["row"], null);
+    const row = await store.getTask(id);
+    assert.equal(row?.status, "parked");
+    // An explicit wake releases it, and the next pick serves it.
+    const woken = await verb(store, env, "wake", { task_id: id, worker: "worker-b" });
+    assert.equal(woken["ok"], true);
+    const served = await claim(store, env, { worker: "worker-b" });
+    assert.equal(((served["row"] as JsonObject)["id"] as number), id);
+  });
+}

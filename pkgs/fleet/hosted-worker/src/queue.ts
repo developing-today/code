@@ -864,6 +864,21 @@ async function scopeMatch(
   return true;
 }
 
+/** #16424 (port of the broker's PARKED_TERM_EXCLUSION, #13091):
+ * a parked row whose recorded term is a broker-owned condition or a
+ * person's answer is not the default pick's to release on the timer
+ * — the park-revalidation sweeper owns the broker conditions and
+ * /wake (verbWake) owns person answers. `ready_condition` absent or
+ * kindless means a genuine time wait (the broker's COALESCE to
+ * 'time'), which keeps its claim-at-not_before release. */
+const PARKED_TERM_EXCLUSION_KINDS = new Set(["task_terminal", "task_status", "event_seen", "person_answer"]);
+
+function parkTermWithheld(row: TaskRow): boolean {
+  const condition = isObj(row.ready_condition) ? row.ready_condition : undefined;
+  const kind = typeof condition?.["kind"] === "string" ? condition["kind"] : "time";
+  return PARKED_TERM_EXCLUSION_KINDS.has(kind);
+}
+
 function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolean {
   if (row.manual_only) return false;
   const required = requiredBudget(row);
@@ -876,6 +891,7 @@ function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolea
     live = gate;
   } else if (
     row.status === "parked" &&
+    !parkTermWithheld(row) &&
     ((row.not_before !== null && row.not_before <= now) || (row.wait_kind === "capacity" && bypass))
   ) {
     live = gate;
