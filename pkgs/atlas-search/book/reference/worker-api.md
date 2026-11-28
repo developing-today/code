@@ -6,6 +6,7 @@ The Worker is the hosted half of Atlas: a Cloudflare Worker named `atlas-search`
 
 ```http
 GET  /health
+GET  /version
 POST /v1/search
 GET  /v1/cache/inspect?query=<query>&k=<k>
 POST /v1/cache/purge
@@ -16,11 +17,11 @@ POST /v1/admin/retained/report
 POST /v1/admin/retained/promote
 ```
 
-That is the whole public surface: **9 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below. The four retained-object admin routes are gated like the others, answer 503 `retained_off` when no retained-object store is configured, and are covered in [Retained objects and retention classes](retained-objects.md).
+That is the whole public surface: **10 public routes**, plus a catch-all 404 for everything else. Three further routes exist inside the Worker's cache Durable Object; they are internal and marked as such below. The four retained-object admin routes are gated like the others, answer 503 `retained_off` when no retained-object store is configured, and are covered in [Retained objects and retention classes](retained-objects.md).
 
 ## The shared gate
 
-Every route except `GET /health` is gated. REST/admin routes use the shared `GATE_TOKEN`; `/mcp` uses it only when the optional per-agent map is absent:
+Every route except `GET /health` and `GET /version` is gated. REST/admin routes use the shared `GATE_TOKEN`; `/mcp` uses it only when the optional per-agent map is absent:
 
 | Aspect       | Rule                                                                                                                                                           |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -54,6 +55,16 @@ Open — no gate, checked before it. No body, no parameters read. The only respo
 ```
 
 with status 200. It is liveness only; it says nothing about the laptop service behind the Worker.
+
+## `GET /version`
+
+Open — no gate, answered with `/health` ahead of every gated route. No body, no parameters read; it reads no state and no secret. The only response this route produces:
+
+```json
+{ "ok": true, "service": "atlas-search", "version": "<deployed commit>" }
+```
+
+with status 200, where `version` is the deploy-stamped `VERSION` variable, or `"unknown"` when the deploy was unstamped. A non-GET method on this path is refused 405. This is the #15793 criterion-1 route: the edge probe reads its `version` field to name the commit the Worker was deployed from.
 
 ## `POST /v1/search`
 
