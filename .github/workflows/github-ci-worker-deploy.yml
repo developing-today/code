@@ -54,4 +54,4 @@ jobs:
             echo "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required to deploy github-ci." >&2
             exit 1
           fi
-          npx wrangler deploy --message "github-ci ${GITHUB_SHA}"
+          npx wrangler deploy --var "VERSION:${GITHUB_SHA}" --message "github-ci ${GITHUB_SHA}"
