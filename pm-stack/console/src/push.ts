@@ -181,6 +181,19 @@ type Poster = (
   init: { method: string; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
 ) => Promise<{ status: number }>;
 
+/** The one-census shape (#14084 S2, §3.5) as the console status
+ * carries it. The aggregator serves it live from the registry; the
+ * console's live loader wires in with S4's registry read path, so
+ * until then the console reports the slot as unavailable rather than
+ * a zero census — a missing reader is not an empty registry. */
+export interface PushRegistryCensus {
+  available: boolean;
+  asOf?: string;
+  endpoints?: { total: number; byTransportClient: { transport: string; client: string; count: number }[] };
+  lastSuccessfulSendAt?: string | null;
+  needsUser?: { open: number; totalBlockedBy: number };
+}
+
 export class Push {
   private state: PushFile | null = null;
   private signer: CryptoKey | null = null;
@@ -192,6 +205,8 @@ export class Push {
     private subject: string | (() => string),
     private post: Poster = (url, init) => fetch(url, init as RequestInit),
     private now: () => number = Date.now,
+    /** S4 wires the registry-backed census loader; until then null. */
+    private registryCensus: (() => Promise<PushRegistryCensus | null>) | null = null,
   ) {}
 
   private async load(): Promise<PushFile> {
@@ -227,6 +242,7 @@ export class Push {
       key: s.vapid?.publicKey ?? "",
       devices: s.subscriptions.length,
       known: await Promise.all(s.subscriptions.map((x) => endpointMark(x.endpoint))),
+      registry: (await this.registryCensus?.()) ?? { available: false },
       classes: Object.fromEntries(CLASSES.map((c) => [c, !s.off.includes(c)])),
       last: s.last ?? null,
     };

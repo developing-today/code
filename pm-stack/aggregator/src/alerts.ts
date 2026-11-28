@@ -26,18 +26,25 @@ import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getD1StoreClient } from "./d1-stores.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
 import {
+  canonicalClass,
   DEFAULT_DELIVERY,
   ensurePushRegistry,
   isPushClient,
+  LEGACY_CLASS_ALIASES,
   MAX_DEVICE_ID_LENGTH,
   MAX_LABEL_LENGTH,
   ItemStageStore,
   mergeDelivery,
+  normalizeClassMap,
   nowIso,
   readDelivery,
+  UnifiedSendStore,
   type DeliveryPrefs,
   type PushClient,
   type PushTransport,
+  type UnifiedSendInput,
+  type UnifiedSendOutcome,
+  type UnifiedSendRow,
 } from "./push-registry.ts";
 import { sqlInt, sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
 import {
@@ -52,6 +59,7 @@ import {
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 import { postCostAnomalyTick, type CostEvidence } from "./cost-anomaly.ts";
+import { runPushSentinelTick } from "./push-sentinel.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
 import {
@@ -205,27 +213,9 @@ export const MAX_CLASS_KEYS = 16;
  * ("quota-wall"); anything longer is not a class this build knows. */
 export const MAX_CLASS_KEY_LENGTH = 64;
 
-/** Class ids renamed by a ruling, old id → class of record. #14084
- * (Drew, 2026-11-24, comment 7124146989): the answerable class is
- * `needs-user`, not `needs-drew`. A stored map or a caller that still
- * says `needs-drew` means `needs-user`; the old key is never stored
- * again and never reaches the engine. */
-export const LEGACY_CLASS_ALIASES: Readonly<Record<string, string>> = { "needs-drew": "needs-user" };
-
-export const canonicalClass = (cls: string): string =>
-  Object.hasOwn(LEGACY_CLASS_ALIASES, cls) ? LEGACY_CLASS_ALIASES[cls] : cls;
-
-/** Rewrite a class map onto the classes of record. Where a map holds
- * both the old and the new key, the new key's choice wins. */
-export function normalizeClassMap<T>(input: Record<string, T>): Record<string, T> {
-  const out: Record<string, T> = {};
-  for (const [k, v] of Object.entries(input)) {
-    const canonical = canonicalClass(k);
-    if (canonical !== k && Object.hasOwn(input, canonical)) continue;
-    out[canonical] = v;
-  }
-  return out;
-}
+/** Class ids renamed by a ruling — the registry owns the map;
+ * re-exported here so existing importers keep working. */
+export { LEGACY_CLASS_ALIASES, canonicalClass, normalizeClassMap };
 
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
@@ -566,6 +556,11 @@ export class AlertsStore {
     return this.stages;
   }
 
+  /** The registry connection behind the census and unified ledger. */
+  registryClient(): SqlClient {
+    return this.registry();
+  }
+
   private async pendingBatch(
     eligibility: string,
     orderColumn: PendingIncidentOrder,
@@ -805,6 +800,9 @@ export class AlertsStore {
       await this.db.query(
         `update alerts.notification_sends set acted_on_at = now() where incident_id = ${sqlStr(id)} and acted_on_at is null`,
       );
+      // #14084 S2: the unified ledger's acted_on_at rides the same
+      // exactly-once transition.
+      await this.unifiedSends().markActedByIncident(id);
       return { incident: rows[0], transitioned: true };
     }
     return { incident: await this.getIncident(id), transitioned: false };
@@ -895,17 +893,60 @@ export class AlertsStore {
     outcome: "sent" | "suppressed-quiet" | "suppressed-dedupe" | "gone" | "error";
     /** #14419: injectable for tests; defaults to now. */
     sentAt?: string;
+    /** Registry endpoint id, when the attempt targeted one endpoint. */
+    endpointId?: string;
+    /** Push-service detail for this attempt (status code / reason). */
+    pushStatus?: string;
+    /** The digest delivery a grouped send rode in, if any. */
+    groupRef?: string;
   }): Promise<void> {
     // #14419: stamp sent_at explicitly in ISO-8601 UTC on every row.
     // Relying on the created_at column default left live rows in a
     // format the reader could not parse, so every send was excluded
     // from the measurement roll-up.
     const sentAt = entry.sentAt ?? new Date().toISOString();
+    const cls = canonicalClass(entry.class);
     await this.db.query(
       `insert into alerts.notification_sends (class, object_ref, incident_id, outcome, sent_at)
-       values (${sqlStr(entry.class)}, ${sqlStr(entry.objectRef)}, ${
+       values (${sqlStr(cls)}, ${sqlStr(entry.objectRef)}, ${
          entry.incidentId ? sqlStr(entry.incidentId) : "null"
        }, ${sqlStr(entry.outcome)}, ${sqlStr(sentAt)})`,
+    );
+    // #14084 S2: dual-write the unified ledger. The legacy row above
+    // stays byte-for-byte the shape #14061's backfill expects; the
+    // unified row is the roll-up's input from cutover.
+    await this.unifiedSends().log({
+      endpointId: entry.endpointId,
+      class: cls,
+      objectRef: entry.objectRef,
+      incidentId: entry.incidentId,
+      outcome: entry.outcome,
+      pushStatus: entry.pushStatus,
+      sentAt,
+      groupRef: entry.groupRef,
+    });
+  }
+
+  /** The unified sends ledger (#14084 S2), over the registry connection. */
+  unifiedSends(): UnifiedSendStore {
+    return new UnifiedSendStore(this.registry());
+  }
+
+  /** One unified attempt outside the legacy dual-write (grouped sends:
+   * each candidate in a digest delivery is its own attempt). */
+  async logUnifiedSend(entry: UnifiedSendInput): Promise<void> {
+    await this.unifiedSends().log(entry);
+  }
+
+  /** Every unified send-ledger row (#14084 S2 roll-up input). */
+  async listUnifiedSends(): Promise<UnifiedSendRow[]> {
+    return this.unifiedSends().list();
+  }
+
+  /** Open incidents for the dead-push sentinel (status + delivery state). */
+  async listOpenIncidents(): Promise<{ status: string; delivered_at: string | null }[]> {
+    return this.db.query<{ status: string; delivered_at: string | null }>(
+      `select status, delivered_at from alerts.incidents where status = ${sqlStr("open")}`,
     );
   }
 
@@ -981,15 +1022,15 @@ export async function sendClassTestPush(
     const outcome = await send(target, payload);
     if (outcome.ok) {
       summary.sent += 1;
-      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "sent" });
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "sent", endpointId: sub.id });
       await store.noteSubscriptionAlive(sub.endpoint);
     } else if (outcome.gone) {
       summary.gone += 1;
-      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "gone" });
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "gone", endpointId: sub.id });
       await store.noteSubscriptionGone(sub.endpoint);
     } else {
       summary.errors += 1;
-      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "error" });
+      await store.logSend({ class: cls, objectRef: payload.objectRef, outcome: "error", endpointId: sub.id });
     }
   }
   return summary;
@@ -1037,15 +1078,15 @@ export async function sendTestPush(
     const outcome = await send(target, payload);
     if (outcome.ok) {
       summary.sent += 1;
-      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent" });
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent", endpointId: sub.id });
       await store.noteSubscriptionAlive(sub.endpoint);
     } else if (outcome.gone) {
       summary.gone += 1;
-      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" });
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone", endpointId: sub.id });
       await store.noteSubscriptionGone(sub.endpoint);
     } else {
       summary.errors += 1;
-      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "error" });
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "error", endpointId: sub.id });
     }
   }
   return summary;
@@ -1145,6 +1186,7 @@ async function deliverToAll(
         objectRef: payload.objectRef,
         incidentId: incident.id,
         outcome: "sent",
+        endpointId: sub.id,
       });
       await store.noteSubscriptionAlive(sub.endpoint);
     } else if (outcome.gone) {
@@ -1154,6 +1196,7 @@ async function deliverToAll(
         objectRef: payload.objectRef,
         incidentId: incident.id,
         outcome: "gone",
+        endpointId: sub.id,
       });
       await store.noteSubscriptionGone(sub.endpoint);
     } else {
@@ -1163,6 +1206,7 @@ async function deliverToAll(
         objectRef: payload.objectRef,
         incidentId: incident.id,
         outcome: "error",
+        endpointId: sub.id,
       });
     }
   }
@@ -1398,7 +1442,7 @@ async function runDashboardNotificationTick(
       };
       await append(entry);
       subHistory.push(entry);
-      await store.logSend({ class: candidate.class, objectRef: candidate.objectRef, outcome });
+      await store.logSend({ class: candidate.class, objectRef: candidate.objectRef, outcome, endpointId: sub.id });
       if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
       else if (result.gone) await store.noteSubscriptionGone(sub.endpoint);
     }
@@ -1476,7 +1520,22 @@ async function runDashboardNotificationTick(
         pending.delete(key);
       }
     }
-    await store.logSend({ class: "digest", objectRef: payload.objectRef, outcome });
+    await store.logSend({ class: "digest", objectRef: payload.objectRef, outcome, endpointId: sub.id });
+    // #14084 S2: each grouped send is its own unified attempt under
+    // the candidate's class (of record), tied to this digest delivery
+    // by group_ref. The legacy ledger keeps the single digest row
+    // above — its shape is #14061's territory, not this slice's. The
+    // optional call keeps hand-rolled legacy-surface fakes working;
+    // the real store always implements the unified ledger.
+    for (const candidate of digestCandidates) {
+      await store.logUnifiedSend?.({
+        endpointId: sub.id,
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        outcome,
+        groupRef: payload.objectRef,
+      });
+    }
     if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
     else if (isGone) await store.noteSubscriptionGone(sub.endpoint);
   }
@@ -1545,6 +1604,10 @@ export async function runAlertTick(
     }
   }
   await runDashboardNotificationTick(cfg, store, subs, push, options);
+  // #14084 S2: the dead-push sentinel. Fail-soft by construction (the
+  // tick helper never throws): a sentinel failure must not break
+  // delivery, escalation, or the dashboard tick.
+  await runPushSentinelTick(store, new Date(options.now ?? Date.now()));
 }
 
 let engineStarted = false;

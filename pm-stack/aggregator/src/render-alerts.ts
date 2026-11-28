@@ -469,7 +469,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
   if (!view.available || !view.rollup) {
     return layout(
       "Notifications",
-      `<h1>Notifications</h1><p class="muted">The notification send ledger (Turso fleet-platform <code>alerts_notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notifications</h1><p class="muted">The unified send ledger (fleet-platform <code>push_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/notifications",
     );
@@ -494,7 +494,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
         .join("")}`
     : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
   const body = `<h1>Notifications</h1>
-<p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
+<p class="muted">Weekly sent-vs-acted-on roll-up over the unified send ledger (<code>push_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. The ledger starts at the #14084 S2 cutover; earlier history lives in the legacy <code>alerts.notification_sends</code> ledger. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
 <h2>How acted-on is counted (attribution)</h2>
 <p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
 ${rollup.alarm ? `<p role="alert"><strong>ALARM:</strong> all ${rollup.total} send ledger row(s) were excluded for missing/unusable timestamps — the roll-up below reports no sends because the ledger timestamps are unreadable, not because nothing was sent (#14419).</p>` : rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
