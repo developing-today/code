@@ -49,6 +49,7 @@ pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod groups;
 pub mod guest_burn;
+pub mod mcp_bridge;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
