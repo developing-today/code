@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - 1837l/16266-100x-rerun
+      - 1837l/16266-100x-rerun-fixed
 
 permissions:
   contents: read
