@@ -328,7 +328,7 @@ window without refresh.
 `;
 
 /** The #15793 criterion-1 answer: the deployed commit from the VERSION
- * var (stamped per deploy at build time \u2014 see cloudflare.config.ts), or
+ * var (stamped per deploy at build time — see cloudflare.config.ts), or
  * "unknown" when the deploy was unstamped; the edge probe records the
  * commit only when one is named (commitOf in
  * pm-stack/console/edge/src/worker-checks.ts reads the `version` field). */
@@ -351,7 +351,7 @@ export default {
     }
     if (path === "/version") {
       // #15793 criterion 1: unauthenticated, ahead of every other route
-      // \u2014 it reads no state and no secret.
+      // — it reads no state and no secret.
       if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
       return Response.json(versionAnswer(env));
     }

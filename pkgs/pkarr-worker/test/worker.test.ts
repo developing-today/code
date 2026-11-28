@@ -445,7 +445,7 @@ describe("scope guardrails", () => {
 });
 
 describe("GET /version (#15793 criterion 1)", () => {
-  // Oracle: #15793 criterion 1 (parent #13494) \u2014 every in-service Worker
+  // Oracle: #15793 criterion 1 (parent #13494) — every in-service Worker
   // answers unauthenticated GET /version with the commit it was deployed
   // from, in the `version`-field shape the edge probe reads (commitOf in
   // pm-stack/console/edge/src/worker-checks.ts); "unknown", never a
