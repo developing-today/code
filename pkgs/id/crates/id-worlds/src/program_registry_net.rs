@@ -633,7 +633,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(none.is_empty());
+        assert_eq!(none, [] as [BundleRecord; 0]);
 
         let hash = chess.manifest().content_hash.clone();
         let fetched = fetch(&other, addr.clone(), &hash).await.unwrap();
@@ -649,11 +649,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(record, chess.record());
-        assert!(
+        assert_eq!(
             list(&other, addr.clone(), &ListQuery::default())
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [BundleRecord; 0]
         );
         match publish(&client, addr, &chess.to_bytes()).await {
             Err(RegistryNetError::Refused { code, .. }) => assert_eq!(code, "withdrawn"),
@@ -687,11 +687,9 @@ mod tests {
             }
             other => panic!("expected the removal, got {other:?}"),
         }
-        assert!(
-            list(&client, addr, &ListQuery::default())
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            list(&client, addr, &ListQuery::default()).await.unwrap(),
+            [] as [BundleRecord; 0]
         );
     }
 

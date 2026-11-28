@@ -60,7 +60,18 @@ async function migratedDb() {
     sql.run(
       `INSERT INTO pm_boards (board_id, org, number, node_id, url, role, parent_board_id, sibling_order, title, recorded_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [board.id, board.org, board.number, board.nodeId, board.url, board.role, board.parentBoardId ?? null, board.siblingOrder, board.title, T1],
+      [
+        board.id,
+        board.org,
+        board.number,
+        board.nodeId,
+        board.url,
+        board.role,
+        board.parentBoardId ?? null,
+        board.siblingOrder,
+        board.title,
+        T1,
+      ],
     );
   }
   return sql;
@@ -110,7 +121,9 @@ function gqlItem(spec: ItemSpec) {
         ? {}
         : {
             labels: { nodes: (spec.labels ?? []).map((name) => ({ name })) },
-            parent: spec.parent ? { number: spec.parent.number, url: "", repository: { nameWithOwner: spec.parent.repo } } : null,
+            parent: spec.parent
+              ? { number: spec.parent.number, url: "", repository: { nameWithOwner: spec.parent.repo } }
+              : null,
             blockedBy: { nodes: [] },
             blocking: { nodes: [] },
           }),
@@ -154,6 +167,7 @@ interface Harness {
   deps: CollectorDeps;
   requests: { boardId: string; authorization: string | null; ifNoneMatch: string | null }[];
   mintedOrgs: string[];
+  notifications: { boardId: string; snapshotId: string }[];
   storages: Map<string, MemoryIngestStorage>;
   setHandler: (boardId: string, handler: ((ifNoneMatch: string | null) => Response) | null) => void;
   setNow: (iso: string) => void;
@@ -162,6 +176,7 @@ interface Harness {
 function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): Harness {
   const requests: Harness["requests"] = [];
   const mintedOrgs: string[] = [];
+  const notifications: Harness["notifications"] = [];
   const storages = new Map<string, MemoryIngestStorage>();
   const dos = new Map<string, IngestDO>();
   const handlers = new Map<string, ((ifNoneMatch: string | null) => Response) | null>();
@@ -207,10 +222,14 @@ function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): 
         }
         return entry;
       },
+      boardDoFor: (boardId) => ({
+        snapshotLanded: async (snapshotId) => { notifications.push({ boardId, snapshotId }); },
+      }),
       now: () => nowValue,
     },
     requests,
     mintedOrgs,
+    notifications,
     storages,
     setHandler: (boardId, handler) => handlers.set(boardId, handler),
     setNow: (iso) => {
@@ -220,11 +239,26 @@ function harness(sql: SqlDb, pages: Map<string, ReturnType<typeof gqlItem>[]>): 
 }
 
 const MAIN_ITEMS = [
-  gqlItem({ id: "PVTI_main_1", repo: "developing-today/code", number: 3447, title: "epic: id crate split", kind: "Task", status: "In Progress", labels: ["epic"] }),
+  gqlItem({
+    id: "PVTI_main_1",
+    repo: "developing-today/code",
+    number: 3447,
+    title: "epic: id crate split",
+    kind: "Task",
+    status: "In Progress",
+    labels: ["epic"],
+  }),
   gqlItem({ id: "PVTI_main_2", repo: "developing-today/code", number: 200, title: "a pull request", pr: true }),
 ];
 const FORKS_ITEMS = [
-  gqlItem({ id: "PVTI_forks_1", repo: "developing-today-forks/lab", number: 7, title: "satellite work", kind: "Task", status: "Todo" }),
+  gqlItem({
+    id: "PVTI_forks_1",
+    repo: "developing-today-forks/lab",
+    number: 7,
+    title: "satellite work",
+    kind: "Task",
+    status: "Todo",
+  }),
 ];
 
 function count(sql: SqlDb, query: string, params: (string | number | null)[] = []): number {
@@ -233,18 +267,37 @@ function count(sql: SqlDb, query: string, params: (string | number | null)[] = [
 
 describe("hosted collector (#12826)", () => {
   test("the pool query is the laptop collector's query (fields, views, parent, blockedBy/blocking, labels, milestones, subIssuesSummary)", () => {
-    for (const fragment of ["fields(first: 100)", "views(first: 100)", "parent {", "blockedBy(first: 50)", "blocking(first: 50)", "labels(first: 20)", "milestone {", "subIssuesSummary {"]) {
+    for (const fragment of [
+      "fields(first: 100)",
+      "views(first: 100)",
+      "parent {",
+      "blockedBy(first: 50)",
+      "blocking(first: 50)",
+      "labels(first: 20)",
+      "milestone {",
+      "subIssuesSummary {",
+    ]) {
       expect(PROJECT_QUERY).toContain(fragment);
     }
   });
 
   test("a cron run ingests every registry board into the tenant DB", async () => {
     const sql = await migratedDb();
-    const h = harness(sql, new Map([["devtoday-main", MAIN_ITEMS], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", MAIN_ITEMS],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     const report = await runHostedCollector(h.deps);
 
     expect(report.landedBoardIds).toEqual(["devtoday-main", "forks-main"]);
     expect(report.failedBoardIds).toEqual([]);
+    expect(h.notifications).toEqual([
+      { boardId: "devtoday-main", snapshotId: `snap-devtoday-main-${T1}` },
+      { boardId: "forks-main", snapshotId: `snap-forks-main-${T1}` },
+    ]);
     // Tokens are minted per run, per board org, through the tenancy seam.
     expect(h.mintedOrgs).toEqual(["developing-today", "developing-today-forks"]);
     expect(h.requests.map((r) => r.authorization)).toEqual([
@@ -277,22 +330,44 @@ describe("hosted collector (#12826)", () => {
 
   test("a forced failure on one board leaves the other boards' pools intact and records a finding", async () => {
     const sql = await migratedDb();
-    const h = harness(sql, new Map([["devtoday-main", MAIN_ITEMS], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", MAIN_ITEMS],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     await runHostedCollector(h.deps);
 
     // Second run: the main board's export changed (new etag, one more
     // item); the forks board's fetch is forced to fail.
     h.setNow(T2);
-    h.setHandler("devtoday-main", () =>
-      new Response(
-        JSON.stringify(
-          gqlPage(BOARDS[0] as BoardDef, [
-            ...MAIN_ITEMS,
-            gqlItem({ id: "PVTI_main_3", repo: "developing-today/code", number: 4000, title: "new work", kind: "Task", status: "Todo" }),
-          ]),
+    h.setHandler(
+      "devtoday-main",
+      () =>
+        new Response(
+          JSON.stringify(
+            gqlPage(BOARDS[0] as BoardDef, [
+              ...MAIN_ITEMS,
+              gqlItem({
+                id: "PVTI_main_3",
+                repo: "developing-today/code",
+                number: 4000,
+                title: "new work",
+                kind: "Task",
+                status: "Todo",
+              }),
+            ]),
+          ),
+          {
+            status: 200,
+            headers: {
+              etag: '"etag-devtoday-main-2"',
+              "x-ratelimit-remaining": "4990",
+              "x-ratelimit-reset": String(RESET_FUTURE),
+            },
+          },
         ),
-        { status: 200, headers: { etag: '"etag-devtoday-main-2"', "x-ratelimit-remaining": "4990", "x-ratelimit-reset": String(RESET_FUTURE) } },
-      ),
     );
     h.setHandler("forks-main", null);
     const report = await runHostedCollector(h.deps);
@@ -316,7 +391,13 @@ describe("hosted collector (#12826)", () => {
 
   test("ingest cursors make a second run incremental: a 304 ends the board's run with no re-fetch and no writes", async () => {
     const sql = await migratedDb();
-    const h = harness(sql, new Map([["devtoday-main", MAIN_ITEMS], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", MAIN_ITEMS],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     await runHostedCollector(h.deps);
     const snapshotsAfterFirst = count(sql, "SELECT COUNT(*) AS n FROM pm_snapshots");
     const itemsAfterFirst = count(sql, "SELECT COUNT(*) AS n FROM pm_items");
@@ -326,7 +407,10 @@ describe("hosted collector (#12826)", () => {
     for (const board of BOARDS) {
       h.setHandler(board.id, (ifNoneMatch) =>
         ifNoneMatch === `"etag-${board.id}-1"`
-          ? new Response(null, { status: 304, headers: { "x-ratelimit-remaining": "4995", "x-ratelimit-reset": String(RESET_FUTURE) } })
+          ? new Response(null, {
+              status: 304,
+              headers: { "x-ratelimit-remaining": "4995", "x-ratelimit-reset": String(RESET_FUTURE) },
+            })
           : new Response(JSON.stringify(gqlPage(board, [])), { status: 200 }),
       );
     }
@@ -346,7 +430,13 @@ describe("hosted collector (#12826)", () => {
 
   test("no token value persists anywhere after a run (E §2.3, test-pinned)", async () => {
     const sql = await migratedDb();
-    const h = harness(sql, new Map([["devtoday-main", MAIN_ITEMS], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", MAIN_ITEMS],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     const report = await runHostedCollector(h.deps);
     // The tokens really were used — the pin below is not vacuous.
     expect(h.requests.map((r) => r.authorization)).toContain("Bearer test-token-for-developing-today");
@@ -367,18 +457,39 @@ describe("hosted collector (#12826)", () => {
   test("cross-board ancestry resolves in the merged pool (epic on one board, descendants on another)", async () => {
     const sql = await migratedDb();
     const epic = gqlItem({
-      id: "PVTI_forks_epic", repo: "developing-today/code", number: 100, title: "the epic", kind: "Epic", status: "In Progress",
+      id: "PVTI_forks_epic",
+      repo: "developing-today/code",
+      number: 100,
+      title: "the epic",
+      kind: "Epic",
+      status: "In Progress",
       subIssuesSummary: { total: 2, completed: 0 },
     });
     const mid = gqlItem({
-      id: "PVTI_main_mid", repo: "developing-today/code", number: 101, title: "mid task", kind: "Task", status: "Todo",
+      id: "PVTI_main_mid",
+      repo: "developing-today/code",
+      number: 101,
+      title: "mid task",
+      kind: "Task",
+      status: "Todo",
       parent: { repo: "developing-today/code", number: 100 },
     });
     const leaf = gqlItem({
-      id: "PVTI_main_leaf", repo: "developing-today/code", number: 102, title: "leaf task", kind: "Task", status: "Todo",
+      id: "PVTI_main_leaf",
+      repo: "developing-today/code",
+      number: 102,
+      title: "leaf task",
+      kind: "Task",
+      status: "Todo",
       parent: { repo: "developing-today/code", number: 101 },
     });
-    const h = harness(sql, new Map([["devtoday-main", [mid, leaf]], ["forks-main", [epic]]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", [mid, leaf]],
+        ["forks-main", [epic]],
+      ]),
+    );
     const report = await runHostedCollector(h.deps);
     expect(report.failedBoardIds).toEqual([]);
 
@@ -401,28 +512,68 @@ describe("hosted collector (#12826)", () => {
       direct_parent: { repo: "developing-today/code", number: 3447, kind: "epic" },
       links: [],
       lineage: { design: null, roadmap_item: null, priority: null },
-      provenance: { queue_id: null, session_id: "sess-1", lane: "xaltha", host: null, worktree: null, picked_up_at: null, work_started_at: null, created_at: null, model: null, lane_start_issues: [] },
+      provenance: {
+        queue_id: null,
+        session_id: "sess-1",
+        lane: "xaltha",
+        host: null,
+        worktree: null,
+        picked_up_at: null,
+        work_started_at: null,
+        created_at: null,
+        model: null,
+        lane_start_issues: [],
+      },
     };
     const body = `work\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(block)}\n\`\`\`\n<!-- pm-metadata:end -->`;
-    const withMeta = gqlItem({ id: "PVTI_main_meta", repo: "developing-today/code", number: 4403, title: "carries metadata", kind: "Task", status: "Todo", body });
+    const withMeta = gqlItem({
+      id: "PVTI_main_meta",
+      repo: "developing-today/code",
+      number: 4403,
+      title: "carries metadata",
+      kind: "Task",
+      status: "Todo",
+      body,
+    });
     const withBadMeta = gqlItem({
-      id: "PVTI_main_badmeta", repo: "developing-today/code", number: 4404, title: "carries a bad block", kind: "Task", status: "Todo",
+      id: "PVTI_main_badmeta",
+      repo: "developing-today/code",
+      number: 4404,
+      title: "carries a bad block",
+      kind: "Task",
+      status: "Todo",
       body: body.replace('"pm_meta":1', '"pm_meta":99'),
     });
-    const h = harness(sql, new Map([["devtoday-main", [withMeta, withBadMeta]], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", [withMeta, withBadMeta]],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     await runHostedCollector(h.deps);
 
     const rows = sql.all<{ ref: string; direct_parent_ref: string; provenance_session_id: string }>(
       "SELECT ref, direct_parent_ref, provenance_session_id FROM pm_item_metadata",
     );
     expect(rows).toEqual([
-      { ref: "developing-today/code#4403", direct_parent_ref: "developing-today/code#3447", provenance_session_id: "sess-1" },
+      {
+        ref: "developing-today/code#4403",
+        direct_parent_ref: "developing-today/code#3447",
+        provenance_session_id: "sess-1",
+      },
     ]);
   });
 
   test("a board whose rate budget is spent defers without a fetch and records a finding", async () => {
     const sql = await migratedDb();
-    const h = harness(sql, new Map([["devtoday-main", MAIN_ITEMS], ["forks-main", FORKS_ITEMS]]));
+    const h = harness(
+      sql,
+      new Map([
+        ["devtoday-main", MAIN_ITEMS],
+        ["forks-main", FORKS_ITEMS],
+      ]),
+    );
     const storage = new MemoryIngestStorage();
     const spent: IngestState = {
       etag: null,

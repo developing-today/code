@@ -633,7 +633,17 @@ def _broker_roundtrip(method, path, body, trip=None):
             # which is subtracted: a long REMOTE command is not a
             # transport wait and must not be labelled one.
             waited = time.time() - t_start
-            if waited > 10:
+            intentional_wait = 0
+            try:
+                if path.startswith("/jobs/"):
+                    import urllib.parse
+
+                    intentional_wait = min(
+                        30, int(urllib.parse.parse_qs(path.partition("?")[2]).get("wait_s", [0])[0])
+                    )
+            except (TypeError, ValueError):
+                pass
+            if waited > 10 and waited > intentional_wait + 5:
                 remote_ms = None
                 try:
                     results = obj["body"].get("results") or []
@@ -994,9 +1004,15 @@ def _ssh_poll_job(job_id, query):
     qs = urllib.parse.parse_qs(query)
     out_off = int(qs.get("out_off", ["0"])[0] or 0)
     err_off = int(qs.get("err_off", ["0"])[0] or 0)
+    wait_s = min(30, max(0, int(qs.get("wait_s", ["0"])[0] or 0)))
     d = _ssh_job_dir(job_id)
     remote = (
-        f"d={d}; "
+        f"d={d}; end=$(( $(date +%s) + {wait_s} )); "
+        f'while [ ! -f "$d/exit" ]; do '
+        f'os=$(stat -c%s "$d/out" 2>/dev/null || echo 0); '
+        f'es=$(stat -c%s "$d/err" 2>/dev/null || echo 0); '
+        f'if [ "$os" -gt {out_off} ] || [ "$es" -gt {err_off} ]; then break; fi; '
+        f'[ $(date +%s) -ge "$end" ] && break; sleep 0.2; done; '
         f'os=$(stat -c%s "$d/out" 2>/dev/null || echo 0); '
         f'es=$(stat -c%s "$d/err" 2>/dev/null || echo 0); '
         f'start=$(cat "$d/start" 2>/dev/null || date +%s); '
@@ -1651,7 +1667,7 @@ def main():
         _threading.Thread(target=_watchdog, daemon=True).start()
         try:
             while True:
-                wait_s = max(0, min(10, int(deadline - time.time())))
+        wait_s = max(0, min(10, int(deadline - time.time() + 0.999999)))
                 out = request(
                     "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}"
                 )
@@ -1659,10 +1675,31 @@ def main():
                 sys.stdout.flush()
                 sys.stderr.write(out.get("stderr", ""))
                 sys.stderr.flush()
+                got = (out["out_next"] - offs["out"]) + (out["err_next"] - offs["err"])
                 offs = {"out": out["out_next"], "err": out["err_next"]}
                 off_file.write_text(json.dumps(offs))
                 if out["state"] == "done":
+                    # Drain a finished job's spool to the end (#15420):
+                    # one reply carries at most 1 MiB per stream. Stop
+                    # once the cursors reach the reported sizes, or a
+                    # page carries nothing (daemons without sizes).
+                    sizes = (out.get("out_size"), out.get("err_size"))
+                    drained = got <= 0 or (
+                        None not in sizes
+                        and offs["out"] >= sizes[0]
+                        and offs["err"] >= sizes[1]
+                    )
+                    if not drained:
+                        continue
                     state["done"] = True
+                    dropped = out.get("bytes_dropped") or 0
+                    if dropped > 0:
+                        # The daemon's spool cap discarded output; say
+                        # so instead of truncating silently (#15420).
+                        print(
+                            f"[spool cap reached: {dropped} bytes dropped]",
+                            file=sys.stderr,
+                        )
                     print(
                         f"[laptop-agent] job {job_id} done "
                         f"exit={out['exit']} "

@@ -18,12 +18,14 @@ What breaks today is that a known world can change its capability footprint sile
 ## 2. Goals and explicit non-goals
 
 **Goals**
+
 - G1. A notice fires before any capability is exercised when the new release's class set is not covered by the user's accepted baseline (design of record §2, §5).
 - G2. Decreases never prompt; the baseline narrows automatically (§5).
 - G3. An uncomputable comparison fails closed to an `unknown` notice, never to silent proceed (§3.2).
 - G4. Invites may pin the baseline as issued, so an expansion after a pinned join prompts like a reconnect (§7).
 
 **Non-goals**
+
 - N1. Re-deriving comparison semantics. #5999 §6 is consumed unchanged.
 - N2. Re-deriving the registry schema. #5958 is consumed unchanged.
 - N3. Grant-on-use policy changes. The notice carries an honesty line and does not cover grant-on-use (§3.3).
@@ -39,6 +41,7 @@ What breaks today is that a known world can change its capability footprint sile
 ## 4. Chosen approach
 
 Pointers only; the design of record is authoritative.
+
 - Baseline store per (user, world), keyed by release identity (§1).
 - Connect-stage comparison between release resolution and connection completion (§2).
 - Three choices with no default button: connect once, connect and remember, don't connect (§4).

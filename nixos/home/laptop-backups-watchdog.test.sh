@@ -301,6 +301,48 @@ set_triggers "1 hour ago" "1 hour ago"
 run_watchdog_jobs dashboard,repo-archive
 expect_ok state-not-enabled
 
+# --- opencode-db zstd leg coverage (code#14515) ------------------------------
+# The zstd leg has its own success marker, checked separately from
+# the restic marker: neither leg may mask the other.
+OCDB_MARKER="$TMP_ROOT/opencode-db-marker"
+OCDB_ZSTD_MARKER="$TMP_ROOT/opencode-db-zstd-marker"
+write_ocdb_marker() { date -d "$1" +%s >"$OCDB_MARKER"; }
+write_ocdb_zstd_marker() { date -d "$1" +%s >"$OCDB_ZSTD_MARKER"; }
+run_watchdog_opencode_db() {
+  HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_BACKUPS_OPENCODE_DB_MARKER="$OCDB_MARKER" \
+    LAPTOP_BACKUPS_OPENCODE_DB_ZSTD_MARKER="$OCDB_ZSTD_MARKER" \
+    PATH="$BIN:$PATH" bash "$SCRIPT" 26 opencode-db >"$TMP_ROOT/out.log" 2>&1
+  RC=$?
+}
+trig_ago "1 hour ago" >"$TRIG/opencode-db-backup.timer"
+write_ocdb_marker "1 hour ago"
+write_ocdb_zstd_marker "2 hours ago"
+run_watchdog_opencode_db
+expect_ok opencode-db-zstd-fresh
+
+# stale zstd marker with a FRESH restic marker -> named failure: a
+# successful restic run must not mask a stale zstd leg
+write_ocdb_zstd_marker "40 hours ago"
+run_watchdog_opencode_db
+expect_named_failure opencode-db-zstd-stale 'zstd leg'
+
+# missing zstd marker -> named failure
+rm -f "$OCDB_ZSTD_MARKER"
+run_watchdog_opencode_db
+expect_named_failure opencode-db-zstd-missing 'zstd leg'
+
+# future zstd marker (beyond skew tolerance) -> named failure
+write_ocdb_zstd_marker "2 hours"
+run_watchdog_opencode_db
+expect_named_failure opencode-db-zstd-future 'zstd leg'
+
+# a fresh zstd marker does not mask a stale restic marker either
+write_ocdb_zstd_marker "1 hour ago"
+write_ocdb_marker "40 hours ago"
+run_watchdog_opencode_db
+expect_named_failure opencode-db-restic-stale opencode-db-backup
+
 # cold-store job: fresh trigger + success result + fresh ledger -> 0
 set_cs_trigger "1 hour ago"
 set_cs_result success

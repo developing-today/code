@@ -41,17 +41,50 @@ ISSUE_RE = re.compile(r"#\d+")
 STORE_CLASSES = [
     # (inventory substring, evidence)
     ("atlas", "pkgs/atlas-search/book/reference/data-stores.md: canonical Turso DB"),
-    ("vec_snowflake_m_v2_768_f32", "pkgs/atlas-search/book/reference/data-stores.md: production vector table"),
-    ("vec_bge_small_384_f32", "pkgs/atlas-search/book/reference/data-stores.md: dormant legacy vector table"),
-    ("atlas-core-", "pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs: scan-shard name pattern"),
-    ("atlas-core-", "pkgs/atlas-search/book/reference/data-stores.md: per-tier content stores"),
-    ("query_embedding_cache", "pkgs/atlas-search/crates/atlas-core/src/embed_cache.rs: query-embedding cache table"),
-    ("ATLAS_EMBED_CACHE_TURSO_URL", "pkgs/atlas-search/crates/atlas-core/src/embed_cache.rs: cache DB env var"),
-    ("ATLAS_VEC_DB", "pkgs/atlas-search/crates/atlas-core/src/local.rs: local side-store vector DB"),
-    ("memory-lancedb", "pkgs/atlas-search/docs/memory-integration-design-8567.md: OpenClaw LanceDB store"),
-    ("QueryCache", "pkgs/atlas-search/book/reference/data-stores.md: Worker Durable Object cache"),
-    ("atlas-hot-cache", "pkgs/atlas-search/book/reference/data-stores.md: D1 hot cache"),
-    ("staging", "pkgs/atlas-search/book/reference/data-stores.md: staging DBs never store vectors"),
+    (
+        "vec_snowflake_m_v2_768_f32",
+        "pkgs/atlas-search/book/reference/data-stores.md: production vector table",
+    ),
+    (
+        "vec_bge_small_384_f32",
+        "pkgs/atlas-search/book/reference/data-stores.md: dormant legacy vector table",
+    ),
+    (
+        "atlas-core-",
+        "pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs: scan-shard name pattern",
+    ),
+    (
+        "atlas-core-",
+        "pkgs/atlas-search/book/reference/data-stores.md: per-tier content stores",
+    ),
+    (
+        "query_embedding_cache",
+        "pkgs/atlas-search/crates/atlas-core/src/embed_cache.rs: query-embedding cache table",
+    ),
+    (
+        "ATLAS_EMBED_CACHE_TURSO_URL",
+        "pkgs/atlas-search/crates/atlas-core/src/embed_cache.rs: cache DB env var",
+    ),
+    (
+        "ATLAS_VEC_DB",
+        "pkgs/atlas-search/crates/atlas-core/src/local.rs: local side-store vector DB",
+    ),
+    (
+        "memory-lancedb",
+        "pkgs/atlas-search/docs/memory-integration-design-8567.md: OpenClaw LanceDB store",
+    ),
+    (
+        "QueryCache",
+        "pkgs/atlas-search/book/reference/data-stores.md: Worker Durable Object cache",
+    ),
+    (
+        "atlas-hot-cache",
+        "pkgs/atlas-search/book/reference/data-stores.md: D1 hot cache",
+    ),
+    (
+        "staging",
+        "pkgs/atlas-search/book/reference/data-stores.md: staging DBs never store vectors",
+    ),
 ]
 
 # Coverage dispositions: every inventory-table row must carry one.
@@ -106,9 +139,7 @@ def inventory_table_rows(text):
 
 class InventoryTests(unittest.TestCase):
     def test_inventory_doc_exists(self):
-        self.assertTrue(
-            INVENTORY.is_file(), f"inventory doc missing: {INVENTORY}"
-        )
+        self.assertTrue(INVENTORY.is_file(), f"inventory doc missing: {INVENTORY}")
 
     def test_every_vector_table_in_code_is_named(self):
         tables = discover_vector_tables()

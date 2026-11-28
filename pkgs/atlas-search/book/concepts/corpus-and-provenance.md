@@ -112,18 +112,16 @@ registry of content-addressed objects), and ingest writes occurrence rows for
 new imports from then on. A further in-repo slice landed 2026-11-23: each
 chunk promoted through the staging path now gets a `chunk_occurrences` row
 recording its canonical text hash, source locator, byte span, and staged
-observation time. That slice is explicitly not the full criterion —
-historical occurrence recovery, canonical dedup identity, and the
-CAS/source-root registry remain open work.
-A further slice landed the same day: the in-repo source registry
-('s module) — stable source-root and
-locator registration, where a root is a named origin (a pinned
-repository, an extracts corpus) and locators hang from it.
-Registration is idempotent and additive only: a repeat returns the
-first registration unchanged, re-pointing a root or registering a
-locator under an unknown root is refused, and registration never
-alters existing chunk or occurrence data — each property pinned by
-oracle tests.
+observation time. That slice is explicitly not the full criterion — historical
+occurrence recovery and canonical dedup identity remain open work.
+A further slice landed the same day: `atlas_core::source_registry`
+provides stable source-root and locator registration, where a root
+is a named origin (a pinned repository, an extracts corpus) and
+locators hang from it. Registration is idempotent and additive only:
+a repeat returns the first registration unchanged, re-pointing a
+root or registering a locator under an unknown root is refused, and
+registration never alters existing chunk or occurrence data — each
+property pinned by oracle tests.
 Three read-side slices followed on 2026-11-23/24 and closed the
 loop from occurrence rows back to roots: `lookup_by_hash` fans out
 over the shards the caller's ceiling admits (keyed by canonical
@@ -133,7 +131,16 @@ and `get-chunk` attaches the rows as an `occurrences` array;
 the lookup takes an optional registry connection so each
 occurrence carries its `root_id` when registered — unregistered
 locators stay unattributed, and the no-registry wire shape is
-unchanged. Serving-side wiring of the catalog path remains open.
+unchanged. Serving-side wiring landed in slice 7 (#14204): the
+standalone search command accepts `--source-registry` (or
+`ATLAS_SOURCE_REGISTRY`) alongside `--shards`, and service config
+accepts `source_registry` alongside `shards`. With both configured,
+the registry connection is attached to the shard backend so
+registered locators can contribute `root_id` to `get-chunk`
+occurrences. This remains opt-in; the code path's existence does
+not mean a production deployment has enabled it. The entry points
+are `atlas-core/src/source_registry.rs`,
+`atlas-search/src/main.rs`, and `atlas-search/src/server.rs`.
 
 **Phase 2 — the extracts store and its backfill (landed 2026-11-23).** The
 extracts store lives on the laptop under `~/atlas/extracts/`. Objects are

@@ -75,6 +75,14 @@ type Options struct {
 	// handed to each of them. Nil means the client builds its own,
 	// which bounds it at per-session strength.
 	ServerLimiter *ServerRequestLimiter
+	// TraceCapture opts the session into recording every frame the
+	// transport carries as a CallTrace (capture.go). Off by default:
+	// the zero value leaves the transport exactly as handed in, and
+	// only an explicitly enabled capture wraps it in a
+	// RecordTransport. The recorded trace always carries credential
+	// content verbatim, so persistence must go through the redacted
+	// form (CallTrace.Redacted / MarshalRedacted), never the raw one.
+	TraceCapture bool
 }
 
 // NewWithOptions connects with everything known up front.
@@ -225,6 +233,19 @@ func (c *Client) withMeta(ctx context.Context, params json.RawMessage, version s
 	c.mu.Unlock()
 	if level != "" {
 		set(MetaLogLevel, level)
+	}
+	// Fleet context (build 4/5, #14190): the originating queue task id
+	// rides every modern request's _meta, set-if-absent so a caller's
+	// deliberate value is never overwritten. Absent context stamps
+	// nothing (partial record, not an error). Env is the fallback when
+	// ctx carries none (stdio/no-header path, #14188 contract).
+	for k, v := range fleetMetaOf(fleetCtxOf(ctx)) {
+		if _, ok := meta[k]; !ok {
+			var rv any
+			if json.Unmarshal(v, &rv) == nil {
+				meta[k] = rv
+			}
+		}
 	}
 	b, err := json.Marshal(meta)
 	if err != nil {
@@ -624,7 +645,7 @@ func (c *Client) cancelled(method string, id int64, cause error) {
 	if method == "initialize" {
 		return
 	}
-	if _, isHTTP := c.t.(*HTTPTransport); isHTTP && c.metaVersion != "" {
+	if _, isHTTP := c.bareTransport().(*HTTPTransport); isHTTP && c.metaVersion != "" {
 		return
 	}
 	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": cancelReason(cause)})
@@ -641,7 +662,7 @@ func (c *Client) cancelled(method string, id int64, cause error) {
 // caller's goroutine while a concurrent call's recovery (finishLegacy)
 // may be writing Era. That pair is the data race #2842 reproduced.
 func (c *Client) mirrorsHeaders() bool {
-	_, isHTTP := c.t.(*HTTPTransport)
+	_, isHTTP := c.bareTransport().(*HTTPTransport)
 	return isHTTP && c.modern.Load()
 }
 

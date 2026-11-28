@@ -88,16 +88,19 @@ function insertBoard(sql: ReturnType<typeof openTenantDb>["sql"], board: BoardDe
 describe("migrations", () => {
   test("apply to an empty tenant DB, record the schema version, and are idempotent", async () => {
     const { sql, result } = await migratedDb();
-    expect(result.applied).toEqual([1]);
-    expect(currentSchemaVersion(sql)).toEqual([1]);
+    expect(result.applied).toEqual([1, 2]);
+    expect(currentSchemaVersion(sql)).toEqual([1, 2]);
     const rows = sql.all<{ version: number; name: string; applied_at: string }>(
       "SELECT version, name, applied_at FROM pm_schema_migrations",
     );
-    expect(rows).toEqual([{ version: 1, name: "pm_tenant_store", applied_at: NOW }]);
+    expect(rows).toEqual([
+      { version: 1, name: "pm_tenant_store", applied_at: NOW },
+      { version: 2, name: "pm_search_index", applied_at: NOW },
+    ]);
 
     const migrations = await tenantStoreMigrations();
     expect(applyMigrations(sql, migrations, now).applied).toEqual([]);
-    expect(currentSchemaVersion(sql)).toEqual([1]);
+    expect(currentSchemaVersion(sql)).toEqual([1, 2]);
   });
 
   test("create the full PM store schema (design §3 + §5)", async () => {
@@ -109,6 +112,11 @@ describe("migrations", () => {
       "pm_boards",
       "pm_item_metadata",
       "pm_items",
+      "pm_items_fts",
+      "pm_items_fts_config",
+      "pm_items_fts_data",
+      "pm_items_fts_docsize",
+      "pm_items_fts_idx",
       "pm_links",
       "pm_milestones",
       "pm_reconcile_findings",
@@ -142,8 +150,12 @@ describe("migrations", () => {
 
   test("the shipped migration files load in order with parsed versions", async () => {
     const migrations: Migration[] = await tenantStoreMigrations();
-    expect(migrations.map((m) => [m.version, m.name])).toEqual([[1, "pm_tenant_store"]]);
+    expect(migrations.map((m) => [m.version, m.name])).toEqual([
+      [1, "pm_tenant_store"],
+      [2, "pm_search_index"],
+    ]);
     expect(migrations[0]?.sql).toContain("CREATE TABLE pm_writer_leases");
+    expect(migrations[1]?.sql).toContain("CREATE VIRTUAL TABLE pm_items_fts");
   });
 });
 

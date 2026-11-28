@@ -133,7 +133,12 @@ export async function fetchBoardSnapshot(input: {
     parsedItems.push(...parseProjectItems(json, pageUrl, board.id).filter((item) => freshIds.has(item.id)));
     for (const node of freshNodes) {
       const content = node.content;
-      if (content && typeof content.body === "string" && typeof content.number === "number" && content.repository?.nameWithOwner) {
+      if (
+        content &&
+        typeof content.body === "string" &&
+        typeof content.number === "number" &&
+        content.repository?.nameWithOwner
+      ) {
         bodies.set(`${content.repository.nameWithOwner}#${content.number}`, content.body);
       }
     }

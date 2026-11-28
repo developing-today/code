@@ -359,6 +359,37 @@ test("entry-point guard: symlinked invocation runs main, matching direct (#6343)
   await symlink(EXPORTER_PATH, linkPath);
   await assertCdpUnavailableRun(linkPath, "symlink");
 });
+test("a /json/list answer that is not an array is cdp-unavailable, not a crash (#7983 item 9)", async () => {
+  for (const answer of ["{}", "null", '"x"']) {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(answer);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = await mkdtemp(join(tmpdir(), "meta-exporter-list-shape-"));
+      const outDir = join(base, "out");
+      let r;
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          process.execPath,
+          [EXPORTER_PATH, "--cdp-port", String(server.address().port), "--out-dir", outDir],
+          { timeout: 30000 },
+        );
+        r = { code: 0, stdout, stderr };
+      } catch (err) {
+        r = { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+      }
+      assert.equal(r.code, 4, `answer ${answer} must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+      const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+      assert.equal(latest.status, "cdp-unavailable");
+      assert.match(latest.detail, /expected a JSON array of targets/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
 // #2789: num() used to be a bare Number() coercion, so drifted
 // spellings became real measurements ("" -> 0% window, "0x10" -> 16,
 // "1e2" -> 100). Only plain decimal spellings are accepted now.
@@ -593,4 +624,38 @@ test("parseArgs property: generated malformed streams are usage errors naming th
       expectUsage(["--cdp-port", badPorts[Math.floor(rand() * badPorts.length)]], "--cdp-port");
     }
   }
+});
+
+// #8220: the home-resolution contract (#5762). The default --out-dir needs
+// HOME; an unset or empty HOME is a usage error (nothing written), never the
+// passwd fallback, and an explicit --out-dir needs no HOME.
+function withHome(value, fn) {
+  const saved = process.env.HOME;
+  if (value === undefined) delete process.env.HOME;
+  else process.env.HOME = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.HOME;
+    else process.env.HOME = saved;
+  }
+}
+
+for (const value of [undefined, "", "  "]) {
+  test(`#8220: HOME ${value === undefined ? "unset" : JSON.stringify(value)} with no --out-dir is a usage error`, () => {
+    assert.throws(
+      () => withHome(value, () => parseArgs([])),
+      (error) =>
+        error instanceof ExportError &&
+        error.status === "usage" &&
+        error.exitCode === 2 &&
+        error.message.includes(value === undefined ? "HOME is unset" : "HOME is empty") &&
+        error.message.includes("set HOME or pass --out-dir"),
+    );
+  });
+}
+
+test("#8220: an explicit --out-dir needs no HOME, and a set HOME keeps the default path", () => {
+  assert.equal(withHome(undefined, () => parseArgs(["--out-dir", "out"])).outDir, "out");
+  assert.equal(withHome("/home/probe", () => parseArgs([])).outDir, join("/home/probe", "atlas", "meta-quota-export"));
 });

@@ -290,8 +290,11 @@ describe("overview reconciled in-progress set (#1162)", () => {
     const summary = deriveOverview(reconciled);
     const byRef = new Map(summary.inProgress.map((item) => [item.ref, item]));
     expect(byRef.get("developing-today/code#1")?.signals).toEqual(["project-status"]);
+    // #14063: the board card's linked issue and open PR are one work item —
+    // every board signal lands on the canonical issue row, so there is no
+    // separate PR row.
     expect(byRef.get(issueRef)?.signals).toEqual(["active-session", "open-pr"]);
-    expect(byRef.get(prRef)?.signals).toEqual(["open-pr"]);
+    expect(byRef.has(prRef)).toBe(false);
     expect(byRef.get(issueRef)?.disagreement).toEqual({ project: "Todo", derived: "In Progress" });
     expect(JSON.stringify(summary)).toContain('"signals":["active-session","open-pr"]');
   });
@@ -302,6 +305,15 @@ describe("overview reconciled in-progress set (#1162)", () => {
     expect(html).toContain("Active session");
     expect(html).toContain("Open PR");
     expect(html).toContain("⚠ project: Todo · derived: In Progress");
+  });
+
+  test("overview subtitles name the board-derived source and cross-link both surfaces (#14063)", () => {
+    const html = renderOverviewBody(deriveOverview(data));
+    expect(html).toContain("NEEDS USER intake queue");
+    expect(html).toContain("Board-derived work items");
+    expect(html).toContain("not fleet queue tasks");
+    expect(html).toContain('href="/attention"');
+    expect(html).toContain('href="/console/#now"');
   });
 });
 

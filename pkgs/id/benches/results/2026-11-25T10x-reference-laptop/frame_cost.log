@@ -1,0 +1,25 @@
+=== frame_cost rep=1 started=2026-11-25T03:19:38-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost
+profile frame_cost guest=territory seats=2 events=10000 view_fuel=958616 view_wall_us_med=80.9 layout_fuel=958683 layout_calls=5 layout_wall_us_med=80.8 update_fuel_max=59807 applied_secs=0.023
+profile frame_cost guest=territory seats=2 events=100000 view_fuel=958616 view_wall_us_med=79.7 layout_fuel=958683 layout_calls=5 layout_wall_us_med=79.1 update_fuel_max=59807 applied_secs=0.214
+profile frame_cost guest=territory seats=2 events=1000000 view_fuel=958616 view_wall_us_med=121.5 layout_fuel=958683 layout_calls=5 layout_wall_us_med=119.3 update_fuel_max=59807 applied_secs=2.394
+=== frame_cost rep=2 started=2026-11-25T03:19:41-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost
+profile frame_cost guest=territory seats=2 events=10000 view_fuel=958616 view_wall_us_med=79.4 layout_fuel=958683 layout_calls=5 layout_wall_us_med=79.2 update_fuel_max=59807 applied_secs=0.024
+profile frame_cost guest=territory seats=2 events=100000 view_fuel=958616 view_wall_us_med=79.3 layout_fuel=958683 layout_calls=5 layout_wall_us_med=79.6 update_fuel_max=59807 applied_secs=0.225
+profile frame_cost guest=territory seats=2 events=1000000 view_fuel=958616 view_wall_us_med=78.6 layout_fuel=958683 layout_calls=5 layout_wall_us_med=77.9 update_fuel_max=59807 applied_secs=2.265
+=== frame_cost rep=3 started=2026-11-25T03:19:44-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost
+profile frame_cost guest=territory seats=2 events=10000 view_fuel=958616 view_wall_us_med=75.3 layout_fuel=958683 layout_calls=5 layout_wall_us_med=75.0 update_fuel_max=59807 applied_secs=0.020
+profile frame_cost guest=territory seats=2 events=100000 view_fuel=958616 view_wall_us_med=74.9 layout_fuel=958683 layout_calls=5 layout_wall_us_med=74.8 update_fuel_max=59807 applied_secs=0.219
+profile frame_cost guest=territory seats=2 events=1000000 view_fuel=958616 view_wall_us_med=74.4 layout_fuel=958683 layout_calls=5 layout_wall_us_med=73.5 update_fuel_max=59807 applied_secs=2.129
+=== frame_cost rep=4 started=2026-11-25T03:19:47-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost
+profile frame_cost guest=territory seats=2 events=10000 view_fuel=958616 view_wall_us_med=75.4 layout_fuel=958683 layout_calls=5 layout_wall_us_med=74.6 update_fuel_max=59807 applied_secs=0.020
+profile frame_cost guest=territory seats=2 events=100000 view_fuel=958616 view_wall_us_med=80.5 layout_fuel=958683 layout_calls=5 layout_wall_us_med=81.4 update_fuel_max=59807 applied_secs=0.217
+profile frame_cost guest=territory seats=2 events=1000000 view_fuel=958616 view_wall_us_med=76.7 layout_fuel=958683 layout_calls=5 layout_wall_us_med=75.9 update_fuel_max=59807 applied_secs=2.187
+=== frame_cost rep=5 started=2026-11-25T03:19:50-06:00 ===
+fleet-build-lock: slot 1/2, CARGO_BUILD_JOBS=8, CARGO_TARGET_DIR=unset: sh -c /home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost
+profile frame_cost guest=territory seats=2 events=10000 view_fuel=958616 view_wall_us_med=75.7 layout_fuel=958683 layout_calls=5 layout_wall_us_med=76.3 update_fuel_max=59807 applied_secs=0.020
+profile frame_cost guest=territory seats=2 events=100000 view_fuel=958616 view_wall_us_med=77.2 layout_fuel=958683 layout_calls=5 layout_wall_us_med=77.1 update_fuel_max=59807 applied_secs=0.214
+profile frame_cost guest=territory seats=2 events=1000000 view_fuel=958616 view_wall_us_med=76.6 layout_fuel=958683 layout_calls=5 layout_wall_us_med=76.7 update_fuel_max=59807 applied_secs=2.178
