@@ -400,7 +400,8 @@ pub(crate) fn validate_filter(expr: &FilterExpr) -> Result<(), String> {
 
 // A tracking issue may live in code while its deliverable lives elsewhere.
 // Keep tracking identity (and work-identity dedupe) separate from eligibility.
-pub(crate) const IMPLEMENTATION_REPO_SQL: &str = "COALESCE(NULLIF(json_extract(payload, '$.implementation_repo'), ''), \
+pub(crate) const IMPLEMENTATION_REPO_SQL: &str =
+    "COALESCE(NULLIF(json_extract(payload, '$.implementation_repo'), ''), \
     NULLIF(json_extract(payload, '$.repo'), ''), \
     CASE WHEN queue LIKE 'repo-health-%' \
          THEN replace(replace(replace(queue, 'repo-health-', ''), '-pilot', ''), '-shadow', '') \

@@ -54,7 +54,8 @@ use std::sync::Mutex;
 // DDL (referenced from core::SCHEMA, beside placement_sessions)
 // ---------------------------------------------------------------------------
 
-pub(crate) const ACTIONS_EXEC_DDL_SESSIONS: &str = "CREATE TABLE IF NOT EXISTS actions_exec_sessions (\
+pub(crate) const ACTIONS_EXEC_DDL_SESSIONS: &str =
+    "CREATE TABLE IF NOT EXISTS actions_exec_sessions (\
     handle TEXT PRIMARY KEY, host_repo TEXT NOT NULL, workflow TEXT NOT NULL, \
     seat TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open', \
     hide_logs INTEGER NOT NULL DEFAULT 0, \
@@ -65,13 +66,15 @@ pub(crate) const ACTIONS_EXEC_DDL_SESSIONS: &str = "CREATE TABLE IF NOT EXISTS a
     ext_tier INTEGER, ext_decide_after TEXT, ext_reason TEXT, context TEXT, \
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT)";
 
-pub(crate) const ACTIONS_EXEC_DDL_COMMANDS: &str = "CREATE TABLE IF NOT EXISTS actions_exec_commands (\
+pub(crate) const ACTIONS_EXEC_DDL_COMMANDS: &str =
+    "CREATE TABLE IF NOT EXISTS actions_exec_commands (\
     cmd_id TEXT PRIMARY KEY, handle TEXT NOT NULL, seq INTEGER NOT NULL, \
     text TEXT NOT NULL, timeout_s INTEGER NOT NULL DEFAULT 60, \
     state TEXT NOT NULL DEFAULT 'queued', exit_code INTEGER, \
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
-pub(crate) const ACTIONS_EXEC_DDL_COMMANDS_IDX: &str = "CREATE INDEX IF NOT EXISTS actions_exec_commands_handle \
+pub(crate) const ACTIONS_EXEC_DDL_COMMANDS_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS actions_exec_commands_handle \
         ON actions_exec_commands(handle, seq)";
 
 pub(crate) const ACTIONS_EXEC_DDL_IO: &str = "CREATE TABLE IF NOT EXISTS actions_exec_io (\

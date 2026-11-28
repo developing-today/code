@@ -573,13 +573,11 @@ mod tests {
             json!({"repo": "developing-today/code"}),
             "2026-11-10T00:00:00Z",
         );
-        assert!(
-            staleness_verdict(&bare, NOW, true, &mut |_| {
-                called = true;
-                landed("2026-10-01T00:00:00Z")
-            })
-            .is_none()
-        );
+        assert!(staleness_verdict(&bare, NOW, true, &mut |_| {
+            called = true;
+            landed("2026-10-01T00:00:00Z")
+        })
+        .is_none());
         assert!(!called, "no linkage means no lookup");
         // A landing stamp in the future, or unparsable, infers nothing.
         assert!(
@@ -874,38 +872,32 @@ mod tests {
         assert_eq!(stale.tier, 1);
         // Fresh stamp: trusted, and the probe is never called.
         let mut called = false;
-        assert!(
-            filing_verdict(
-                &stamped_task("2026-11-18T11:45:00Z"),
-                NOW,
-                true,
-                &mut |_| {
-                    called = true;
-                    landed("2026-11-17T00:00:00Z")
-                },
-            )
-            .is_none()
-        );
-        assert!(!called, "a fresh stamp means no lookup");
-        // No stamp at all: files as before, no lookup.
-        assert!(
-            filing_verdict(&issue_task(5), NOW, true, &mut |_| {
+        assert!(filing_verdict(
+            &stamped_task("2026-11-18T11:45:00Z"),
+            NOW,
+            true,
+            &mut |_| {
                 called = true;
                 landed("2026-11-17T00:00:00Z")
-            })
-            .is_none()
-        );
+            },
+        )
+        .is_none());
+        assert!(!called, "a fresh stamp means no lookup");
+        // No stamp at all: files as before, no lookup.
+        assert!(filing_verdict(&issue_task(5), NOW, true, &mut |_| {
+            called = true;
+            landed("2026-11-17T00:00:00Z")
+        })
+        .is_none());
         assert!(!called, "no stamp means no filing check");
         // Old stamp but the work is still open: files live.
-        assert!(
-            filing_verdict(
-                &stamped_task("2026-11-18T09:00:00Z"),
-                NOW,
-                true,
-                &mut |_| Landing::Open,
-            )
-            .is_none()
-        );
+        assert!(filing_verdict(
+            &stamped_task("2026-11-18T09:00:00Z"),
+            NOW,
+            true,
+            &mut |_| Landing::Open,
+        )
+        .is_none());
     }
 
     #[test]

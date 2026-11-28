@@ -1547,7 +1547,8 @@ pub(crate) fn claim_by_id(
 /// attribute the claimer does not declare binds NULL and meets
 /// no requirement — the same shape as the platform limitation's
 /// family-less rule (#8217).
-pub(crate) const TASK_REQUIREMENTS_CLAUSE: &str = "(json_extract(payload, '$.requires.platform') IS NULL \
+pub(crate) const TASK_REQUIREMENTS_CLAUSE: &str =
+    "(json_extract(payload, '$.requires.platform') IS NULL \
         OR json_extract(payload, '$.requires.platform') = ?) \
      AND (json_extract(payload, '$.requires.lane') IS NULL \
         OR json_extract(payload, '$.requires.lane') = ?) \
@@ -1908,7 +1909,8 @@ pub(crate) fn budget_bypass_sql() -> String {
 /// condition) keeps its timer release: for those, claim-at-
 /// not_before IS the designed release path (FDR-0008). Literals
 /// only — the predicate's placeholder count is pinned.
-pub(crate) const PARKED_TERM_EXCLUSION: &str = "COALESCE(json_extract(ready_condition, '$.kind'), 'time') \
+pub(crate) const PARKED_TERM_EXCLUSION: &str =
+    "COALESCE(json_extract(ready_condition, '$.kind'), 'time') \
     NOT IN ('task_terminal', 'task_status', 'event_seen', 'person_answer')";
 
 pub(crate) fn default_pick_predicate() -> String {

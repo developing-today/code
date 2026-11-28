@@ -39,7 +39,7 @@
 //! row and returns `{row: null}` (client exit 5), exactly the PG
 //! envelope.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
@@ -56,6 +56,7 @@ mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod lifecycle_limits;
+mod lifecycle_wait;
 mod links;
 mod notes;
 mod placement_coord;
@@ -75,6 +76,7 @@ pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
 pub use lifecycle_limits::*;
+pub use lifecycle_wait::*;
 pub use links::*;
 pub use notes::*;
 pub use placement_coord::*;
@@ -102,6 +104,7 @@ mod tests {
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/lifecycle_limits.rs"),
+            include_str!("turso_queue/lifecycle_wait.rs"),
             include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
@@ -2473,11 +2476,9 @@ mod tests {
                 .and_then(|m| m.variant),
             None
         );
-        assert!(
-            parse_claim_model(&json!({}))
-                .expect("empty claim")
-                .is_none()
-        );
+        assert!(parse_claim_model(&json!({}))
+            .expect("empty claim")
+            .is_none());
         assert!(parse_claim_model(&json!({"model_provider": "_claude"})).is_err());
         assert!(parse_claim_model(&json!({"model_id": "claude-sonnet-5-5"})).is_err());
         assert!(parse_claim_model(&json!({"model_variant": "medium"})).is_err());
@@ -3558,41 +3559,33 @@ mod tests {
         assert_eq!(dep_key(&deps[2]), "task:5865");
         assert_eq!(dep_key(&deps[3]), "ci:developing-today/code#12345");
         // A dep the broker cannot watch is a block-time error.
-        assert!(
-            parse_block_deps(
-                &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
-                "w",
-                now,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_block_deps(
-                &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
-                "w",
-                now,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_block_deps(
-                &json!({"deps": [{"kind": "task", "task_id": -3}]}),
-                "w",
-                now,
-            )
-            .is_err()
-        );
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "pr", "repo": "noslash", "number": 1}]}),
+            "w",
+            now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "pr", "repo": "a/b", "number": 0}]}),
+            "w",
+            now,
+        )
+        .is_err());
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "task", "task_id": -3}]}),
+            "w",
+            now,
+        )
+        .is_err());
         assert!(
             parse_block_deps(&json!({"deps": [{"kind": "ci", "repo": "a/b"}]}), "w", now,).is_err()
         );
-        assert!(
-            parse_block_deps(
-                &json!({"deps": [{"kind": "milestone", "number": 1}]}),
-                "w",
-                now,
-            )
-            .is_err()
-        );
+        assert!(parse_block_deps(
+            &json!({"deps": [{"kind": "milestone", "number": 1}]}),
+            "w",
+            now,
+        )
+        .is_err());
         assert!(parse_block_deps(&json!({"deps": "pr"}), "w", now).is_err());
     }
 
@@ -3812,10 +3805,10 @@ mod tests {
             Some(vec![json!({"kind": "task", "task_id": 20408})])
         );
         assert!(parse_drop_deps(&json!({"drop_deps": "task:20408"})).is_err());
-        assert!(
-            parse_drop_deps(&json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]}))
-                .is_err()
-        );
+        assert!(parse_drop_deps(
+            &json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]})
+        )
+        .is_err());
         assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 0}]})).is_err());
         assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "bogus", "task_id": 1}]})).is_err());
         // Wiring: the client flag and parser, the broker's
@@ -4529,45 +4522,35 @@ mod tests {
         assert!(gate(&fix, &json!({"evidence": ""})).is_err());
         assert!(gate(&fix, &json!({"evidence": []})).is_err());
         // #10611: evidence alone is no longer a completion.
-        assert!(
-            gate(
-                &fix,
-                &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
-            )
-            .is_err()
-        );
-        assert!(
-            gate(
-                &fix,
-                &json!({"pr_url": "https://github.com/developing-today/code/pull/1",
+        assert!(gate(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
+        )
+        .is_err());
+        assert!(gate(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1",
                         "disposition": merged})
-            )
-            .is_ok()
-        );
+        )
+        .is_ok());
         assert!(gate(&fix, &json!({"commit": "abc123", "disposition": merged})).is_ok());
-        assert!(
-            gate(
-                &fix,
-                &json!({"verified_closure": "closed by #1, verified on the issue",
+        assert!(gate(
+            &fix,
+            &json!({"verified_closure": "closed by #1, verified on the issue",
                         "disposition": merged})
-            )
-            .is_ok()
-        );
-        assert!(
-            gate(
-                &fix,
-                &json!({"evidence": ["artifact"], "disposition": merged})
-            )
-            .is_ok()
-        );
+        )
+        .is_ok());
+        assert!(gate(
+            &fix,
+            &json!({"evidence": ["artifact"], "disposition": merged})
+        )
+        .is_ok());
         // A disposition that does not cover the claimed PR is a rejection.
-        assert!(
-            gate(
-                &fix,
-                &json!({"pr_url": "https://x/pull/2", "disposition": merged})
-            )
-            .is_err()
-        );
+        assert!(gate(
+            &fix,
+            &json!({"pr_url": "https://x/pull/2", "disposition": merged})
+        )
+        .is_err());
     }
 
     #[test]
@@ -4742,11 +4725,9 @@ mod tests {
         assert!(err.contains("#9245") && err.contains("follow_up"), "{err}");
         // a follow-up task that does not exist
         let follow = json!({"task_id": 17413, "reason": "#9245 stays with 17413"});
-        assert!(
-            complete(follow.clone(), &[])
-                .unwrap_err()
-                .contains("does not exist")
-        );
+        assert!(complete(follow.clone(), &[])
+            .unwrap_err()
+            .contains("does not exist"));
         // a terminal one
         assert!(
             complete(follow.clone(), &[successor(17413, "done", Some(9155))])
@@ -4761,11 +4742,9 @@ mod tests {
         );
         // the completing task itself
         let own = json!({"task_id": 15345, "reason": "r"});
-        assert!(
-            complete(own, &[successor(15345, "claimed", Some(9155))])
-                .unwrap_err()
-                .contains("its own successor")
-        );
+        assert!(complete(own, &[successor(15345, "claimed", Some(9155))])
+            .unwrap_err()
+            .contains("its own successor"));
         // a real successor task
         assert_eq!(
             complete(follow, &[successor(17413, "queued", Some(9155))]).unwrap(),
@@ -4811,13 +4790,11 @@ mod tests {
         // Already-solved needs a real evidence reference AND the
         // verified disposition (#10611).
         assert!(gate(&triage, &json!({"triage_outcome": "already_solved"})).is_err());
-        assert!(
-            gate(
-                &triage,
-                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
-            )
-            .is_err()
-        );
+        assert!(gate(
+            &triage,
+            &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+        )
+        .is_err());
         assert_eq!(
             gate(
                 &triage,
@@ -4861,16 +4838,14 @@ mod tests {
         let follow = json!({"task_id": 17413, "reason": "#9245 still carries the #9155 work"});
         let mut handed = receipt.clone();
         handed["disposition"] = open_9155_with_draft(follow);
-        assert!(
-            gate_with(
-                &triage,
-                Some(9155),
-                false,
-                &[successor(17413, "cancelled", Some(9155))],
-                &handed
-            )
-            .is_err()
-        );
+        assert!(gate_with(
+            &triage,
+            Some(9155),
+            false,
+            &[successor(17413, "cancelled", Some(9155))],
+            &handed
+        )
+        .is_err());
         // A legitimate triage that records a live handoff passes.
         assert_eq!(
             gate_with(
@@ -5858,14 +5833,12 @@ mod tests {
         // claim_race idiom: no live store needed). A valid
         // limitation refuses every other family, and a claim
         // declaring no family at all:
-        assert!(
-            platform_limit_refusal(
-                Some("muse"),
-                Some("needs the muse surface"),
-                Some("openchamber"),
-            )
-            .is_some()
-        );
+        assert!(platform_limit_refusal(
+            Some("muse"),
+            Some("needs the muse surface"),
+            Some("openchamber"),
+        )
+        .is_some());
         assert!(
             platform_limit_refusal(Some("muse"), Some("needs the muse surface"), None,).is_some()
         );
@@ -6175,11 +6148,9 @@ mod tests {
         assert_eq!(task_repo_identity(&row), "developing-today/code");
         assert_eq!(work_identity(&row).unwrap().repo, "developing-today/code");
         let unknown = json!({"payload":{"repo":"developing-today/code", "risk":{"flags":["cross-repo-change"]}}});
-        assert!(
-            claim_guard_reason(&unknown)
-                .unwrap()
-                .contains("implementation_repo")
-        );
+        assert!(claim_guard_reason(&unknown)
+            .unwrap()
+            .contains("implementation_repo"));
         let legacy =
             json!({"queue":"repo-health-code-pilot", "payload":{"repo":"developing-today/code"}});
         assert!(filter_matches(

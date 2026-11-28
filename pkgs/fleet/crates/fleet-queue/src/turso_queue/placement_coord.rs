@@ -40,7 +40,8 @@ pub(crate) const GRANT_TTL_SECS: i64 = 120;
 /// + `confirmed` rows; `confirmed` rows stop counting once their
 /// run is observed live (GitHub then carries them) — the sweep
 /// owns that recomputation.
-pub(crate) const PLACEMENT_COORD_DDL_OWNER: &str = "CREATE TABLE IF NOT EXISTS placement_owner_state (\
+pub(crate) const PLACEMENT_COORD_DDL_OWNER: &str =
+    "CREATE TABLE IF NOT EXISTS placement_owner_state (\
     owner TEXT PRIMARY KEY, cap INTEGER NOT NULL DEFAULT 0, \
     gh_running INTEGER NOT NULL DEFAULT 0, gh_queued INTEGER NOT NULL DEFAULT 0, \
     load_read_at TEXT, load_source TEXT, claims_active INTEGER NOT NULL DEFAULT 0, \
@@ -60,12 +61,14 @@ pub(crate) const PLACEMENT_COORD_DDL_CLAIMS: &str = "CREATE TABLE IF NOT EXISTS 
 /// `reserved` at claim, converted to `used` at settle. The budget
 /// itself (`budget_minutes`) is re-synced from the embedded
 /// registry on every claim — the registry is the authority.
-pub(crate) const PLACEMENT_COORD_DDL_BUDGETS: &str = "CREATE TABLE IF NOT EXISTS placement_budgets (\
+pub(crate) const PLACEMENT_COORD_DDL_BUDGETS: &str =
+    "CREATE TABLE IF NOT EXISTS placement_budgets (\
     month TEXT NOT NULL, surface TEXT NOT NULL, budget_minutes REAL NOT NULL DEFAULT 0, \
     reserved_minutes REAL NOT NULL DEFAULT 0, used_minutes REAL NOT NULL DEFAULT 0, \
     updated_at TEXT NOT NULL, PRIMARY KEY (month, surface))";
 /// FIFO promotion order is `(owner, state, created_at)`.
-pub(crate) const PLACEMENT_COORD_DDL_CLAIMS_IDX: &str = "CREATE INDEX IF NOT EXISTS placement_claims_owner_state \
+pub(crate) const PLACEMENT_COORD_DDL_CLAIMS_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS placement_claims_owner_state \
     ON placement_claims(owner, state, created_at)";
 
 /// The embedded surface registry — the same file the placement

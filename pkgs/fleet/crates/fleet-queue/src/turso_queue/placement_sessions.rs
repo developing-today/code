@@ -223,63 +223,60 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = captured.clone();
-        std::thread::spawn(move || {
+        std::thread::spawn(move || loop {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(sock.try_clone().unwrap());
+            let mut content_length = 0usize;
             loop {
-                let Ok((mut sock, _)) = listener.accept() else {
-                    return;
-                };
-                let mut reader = BufReader::new(sock.try_clone().unwrap());
-                let mut content_length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                        break;
-                    }
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        break;
-                    }
-                    if let Some((name, value)) = trimmed.split_once(':') {
-                        if name.trim().eq_ignore_ascii_case("content-length") {
-                            content_length = value.trim().parse().unwrap_or(0);
-                        }
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = trimmed.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
                     }
                 }
-                let mut body = vec![0u8; content_length];
-                if reader.read_exact(&mut body).is_err() {
-                    return;
-                }
-                let text = String::from_utf8_lossy(&body).to_string();
-                let executes = text.matches("\"type\":\"execute\"").count();
-                let is_select = text.contains("SELECT record FROM placement_sessions");
-                sink.lock().unwrap().push(text);
-                let mut results = Vec::new();
-                for i in 0..executes {
-                    let result = if is_select && i == 0 {
-                        let rows: Vec<Value> = select_rows
-                            .iter()
-                            .map(|r| json!([{"type": "text", "value": r}]))
-                            .collect();
-                        json!({"cols": [{"name": "record"}], "rows": rows,
+            }
+            let mut body = vec![0u8; content_length];
+            if reader.read_exact(&mut body).is_err() {
+                return;
+            }
+            let text = String::from_utf8_lossy(&body).to_string();
+            let executes = text.matches("\"type\":\"execute\"").count();
+            let is_select = text.contains("SELECT record FROM placement_sessions");
+            sink.lock().unwrap().push(text);
+            let mut results = Vec::new();
+            for i in 0..executes {
+                let result = if is_select && i == 0 {
+                    let rows: Vec<Value> = select_rows
+                        .iter()
+                        .map(|r| json!([{"type": "text", "value": r}]))
+                        .collect();
+                    json!({"cols": [{"name": "record"}], "rows": rows,
                                "affected_row_count": 0, "last_insert_rowid": null})
-                    } else {
-                        json!({"cols": [], "rows": [],
+                } else {
+                    json!({"cols": [], "rows": [],
                                "affected_row_count": 1, "last_insert_rowid": null})
-                    };
-                    results.push(
-                        json!({"type": "ok", "response": {"type": "execute", "result": result}}),
-                    );
-                }
-                let resp_body = json!({"results": results}).to_string();
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                };
+                results
+                    .push(json!({"type": "ok", "response": {"type": "execute", "result": result}}));
+            }
+            let resp_body = json!({"results": results}).to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    resp_body.len(),
-                    resp_body
-                );
-                if sock.write_all(resp.as_bytes()).is_err() {
-                    return;
-                }
+                resp_body.len(),
+                resp_body
+            );
+            if sock.write_all(resp.as_bytes()).is_err() {
+                return;
             }
         });
         (format!("http://{addr}"), captured)

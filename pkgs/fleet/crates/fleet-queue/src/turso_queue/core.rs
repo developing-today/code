@@ -11,7 +11,8 @@ pub const DEFAULT_TURSO_URL: &str =
     "https://d1-gateway.developing-today.workers.dev/db/fleet-queue";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
-pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
+pub(crate) const TASK_COLS: &str =
+    "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, claim_session_id, resume_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
@@ -20,7 +21,8 @@ pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds, \
     resolution, resolution_category, resolution_substatus, resolution_reason, resolution_ref, \
     resolved_by, resolved_at";
-pub(crate) const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, \
+pub(crate) const LEDGER_COLS: &str =
+    "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, \
     exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
     assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
