@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use super::*;
 
 pub(super) fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_verb_args(
+    let args = parse_verb_args_multi(
         "claim",
         rest,
         &[
@@ -20,6 +20,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "lease-seconds",
             "lane",
             "task",
+            "tasks",
             "count",
             "from-session",
             "platform",
@@ -33,7 +34,9 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             "remaining-budget-minutes",
             "manual-override",
         ],
-        &["handoff", "bind"],
+        &["handoff", "bind", "take-over"],
+        // #9178 §3: --task repeats to name a batch of tasks.
+        &["task"],
     );
     reject_extra_pos("claim", &args, 0);
     // #8606: a zero-intent claim refuses before any broker
@@ -148,8 +151,64 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
     // ordinary predicate, or a sink row). The opencode claimant
     // uses this to collect handed-off tasks out of the sink; a
     // plain claim never names a task.
-    if let Some(task) = args.get_i64("task") {
-        body["task_id"] = json!(task);
+    // A repeated (or comma-joined) --task names a by-ids batch
+    // instead (derived below); only a single --task is a by-id
+    // claim of exactly one row.
+    let repeated_task_batch =
+        args.get("tasks").is_none() && args.get_list("task").len() > 1;
+    if !repeated_task_batch {
+        if let Some(task) = args.get_i64("task") {
+            body["task_id"] = json!(task);
+        }
+    }
+    // --tasks <id,id,...> (#9178 §3): by-ids batch claim — claim
+    // several NAMED tasks for this session in one operation; the
+    // broker answers with a per-task result for every id. It
+    // names its rows explicitly, so it combines with no other
+    // naming or picking shape; --take-over is its one modifier.
+    let task_ids = match parse_task_ids_flag(args.get("tasks")) {
+        Ok(ids) => ids,
+        Err(e) => die(2, &e),
+    };
+    // Repeated --task <id> (#9178 §3, ported from PR #16396): the
+    // section's example form — `--task <id1> --task <id2>` — names
+    // the same batch as --tasks; the multi parser accumulated the
+    // occurrences comma-joined, so get_list reads every id.
+    let task_ids = if task_ids.is_empty() && repeated_task_batch {
+        args.get_list("task")
+            .iter()
+            .map(|raw| match parse_i64_flag("task", raw) {
+                Ok(n) if n > 0 => n,
+                Ok(_) => die(2, "claim: --task ids must be positive task ids (#9178 §3)"),
+                Err(msg) => die(2, &msg),
+            })
+            .collect::<Vec<i64>>()
+    } else {
+        task_ids
+    };
+    if !task_ids.is_empty() {
+        if (args.has("task") && !repeated_task_batch)
+            || args.has("handoff")
+            || args.get("from-session").is_some()
+            || args.get("manual-override").is_some()
+            || args.has("bind")
+            || args.get_i64("count").unwrap_or(1) != 1
+        {
+            die(
+                2,
+                "claim: --tasks cannot combine with --task, --handoff, \
+                 --from-session, --manual-override, --count, or --bind (#9178 §3)",
+            );
+        }
+        body["task_ids"] = json!(task_ids);
+        if args.has("take-over") {
+            body["take_over"] = json!(true);
+        }
+    } else if args.has("take-over") {
+        die(
+            2,
+            "claim: --take-over requires a by-ids batch (--tasks <id,id,...> or repeated --task) (#9178 §3)",
+        );
     }
     if let Some(reason) = args.get("manual-override") {
         if args.get_i64("task").filter(|task| *task > 0).is_none() {
@@ -239,6 +298,21 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             }
         }
         return claim_batch_output(&resp, &worker, count);
+    }
+    if !task_ids.is_empty() {
+        // #9178 §3: timeline appends for the rows this operation
+        // newly claimed (already-owned rows keep the binding
+        // window their original claim opened).
+        if let Some(results) = resp.get("results").and_then(|r| r.as_array()) {
+            for result in results {
+                if result.get("outcome").and_then(|v| v.as_str()) == Some("claimed") {
+                    if let Some(row) = result.get("row") {
+                        claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+                    }
+                }
+            }
+        }
+        return claim_by_ids_output(&resp, &worker, task_ids.len() as i64);
     }
     // #9046: mirror the claim's binding + stamp into the
     // timeline (a no-op when the broker stamped in-op).
@@ -411,6 +485,148 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
             crate::BATCH_CLAIM_MAX
         )),
     }
+}
+
+/// #9178 §3: --tasks <id,id,...> parsing for the by-ids batch
+/// claim. Pure so the shape is unit-testable: a comma-separated
+/// list of positive task ids; anything else is a usage error.
+/// Absent flag is an empty list (not a by-ids claim at all).
+pub(super) fn parse_task_ids_flag(raw: Option<String>) -> Result<Vec<i64>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        let id: i64 = part.parse().map_err(|_| {
+            format!("claim --tasks: {part:?} is not a task id (#9178 §3)")
+        })?;
+        if id <= 0 {
+            return Err(format!(
+                "claim --tasks: task ids must be positive (got {id}) (#9178 §3)"
+            ));
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Err("claim --tasks must name at least one task id (#9178 §3)".to_string());
+    }
+    Ok(ids)
+}
+
+/// The by-ids batch claim's response handling (#9178 §3): the
+/// broker resolved every named id to a per-task outcome. Rows
+/// this session now holds go through the same payload defense
+/// and #6741 fallback guard as a single claim; a guard-held row
+/// is blocked back and its outcome is rewritten to guard-held so
+/// the printed results never claim a serve the guard refused.
+/// Prints {"results": [...], "tasks": [...], "claimed": k,
+/// "requested": n, "guard_held": [...]}. Exit 0 when the session
+/// holds at least one of the named tasks afterwards (claimed or
+/// already-owned); NO_CLAIM_EXIT otherwise.
+pub(super) fn claim_by_ids_output(resp: &Value, worker: &str, requested: i64) -> i32 {
+    let mut results = resp
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    let mut github_read = true;
+    for result in results.iter_mut() {
+        let outcome = result
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if outcome != "claimed" && outcome != "already-owned-by-this-session" {
+            continue;
+        }
+        let Some(row) = result.get("row").cloned() else {
+            continue;
+        };
+        // Payload defense in depth, as in claim_output (#5444).
+        if let Some(payload) = row.get("payload") {
+            if payload.is_null() || payload.as_object().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+        }
+        match fallback_guard(&row, worker) {
+            GuardOutcome::HeldBy(holder) => {
+                let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let (repo, issue) = task_issue(&row);
+                let blocker = format!(
+                    "issue {repo}#{issue} is held in the GitHub fallback by {holder}; \
+                     primary-store claim auto-blocked to prevent double-serve (#6741)"
+                );
+                let resp = call(
+                    "/block",
+                    &json!({
+                        "task_id": task_id,
+                        "worker": worker,
+                        "reason_class": "fallback_held",
+                        "blocker": blocker,
+                        "progress": {},
+                    }),
+                );
+                if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                    eprint(
+                        "repo-queue: WARNING: fallback guard block failed; \
+                         the task stays claimed under its lease",
+                    );
+                }
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert("outcome".to_string(), json!("guard-held"));
+                    obj.insert("held_by".to_string(), json!(holder));
+                }
+                held.push(json!({
+                    "task": task_id,
+                    "held_by": holder,
+                    "repo": repo,
+                    "issue": issue,
+                }));
+            }
+            GuardOutcome::Unchecked(e) => {
+                github_read = false;
+                let mut row = row;
+                if let Some(o) = row.as_object_mut() {
+                    o.insert(
+                        "guard_warning".to_string(),
+                        json!(format!(
+                            "fallback double-serve guard could not check GitHub: {e}"
+                        )),
+                    );
+                }
+                tasks.push(row);
+            }
+            GuardOutcome::Serve => tasks.push(row),
+        }
+    }
+    let claimed = results
+        .iter()
+        .filter(|r| r.get("outcome").and_then(|v| v.as_str()) == Some("claimed"))
+        .count();
+    let held_by_session = results.iter().filter(|r| {
+        matches!(
+            r.get("outcome").and_then(|v| v.as_str()),
+            Some("claimed") | Some("already-owned-by-this-session")
+        )
+    })
+    .count();
+    let mut out = json!({
+        "results": results,
+        "tasks": tasks,
+        "claimed": claimed,
+        "requested": requested,
+        "guard_held": held,
+    });
+    attach_mode_line(&mut out, "claim", legs_served(true, github_read));
+    print_json(&out);
+    if held_by_session == 0 {
+        eprint("repo-queue: by-ids claim held none of the named tasks (#9178 §3)");
+        return NO_CLAIM_EXIT;
+    }
+    0
 }
 
 /// The batch claim's response handling (#8217): the broker ran the

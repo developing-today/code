@@ -423,6 +423,7 @@ mod tests {
                     "lease-seconds",
                     "lane",
                     "task",
+                    "tasks",
                     "count",
                     "from-session",
                     "platform",
@@ -436,7 +437,7 @@ mod tests {
                     "remaining-budget-minutes",
                     "manual-override",
                 ],
-                &["handoff", "bind"],
+                &["handoff", "bind", "take-over"],
             )
         };
         // Bare: no arguments at all — the probing shape.
@@ -467,6 +468,7 @@ mod tests {
             .is_none()
         );
         assert!(bare_claim_refusal(&mk(&["--task", "123"]), &None).is_none());
+        assert!(bare_claim_refusal(&mk(&["--tasks", "123,124"]), &None).is_none());
         assert!(bare_claim_refusal(&mk(&["--filter", "repo = code"]), &None).is_none());
         assert!(
             bare_claim_refusal(
@@ -772,6 +774,74 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn repeated_task_flag_accumulates_for_batch_by_id_9178() {
+        // #9178 §3 (ported from PR #16396): --task repeats to name
+        // a batch. Oracle: every occurrence is kept (repeated and
+        // comma-joined forms read alike), while any other repeated
+        // flag stays a usage error.
+        let argv = |words: &[&str]| {
+            words.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        };
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11", "--task", "22"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22"]);
+        assert_eq!(args.get("task").as_deref(), Some("11,22"));
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11,22", "--task", "33"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22", "33"]);
+        let single = parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"])
+            .unwrap();
+        assert_eq!(single.get_i64("task"), Some(11));
+        // A repeated non-repeatable flag is still rejected.
+        assert!(
+            parse_args_inner_multi(&argv(&["--worker", "a", "--worker", "b"]), &["worker"], &[], &[])
+                .is_err()
+        );
+        // A repeatable boolean is still a duplicate-flag error.
+        assert!(
+            parse_args_inner_multi(
+                &argv(&["--bind", "--bind"]),
+                &["task"],
+                &["bind"],
+                &["bind"],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_ids_flag_parses_the_named_batch_9178() {
+        // #9178 §3 oracle: --tasks names the batch explicitly —
+        // a comma-separated list of positive ids, whitespace
+        // tolerated; an absent flag is no batch; anything else
+        // is a usage error, never a silent pick.
+        assert_eq!(parse_task_ids_flag(None), Ok(vec![]));
+        assert_eq!(
+            parse_task_ids_flag(Some("12,34".to_string())),
+            Ok(vec![12, 34])
+        );
+        assert_eq!(
+            parse_task_ids_flag(Some(" 7 , 8 ,9".to_string())),
+            Ok(vec![7, 8, 9])
+        );
+        assert!(parse_task_ids_flag(Some("".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("0".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("-3".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,x".to_string())).is_err());
+        assert!(parse_task_ids_flag(Some("12,".to_string())).is_err());
     }
 
     #[test]

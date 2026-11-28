@@ -121,6 +121,18 @@ omitting it leaves such tasks unclaimed. No claimable task is
 `{"task": null}`, exit **5**, with counts (`queued`, `at_cap_queued`,
 `queued_not_yet_due`, `parked_due`) explaining why.
 
+A claim may instead name several tasks at once: `--tasks <id,id,...>`
+(#9178 §3) claims each named task for the claiming session in one
+operation and reports a per-task outcome — `claimed`,
+`already-owned-by-this-session`, `skipped-claimed`, `not-found`, or
+`failed` with a reason. Tasks claimed by another worker are skipped
+with their claims unchanged; `--take-over` transfers a named
+live-claimed task directly from its recorded holder session, with
+both sides of the transfer on the claimed event. Repeating
+`--task <id>` names the same batch. The named form
+never picks: it combines with neither a single `--task`, `--count`,
+`--from-session`, `--manual-override`, `--handoff`, nor `--bind`.
+
 An enqueue may set the task's top-level `manual_only` flag. It defaults to
 false and is persisted on the task row with the enqueue audit event. Automatic
 default and handoff picks always skip flagged tasks, regardless of priority or
