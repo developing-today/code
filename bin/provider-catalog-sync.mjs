@@ -525,10 +525,63 @@ export function makeEntry(providerId, modelId, siblings, modelsDevEntry) {
 // ---------------------------------------------------------------------------
 // Sources
 // ---------------------------------------------------------------------------
-async function fetchJson(url, timeoutMs = 15000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+// Largest response body fetchJson will buffer (#16505). models.dev's api.json
+// is low-single-digit MB; anything past this fails closed so a runaway
+// endpoint cannot OOM the sync process. A timeout bounds duration, never
+// bytes: a fast endpoint can deliver gigabytes inside the window and
+// res.json() buffers it all before parsing.
+export const FETCH_JSON_MAX_BYTES = 8 * 1024 * 1024;
+
+export class ResponseTooLargeError extends Error {
+  constructor(url, seenBytes, maxBytes) {
+    super(`response body for ${url} exceeds ${maxBytes} byte cap (stopped after ${seenBytes} bytes)`);
+    this.name = 'ResponseTooLargeError';
+    this.url = url;
+    this.seenBytes = seenBytes;
+    this.maxBytes = maxBytes;
+  }
+}
+
+// Stream res's body as text without ever buffering past maxBytes. A declared
+// content-length past the cap rejects without reading the body at all;
+// otherwise chunks are pulled until done, and the first chunk that pushes
+// the total past the cap cancels the stream and rejects.
+export async function readCappedText(res, url, maxBytes = FETCH_JSON_MAX_BYTES) {
+  const declared = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { await res.body?.cancel?.(); } catch { /* best effort */ }
+    throw new ResponseTooLargeError(url, declared, maxBytes);
+  }
+  if (typeof res.body?.getReader !== 'function') {
+    const text = await res.text();
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (bytes > maxBytes) throw new ResponseTooLargeError(url, bytes, maxBytes);
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value?.byteLength ?? value?.length ?? 0;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* best effort */ }
+        throw new ResponseTooLargeError(url, total, maxBytes);
+      }
+      chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value));
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* stream already cancelled */ }
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
+export async function fetchJson(url, timeoutMs = 15000, fetchImpl = fetch) {
+  const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  return JSON.parse(await readCappedText(res, url));
 }
 
 function modelIdsFromProxyResponse(data) {

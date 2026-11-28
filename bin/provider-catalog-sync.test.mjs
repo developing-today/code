@@ -25,6 +25,10 @@ import {
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
   parseModelsDev,
+  fetchJson,
+  readCappedText,
+  ResponseTooLargeError,
+  FETCH_JSON_MAX_BYTES,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -587,4 +591,85 @@ test('a drifted models.dev file is reported as unavailable, not read as zero mod
   fs.writeFileSync(modelsDev, JSON.stringify({ openai: { models: ['gpt-x'] } }));
   const { report } = await runSync({ configPath, modelsDevSpec: modelsDev, sourceDir });
   assert.match(report.models_dev, /^unavailable \(models\.dev provider "openai"\.models must be an object/);
+});
+
+// Byte-budgeted fetch (#16505). Oracle: a stubbed fetch serving an over-cap
+// body must make fetchJson reject with ResponseTooLargeError after pulling
+// only cap + one chunk — the run fails closed instead of buffering the
+// whole body. A timeout bounds duration, never bytes.
+const CHUNK_BYTES = 64 * 1024;
+
+function streamingStub(totalBytes, { contentLength = null } = {}) {
+  let pulled = 0;
+  let chunks = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      chunks += 1;
+      const n = Math.min(CHUNK_BYTES, totalBytes - pulled);
+      pulled += n;
+      controller.enqueue(new Uint8Array(n));
+      if (pulled >= totalBytes) controller.close();
+    },
+  });
+  return {
+    get pulled() { return pulled; },
+    get chunks() { return chunks; },
+    get total() { return totalBytes; },
+    response: new Response(stream, {
+      status: 200,
+      headers: contentLength === null ? {} : { 'content-length': String(contentLength) },
+    }),
+  };
+}
+
+test('readCappedText fails closed on an over-cap stream without buffering it all (#16505)', async () => {
+  const cap = 1000;
+  const stub = streamingStub(cap * 50);
+  await assert.rejects(readCappedText(stub.response, 'http://x/y', cap), ResponseTooLargeError);
+  // Only cap + one chunk was ever pulled from the stream.
+  assert.ok(stub.pulled <= cap + CHUNK_BYTES, `pulled ${stub.pulled} bytes past a ${cap} cap`);
+});
+
+test('readCappedText rejects on content-length alone without reading the body (#16505)', async () => {
+  const cap = 1000;
+  const stub = streamingStub(cap * 50, { contentLength: cap * 50 });
+  await assert.rejects(
+    readCappedText(stub.response, 'http://x/y', cap),
+    /exceeds 1000 byte cap/,
+  );
+  assert.equal(stub.pulled, 0);
+  assert.equal(stub.chunks, 0);
+});
+
+test('readCappedText passes an under-cap body through unchanged (#16505)', async () => {
+  const stub = streamingStub(500);
+  const filler = 'a'.repeat(500);
+  const res = new Response(filler, { status: 200 });
+  assert.equal(await readCappedText(res, 'http://x/y', 1000), filler);
+  assert.equal(stub.pulled, 500);
+});
+
+test('fetchJson parses an under-cap body and fails closed past the default cap (#16505)', async () => {
+  const okFetch = async () => new Response(JSON.stringify({ data: [{ id: 'm' }] }), { status: 200 });
+  assert.deepEqual(await fetchJson('http://127.0.0.1:9/v1/models', 10000, okFetch), { data: [{ id: 'm' }] });
+
+  const big = streamingStub(FETCH_JSON_MAX_BYTES * 2, {});
+  const bigFetch = async () => big.response;
+  await assert.rejects(
+    fetchJson('https://models.dev/api.json', 30000, bigFetch),
+    (err) => err instanceof ResponseTooLargeError && /exceeds 8388608 byte cap/.test(err.message),
+  );
+  // Fail-closed oracle: the stream was abandoned early (far less than the
+  // ~16 MiB offered was ever pulled) and resident chunks stay bounded by
+  // cap + prefetch slack — the body is never buffered whole. (+2 chunks:
+  // ReadableStream may pull one chunk ahead of the reader.)
+  assert.ok(big.pulled < big.total, `consumed the whole ${big.total}-byte stream`);
+  assert.ok(big.pulled <= FETCH_JSON_MAX_BYTES + 2 * CHUNK_BYTES, `pulled ${big.pulled} past the cap`);
+});
+
+test('fetchJson keeps the existing non-ok and shape-error behavior (#16505)', async () => {
+  const http500 = async () => new Response('x', { status: 500 });
+  await assert.rejects(fetchJson('http://127.0.0.1:9/v1/models', 10000, http500), /HTTP 500/);
+  const badJson = async () => new Response('not json', { status: 200 });
+  await assert.rejects(fetchJson('http://127.0.0.1:9/v1/models', 10000, badJson), SyntaxError);
 });
