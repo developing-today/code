@@ -52,6 +52,14 @@
 //! throws on every receiving client, in a step's `mark` field and in
 //! a slice node's `marks` alike.
 //!
+//! A node's own required attrs are checked the same way: the
+//! `image` node of `editor.ts` declares `attrs: {src: {}, alt:
+//! {default: null}, …}` — `src` is the only node attr in either
+//! editor schema with no default, so `prosemirror-model` refuses an
+//! image without a string `src` when a client parses the step
+//! (`Node.fromJSON`). A stored src-less image therefore throws on
+//! every receiving client.
+//!
 //! This does not yet prove that a structurally plausible step applies
 //! against the evolving document. Full server-side application is the
 //! later stage of #1618.
@@ -543,6 +551,27 @@ fn check_content_marks(kind: &str, children: &[Value]) -> Result<(), String> {
     Ok(())
 }
 
+/// Check a slice node's own required attrs. Only `image` has one:
+/// `editor.ts` declares its `src` attr with no default (`src: {}`,
+/// where every other node attr in either schema declares one), so
+/// `prosemirror-model` refuses an image whose `src` is missing or
+/// not a string when a client parses the step (`Node.fromJSON`
+/// throws, as slice 7 established for the `link` mark's `href`).
+fn check_node_attrs(kind: &str, node: &Map<String, Value>) -> Result<(), String> {
+    if kind != "image" {
+        return Ok(());
+    }
+    let has_string_src = node
+        .get("attrs")
+        .and_then(Value::as_object)
+        .and_then(|attrs| attrs.get("src"))
+        .is_some_and(Value::is_string);
+    if !has_string_src {
+        return Err("node `image` needs a string `src` attr".to_owned());
+    }
+    Ok(())
+}
+
 /// The size of one node inside a slice, checked against the schema.
 fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, String> {
     if depth >= MAX_NODE_DEPTH {
@@ -570,6 +599,7 @@ fn node_size(schema: StepSchema, node: &Value, depth: usize) -> Result<u64, Stri
         None | Some(Value::Object(_) | Value::Null) => {}
         Some(_) => return Err(format!("node `{kind}` has non-object `attrs`")),
     }
+    check_node_attrs(kind, node)?;
     let content = match node.get("content") {
         None | Some(Value::Null) => None,
         Some(Value::Array(children)) => Some(children.as_slice()),
@@ -1063,6 +1093,55 @@ mod tests {
                 check_steps(rich(), size, &[step.clone()]).is_ok(),
                 "refused valid {step}"
             );
+        }
+    }
+
+    #[test]
+    fn image_nodes_need_a_string_src() {
+        // Oracle: `web/src/editor.ts` declares the image node
+        // `attrs: {src: {}, alt: {default: null}, title: {default:
+        // null}, …}`; with no default for `src`, prosemirror-model
+        // (the attr computation slice 7 verified against 1.25.12 for
+        // the link mark's `href`) throws in `Node.fromJSON` for an
+        // image whose `src` is missing or not a string — "No value
+        // supplied for attribute src". Every slice position that
+        // carries a node is refused the same way.
+        let refused = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).unwrap_err().reason
+        };
+        for node in [
+            // No attrs at all, empty attrs, a null src and a numeric
+            // src all fail the client's parse.
+            json!({"type": "image"}),
+            json!({"type": "image", "attrs": {}}),
+            json!({"type": "image", "attrs": {"src": null}}),
+            json!({"type": "image", "attrs": {"src": 42}}),
+            // Nested inside a paragraph, the natural inline parent.
+            json!({"type": "paragraph", "content": [{"type": "image"}]}),
+        ] {
+            let reason = refused(node.clone());
+            assert!(reason.contains("image"), "{reason}");
+            assert!(reason.contains("src"), "{reason}");
+        }
+        // Valid controls: an image with a string src (bare, and with
+        // the optional defaulted attrs), and leaf nodes with no
+        // required attrs carrying none.
+        let valid = |node: Value| {
+            let step = json!({"stepType": "replace", "from": 0, "to": 0,
+                              "slice": {"content": [node]}});
+            check_steps(rich(), 2, &[step]).is_ok()
+        };
+        for node in [
+            json!({"type": "image", "attrs": {"src": "x.png"}}),
+            json!({"type": "image", "attrs": {"src": "x.png", "alt": "x", "title": null}}),
+            json!({"type": "paragraph", "content": [
+                {"type": "image", "attrs": {"src": "x.png"}}]}),
+            json!({"type": "hard_break"}),
+            json!({"type": "horizontal_rule"}),
+        ] {
+            assert!(valid(node.clone()), "refused valid {node}");
         }
     }
 }
