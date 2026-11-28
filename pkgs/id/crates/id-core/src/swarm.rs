@@ -31,10 +31,19 @@
 //! PoC status: this is the review-gated proof of concept for #2261.
 //! Fixture benchmarks for the required matrix (1 vs 2 vs 4 holders,
 //! partial mix, holder leaving, optimistic mode) live in
-//! `tests/swarm_bench.rs` and are reported on the issue. The fetch-loop
-//! wiring in the `get` path and live multi-holder benchmarks are the
-//! remaining steps recorded on the issue; nothing here is the permanent
-//! retrieval path until that review round decides.
+//! `tests/swarm_bench.rs`. Those fixtures simulate transport outcomes; they
+//! are not a live multi-holder transfer demonstration.
+//!
+//! The pinned `iroh-blobs` 0.103 API does provide the primitives for a real
+//! adapter: `Remote::execute_get(conn, GetRequest)` persists authenticated
+//! range responses in the local store, and `GetRequest::blob_ranges` accepts
+//! Bao `ChunkRanges`. In contrast, `Remote::fetch` accepts a whole hash and
+//! computes the missing ranges itself, so it cannot drive these holder-specific
+//! assignments. `execute_get`'s progress reports bytes, not verified group
+//! outcomes, so the adapter still needs to translate completion/error into
+//! scheduler events (and distinguish a missing range from a failed transfer).
+//! No production `get` path calls this scheduler yet; that opt-in integration,
+//! two-holder loopback proof and provider-table wiring remain follow-up work.
 
 use std::collections::BTreeMap;
 
