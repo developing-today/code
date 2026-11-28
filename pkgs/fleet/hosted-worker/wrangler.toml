@@ -17,6 +17,9 @@ workers_dev = true
 # live in this file.
 [vars]
 RP_AUDIENCE = "fleet-hosted"
+# VERSION is deliberately not set here: cf-worker-versions-release.yml
+# stamps it per deploy with the deployed commit (#15793), and the
+# Worker's /version route reports it (src/health.ts versionAnswer).
 
 # The message bridge, by service binding (#14373): the bridge door
 # calls it presenting the PM stack's bridge credential
