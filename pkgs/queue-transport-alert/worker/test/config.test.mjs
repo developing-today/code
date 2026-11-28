@@ -22,7 +22,15 @@ test("name, compatibility date and cron schedule match", () => {
 
 test("every plain var matches", () => {
   const texts = Object.fromEntries([...cfConfig.matchAll(/(\w+): bindings\.text\("([^"]*)"\)/g)].map((m) => [m[1], m[2]]));
-  assert.deepEqual(texts, wrangler.vars);
+  // VERSION is the one non-literal var: stamped from GITHUB_SHA at build
+  // time in the cf config (#15793), pinned separately below.
+  const { VERSION, ...literalVars } = wrangler.vars;
+  assert.deepEqual(texts, literalVars);
+});
+
+test("VERSION is stamped from GITHUB_SHA at build time, unknown locally", () => {
+  assert.match(cfConfig, /VERSION: bindings\.text\(process\.env\.GITHUB_SHA \?\? "unknown"\)/);
+  assert.equal(wrangler.vars.VERSION, "unknown");
 });
 
 test("the Durable Object keeps its sqlite namespace", () => {
