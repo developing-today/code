@@ -76,7 +76,7 @@ let
   # cargo runs from pkgs/fleet inside it. The fleet Cargo.lock covers
   # the atlas crates' external dependencies.
   fleetSrc = lib.fileset.toSource {
-    root = ./..;
+    root = ../..;
     fileset = lib.fileset.unions [
       ./.
       ../atlas-search/Cargo.toml
@@ -84,6 +84,14 @@ let
       # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
       # without it the fleet build fails on the missing .sql files.
       ../atlas-search/schema
+      # atlas-core tests include_str! id_projection_rows.json from
+      # fixtures/ (#16152 follow-on: same missing-file class).
+      ../atlas-search/fixtures
+      # fleet-transport's registry-deserialize test include_str!s the
+      # shared language-neutral contract at the repo-root config/
+      # (#16152 follow-on: the PR-branch static re-dispatch failed on
+      # this file missing from the pkgs-rooted source, not on OpenSSL).
+      ../../config/transport-adapters/registry.json
     ];
   };
 
@@ -185,8 +193,8 @@ let
           inherit pname;
           version = "0.1.0";
           src = fleetSrc;
-          sourceRoot = "${fleetSrc.name}/fleet";
-          # The workspace root is the fleet/ subdir of the source,
+          sourceRoot = "${fleetSrc.name}/pkgs/fleet";
+          # The workspace root is the pkgs/fleet/ subdir of the source,
           # and so is its lockfile; crane vendors from the lockfile
           # path it is given, not from the source root.
           cargoLock = ./Cargo.lock;
@@ -247,7 +255,7 @@ let
         inherit pname;
         version = "0.1.0";
         src = fleetSrc;
-        sourceRoot = "${fleetSrc.name}/fleet";
+        sourceRoot = "${fleetSrc.name}/pkgs/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
         nativeCheckInputs = checkTools;
@@ -300,7 +308,7 @@ in
     nativeCheckInputs = checkTools;
     version = "0.1.0";
     src = fleetSrc;
-    sourceRoot = "${fleetSrc.name}/fleet";
+    sourceRoot = "${fleetSrc.name}/pkgs/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
