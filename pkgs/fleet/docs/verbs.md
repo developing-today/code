@@ -25,6 +25,7 @@ Invocation is `fleet <domain> <verb> [args...]`. The executable aliases `repo-qu
 | `fleet version`       | Print the build, derived version, source revision, and enabled capabilities. `--version` and `-V` are supported. |
 | `fleet capabilities`  | Print the full registry and this binary's effective capability set as JSON.                                      |
 | `fleet help [DOMAIN]` | Print all-domain help or the registry entry for one domain.                                                      |
+| `fleet git-credential` | Git credential helper over the gh token rotation: answers git's credential queries for github.com, skipping credentials that cannot see the target repo (code#16577). |
 
 ## `queue` — work queue and remote execution
 
@@ -188,6 +189,20 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 | `sync-labels-add <number> --label LABEL [--label LABEL]`                            | Add labels to an issue.                                                                               |
 | `sync-label-ensure --label LABEL --color COLOR --description TEXT`                  | Create a label, or update it when it already exists.                                                  |
 | `sync-issue-close <number> --reason REASON`                                         | Close an issue with a fleet closure reason (implemented, superseded, cancelled, started-incorrectly). |
+
+## `git-credential` — git credential helper
+
+`fleet git-credential [--cache-addr <addr>...] [--no-cache] <get|store|erase>` implements the git credential protocol over the `fleet gh` token rotation (code#16577), so plain git gets the same skip-and-try-next failover `fleet gh` has. Upstream `gh auth git-credential` offers the single credential gh resolves as active, with no rotation and no repo check; when that credential cannot see the target repo, git dies with `Repository not found`.
+
+`get` walks the rotation in order and, when the query names the target repo (the `path` attribute, sent when git is configured with `credential.useHttpPath`), skips a candidate whose token provably cannot see that repo (the repos API answers 404 for it) and offers the next one. A candidate is skipped only on that proof — an inconclusive check (transport error, rate limit, 5xx) never skips. When no candidate can be proven to see the repo, the first resolvable credential is offered anyway, so git surfaces its own truthful error. `store` and `erase` are no-ops: fleet keeps no credential store, and every `get` resolves fresh. Hosts other than github.com are declined silently (empty answer), so the helper can sit in a global git config.
+
+Seats configure it in place of `gh auth git-credential` (the canonical seat gitconfig in hatch-personal `configs/gitconfig` carries this):
+
+```ini
+[credential "https://github.com"]
+	helper = !fleet git-credential
+	useHttpPath = true
+```
 
 ## `bridge` — Fleet messaging
 
