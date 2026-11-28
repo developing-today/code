@@ -1,0 +1,18 @@
+relays: local http://localhost:45949/, n0 https://aps1-1.relay.n0.iroh.link./
+server online after 3.013283706s
+ticket: 162 chars, 2 relay URLs, 0 direct
+server home relays at start: [RelayUrl("http://localhost:45949/")]
+A (both relays up): connected 14.914768ms, replied 27.50008ms, echoed true, handshake over relay http://localhost:45949/
+  path after reply: * relay http://localhost:45949/
+warm client home relays before: [RelayUrl("http://localhost:45949/")]
+server re-homed onto n0 20.456669346s after the shutdown
+B: client online 24.332396194s after the shutdown (its own wait: 3.873272999s)
+B (fresh client, local relay down): connected 655.865985ms, replied 1.431964635s, echoed true, handshake over relay https://aps1-1.relay.n0.iroh.link./
+  path after reply: * relay https://aps1-1.relay.n0.iroh.link./
+B: handshake complete 24.988291603s after the shutdown
+C: home relays at dial time: [RelayUrl("https://aps1-1.relay.n0.iroh.link./")]
+C (warm client, local relay down): connected 1.336737982s, replied 1.900313725s, echoed true, handshake over relay https://aps1-1.relay.n0.iroh.link./
+  path after reply:   relay https://aps1-1.relay.n0.iroh.link./
+  path after reply: * direct (address withheld)
+C: handshake complete 27.101219383s after the shutdown, over Some("https://aps1-1.relay.n0.iroh.link./")
+RESULT t2: PASS

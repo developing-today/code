@@ -1,0 +1,67 @@
+{
+  "title": "AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 14/14 (85 PRs)",
+  "body": "Lane 4 (MERGED-PR-AUDIT, tracking https://github.com/developing-today/code/issues/13879, umbrella https://github.com/developing-today/code/issues/13871) continuation slice.\n\nAUDIT each of these merged PRs in developing-today/code (merged since 2026-10-23), ONE BY ONE, IN FULL: read the PR body and its complete diff (fleet gh api repos/developing-today/code/pulls/<n> and /files, per_page=100, count-confirmed), extract the spawning issue (especially Closes/closes/fixes references), read that issue in full, and judge: did the PR fully implement the issue? Check LATER merged PRs in the same repo before filing any gap - if a later PR completed it, record completed-later on both. Where a gap/bug/unfiled next step is real, FILE it in the owning repo (via gh-post), prioritise it, and link it. NEVER use closing keywords in comments on issues that must stay open. Lane 2 owns reopen/correction decisions on closures - post suspect closures as pointers on the umbrella #13871, do not reopen. Apply the Lane 4 outcome labels (defined on code#13879; create them in developing-today/code first if absent): audit:complete / audit:partial / audit:gap-filed / audit:bug-filed / audit:completed-later / audit:no-issue. Post the batch ledger (PR, spawning issue, verdict, filed links) as a comment on code#13879 when the batch is done. Check #13879 and the umbrella for lane claims before acting on any item; a claim from another lane is a hard stop.\n\nPR numbers in this batch: [13716, 13718, 13719, 13720, 13734, 13735, 13736, 13737, 13740, 13746, 13749, 13750, 13753, 13755, 13756, 13757, 13759, 13768, 13769, 13771, 13773, 13776, 13777, 13778, 13780, 13781, 13782, 13783, 13784, 13785, 13786, 13788, 13789, 13791, 13792, 13799, 13800, 13801, 13802, 13803, 13804, 13805, 13806, 13807, 13808, 13810, 13811, 13815, 13817, 13818, 13819, 13820, 13823, 13825, 13826, 13827, 13828, 13830, 13832, 13834, 13835, 13836, 13837, 13838, 13840, 13841, 13845, 13846, 13847, 13848, 13854, 13855, 13856, 13857, 13859, 13861, 13862, 13863, 13865, 13866, 13867, 13868, 13869, 13870, 13897]",
+  "priority": 40,
+  "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13879:slice-14",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "issue": {
+      "number": 13879,
+      "title": "AUDIT-7 Lane 4 - MERGED-PR-AUDIT tracking",
+      "url": "https://github.com/developing-today/code/issues/13879"
+    },
+    "slice": {
+      "lane": "AUDIT-7 Lane 4",
+      "repo": "developing-today/code",
+      "batch": 14,
+      "batches": 14,
+      "pr_numbers": [
+        13716, 13718, 13719, 13720, 13734, 13735, 13736, 13737, 13740, 13746, 13749, 13750, 13753, 13755, 13756, 13757,
+        13759, 13768, 13769, 13771, 13773, 13776, 13777, 13778, 13780, 13781, 13782, 13783, 13784, 13785, 13786, 13788,
+        13789, 13791, 13792, 13799, 13800, 13801, 13802, 13803, 13804, 13805, 13806, 13807, 13808, 13810, 13811, 13815,
+        13817, 13818, 13819, 13820, 13823, 13825, 13826, 13827, 13828, 13830, 13832, 13834, 13835, 13836, 13837, 13838,
+        13840, 13841, 13845, 13846, 13847, 13848, 13854, 13855, 13856, 13857, 13859, 13861, 13862, 13863, 13865, 13866,
+        13867, 13868, 13869, 13870, 13897
+      ],
+      "parent_issue": 13879,
+      "number": 14,
+      "criterion": "Every merged PR in developing-today/code batch 14 (numbers in pr_numbers) has a recorded PR-vs-spawning-issue verdict on code#13879.",
+      "done_check": "Read back the batch ledger comment on code#13879 and confirm it lists every PR number in pr_numbers exactly once with a verdict and any filed gap/bug links.",
+      "owned_paths": ["audit-7/lane-4"]
+    },
+    "problem": "85 merged PRs in developing-today/code (batch 14/14) await Lane 4 PR-vs-issue comparison under AUDIT-7.",
+    "scope": {
+      "include": [
+        "Lane 4 (MERGED-PR-AUDIT, tracking https://github.com/developing-today/code/issues/13879, umbrella https://github.com/developing-today/code/issues/13871) continuation slice.\n\nAUDIT each of these merged PRs in developing-today/code (merged since 2026-10-23), ONE BY ONE, IN FULL: read the PR body and its complete diff (fleet gh api repos/developing-today/code/pulls/<n> and /files, per_page=100, count-confirmed), extract the spawning issue (especially Closes/closes/fixes references), read that issue in full, and judge: did the PR fully implement the issue? Check LATER merged PRs in the same repo before filing any gap - if a later PR completed it, record completed-later on both. Where a gap/bug/unfiled next step is real, FILE it in the owning repo (via gh-post), prioritise it, and link it. NEVER use closing keywords in comments on issues that must stay open. Lane 2 owns reopen/correction decisions on closures - post suspect closures as pointers on the umbrella #13871, do not reopen. Apply the Lane 4 outcome labels (defined on code#13879; create them in developing-today/code first if absent): audit:complete / audit:partial / audit:gap-filed / audit:bug-filed / audit:completed-later / audit:no-issue. Post the batch ledger (PR, spawning issue, verdict, filed links) as a comment on code#13879 when the batch is done. Check #13879 and the umbrella for lane claims before acting on any item; a claim from another lane is a hard stop.\n\nPR numbers in this batch: [13716, 13718, 13719, 13720, 13734, 13735, 13736, 13737, 13740, 13746, 13749, 13750, 13753, 13755, 13756, 13757, 13759, 13768, 13769, 13771, 13773, 13776, 13777, 13778, 13780, 13781, 13782, 13783, 13784, 13785, 13786, 13788, 13789, 13791, 13792, 13799, 13800, 13801, 13802, 13803, 13804, 13805, 13806, 13807, 13808, 13810, 13811, 13815, 13817, 13818, 13819, 13820, 13823, 13825, 13826, 13827, 13828, 13830, 13832, 13834, 13835, 13836, 13837, 13838, 13840, 13841, 13845, 13846, 13847, 13848, 13854, 13855, 13856, 13857, 13859, 13861, 13862, 13863, 13865, 13866, 13867, 13868, 13869, 13870, 13897]"
+      ],
+      "exclude": ["Reopening or correcting closed issues (Lane 2 owns that)", "Auditing PRs outside the listed batch"]
+    },
+    "acceptance": [
+      "Ledger comment on code#13879 covering all 85 PRs of developing-today/code batch 14 with verdicts, outcome labels applied, and any gap/bug issues filed and linked."
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13879",
+      "https://github.com/developing-today/code/issues/13871"
+    ],
+    "risk": {
+      "flags": [],
+      "level": "low"
+    },
+    "timebox_minutes": 45,
+    "priority_reason": "AUDIT-7 is Drew's 2026-11-23 directive programme; Lane 4's remaining repos exceed one session, so the exhaustive audit continues as queued slices at normal pilot priority.",
+    "evidence": [
+      "Census snapshot 2026-11-24T00:39Z via fleet gh api: developing-today/code has merged PRs in this batch merged since 2026-10-23; dezren39/fleet slice (92 PRs) already completed by Lane 4 with ledger on code#13879.",
+      "Tracking: https://github.com/developing-today/code/issues/13879 ; umbrella: https://github.com/developing-today/code/issues/13871"
+    ],
+    "tests": [
+      "Batch ledger comment posted on code#13879 covering every PR number in payload.slice.pr_numbers",
+      "Outcome label present on every audited PR in the batch repo"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-24T00:39:00Z",
+      "basis": "Lane 4 tracking issue #13879 and umbrella #13871 checked 2026-11-24: no other lane claims merged-PR audit of these repos; fleet slice done by Lane 4 itself; no live audit task for these PR batches existed at enqueue time."
+    }
+  }
+}

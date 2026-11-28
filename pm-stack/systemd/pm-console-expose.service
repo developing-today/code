@@ -1,0 +1,12 @@
+[Unit]
+Description=PM console — keep the public address as declared (sign-in methods, policy, route) (pm-stack)
+Documentation=https://github.com/developing-today/code/tree/main/pm-stack/console
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Changes only what is not already so. When the Google sign-in secrets
+# appear in the secret store, the next run turns Google sign-in on.
+ExecStart=/etc/profiles/per-user/%u/bin/python3 %h/.local/share/pm-console/current/pm-stack/console/scripts/expose.py
+Environment=PATH=%h/.local/bin:/run/current-system/sw/bin:/etc/profiles/per-user/%u/bin:/usr/bin:/bin
+TimeoutStartSec=600

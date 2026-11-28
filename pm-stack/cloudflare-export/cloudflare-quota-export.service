@@ -1,0 +1,12 @@
+[Unit]
+Description=Cloudflare quota exporter — code#1048
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+# The wrapper calls bun, bws and jq by bare name; the systemd user
+# manager's default PATH omits user install dirs, so pin them here or
+# every timer run dies before the exporter can write a document.
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/atlas/cloudflare-export/cloudflare-quota-export.sh --out-dir %h/atlas/cloudflare-export

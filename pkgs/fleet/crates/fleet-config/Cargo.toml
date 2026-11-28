@@ -1,0 +1,16 @@
+[package]
+name = "fleet-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "fleet configuration: ~/.config/fleet/fleet.toml + env resolution, the [domains] enable/disable table, and state-dir paths."
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+# Property-based tests for the [[proxy.services]] load invariants
+# (#6397), the same proptest version pkgs/id uses.
+proptest = "1.12"

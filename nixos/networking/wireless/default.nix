@@ -1,0 +1,47 @@
+{
+  config,
+  host,
+  lib,
+  ...
+}:
+{
+  imports = [ (lib.from-root "nixos/networking") ];
+  networking = {
+    networkmanager = {
+      enable = false;
+      unmanaged = [
+        "*"
+        "except:type:wwan"
+        "except:type:gsm"
+      ];
+    };
+    wireless = {
+      enable = true;
+      # userControlled.enable = true;
+      # enableHardened false? consider TODO
+      scanOnLowSignal = true;
+      fallbackToWPA2 = true;
+      # TODO: separate module for secretsFile and template
+      #       so that one can enable wireless without adding a network
+      #       useful for manual configuration
+      secretsFile = config.sops.templates.wireless-secrets.path;
+      allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
+      # was { enable = true; group = "network"; }; now a plain bool, group fixed to wpa_supplicant
+      # NOTE: users needing control must be in the `wpa_supplicant` group now
+      userControlled = true;
+      # whats extraConfig.update_config=1 do?
+      extraConfig = ''
+        update_config=1
+        sae_pwe=2
+      '';
+    };
+  };
+  sops.templates.wireless-secrets = {
+    content = host.wireless-secrets-template config;
+    # wpa_supplicant runs as its own user and must be able to read this at boot.
+    owner = "wpa_supplicant";
+    group = "wpa_supplicant";
+    mode = "0400";
+  };
+  users.groups.network = { }; # Ensure group exists this would be for users that aren't root or sudoers or doassers or whatever
+}

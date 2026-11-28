@@ -1,0 +1,34 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: first-pool
+  namespace: metallb-system
+spec:
+  addresses: # https://www.calculator.net/ip-subnet-calculator.html
+    # reserved for gateway static ip (main edge router from: 10.10.0.0/16)
+    # - 10.10.0.0 - 10.10.1.255
+
+    # reserved for gateway dhcp (main edge router from: 10.10.0.0/16)
+    # - 10.10.2.0 - 10.10.31.255
+
+    # reserved for 01b.us cluster load balancers (no subnet? essentially a separate dhcp under main edge router from 10.10.0.0/16)
+    - 10.10.32.0-10.10.63.254
+
+    # reserved for kubernetes: 10.96.0.0/12
+    # - 10.96.0.0 - 10.111.255.255
+
+    # reserved for kubernetes: 10.244.0.0/16
+    # - 10.244.0.0 - 10.244.255.255
+
+    # reserved for tailscale cgnat vpn addresses: (from: 100.64.0.0/10) (from the 100.64.0.0/10 subnet (100.64.0.0 through 100.127.255.255)
+    # - 100.64.0.1 - 100.79.255.254
+
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - first-pool

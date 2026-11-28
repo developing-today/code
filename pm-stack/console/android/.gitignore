@@ -1,0 +1,5 @@
+build/
+.gradle/
+*.p12
+*.apk
+/gradle-dist/

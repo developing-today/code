@@ -1,0 +1,6 @@
+[2m2026-10-11T12:20:18.620480Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19201
+[2m2026-10-11T12:20:18.621830Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTP/WS] relay: serving on 127.0.0.1:19101
+[2m2026-10-11T12:20:22.907225Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:19201
+[2m2026-10-11T12:20:22.908399Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTP/WS] relay: serving on 127.0.0.1:19101
+[2m2026-10-11T12:20:24.179066Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:39844[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0m95b0fb7ead [3mconnection_id[0m[2m=[0m0[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting
+[2m2026-10-11T12:20:24.179272Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m127.0.0.1:39846[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0m0bba50ee13 [3mconnection_id[0m[2m=[0m1[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting

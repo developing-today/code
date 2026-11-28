@@ -1,0 +1,566 @@
+/* The app's colour themes. One block each: the thirteen colours the
+   style sheet (app.css) draws everything with, under the name the
+   chooser (look.js, THEMES) knows it by. A new theme is a block here
+   and a line there; the tests then hold it to the same rules as the
+   rest:
+
+     text      7 to 1 or more on the page, a panel and a raised panel
+     quiet     4.5 to 1 on all three (the small print)
+     accent, good, warn, bad
+               4.5 to 1 on all three (they are written with)
+     *-ink     4.5 to 1 on the colour it is the ink for
+     line      can be told from the page and from a panel (1.25 to 1)
+
+   and the high-contrast ones to 15, 10, 7, 7 and 3 to 1.
+
+   A block here comes after app.css's own :root, so a chosen theme wins
+   over what the system prefers. Put on any element, a block colours
+   just that element and what is in it: that is how the chooser shows
+   every theme at once.
+
+   The palettes with names from elsewhere are their makers' colours
+   (Nord, Dracula, Solarized, Gruvbox, Catppuccin, Tokyo Night, Rosé
+   Pine, Everforest, One Dark: each published under a permissive
+   licence), with any colour that missed a rule above moved toward
+   white or black until it met it. */
+
+/* ---- The two the app follows the system with --------------------------- */
+[data-theme="slate"] {
+  color-scheme: dark;
+  --bg: #0b0f14;
+  --panel: #151b23;
+  --panel-2: #1c2430;
+  --line: #2a3441;
+  --text: #e6edf3;
+  --quiet: #8b98a8;
+  --accent: #4c9aff;
+  --accent-ink: #06121f;
+  --good: #3fb950;
+  --good-ink: #04130a;
+  --warn: #d29922;
+  --bad: #f85149;
+  --bad-ink: #1a0405;
+}
+[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --panel-2: #eef1f5;
+  --line: #d5dbe3;
+  --text: #17202b;
+  --quiet: #5b6777;
+  --accent: #0b63ce;
+  --accent-ink: #ffffff;
+  --good: #18753a;
+  --good-ink: #ffffff;
+  --warn: #8a5a00;
+  --bad: #c5222c;
+  --bad-ink: #ffffff;
+}
+
+/* ---- True black: the page is #000000, and an OLED screen leaves those pixels off --- */
+[data-theme="black"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #0e0e0e;
+  --line: #303030;
+  --text: #f2f2f2;
+  --quiet: #9a9a9a;
+  --accent: #5aa9ff;
+  --accent-ink: #00101f;
+  --good: #3fb950;
+  --good-ink: #04130a;
+  --warn: #d9a520;
+  --bad: #ff5c52;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-amber"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #100c04;
+  --line: #3a2e12;
+  --text: #f5ecd9;
+  --quiet: #a89c82;
+  --accent: #ffb000;
+  --accent-ink: #1a1000;
+  --good: #7ac74f;
+  --good-ink: #06140a;
+  --warn: #ffd166;
+  --bad: #ff6b5e;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-green"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #06100a;
+  --line: #173a22;
+  --text: #c9f5d0;
+  --quiet: #7fa98a;
+  --accent: #39d353;
+  --accent-ink: #021207;
+  --good: #39d353;
+  --good-ink: #021207;
+  --warn: #e3c14a;
+  --bad: #ff6b6b;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-rose"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #12070c;
+  --line: #3d1c2a;
+  --text: #f7e9ef;
+  --quiet: #ab8f9b;
+  --accent: #ff5fa2;
+  --accent-ink: #1f0010;
+  --good: #4cc38a;
+  --good-ink: #04130a;
+  --warn: #e9b44c;
+  --bad: #ff5c52;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-ice"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #050f12;
+  --line: #143840;
+  --text: #e6f6fa;
+  --quiet: #86a6ae;
+  --accent: #22d3ee;
+  --accent-ink: #00161b;
+  --good: #34d399;
+  --good-ink: #03130d;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-violet"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #0c0914;
+  --line: #2e2649;
+  --text: #efeafc;
+  --quiet: #9d94b8;
+  --accent: #a78bfa;
+  --accent-ink: #0f0726;
+  --good: #4ade80;
+  --good-ink: #04130a;
+  --warn: #facc15;
+  --bad: #f87171;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-ember"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #120906;
+  --line: #40241a;
+  --text: #f8ebe4;
+  --quiet: #b0978c;
+  --accent: #ff7a45;
+  --accent-ink: #1c0a02;
+  --good: #84cc16;
+  --good-ink: #0a1402;
+  --warn: #fbbf24;
+  --bad: #ff5c52;
+  --bad-ink: #1a0405;
+}
+[data-theme="black-dim"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #0a0a0a;
+  --line: #262626;
+  --text: #b8b8b8;
+  --quiet: #7d7d7d;
+  --accent: #6b9bd1;
+  --accent-ink: #020d19;
+  --good: #5a9e62;
+  --good-ink: #020d05;
+  --warn: #a88a3a;
+  --bad: #c96a64;
+  --bad-ink: #140303;
+}
+
+/* ---- High contrast: text at 15 to 1 or more on every surface, and edges at 3 to 1 --- */
+[data-theme="contrast-dark"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #1a1a1a;
+  --line: #ffffff;
+  --text: #ffffff;
+  --quiet: #e6e6e6;
+  --accent: #ffff00;
+  --accent-ink: #000000;
+  --good: #00ff66;
+  --good-ink: #000000;
+  --warn: #ffcc00;
+  --bad: #ff8a80;
+  --bad-ink: #000000;
+  --edge: 2px;
+}
+[data-theme="contrast-aqua"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #000000;
+  --panel-2: #101820;
+  --line: #9fefff;
+  --text: #ffffff;
+  --quiet: #d9f6ff;
+  --accent: #00ffff;
+  --accent-ink: #000000;
+  --good: #7dff9b;
+  --good-ink: #000000;
+  --warn: #ffe066;
+  --bad: #ffa0a0;
+  --bad-ink: #000000;
+  --edge: 2px;
+}
+[data-theme="contrast-light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f0f0f0;
+  --line: #000000;
+  --text: #000000;
+  --quiet: #1f1f1f;
+  --accent: #0000c8;
+  --accent-ink: #ffffff;
+  --good: #005a1e;
+  --good-ink: #ffffff;
+  --warn: #5c3a00;
+  --bad: #a50000;
+  --bad-ink: #ffffff;
+  --edge: 2px;
+}
+
+/* ---- Dark -------------------------------------------------------------- */
+[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --panel: #3b4252;
+  --panel-2: #434c5e;
+  --line: #596377;
+  --text: #eceff4;
+  --quiet: #b9c2d0;
+  --accent: #8fc4d3;
+  --accent-ink: #1d2530;
+  --good: #acc498;
+  --good-ink: #1b2415;
+  --warn: #ebcb8b;
+  --bad: #dfb0b4;
+  --bad-ink: #2a0d10;
+}
+[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --panel: #343746;
+  --panel-2: #44475a;
+  --line: #5c6080;
+  --text: #f8f8f2;
+  --quiet: #b9bdd6;
+  --accent: #caa9fa;
+  --accent-ink: #1b0f33;
+  --good: #50fa7b;
+  --good-ink: #06240f;
+  --warn: #f1fa8c;
+  --bad: #ff9c9c;
+  --bad-ink: #2b0606;
+}
+[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --bg: #002b36;
+  --panel: #073642;
+  --panel-2: #0d4250;
+  --line: #2a5f6e;
+  --text: #eee8d5;
+  --quiet: #9ca9a9;
+  --accent: #67aee0;
+  --accent-ink: #00141f;
+  --good: #a0af38;
+  --good-ink: #0e1400;
+  --warn: #c5a338;
+  --bad: #eb8c8b;
+  --bad-ink: #1f0504;
+}
+[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --bg: #1d2021;
+  --panel: #282828;
+  --panel-2: #3c3836;
+  --line: #5a524c;
+  --text: #ebdbb2;
+  --quiet: #afa18e;
+  --accent: #fabd2f;
+  --accent-ink: #241a00;
+  --good: #b8bb26;
+  --good-ink: #1a1b00;
+  --warn: #fe8019;
+  --bad: #fc7c6d;
+  --bad-ink: #250603;
+}
+[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #11111b;
+  --panel: #1e1e2e;
+  --panel-2: #313244;
+  --line: #4b4d63;
+  --text: #cdd6f4;
+  --quiet: #a6adc8;
+  --accent: #cba6f7;
+  --accent-ink: #1e1033;
+  --good: #a6e3a1;
+  --good-ink: #0f2410;
+  --warn: #f9e2af;
+  --bad: #f38ba8;
+  --bad-ink: #2b0a14;
+}
+[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --panel: #1f2335;
+  --panel-2: #292e42;
+  --line: #414868;
+  --text: #c0caf5;
+  --quiet: #9aa5ce;
+  --accent: #7aa2f7;
+  --accent-ink: #0b1430;
+  --good: #9ece6a;
+  --good-ink: #142106;
+  --warn: #e0af68;
+  --bad: #f7768e;
+  --bad-ink: #2b0810;
+}
+[data-theme="rose-pine"] {
+  color-scheme: dark;
+  --bg: #191724;
+  --panel: #1f1d2e;
+  --panel-2: #26233a;
+  --line: #44415a;
+  --text: #e0def4;
+  --quiet: #908caa;
+  --accent: #c4a7e7;
+  --accent-ink: #1c1033;
+  --good: #9ccfd8;
+  --good-ink: #0a2226;
+  --warn: #f6c177;
+  --bad: #eb6f92;
+  --bad-ink: #2b0813;
+}
+[data-theme="everforest"] {
+  color-scheme: dark;
+  --bg: #272e33;
+  --panel: #2e383c;
+  --panel-2: #374145;
+  --line: #4f585e;
+  --text: #ddd3bd;
+  --quiet: #a3aea6;
+  --accent: #a7c080;
+  --accent-ink: #1a2410;
+  --good: #83c092;
+  --good-ink: #0d2417;
+  --warn: #dbbc7f;
+  --bad: #ea9394;
+  --bad-ink: #2b0c0d;
+}
+[data-theme="one-dark"] {
+  color-scheme: dark;
+  --bg: #21252b;
+  --panel: #282c34;
+  --panel-2: #323842;
+  --line: #4b5263;
+  --text: #d7dae0;
+  --quiet: #9da5b4;
+  --accent: #61afef;
+  --accent-ink: #071a2b;
+  --good: #98c379;
+  --good-ink: #14210a;
+  --warn: #e5c07b;
+  --bad: #e6868e;
+  --bad-ink: #2b0a0e;
+}
+[data-theme="ocean"] {
+  color-scheme: dark;
+  --bg: #071a26;
+  --panel: #0c2433;
+  --panel-2: #123044;
+  --line: #23506b;
+  --text: #e2f1f8;
+  --quiet: #8fb0c2;
+  --accent: #2dd4bf;
+  --accent-ink: #03201c;
+  --good: #4ade80;
+  --good-ink: #04130a;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+  --bad-ink: #2b0810;
+}
+[data-theme="dusk"] {
+  color-scheme: dark;
+  --bg: #17131f;
+  --panel: #1f1a2b;
+  --panel-2: #2a2339;
+  --line: #453a5c;
+  --text: #ece6f5;
+  --quiet: #a79cbd;
+  --accent: #f0a35e;
+  --accent-ink: #2b1503;
+  --good: #7bd88f;
+  --good-ink: #06200d;
+  --warn: #f4d35e;
+  --bad: #ff7b89;
+  --bad-ink: #2b070c;
+}
+[data-theme="graphite"] {
+  color-scheme: dark;
+  --bg: #161616;
+  --panel: #1f1f1f;
+  --panel-2: #2a2a2a;
+  --line: #444444;
+  --text: #ededed;
+  --quiet: #a0a0a0;
+  --accent: #f5f5f5;
+  --accent-ink: #111111;
+  --good: #6fcf7f;
+  --good-ink: #06200d;
+  --warn: #e2b84a;
+  --bad: #ff7b72;
+  --bad-ink: #2b0806;
+}
+[data-theme="blueprint"] {
+  color-scheme: dark;
+  --bg: #0a2540;
+  --panel: #0f3057;
+  --panel-2: #15406f;
+  --line: #2f6aa3;
+  --text: #eaf3ff;
+  --quiet: #a9c4e4;
+  --accent: #ffd43b;
+  --accent-ink: #201a00;
+  --good: #6ee7a0;
+  --good-ink: #03200f;
+  --warn: #ffb454;
+  --bad: #ff8fa3;
+  --bad-ink: #33060f;
+}
+
+/* ---- Light ------------------------------------------------------------- */
+[data-theme="solarized-light"] {
+  color-scheme: light;
+  --bg: #fdf6e3;
+  --panel: #fffbf0;
+  --panel-2: #eee8d5;
+  --line: #d6cfb9;
+  --text: #002b36;
+  --quiet: #566c73;
+  --accent: #1e6ca4;
+  --accent-ink: #ffffff;
+  --good: #606e00;
+  --good-ink: #ffffff;
+  --warn: #826300;
+  --bad: #c22c29;
+  --bad-ink: #ffffff;
+}
+[data-theme="gruvbox-light"] {
+  color-scheme: light;
+  --bg: #f9f5d7;
+  --panel: #fbf1c7;
+  --panel-2: #ebdbb2;
+  --line: #d0bf9c;
+  --text: #282828;
+  --quiet: #665c54;
+  --accent: #ac3903;
+  --accent-ink: #ffffff;
+  --good: #66610c;
+  --good-ink: #ffffff;
+  --warn: #86570f;
+  --bad: #9d0006;
+  --bad-ink: #ffffff;
+}
+[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --bg: #e6e9ef;
+  --panel: #eff1f5;
+  --panel-2: #dce0e8;
+  --line: #b9bdca;
+  --text: #41445a;
+  --quiet: #5c5f77;
+  --accent: #7d34dc;
+  --accent-ink: #ffffff;
+  --good: #2d701e;
+  --good-ink: #ffffff;
+  --warn: #8a5812;
+  --bad: #c50e36;
+  --bad-ink: #ffffff;
+}
+[data-theme="rose-pine-dawn"] {
+  color-scheme: light;
+  --bg: #faf4ed;
+  --panel: #fffaf3;
+  --panel-2: #f2e9e1;
+  --line: #d9cdc3;
+  --text: #4d486a;
+  --quiet: #6a6781;
+  --accent: #736287;
+  --accent-ink: #ffffff;
+  --good: #286983;
+  --good-ink: #ffffff;
+  --warn: #8c5e1f;
+  --bad: #975366;
+  --bad-ink: #ffffff;
+}
+[data-theme="sepia"] {
+  color-scheme: light;
+  --bg: #f4ecd8;
+  --panel: #fbf5e6;
+  --panel-2: #eadfc6;
+  --line: #cdbf9f;
+  --text: #3b2f20;
+  --quiet: #6b5a45;
+  --accent: #8a4b08;
+  --accent-ink: #ffffff;
+  --good: #3d6b21;
+  --good-ink: #ffffff;
+  --warn: #875800;
+  --bad: #a3261d;
+  --bad-ink: #ffffff;
+}
+[data-theme="mint"] {
+  color-scheme: light;
+  --bg: #eef7f2;
+  --panel: #ffffff;
+  --panel-2: #e0efe7;
+  --line: #bfd8cb;
+  --text: #12261c;
+  --quiet: #4d6a5b;
+  --accent: #0f766e;
+  --accent-ink: #ffffff;
+  --good: #17703a;
+  --good-ink: #ffffff;
+  --warn: #855a00;
+  --bad: #b3261e;
+  --bad-ink: #ffffff;
+}
+[data-theme="ink"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f3f3f3;
+  --line: #cfcfcf;
+  --text: #111111;
+  --quiet: #5c5c5c;
+  --accent: #111111;
+  --accent-ink: #ffffff;
+  --good: #1f6f3a;
+  --good-ink: #ffffff;
+  --warn: #7a5200;
+  --bad: #b00020;
+  --bad-ink: #ffffff;
+}

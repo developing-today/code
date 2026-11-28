@@ -1,0 +1,14 @@
+[Unit]
+Description=fleet-queue-backup: export the fleet-queue Turso store to its D1 copy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# A full export reads the whole queue store over the libsql HTTP API
+# before the D1 import begins; the first live run's read phase alone
+# took ~24 minutes (2026-11-22, #8584). The user manager's default
+# start timeout (90s) would kill every scheduled run, so the bound is
+# set from the measured cycle with headroom for import + verify.
+TimeoutStartSec=2h
+ExecStart=/usr/bin/env bash __FQ_DIR__/systemd/run-export.sh

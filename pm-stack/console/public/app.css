@@ -1,0 +1,837 @@
+:root {
+  color-scheme: dark light;
+  --bg: #0b0f14;
+  --panel: #151b23;
+  --panel-2: #1c2430;
+  --line: #2a3441;
+  --text: #e6edf3;
+  --quiet: #8b98a8;
+  --accent: #4c9aff;
+  --accent-ink: #06121f;
+  --good: #3fb950;
+  --good-ink: #04130a;
+  --warn: #d29922;
+  --bad: #f85149;
+  /* Text on that red: white on it was 3.4 to 1. */
+  --bad-ink: #1a0405;
+  --tab-h: 62px;
+  --top-h: 52px;
+  /* How it looks beyond its colours, each set by an attribute on this
+     element (look.js puts them there; look.css has the steps): the
+     typeface, the size of the text, the room around things, how round
+     the corners are, and how heavy an edge is. */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --scale: 1;
+  --space: 1;
+  --round: 1;
+  --edge: 1px;
+  font-family: var(--font);
+  font-size: calc(16px * var(--scale));
+  line-height: 1.4;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f6f9;
+    --panel: #ffffff;
+    --panel-2: #eef1f5;
+    --line: #d5dbe3;
+    --text: #17202b;
+    --quiet: #5b6777;
+    --accent: #0b63ce;
+    --accent-ink: #ffffff;
+    /* The status colours above are made for a dark page: on a light one
+       they are too faint to read (2.2 to 3.4 to 1). These are at least
+       5 to 1 on every light surface here. */
+    --good: #18753a;
+    /* Text on that darker green: the dark ink made for the dark page's
+       green was 3.3 to 1 on it. */
+    --good-ink: #ffffff;
+    --warn: #8a5a00;
+    --bad: #c5222c;
+    --bad-ink: #ffffff;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+body {
+  padding: calc(var(--top-h) + env(safe-area-inset-top)) 0 calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px);
+  -webkit-tap-highlight-color: transparent;
+}
+/* A link in running text is underlined: its colour alone is too close
+   to the text's to tell it by. Links drawn as rows or buttons say what
+   they are by their shape. */
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+a.link,
+a.button {
+  text-decoration: none;
+}
+[hidden] {
+  display: none !important;
+}
+
+/* ---- frame ---------------------------------------------------------- */
+.top {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: calc(var(--top-h) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) calc(12px * var(--space)) 0 calc(16px * var(--space));
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--space));
+  background: var(--bg);
+  border-bottom: var(--edge) solid var(--line);
+  z-index: 5;
+}
+.top h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+.grow {
+  flex: 1;
+}
+.fresh {
+  font-size: 0.78rem;
+  color: var(--quiet);
+}
+.fresh.stale {
+  color: var(--warn);
+}
+.fresh.down {
+  color: var(--bad);
+}
+/* The line under the header: no connection, and what is kept to send. */
+.kept {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: calc(10px * var(--space)) calc(16px * var(--space));
+  border: 0;
+  border-bottom: var(--edge) solid var(--line);
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+}
+.kept.warn {
+  color: var(--warn);
+}
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: calc(12px * var(--space));
+  outline: none;
+}
+.tabs {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: calc(var(--tab-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  background: var(--panel);
+  border-top: var(--edge) solid var(--line);
+  z-index: 5;
+}
+.tabs button {
+  flex: 1;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--quiet);
+  font: inherit;
+  font-size: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(3px * var(--space));
+  min-height: 0;
+  padding: 0;
+  position: relative;
+}
+.tabs button[aria-current="page"] {
+  color: var(--accent);
+}
+.tabs svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.badge {
+  position: absolute;
+  top: 6px;
+  left: calc(50% + 6px);
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: calc(9px * var(--round));
+  /* The theme's own red and the ink made for it: every theme is held
+     to 4.5 to 1 between the two. */
+  background: var(--bad);
+  color: var(--bad-ink);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 18px;
+}
+@media (min-width: 900px) {
+  body {
+    padding-left: 96px;
+    padding-bottom: 24px;
+  }
+  .top {
+    left: 96px;
+  }
+  .tabs {
+    inset: 0 auto 0 0;
+    width: 96px;
+    height: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-top: 12px;
+    border-top: 0;
+    border-right: var(--edge) solid var(--line);
+  }
+  .tabs button {
+    flex: 0 0 72px;
+  }
+}
+
+/* ---- pieces --------------------------------------------------------- */
+h2 {
+  margin: calc(20px * var(--space)) calc(4px * var(--space)) calc(8px * var(--space));
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--quiet);
+}
+h2:first-child {
+  margin-top: calc(4px * var(--space));
+}
+h3 {
+  margin: 0 0 calc(4px * var(--space));
+  font-size: 1rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+p {
+  margin: calc(4px * var(--space)) 0;
+  overflow-wrap: anywhere;
+}
+.card {
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
+  margin-bottom: calc(10px * var(--space));
+}
+.card.flag {
+  border-left: 4px solid var(--warn);
+}
+.card.hot {
+  border-left: 4px solid var(--accent);
+}
+.meta {
+  color: var(--quiet);
+  font-size: 0.82rem;
+}
+.step {
+  margin-top: calc(8px * var(--space));
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
+  background: var(--panel-2);
+  border-radius: calc(8px * var(--round));
+  font-size: 0.9rem;
+}
+.step b {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--quiet);
+  margin-bottom: calc(2px * var(--space));
+}
+.why {
+  color: var(--warn);
+}
+.bad {
+  color: var(--bad);
+}
+.empty {
+  padding: calc(28px * var(--space)) calc(16px * var(--space));
+  text-align: center;
+  color: var(--quiet);
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(8px * var(--space));
+  align-items: center;
+}
+.row.end {
+  justify-content: flex-end;
+  margin-top: calc(10px * var(--space));
+}
+.chip {
+  display: inline-block;
+  padding: 1px calc(8px * var(--space));
+  border-radius: calc(999px * var(--round));
+  background: var(--panel-2);
+  border: var(--edge) solid var(--line);
+  font-size: 0.74rem;
+  color: var(--quiet);
+  white-space: nowrap;
+}
+.chip.good {
+  color: var(--good);
+  border-color: var(--good);
+}
+.chip.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.chip.accent {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
+  gap: calc(8px * var(--space));
+  margin-bottom: calc(4px * var(--space));
+}
+.stat {
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(10px * var(--space)) calc(2px * var(--space));
+  text-align: center;
+  color: var(--text);
+  min-height: 0;
+  display: block;
+}
+.stat b {
+  display: block;
+  font-size: 1.35rem;
+}
+.stat span {
+  font-size: 0.72rem;
+  color: var(--quiet);
+}
+.num {
+  flex: 0 0 26px;
+  height: 26px;
+  border-radius: calc(13px * var(--round));
+  background: var(--panel-2);
+  color: var(--quiet);
+  font-size: 0.8rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lead {
+  display: flex;
+  gap: calc(10px * var(--space));
+  align-items: flex-start;
+}
+.lead > div {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- controls ------------------------------------------------------- */
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  min-height: 42px;
+  padding: calc(8px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(10px * var(--round));
+  border: var(--edge) solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+/* A link that is the main thing to do on its card. */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: calc(8px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(10px * var(--round));
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+ul.plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+ul.plain li {
+  padding: calc(6px * var(--space)) 0;
+  color: var(--quiet);
+}
+ul.plain li b {
+  color: var(--text);
+}
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 500;
+}
+button.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: var(--bad-ink);
+}
+button.small {
+  min-height: 34px;
+  padding: calc(4px * var(--space)) calc(10px * var(--space));
+  font-size: 0.85rem;
+}
+button.icon {
+  min-height: 40px;
+  width: 40px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+  font-size: 1.3rem;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+select,
+input,
+textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
+  border-radius: calc(10px * var(--round));
+  border: var(--edge) solid var(--line);
+  background: var(--panel-2);
+}
+select.narrow {
+  width: auto;
+}
+textarea {
+  resize: vertical;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.seg {
+  display: flex;
+  gap: calc(6px * var(--space));
+  overflow-x: auto;
+  padding-bottom: calc(6px * var(--space));
+  margin-bottom: calc(6px * var(--space));
+}
+.seg button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: calc(4px * var(--space)) calc(12px * var(--space));
+  border-radius: calc(999px * var(--round));
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+.seg button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+/* A row of choices that are all to be seen at once (the steps of a
+   setting): it wraps instead of scrolling off the side. */
+.seg.wrap {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+/* ---- questions ------------------------------------------------------ */
+.options {
+  display: grid;
+  gap: calc(8px * var(--space));
+  margin-top: calc(10px * var(--space));
+}
+.option {
+  text-align: left;
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--text);
+  font-weight: 500;
+}
+.option.rec {
+  border-color: var(--accent);
+}
+.option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
+}
+.option small {
+  display: block;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+details {
+  margin-top: calc(6px * var(--space));
+}
+summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.86rem;
+  padding: calc(6px * var(--space)) 0;
+}
+.set {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--space));
+  margin: calc(18px * var(--space)) calc(4px * var(--space)) calc(8px * var(--space));
+}
+.set h2 {
+  margin: 0;
+  flex: 1;
+}
+
+/* ---- ask ------------------------------------------------------------ */
+.composer {
+  position: sticky;
+  top: calc(var(--top-h) + env(safe-area-inset-top) + 8px);
+  z-index: 2;
+}
+.bubble {
+  margin-top: calc(8px * var(--space));
+  padding: calc(8px * var(--space)) calc(10px * var(--space));
+  border-radius: calc(10px * var(--round));
+  background: var(--panel-2);
+  font-size: 0.92rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bubble.you {
+  background: transparent;
+  border: var(--edge) solid var(--line);
+}
+.bubble b {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--quiet);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.listening {
+  border-color: var(--bad) !important;
+  color: var(--bad) !important;
+}
+
+/* ---- more ----------------------------------------------------------- */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: calc(10px * var(--space));
+}
+.tile {
+  display: block;
+  text-align: left;
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  padding: calc(12px * var(--space));
+  color: var(--text);
+  font-weight: 600;
+  min-height: 74px;
+}
+.tile span {
+  display: block;
+  margin-top: calc(4px * var(--space));
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+.link {
+  display: block;
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  margin-bottom: calc(8px * var(--space));
+  color: var(--text);
+}
+.link span {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--quiet);
+}
+/* A form in a dialog: a note, a change, a new item. */
+dialog.sheet {
+  width: min(560px, calc(100vw - 24px));
+  border: var(--edge) solid var(--line);
+  border-radius: calc(14px * var(--round));
+  background: var(--panel);
+  color: var(--text);
+  padding: calc(16px * var(--space));
+}
+dialog.sheet::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+dialog.sheet label {
+  display: block;
+  margin: calc(10px * var(--space)) 0 calc(4px * var(--space));
+  font-size: 0.86rem;
+  color: var(--quiet);
+}
+dialog.sheet label.check {
+  display: flex;
+  color: var(--text);
+}
+dialog.sheet textarea,
+dialog.sheet select,
+dialog.sheet input[type="text"] {
+  width: 100%;
+}
+.chip + .chip {
+  margin-left: calc(6px * var(--space));
+}
+/* A list of runs, each a link to its page: a line tall enough to tap. */
+.runs a {
+  display: block;
+  padding: calc(6px * var(--space)) 0;
+  font-size: 0.88rem;
+}
+pre {
+  margin: calc(8px * var(--space)) 0 0;
+  padding: calc(10px * var(--space));
+  background: var(--panel-2);
+  border-radius: calc(8px * var(--round));
+  font-size: 0.74rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- overlays ------------------------------------------------------- */
+.toast {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px);
+  max-width: 560px;
+  margin: 0 auto;
+  padding: calc(12px * var(--space)) calc(14px * var(--space));
+  border-radius: calc(12px * var(--round));
+  background: var(--good);
+  color: var(--good-ink);
+  font-weight: 600;
+  z-index: 20;
+}
+.toast.bad {
+  background: var(--bad);
+  color: var(--bad-ink);
+}
+/* A button on it (Undo) is written in the toast's own ink: the page's
+   text colour is made for the page, not for this green or red. */
+.toast button {
+  color: inherit;
+  border-color: currentColor;
+}
+dialog {
+  width: min(92vw, 520px);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(14px * var(--round));
+  background: var(--panel);
+  color: var(--text);
+  padding: calc(16px * var(--space));
+}
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+dialog h2 {
+  margin: 0 0 calc(6px * var(--space));
+  font-size: 1.05rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+dialog label {
+  display: block;
+  margin: calc(10px * var(--space)) 0 calc(4px * var(--space));
+  font-size: 0.85rem;
+  color: var(--quiet);
+}
+
+.check {
+  padding: calc(8px * var(--space)) 0;
+  flex-wrap: nowrap;
+}
+.check input {
+  flex: 0 0 22px;
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+}
+
+/* Sign-in: the numbered steps, and a value to copy that may be long. */
+ol.steps {
+  margin: 0.5rem 0;
+  padding-left: 1.3rem;
+  display: grid;
+  gap: 0.6rem;
+}
+code.wrap {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.card input + input,
+.card > select + textarea,
+.card > textarea + .row,
+.card > select + .row {
+  margin-top: 0.5rem;
+}
+/* A tick box is never stretched like a text field, wherever it sits. */
+input[type="checkbox"],
+input[type="radio"] {
+  flex: 0 0 22px;
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+  padding: 0;
+}
+
+/* ---- appearance ----------------------------------------------------- */
+/* Choosing a theme: each choice is drawn in its own colours (the inner
+   swatch carries the theme's name, so themes.css colours just it), and
+   the button around it in the page's, so the chosen one is marked in a
+   colour that shows on the page whatever the choice looks like. */
+.picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: calc(8px * var(--space));
+}
+.pick {
+  display: block;
+  padding: calc(6px * var(--space));
+  text-align: left;
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(12px * var(--round));
+  color: var(--text);
+  font-weight: 500;
+}
+.pick[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.pick-name {
+  display: block;
+  margin-top: calc(6px * var(--space));
+  font-size: 0.85rem;
+}
+.pick[aria-pressed="true"] .pick-name::before {
+  content: "✓ ";
+  color: var(--accent);
+  font-weight: 700;
+}
+.swatch {
+  display: block;
+  padding: calc(8px * var(--space));
+  background: var(--bg);
+  color: var(--text);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(8px * var(--round));
+}
+.swatch-card {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6px * var(--space));
+  padding: calc(4px * var(--space)) calc(8px * var(--space));
+  background: var(--panel);
+  border: var(--edge) solid var(--line);
+  border-radius: calc(6px * var(--round));
+}
+.swatch-card b {
+  font-size: 1.05rem;
+}
+.swatch-card i {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--quiet);
+}
+.dots {
+  display: flex;
+  gap: calc(6px * var(--space));
+  margin-top: calc(8px * var(--space));
+}
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--quiet);
+}
+.dot.accent {
+  background: var(--accent);
+}
+.dot.good {
+  background: var(--good);
+}
+.dot.warn {
+  background: var(--warn);
+}
+.dot.bad {
+  background: var(--bad);
+}
+/* Choosing a typeface: each choice is set in itself. */
+.option.face {
+  font-family: var(--font);
+}
+.option.face b {
+  display: block;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.option.face span {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--quiet);
+}
+/* The sample the choices are seen on: its rows keep apart. */
+.sample .row {
+  margin-top: calc(10px * var(--space));
+  flex-wrap: wrap;
+}

@@ -1,0 +1,6 @@
+digraph {
+	nodes
+	nodes -> nodes [label="graph"]
+	nodes -> nodes [label=parent]
+	nodes -> nodes [label=link]
+}

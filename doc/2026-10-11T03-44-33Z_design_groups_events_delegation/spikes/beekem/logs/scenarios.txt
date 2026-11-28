@@ -1,0 +1,108 @@
+## S0: a plain removal with no concurrent op
+  b <- op: applied=true
+  c <- op: applied=true
+  d <- op: applied=true
+  a: members=3, no root (NoRootKey), has_pcs_key=false
+  b: members=3, no root (NoRootKey), has_pcs_key=false
+  c: members=3, no root (IdentifierNotFound), has_pcs_key=false
+  d: members=3, no root (NoRootKey), has_pcs_key=false
+  all replicas derive one key: false (derived by 0 of 4)
+
+## S1: a and b commit at once; c and d see the two updates in opposite orders
+  c <- op: applied=true
+  c <- op: applied=true
+  d <- op: applied=true
+  d <- op: applied=true
+  a <- op: applied=true
+  b <- op: applied=true
+  a: members=4, no root (NoRootKey), has_pcs_key=false
+  b: members=4, no root (NoRootKey), has_pcs_key=false
+  c: members=4, no root (NoRootKey), has_pcs_key=false
+  d: members=4, no root (NoRootKey), has_pcs_key=false
+  all replicas derive one key: false (derived by 0 of 4)
+  c resolves with one update:
+  a <- op: applied=true
+  b <- op: applied=true
+  d <- op: applied=true
+  a: members=4, root 363ea6f1, has_pcs_key=true
+  b: members=4, root 363ea6f1, has_pcs_key=true
+  c: members=4, root 363ea6f1, has_pcs_key=true
+  d: members=4, root 363ea6f1, has_pcs_key=true
+  all replicas derive one key: true (derived by 4 of 4)
+
+## S2: a updates while b removes c
+  d <- op: applied=true
+  d <- op: applied=true
+  c <- op: applied=true
+  c <- op: applied=true
+  a <- op: applied=true
+  b <- op: applied=true
+  a: members=4, root 918d9b9c, has_pcs_key=false
+  b: members=3, root 918d9b9c, has_pcs_key=false
+  c: members=4, root 918d9b9c, has_pcs_key=false
+  d: members=3, root 918d9b9c, has_pcs_key=false
+  all replicas derive one key: true (derived by 4 of 4)
+  a <- op: applied=true
+  b <- op: applied=true
+  c <- op: applied=true
+  after d's update:
+  a: members=3, root 3f46455b, has_pcs_key=true
+  b: members=3, root 3f46455b, has_pcs_key=true
+  c: members=3, no root (IdentifierNotFound), has_pcs_key=true
+  d: members=3, root 3f46455b, has_pcs_key=true
+  all replicas derive one key: false (derived by 3 of 4)
+
+## S3: a and b both add the same newcomer e
+  c <- op: applied=true
+  c <- op: applied=true
+  d <- op: applied=true
+  d <- op: applied=true
+  a <- op: applied=true
+  b <- op: applied=true
+  a: members=5, no root (NoRootKey), has_pcs_key=false
+  b: members=5, no root (NoRootKey), has_pcs_key=false
+  c: members=5, no root (NoRootKey), has_pcs_key=false
+  d: members=5, no root (NoRootKey), has_pcs_key=false
+  all replicas derive one key: false (derived by 0 of 4)
+  a <- op: applied=true
+  b <- op: applied=true
+  d <- op: applied=true
+  after c's update:
+  a: members=5, root 913e4969, has_pcs_key=true
+  b: members=5, root 913e4969, has_pcs_key=true
+  c: members=5, root 913e4969, has_pcs_key=true
+  d: members=5, root 913e4969, has_pcs_key=true
+  all replicas derive one key: true (derived by 4 of 4)
+
+## S4: a adds e while b removes c
+  c <- op: applied=true
+  c <- op: applied=true
+  d <- op: applied=true
+  d <- op: applied=true
+  a <- op: applied=true
+  b <- op: applied=true
+  a <- op: applied=true
+  b <- op: applied=true
+  c <- op: applied=true
+  after d's update:
+  a: members=4, root e41040d6, has_pcs_key=true
+  b: members=4, root e41040d6, has_pcs_key=true
+  c: members=4, no root (IdentifierNotFound), has_pcs_key=true
+  d: members=4, root e41040d6, has_pcs_key=true
+  all replicas derive one key: false (derived by 3 of 4)
+
+## S5: an op delivered before its predecessor; a duplicate delivery
+  b <- op: applied=true
+  d (op2 first) <- op: error OutOfOrderOperation
+  d's op count unchanged after the rejected op: true
+  d (op1) <- op: applied=true
+  d (op2, retry) <- op: applied=true
+  d (op2, duplicate) <- op: applied=false
+  a (op2) <- op: applied=true
+  c (op1) <- op: applied=true
+  c (op2) <- op: applied=true
+  a: members=4, root 7ed894cd, has_pcs_key=true
+  b: members=4, root 7ed894cd, has_pcs_key=true
+  c: members=4, root 7ed894cd, has_pcs_key=true
+  d: members=4, root 7ed894cd, has_pcs_key=true
+  all replicas derive one key: true (derived by 4 of 4)

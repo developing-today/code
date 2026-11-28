@@ -1,0 +1,405 @@
+# laptop-backups-watchdog — freshness check for the laptop backups
+# (#1026, design #1024 phase 3; the #976 acceptance "a freshness check
+# exists so a stopped backup gets named").
+#
+# Read-only: it changes nothing and attempts no repair. It exits 0
+# only when all applicable checks hold, and otherwise exits 1 with one
+# line per violation naming the job, timer, day, or archive:
+#   (a) pm-dashboard-backup's run record ($HOME/backups/dashboard/
+#       .last-run.json, written by modules/pm-dashboard-backup.sh on
+#       every exit path) says result=complete and finished within
+#       the threshold — a failed record is a violation however fresh,
+#       so a nightly failure can never masquerade as freshness;
+#   (b) both backup timers (pm-dashboard-backup.timer and
+#       repo-archive-backup.timer) last triggered within the same
+#       threshold, per `systemctl --user show -p LastTriggerUSec`;
+#   (c) when LAPTOP_BACKUPS_OFFSITE_CHECK=1 (the module sets it for
+#       the service; #3914), the dashboard backup's own date - the
+#       run record's `date` - is present on the R2 offsite:
+#       r2bak:supabase-backups/dashboard/<date>/dashboard-<date>.tar.zst
+#       exists. A complete run record whose upload silently landed
+#       nothing (2026-10-29..2026-11-01, #3914) passes (a) and (b);
+#       only an object listing sees the absence. Credentials come
+#       from Bitwarden exactly as in pm-dashboard-backup.sh, and
+#       rclone/bws resolve via PATH so tests can stub both.
+#   (d) when $HOME/backups/pm-stack exists, the newest valid day dir
+#       whose mtime is within the threshold contains its
+#       pm-stack-<date>.tar.zst archive. The directory is created before
+#       dumps run, so an empty fresh dir is not evidence of a backup.
+#       Hosts without this independent backup root skip the check.
+#   (e) when the state job is enabled, laptop-state-backup's success
+#       marker ($HOME/backups/restic/.laptop-state-last-success-epoch,
+#       an epoch written only after local + R2 + Drive all succeed)
+#       must exist and be fresher than the threshold, and its timer
+#       must have triggered within the threshold (via (b)). A timer
+#       that never fires writes no marker, so the stall that ran
+#       2026-11-02..2026-11-14 (code#10294) is named within a day.
+# repo-archive-backup is covered via its timer's last-trigger time
+# only: its script and restic credentials live outside this repo, so
+# no run record is required of it (stated in laptop-backups.nix too).
+# cold-store-nightly is covered via its timer's last-trigger time
+# PLUS completion evidence (f): its service's last Result must be
+# success and the cold-store manifest's transfer ledger must hold a
+# fresh backup-upload row. A trigger alone cannot see the 2026-11-12
+# failure shape (code#9093): the timer fired and the service started,
+# but the 30-minute start timeout killed the every-DB Turso export
+# mid-flight, filing almost nothing.
+#
+# Usage: laptop-backups-watchdog [max-age-hours] [jobs]
+#   max-age-hours   (default 26, a little over one daily period; the
+#                   module option services.laptop-backups.watchdog
+#                   .maxAgeHours feeds this argument).
+#   jobs            comma-separated subset of
+#                   dashboard,repo-archive,state,opencode-db,cold-store,mesh
+#                   (default dashboard,repo-archive). The module passes only the jobs
+#                   whose enable flag is on: a disabled job has no
+#                   record and no timer, so requiring them would fail
+#                   the watchdog forever in a supported configuration.
+# Test hooks: LAPTOP_BACKUPS_RECORD overrides the record path and
+# `systemctl` is resolved via PATH, so the suite can stub both.
+#
+# mesh (code#13463): restore verification, not just backup freshness.
+# The mesh rotation writes one JSON record per leg x store pair to
+# $HOME/backups/mesh/restore-verification/<leg>.<store>.json:
+#   {"leg":"class-a","store":"r2","verified_at":"2026-11-20T12:00:00Z",
+#    "result":"ok","detail":"restored 12 dbs to /var/tmp/scratch; row counts match manifest"}
+# Every declared leg x store pair must have a record whose result is
+# ok and whose verification is no older than a quarter (the rotation's
+# coverage promise, design §9: every combination at least quarterly),
+# so a stalled rotation or a failed restore is named by leg and store.
+MAX_AGE_HOURS="${1:-26}"
+JOBS="${2:-dashboard,repo-archive}"
+want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
+RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
+MANIFEST="${COLD_STORE_MANIFEST:-$HOME/.config/cold-store/manifest.sqlite}"
+# mesh restore-verification records (code#13463). Legs and stores are
+# the design's topology (§2); a new leg adds its name here and to the
+# rotation. A quarter is 91 days ~= 2184h; 2200h is a little over,
+# matching the daily threshold's slack.
+MESH_RECORDS="${LAPTOP_BACKUPS_MESH_RECORDS:-$HOME/backups/mesh/restore-verification}"
+MESH_MAX_AGE_HOURS="${LAPTOP_BACKUPS_MESH_MAX_AGE_HOURS:-2200}"
+MESH_LEGS="${LAPTOP_BACKUPS_MESH_LEGS:-class-a,class-b,replicate,class-d,class-e,embeds}"
+MESH_STORES="${LAPTOP_BACKUPS_MESH_STORES:-r2,laptop,drive}"
+NOW_EPOCH="$(date +%s)"
+MAX_AGE_SEC=$((MAX_AGE_HOURS * 3600))
+# A timestamp further in the future than this tolerance cannot be a
+# fresh run: after a backward clock correction it would read as a
+# negative age and pass, masking a stopped backup until real time
+# caught up. Small skew (NTP steps, VM resume) is tolerated.
+SKEW_TOLERANCE_SEC=300
+violations=0
+
+complain() {
+  echo "laptop-backups-watchdog: FAIL $*" >&2
+  violations=$((violations + 1))
+}
+
+# --- (a) the dashboard run record -------------------------------------------
+if want_job dashboard; then
+  if [ ! -f "$RECORD" ]; then
+    complain "pm-dashboard-backup: no run record at $RECORD"
+  else
+    verdict="$(
+      RECORD="$RECORD" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+        python3 - <<'PYEOF' 2>/dev/null
+import json, os
+from datetime import datetime, timezone
+try:
+    rec = json.load(open(os.environ["RECORD"]))
+    finished = datetime.strptime(rec["finished_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+except Exception:
+    print("unreadable")
+    raise SystemExit
+age = int(os.environ["NOW_EPOCH"]) - int(finished.timestamp())
+if rec.get("result") != "complete":
+    print(f"failed result={rec.get('result')} failing_step={rec.get('failing_step')} finished_at={rec.get('finished_at')}")
+elif age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future finished_at={rec.get('finished_at')} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
+elif age > int(os.environ["MAX_AGE_SEC"]):
+    print(f"stale age_hours={age // 3600} finished_at={rec.get('finished_at')}")
+else:
+    print("ok")
+PYEOF
+    )"
+    case "$verdict" in
+    ok) ;;
+    unreadable | "") complain "pm-dashboard-backup: run record at $RECORD is unreadable" ;;
+    *) complain "pm-dashboard-backup: run record $verdict (threshold ${MAX_AGE_HOURS}h)" ;;
+    esac
+  fi
+fi
+
+# --- (b) enabled timers' last triggers ---------------------------------------
+timers=()
+want_job dashboard && timers+=(pm-dashboard-backup.timer)
+want_job repo-archive && timers+=(repo-archive-backup.timer)
+want_job state && timers+=(laptop-state-backup.timer)
+want_job opencode-db && timers+=(opencode-db-backup.timer)
+want_job cold-store && timers+=(cold-store-nightly.timer)
+for timer in "${timers[@]}"; do
+  job="${timer%.timer}"
+  raw="$(systemctl --user show -p LastTriggerUSec --value "$timer" 2>/dev/null || true)"
+  if [ -z "$raw" ]; then
+    complain "$job: timer $timer has never triggered"
+    continue
+  fi
+  trig_epoch="$(date -d "$raw" +%s 2>/dev/null || echo "")"
+  if [ -z "$trig_epoch" ]; then
+    complain "$job: timer $timer last trigger unparseable: '$raw'"
+    continue
+  fi
+  age=$((NOW_EPOCH - trig_epoch))
+  if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+    complain "$job: timer $timer last trigger is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+  elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+    complain "$job: timer $timer last triggered $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+  fi
+done
+
+# --- (e) opencode-db success marker (completion evidence, code#10297) -------
+# opencode-db-backup.sh writes the epoch of its last fully successful
+# run (all three restic legs verified) to the marker; a stale, future,
+# unreadable or missing marker names the job, exactly like the
+# dashboard run record in (a). Timer coverage comes from (b) above.
+OPENCODE_DB_MARKER="${LAPTOP_BACKUPS_OPENCODE_DB_MARKER:-$HOME/backups/restic/.opencode-db-last-success-epoch}"
+if want_job opencode-db; then
+  if [ ! -f "$OPENCODE_DB_MARKER" ]; then
+    complain "opencode-db-backup: no success marker at $OPENCODE_DB_MARKER"
+  else
+    marker_epoch="$(head -1 "$OPENCODE_DB_MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "opencode-db-backup: success marker at $OPENCODE_DB_MARKER is unreadable"
+    else
+      age=$((NOW_EPOCH - marker_epoch))
+      if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "opencode-db-backup: success marker is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+        complain "opencode-db-backup: last success $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
+
+# --- (c) offsite presence on R2 ----------------------------------------------
+if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
+  offsite_date="$(
+    RECORD="$RECORD" python3 - <<'PYEOF' 2>/dev/null
+import json, os
+try:
+    print(json.load(open(os.environ["RECORD"]))["date"])
+except Exception:
+    pass
+PYEOF
+  )"
+  if [ -z "$offsite_date" ]; then
+    : # (a) already named the missing or unreadable record
+  elif ! command -v rclone >/dev/null 2>&1 || ! command -v bws >/dev/null 2>&1; then
+    complain "pm-dashboard-backup: cannot verify offsite presence for $offsite_date: rclone/bws not on PATH"
+  else
+    if [ -z "${BWS_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.config/bws/access-token" ]; then
+      BWS_ACCESS_TOKEN="$(cat "$HOME/.config/bws/access-token")"
+      export BWS_ACCESS_TOKEN
+    fi
+    BWS_LIST="$(bws secret list 2>/dev/null || true)"
+    bws_get() {
+      printf '%s' "$BWS_LIST" | python3 -c 'import json,sys
+k = sys.argv[1]
+for s in json.load(sys.stdin):
+    if s.get("key") == k:
+        print(s.get("value", "")); break' "$1" 2>/dev/null
+    }
+    R2_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
+    R2_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
+    R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
+    if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
+      complain "pm-dashboard-backup: cannot verify offsite presence for $offsite_date: R2 credentials incomplete in Bitwarden"
+    else
+      case "$R2_ENDPOINT" in
+      http://* | https://*) ;;
+      *) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
+      esac
+      R2_ENDPOINT="${R2_ENDPOINT%/}"
+      export RCLONE_CONFIG_R2BAK_TYPE="s3"
+      export RCLONE_CONFIG_R2BAK_PROVIDER="Cloudflare"
+      export RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+      export RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+      export RCLONE_CONFIG_R2BAK_ENDPOINT="$R2_ENDPOINT"
+      export RCLONE_CONFIG_R2BAK_REGION="auto"
+      # The r2-backups token cannot HeadBucket (see pm-dashboard-backup.sh).
+      export RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET="true"
+      offsite_listing="$(rclone lsf "r2bak:supabase-backups/dashboard/$offsite_date/" 2>/dev/null || true)"
+      case "$offsite_listing" in
+      *"dashboard-$offsite_date.tar.zst"*) ;;
+      *) complain "pm-dashboard-backup: offsite absence on R2: dashboard/$offsite_date/dashboard-$offsite_date.tar.zst not found (run record says complete)" ;;
+      esac
+    fi
+  fi
+fi
+
+# --- (d) local pm-stack archive presence -------------------------------------
+PM_STACK_ROOT="$HOME/backups/pm-stack"
+if [ -d "$PM_STACK_ROOT" ]; then
+  newest_pm_stack_day=""
+  # nullglob: an unmatched glob must expand to nothing, not to the
+  # literal pattern (which the [ -d ] guard below would have to catch).
+  shopt -s nullglob
+  for day_dir in "$PM_STACK_ROOT"/*/; do
+    [ -d "$day_dir" ] || continue
+    day="${day_dir%/}"
+    day="${day##*/}"
+    [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    normalized_day="$(date -d "$day" +%F 2>/dev/null || true)"
+    [ "$normalized_day" = "$day" ] || continue
+
+    # The backup script creates the dated directory before its dumps;
+    # its mtime therefore detects a fresh failed run even when no file
+    # was ever written. Select by the ISO date, not mtime ordering, in
+    # case a later write touches an older day directory.
+    day_mtime="$(stat -c %Y -- "$day_dir" 2>/dev/null || true)"
+    [[ $day_mtime =~ ^[0-9]+$ ]] || continue
+    age=$((NOW_EPOCH - day_mtime))
+    [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ] && continue
+    [ "$age" -gt "$MAX_AGE_SEC" ] && continue
+    if [[ -z $newest_pm_stack_day || $day > $newest_pm_stack_day ]]; then
+      newest_pm_stack_day="$day"
+    fi
+  done
+  shopt -u nullglob
+
+  if [ -n "$newest_pm_stack_day" ]; then
+    expected_archive="$PM_STACK_ROOT/$newest_pm_stack_day/pm-stack-$newest_pm_stack_day.tar.zst"
+    if [ ! -f "$expected_archive" ]; then
+      complain "pm-stack-backup: day $newest_pm_stack_day missing archive $expected_archive"
+    fi
+  fi
+fi
+
+# --- (e) laptop-state success marker -----------------------------------------
+if want_job state; then
+  MARKER="${LAPTOP_STATE_MARKER:-$HOME/backups/restic/.laptop-state-last-success-epoch}"
+  if [ ! -f "$MARKER" ]; then
+    complain "laptop-state-backup: no success marker at $MARKER"
+  else
+    marker_epoch="$(tr -d '[:space:]' <"$MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "laptop-state-backup: success marker at $MARKER is unreadable"
+    else
+      marker_age=$((NOW_EPOCH - marker_epoch))
+      if [ "$marker_age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "laptop-state-backup: success marker is $((-marker_age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$marker_age" -gt "$MAX_AGE_SEC" ]; then
+        complain "laptop-state-backup: last success $((marker_age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
+
+# --- (f) cold-store-nightly completion evidence ------------------------------
+if want_job cold-store; then
+  cs_result="$(systemctl --user show -p Result --value cold-store-nightly.service 2>/dev/null || true)"
+  if [ "$cs_result" != "success" ]; then
+    complain "cold-store-nightly: last run result '${cs_result:-unknown}' is not success"
+  fi
+  if [ ! -f "$MANIFEST" ]; then
+    complain "cold-store-nightly: no cold-store manifest at $MANIFEST"
+  else
+    cs_verdict="$(
+      MANIFEST="$MANIFEST" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+        python3 - <<'PYEOF' 2>/dev/null
+import os, sqlite3
+from datetime import datetime, timezone
+try:
+    con = sqlite3.connect(f"file:{os.environ['MANIFEST']}?mode=ro", uri=True)
+    row = con.execute("select max(ts) from transfer_ledger where kind = 'backup-upload'").fetchone()
+    latest = row[0] if row else None
+except Exception:
+    print("unreadable")
+    raise SystemExit
+if latest is None:
+    print("no backup-upload rows in transfer ledger")
+    raise SystemExit
+try:
+    ts = datetime.strptime(latest, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+except Exception:
+    print("unreadable")
+    raise SystemExit
+age = int(os.environ["NOW_EPOCH"]) - int(ts.timestamp())
+if age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future last backup-upload {latest} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
+elif age > int(os.environ["MAX_AGE_SEC"]):
+    print(f"stale last backup-upload {latest} age_hours={age // 3600}")
+else:
+    print("ok")
+PYEOF
+    )"
+    case "$cs_verdict" in
+    ok) ;;
+    unreadable | "") complain "cold-store-nightly: transfer ledger in $MANIFEST is unreadable" ;;
+    *) complain "cold-store-nightly: transfer ledger $cs_verdict (threshold ${MAX_AGE_HOURS}h)" ;;
+    esac
+  fi
+fi
+
+# --- (g) mesh restore-verification records (code#13463) ----------------------
+# Backup-verified is not restore-verified (design §9). The rotation
+# records each leg x store restore on its own schedule; this check
+# reads those records only. A record that is missing, unreadable,
+# failed, or older than a quarter names the leg and the store, so a
+# stalled rotation cannot pass as a healthy mesh.
+if want_job mesh; then
+  if [ ! -d "$MESH_RECORDS" ]; then
+    complain "mesh restore verification: no records directory at $MESH_RECORDS"
+  else
+    IFS=',' read -r -a mesh_legs <<<"$MESH_LEGS"
+    IFS=',' read -r -a mesh_stores <<<"$MESH_STORES"
+    for leg in "${mesh_legs[@]}"; do
+      [ -n "$leg" ] || continue
+      for store in "${mesh_stores[@]}"; do
+        [ -n "$store" ] || continue
+        mesh_record="$MESH_RECORDS/$leg.$store.json"
+        if [ ! -f "$mesh_record" ]; then
+          complain "mesh restore verification: leg=$leg store=$store: no record at $mesh_record (never verified)"
+          continue
+        fi
+        mesh_verdict="$(
+          RECORD="$mesh_record" LEG="$leg" STORE="$store" NOW_EPOCH="$NOW_EPOCH" \
+            MESH_MAX_AGE_SEC=$((MESH_MAX_AGE_HOURS * 3600)) SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+            python3 - <<'PYEOF' 2>/dev/null
+import json, os
+from datetime import datetime, timezone
+try:
+    rec = json.load(open(os.environ["RECORD"]))
+    verified = datetime.strptime(rec["verified_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+except Exception:
+    print("unreadable")
+    raise SystemExit
+if rec.get("leg") != os.environ["LEG"] or rec.get("store") != os.environ["STORE"]:
+    print(f"record identifies leg={rec.get('leg')} store={rec.get('store')} but is filed as leg={os.environ['LEG']} store={os.environ['STORE']}")
+    raise SystemExit
+if rec.get("result") != "ok":
+    print(f"last verification failed result={rec.get('result')} verified_at={rec.get('verified_at')} detail={rec.get('detail')}")
+    raise SystemExit
+age = int(os.environ["NOW_EPOCH"]) - int(verified.timestamp())
+if age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future verified_at={rec.get('verified_at')} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
+elif age > int(os.environ["MESH_MAX_AGE_SEC"]):
+    print(f"stale verified_at={rec.get('verified_at')} age_days={age // 86400} (quarterly threshold {int(os.environ['MESH_MAX_AGE_SEC']) // 86400}d)")
+else:
+    print("ok")
+PYEOF
+        )"
+        case "$mesh_verdict" in
+        ok) ;;
+        unreadable | "") complain "mesh restore verification: leg=$leg store=$store: record at $mesh_record is unreadable" ;;
+        *) complain "mesh restore verification: leg=$leg store=$store: $mesh_verdict" ;;
+        esac
+      done
+    done
+  fi
+fi
+
+if [ "$violations" -gt 0 ]; then
+  echo "laptop-backups-watchdog: $violations violation(s)" >&2
+  exit 1
+fi
+echo "laptop-backups-watchdog: OK jobs [$JOBS] fresh within ${MAX_AGE_HOURS}h"
