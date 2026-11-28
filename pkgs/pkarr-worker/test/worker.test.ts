@@ -1,6 +1,6 @@
 import { env as testBindings, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import worker, { type Env } from "../src/index";
+import worker, { versionAnswer, type Env } from "../src/index";
 import { parseDnsMessage, signableBytes, z32Decode, z32Encode } from "../src/pkarr";
 import { retentionMilliseconds } from "../src/retention";
 import { buildRelayPayload, dnsPacketWithTxt, dnsQuery, keypairFromSeed } from "./helpers";
@@ -441,5 +441,38 @@ describe("scope guardrails", () => {
     expect(root.status).toBe(200);
     expect(await root.text()).toContain("not a Mainline DHT node");
     expect((await SELF.fetch(`${BASE}/healthz`)).status).toBe(200);
+  });
+});
+
+describe("GET /version (#15793 criterion 1)", () => {
+  // Oracle: #15793 criterion 1 (parent #13494) \u2014 every in-service Worker
+  // answers unauthenticated GET /version with the commit it was deployed
+  // from, in the `version`-field shape the edge probe reads (commitOf in
+  // pm-stack/console/edge/src/worker-checks.ts); "unknown", never a
+  // fabricated commit, when the deploy was unstamped.
+  it("names the stamped deployed commit, unauthenticated", async () => {
+    const env = testEnv(mockStore(undefined).store, undefined);
+    env.VERSION = "abc123def456";
+    const res = await worker.fetch(new Request(`${BASE}/version`), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, service: "pkarr", version: "abc123def456" });
+  });
+
+  it("answers unknown when unstamped or blank, and trims the stamp", async () => {
+    const env = testEnv(mockStore(undefined).store, undefined);
+    const unstamped = await worker.fetch(new Request(`${BASE}/version`), env);
+    expect(await unstamped.json()).toEqual({ ok: true, service: "pkarr", version: "unknown" });
+    expect(versionAnswer({ VERSION: "  abc123  " })).toEqual({ ok: true, service: "pkarr", version: "abc123" });
+    expect(versionAnswer({ VERSION: "   " }).version).toBe("unknown");
+    expect(versionAnswer({}).version).toBe("unknown");
+  });
+
+  it("is a 405 for non-GET, and the configured worker answers unknown until a stamped deploy", async () => {
+    const env = testEnv(mockStore(undefined).store, undefined);
+    env.VERSION = "abc123";
+    expect((await worker.fetch(new Request(`${BASE}/version`, { method: "POST" }), env)).status).toBe(405);
+    const live = await SELF.fetch(`${BASE}/version`);
+    expect(live.status).toBe(200);
+    expect(await live.json()).toEqual({ ok: true, service: "pkarr", version: "unknown" });
   });
 });

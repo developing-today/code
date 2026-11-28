@@ -94,6 +94,10 @@ if (deployVersion !== null) {
 const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
 const message = `deploy ${sha} via nix run .#pkarr-deploy`;
+// #15793: cloudflare.config.ts stamps the VERSION var from GITHUB_SHA
+// at build time; hand it the same sha this deploy tags, so /version
+// names the commit each uploaded version was built from.
+env.GITHUB_SHA = sha;
 
 // cf gap (recorded on #1829): `cf workers versions create` cannot
 // create a brand-new Worker — it refuses and tells you to run the
