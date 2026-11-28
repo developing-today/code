@@ -34,10 +34,10 @@ This chapter covers all 29 aggregator routes in the survey census: the 23 manife
 
 ## `/decisions` — Decision sets
 
-- **What it is:** The index of every raised decision set (#8867): new today, this week, and all sets, with open-question counts per set. Manifest group Overview, `nav: primary` (promoted in #9354, per the comment in `pages.ts`).
+- **What it is:** The index of every raised decision set (#8867): new today, this week, the rolling last 7 days, and all sets, with open-question counts per set. Manifest group Overview, `nav: primary` (promoted in #9354, per the comment in `pages.ts`).
 - **Inputs:** Each row opens the set's own page, `/decisions/&lt;setId&gt;` (below).
 - **Defaults:** `pages.ts` declares no `api:` twin for this page — one of only three manifest pages without one. The server implements a decisions API regardless; see D7 in the Sources note and [The question sets, enumerated](question-sets.md).
-- **Behaviour:** The index is a navigation surface over the decision sets; answering happens on the per-set page or in the console.
+- **Behaviour:** The index is a navigation surface over the decision sets; answering happens on the per-set page or in the console. The index has four views, chosen with `?view=` (`handleDecisionsIndex` in `server-decision-routes.ts`; `decisionSetsForView` in `decisions.ts`): `today` (raised on the current America/Chicago calendar day), `week` (the current Chicago calendar week, Monday–Sunday), `recent` (raised in the rolling last 7 days), and `all` (everything). Since the decision-set aging policy landed (#14064, PR #14413), `recent` is the default view, so the landing view is the current workload, not the backlog; a set whose raise time cannot be parsed appears only in `all`. Every set also carries an aging status (`decisionSetAging` in `decisions.ts`): `settled` (nothing open — settled wins over idle), `abandoned` (still open but idle a full 7 days since its last activity — the latest resolution time, else its raise time; a set with no datable instant ages as `active`, never retired undated), else `active`. The `all` view renders the abandoned sets as a fold, with their set ids and a dismiss-all backed by `POST /api/decisions/dismiss` (see [Aggregator HTTP routes and API](aggregator-routes.md)).
 - **Failure shapes:** None recorded in the survey.
 
 ## `/reports` — Reports
