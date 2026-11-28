@@ -128,6 +128,25 @@ class RenderTests(unittest.TestCase):
             ),
         )
 
+    def test_unit_kill_signal_renders_in_service_section(self):
+        # Oracle: the relay kit's unit (pkgs/id/tests/fixtures/relay/
+        # iroh-relay.service) — the relay ignores SIGTERM and exits
+        # cleanly on SIGINT, so a registry entry that deploys the
+        # relay must be able to carry the kit unit's KillSignal.
+        # Issue #14719, slice 2: KillSignal=SIGINT is a [Service]
+        # directive, alongside RestartSec.
+        unit = deploy.render_unit(
+            "svc", dict(DEFN, killSignal="SIGINT"), base=BASE
+        )
+        _, _, service_section = unit.partition("[Service]")
+        self.assertIn("KillSignal=SIGINT", service_section)
+        self.assertIn("Restart=on-failure", service_section)
+
+    def test_unit_without_kill_signal_carries_no_kill_signal(self):
+        # No behavior change for a definition that does not opt in.
+        unit = deploy.render_unit("svc", DEFN, base=BASE)
+        self.assertNotIn("KillSignal", unit)
+
     def test_plist_stub_points_at_profile_current_link(self):
         plist = deploy.render_plist("svc", DEFN, base=BASE)
         self.assertIn("<string>com.developing-today.deploy.svc</string>", plist)
@@ -165,6 +184,36 @@ class StartLimitValidationTests(unittest.TestCase):
             errors = self.errors(**{field: bad})
             self.assertTrue(errors, f"{field}={bad!r} must be rejected")
             self.assertIn(field, errors[0])
+
+
+class KillSignalValidationTests(unittest.TestCase):
+    # Oracle: deploy.py's validation contract — killSignal (#14719
+    # slice 2) is an optional systemd signal name ("SIG" + capitals),
+    # rendered verbatim into the unit file, so anything that is not
+    # exactly a signal name (lowercase, blank, smuggled directives,
+    # wrong type) is reported by field name.
+
+    def errors(self, **overrides):
+        return deploy.validate({"svc": dict(DEFN, **overrides)})
+
+    def test_valid_values_pass(self):
+        self.assertEqual(self.errors(killSignal="SIGINT"), [])
+        self.assertEqual(self.errors(killSignal="SIGTERM"), [])
+
+    def test_bad_values_fail_by_field(self):
+        for bad in [
+            "sigint",
+            "SIGINT\nExecStart=/bin/evil",
+            "SIGINT; rm -rf /",
+            "",
+            "TERM",
+            5,
+            True,
+            None,
+        ]:
+            errors = self.errors(killSignal=bad)
+            self.assertTrue(errors, f"killSignal={bad!r} must be rejected")
+            self.assertIn("killSignal", errors[0])
 
 
 class GenerationLogTests(unittest.TestCase):
