@@ -62,7 +62,7 @@ because a silently wrong coordination store double-claims work.
    name for a disaster; `fleet-queue-restore-drill` for a drill):
 
    ```bash
-   turso db create fleet-queue-restored
+   turso db create fleet-queue-restored --tursodb
    turso db show fleet-queue-restored   # note the URL
    turso db tokens create fleet-queue-restored  # a write token
    ```
@@ -175,7 +175,7 @@ Provisioning the home the first time is an explicit act (the live
 leg of #13458):
 
 ```bash
-turso db create d1-backup-fleet-queue-backup
+turso db create d1-backup-fleet-queue-backup --tursodb
 turso db tokens create d1-backup-fleet-queue-backup  # a write token
 # store the token in Bitwarden as
 #   turso.d1-backup-fleet-queue-backup-rw-token
