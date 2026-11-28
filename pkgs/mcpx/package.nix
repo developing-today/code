@@ -214,16 +214,17 @@ buildMcpxGoModule {
       # adopted by attach on a takeover, so they no longer need the
       # legacy mechanics for their stdio children and run on darwin.
       #
-      # Two e2e tests remain below as a non-legacy exception, blocked
+      # Two e2e tests were below as a non-legacy exception, blocked
       # on the darwin product defects in #15407 (supervisor socket
       # path over darwin's 104-byte limit for scoped instances;
       # changed server's supervised child not retired on takeover) —
       # verified failing on aarch64-darwin by the #15397 run
-      # 45769411977. Remove them when #15407 lands.
+      # 45769411977. Fixed by the supervisor socket-dir shortening
+      # (16-hex instance hash -> 8-hex, short /tmp fallback) plus the
+      # legacy-dir scan migration and takeover retire fix, so they
+      # run on darwin again.
       darwinSkip = "^(${
         lib.concatStringsSep "|" [
-          "TestClientLeaseSurvivesDaemonTakeover"
-          "TestTakeoverRestartsAChangedServerAndKeepsTheRest"
           "TestClientHandoffCommitsOnlyWhenActivated"
           "TestDetachedChildKeepsItsPipesAndAdoptionResumesThem"
           "TestDetachRefusesWhileACallIsInFlight"

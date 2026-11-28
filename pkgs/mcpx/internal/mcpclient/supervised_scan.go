@@ -44,6 +44,26 @@ type SupervisorScanOutcome struct {
 	Detail string
 }
 
+// globSupervisorSockets returns every supervisor socket file under
+// every candidate directory for stateDir (see supervisorSocketDirs),
+// deduped. Scanning all candidates keeps pre-#15407 supervisors (in
+// the legacy fallback dir) and relocated ones visible to the
+// adopt-or-reap scan across the upgrade.
+func globSupervisorSockets(stateDir string) []string {
+	seen := map[string]bool{}
+	var matches []string
+	for _, dir := range supervisorSocketDirs(stateDir) {
+		found, _ := filepath.Glob(filepath.Join(dir, "sup-*.sock"))
+		for _, m := range found {
+			if !seen[m] {
+				seen[m] = true
+				matches = append(matches, m)
+			}
+		}
+	}
+	return matches
+}
+
 // ScanSupervisorSockets performs the reap/stale half of the
 // adopt-or-reap scan over stateDir and returns one outcome per
 // supervisor socket found, in filename order. configured lists the
@@ -56,7 +76,7 @@ func ScanSupervisorSockets(stateDir string, configured []string, logf func(strin
 	for _, name := range configured {
 		expected[supervisorNameHash(name)] = name
 	}
-	matches, _ := filepath.Glob(filepath.Join(SupervisorSocketDir(stateDir), "sup-*.sock"))
+	matches := globSupervisorSockets(stateDir)
 	sort.Strings(matches)
 	var out []SupervisorScanOutcome
 	for _, sock := range matches {
@@ -95,7 +115,7 @@ func ReapSupervisors(stateDir string, names []string, logf func(string, ...any))
 	for _, name := range names {
 		targets[supervisorNameHash(name)] = true
 	}
-	matches, _ := filepath.Glob(filepath.Join(SupervisorSocketDir(stateDir), "sup-*.sock"))
+	matches := globSupervisorSockets(stateDir)
 	sort.Strings(matches)
 	var out []SupervisorScanOutcome
 	for _, sock := range matches {
