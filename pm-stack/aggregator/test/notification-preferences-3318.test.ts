@@ -49,12 +49,12 @@ const row = (overrides: Partial<PushSubscriptionRow> = {}): PushSubscriptionRow 
 });
 
 function stubStore(subs: PushSubscriptionRow[]) {
-  const sends: { class: string; objectRef: string; outcome: string }[] = [];
+  const sends: { class: string; objectRef: string; outcome: string; endpointId?: string }[] = [];
   const gone: string[] = [];
   const alive: string[] = [];
   const store = {
     listSubscriptions: async () => subs,
-    logSend: async (e: { class: string; objectRef: string; outcome: "sent" | "gone" | "error" }) => {
+    logSend: async (e: { class: string; objectRef: string; outcome: "sent" | "gone" | "error"; endpointId?: string }) => {
       sends.push(e);
     },
     noteSubscriptionGone: async (endpoint: string) => {
@@ -144,7 +144,7 @@ describe("per-class test sends honour the stored toggles", () => {
     expect(summary.eligible).toBe(1);
     expect(summary.sent).toBe(1);
     expect(summary.url).toBe(`${ORIGIN}/quota`);
-    expect(sends).toEqual([{ class: "quota-wall", objectRef: "test:quota-wall", outcome: "sent" }]);
+    expect(sends).toEqual([{ class: "quota-wall", objectRef: "test:quota-wall", outcome: "sent", endpointId: "99999999-8888-7777-6666-555555555555" }]);
     expect(alive).toEqual(["https://push.example.test/send/abc"]);
   });
 
@@ -154,7 +154,7 @@ describe("per-class test sends honour the stored toggles", () => {
     const summary = await sendClassTestPush(store, ORIGIN, "digest", async () => ({ ok: true, status: 201 }));
     expect(summary.eligible).toBe(1);
     expect(summary.sent).toBe(1);
-    expect(sends).toEqual([{ class: "digest", objectRef: "test:digest", outcome: "sent" }]);
+    expect(sends).toEqual([{ class: "digest", objectRef: "test:digest", outcome: "sent", endpointId: "99999999-8888-7777-6666-555555555555" }]);
   });
 
   test("a gone endpoint is logged gone and marked", async () => {
@@ -166,7 +166,7 @@ describe("per-class test sends honour the stored toggles", () => {
       error: "gone",
     }));
     expect(summary.gone).toBe(1);
-    expect(sends).toEqual([{ class: "incident", objectRef: "test:incident", outcome: "gone" }]);
+    expect(sends).toEqual([{ class: "incident", objectRef: "test:incident", outcome: "gone", endpointId: "99999999-8888-7777-6666-555555555555" }]);
     expect(gone).toEqual(["https://push.example.test/send/abc"]);
   });
 });
