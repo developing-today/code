@@ -663,10 +663,12 @@ mod tests {
         assert!(parse_session_args("sessions", &args(&["--idle-for", "2h"])).is_err());
     }
 
-    /// The remote lines, run by a real shell against a fake tmux: the
-    /// listing reads back, the sweep kills only the exact fleet- name it
-    /// was given, and a session a client attached to since the listing
-    /// is kept.
+    /// The remote lines, run by a real shell against a fake tmux (and a
+    /// fake date: the test's PATH override hides the ambient coreutils,
+    /// so in a Nix sandbox or on NixOS `date` would not resolve at
+    /// all — #16152): the listing reads back, the sweep kills only the
+    /// exact fleet- name it was given, and a session a client attached
+    /// to since the listing is kept.
     #[cfg(unix)]
     #[test]
     fn remote_lines_list_and_kill_only_exact_fleet_names_15422() {
@@ -682,6 +684,13 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let killed = dir.join("killed");
+        // A fixed clock: the listing's `now` must read back exactly
+        // what the remote `date` printed, proving the fake stood in.
+        let date = dir.join("date");
+        std::fs::write(&date, "#!/bin/sh\nprintf '1000000\\n'\n").unwrap();
+        let mut date_perms = std::fs::metadata(&date).unwrap().permissions();
+        date_perms.set_mode(0o755);
+        std::fs::set_permissions(&date, date_perms).unwrap();
         let tmux = dir.join("tmux");
         std::fs::write(
             &tmux,
@@ -717,7 +726,8 @@ esac
             String::from_utf8(out.stdout).unwrap()
         };
 
-        let (_, listed) = parse_listing(&run(&sessions_line())).unwrap();
+        let (now, listed) = parse_listing(&run(&sessions_line())).unwrap();
+        assert_eq!(now, 1_000_000);
         assert_eq!(
             listed,
             [
