@@ -113,7 +113,12 @@ starts with `<prefix>.` is used as is.
 --store (bitwarden|1password) and --vault select the store for this
 call, over $FLEET_SECRETS_STORE/$FLEET_SECRETS_VAULT, over `[secrets]
 store`/`vault` in fleet.toml. A vault with no store, or an unknown
-store, is a usage error (exit 2).";
+store, is a usage error (exit 2).
+
+--upstream bypasses the local broker cache and resolves through the
+broker network path and the stores (#13948 S5 §5.4); --no-cache
+bypasses every broker leg and goes straight to the stores. The two
+are mutually exclusive.";
 
 const LIST_USAGE: &str = "\
 Usage: fleet secrets list [--store <store>] [--vault <vault>]
@@ -184,10 +189,15 @@ fn leaf_help_usage(verb: &str, args: &[String]) -> Option<&'static str> {
 /// The `--store` / `--vault` flags of a leaf verb (#10358 S3),
 /// separated from its positional arguments. A flag missing its
 /// value, or an unknown flag, is `Err(())` — a usage error.
+/// `get` additionally accepts `--upstream` and `--no-cache`
+/// (#13948 S5 §5.4), which are mutually exclusive: both together
+/// is a usage error.
 #[derive(Debug)]
 struct StoreFlags {
     store: Option<String>,
     vault: Option<String>,
+    upstream: bool,
+    no_cache: bool,
     positional: Vec<String>,
 }
 
@@ -195,6 +205,8 @@ fn parse_store_flags(args: &[String]) -> Result<StoreFlags, ()> {
     let mut flags = StoreFlags {
         store: None,
         vault: None,
+        upstream: false,
+        no_cache: false,
         positional: Vec::new(),
     };
     let mut i = 0;
@@ -208,10 +220,19 @@ fn parse_store_flags(args: &[String]) -> Result<StoreFlags, ()> {
                 i += 1;
                 flags.vault = Some(args.get(i).ok_or(())?.clone());
             }
+            "--upstream" => {
+                flags.upstream = true;
+            }
+            "--no-cache" => {
+                flags.no_cache = true;
+            }
             other if other.starts_with('-') => return Err(()),
             other => flags.positional.push(other.to_string()),
         }
         i += 1;
+    }
+    if flags.upstream && flags.no_cache {
+        return Err(());
     }
     Ok(flags)
 }
@@ -234,7 +255,9 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
     let flags = match parse_store_flags(args) {
         Ok(flags) => flags,
         Err(()) => {
-            eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
+            eprintln!(
+                "usage: fleet secrets get [--store <store>] [--vault <vault>] [--upstream | --no-cache] <name>"
+            );
             return EXIT_USAGE;
         }
     };
@@ -242,13 +265,24 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
     // caller bug (help flags are answered above), never a secret
     // name worth resolving.
     if flags.positional.len() != 1 || flags.positional[0].starts_with('-') {
-        eprintln!("usage: fleet secrets get [--store <store>] [--vault <vault>] <name>");
+        eprintln!(
+            "usage: fleet secrets get [--store <store>] [--vault <vault>] [--upstream | --no-cache] <name>"
+        );
         return EXIT_USAGE;
     }
     let name = &flags.positional[0];
     let selection = match selection_for(config, &flags) {
         Ok(selection) => selection,
         Err(code) => return code,
+    };
+    // #13948 S5 §5.4: explicit cache controls ride the same store
+    // selection — only the broker legs drop out.
+    let bypass = if flags.upstream {
+        fleet_secrets::CacheBypass::Upstream
+    } else if flags.no_cache {
+        fleet_secrets::CacheBypass::NoCache
+    } else {
+        fleet_secrets::CacheBypass::None
     };
     // #10358 S1: a configured prefix maps the name once, before any
     // source sees it; with none configured the scope is the identity.
@@ -259,7 +293,7 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    match Resolver::chain_for(config, &selection).resolve_scoped(&scope, name) {
+    match Resolver::chain_for_with_bypass(config, &selection, bypass).resolve_scoped(&scope, name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
@@ -633,6 +667,14 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
         eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
         return EXIT_USAGE;
     }
+    // Cache controls are a `get` surface (#13948 S5 §5.4): a
+    // broker names listing is already the cache contents, so
+    // `--upstream` / `--no-cache` on `list` is a usage error,
+    // never a silently ignored flag.
+    if flags.upstream || flags.no_cache {
+        eprintln!("usage: fleet secrets list [--store <store>] [--vault <vault>]");
+        return EXIT_USAGE;
+    }
     let selection = match selection_for(config, &flags) {
         Ok(selection) => selection,
         Err(code) => return code,
@@ -768,6 +810,26 @@ mod tests {
         assert!(parse_store_flags(&args(&["--store"])).is_err());
         assert!(parse_store_flags(&args(&["--bogus", "x"])).is_err());
         assert!(parse_store_flags(&args(&[])).is_ok());
+    }
+
+    #[test]
+    fn get_cache_flags_parse_and_conflict() {
+        // #13948 S5 §5.4: each cache control parses in any
+        // position; both together is a usage error, never a
+        // silent precedence.
+        let flags = parse_store_flags(&args(&["--upstream", "alpha"])).unwrap();
+        assert!(flags.upstream);
+        assert!(!flags.no_cache);
+        assert_eq!(flags.positional, ["alpha"]);
+        let flags = parse_store_flags(&args(&["alpha", "--no-cache"])).unwrap();
+        assert!(flags.no_cache);
+        assert!(!flags.upstream);
+        assert!(parse_store_flags(&args(&["alpha", "--upstream", "--no-cache"])).is_err());
+        assert!(parse_store_flags(&args(&["--upstream", "--no-cache"])).is_err());
+        // Plain calls default to no bypass.
+        let flags = parse_store_flags(&args(&["alpha"])).unwrap();
+        assert!(!flags.upstream);
+        assert!(!flags.no_cache);
     }
 
     #[test]
