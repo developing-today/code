@@ -962,16 +962,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST /v1/elicit/{id}/{action}", s.handleElicitAnswer)
 	s.route(mux, "POST /v1/log", s.handleLogRecord)
 	s.route(mux, "GET /v1/resource-templates", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resourceTemplates": s.reg.ResourceTemplates(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
 	s.route(mux, "GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"prompts": s.reg.Prompts(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
 	s.route(mux, "GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
+		s.warmIfCold(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resources": s.reg.Resources(splitCSV(r.URL.Query().Get("ns"))),
 		})
@@ -1109,15 +1112,22 @@ func profileOf(r *http.Request) config.Profile {
 }
 
 func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
+	// Enumeration route: same cold-cache hazard as handleTypes.
+	s.warmIfCold(r.Context())
 	writeJSON(w, 200, s.reg.Namespaces(profileOf(r)))
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
+	// Same cold-enumeration hazard as handleTypes: warm first.
+	s.warmIfCold(r.Context())
 	ns := splitCSV(r.URL.Query().Get("ns"))
 	writeJSON(w, 200, s.reg.Tools(ns))
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// Search reads the cached catalogue; on a cold cache it would answer
+	// "no matching tools" as if authoritative (#15689).
+	s.warmIfCold(r.Context())
 	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
 	if !ok {
 		return
@@ -1148,6 +1158,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
+	// Enumeration, not a call: a cold cache would publish an empty
+	// catalogue as authoritative (discover/tools-list/catalog cluster,
+	// #15689). The CLI's run/exec path no longer waits for schemas
+	// (background refresh), so this route waits when nothing is cached yet.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1162,6 +1177,8 @@ func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	// Same cold-enumeration hazard as handleTypes below: warm first.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1194,6 +1211,10 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Local mcpx run/exec fetch the generated client here and enumerate it
+	// on the script's first lines, so a cold cache must be read now rather
+	// than in the background (TestExamples/discover, #15689).
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
@@ -1216,6 +1237,8 @@ func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Generated-client route: same cold-cache hazard as handleClient.
+	s.warmIfCold(r.Context())
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
