@@ -10,6 +10,18 @@ description = "One multicall binary for the fleet's tools: search, queue, dispat
 name = "fleet"
 path = "src/main.rs"
 
+# Library target for the `id` domain modules (fix for #16333): the
+# package was bin-only, so `cargo test -p fleet --lib ...` failed
+# with "no library targets found". The lib exposes the `id` module
+# closure (`id_key`, `id_postcard`, `id_proxy`, `id_serve` — the only
+# modules those reference via `crate::`) so the `id_serve` golden
+# tests also run under `--lib`. The binary keeps its own `mod` tree
+# unchanged; with `--no-default-features` (no `id` feature) the lib
+# target is empty and still compiles.
+[lib]
+name = "fleet"
+path = "src/lib.rs"
+
 [dependencies]
 fleet-registry = { workspace = true }
 fleet-config = { workspace = true }

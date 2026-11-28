@@ -1,8 +1,8 @@
 # The console, view by view
 
-The PM console is a Bun server (`pm-stack/console/src/server.ts`, base path `/console`, port 4872) serving a static single-page application: shell `pm-stack/console/public/index.html` (title "PM", one `&lt;main id="view"&gt;`, a bottom tab bar, and a global Ask/confirm `&lt;dialog id="ask"&gt;`), logic in `pm-stack/console/public/app.js`, with `outbox.js` and `sw.js` alongside. Views are hash routes in the `VIEWS` map in `app.js` (at about line 2955); routing is `parse()` in the same file. An unknown hash falls back to `now`. The console is also served at the edge by the pm-console-edge Worker and wrapped as an Android TWA.
+The PM console is a Bun server (`pm-stack/console/src/server.ts`, base path `/console`, port 4872) serving a static single-page application: shell `pm-stack/console/public/index.html` (title "PM", one `&lt;main id="view"&gt;`, a bottom tab bar, and a global Ask/confirm `&lt;dialog id="ask"&gt;`), logic in `pm-stack/console/public/app.js`, with `outbox.js` and `sw.js` alongside. Views are hash routes in the `VIEWS` map in `app.js` (at about line 4884); routing is `parse()` in the same file. An unknown hash falls back to `now`. The console is also served at the edge by the pm-console-edge Worker and wrapped as an Android TWA.
 
-This chapter covers all 21 console hash views in the survey census, one entry each, in census order. Every entry follows the same shape: what the view is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them. Console actions post to the generic endpoint `POST /console/api/act`, covered in [The question sets, enumerated](question-sets.md) and [Aggregator HTTP routes and API](aggregator-routes.md).
+This chapter covers all 27 console hash views in the census re-derived 2026-11-27 (#14428 item 11), one entry each, in census order. The counting rule: one view per key of the `VIEWS` map in `app.js` after the page modules in `public/pages/index.js` register their routes (the app's own `routesKnown()`) — 24 keys written in the map itself plus the three page-module routes (`more/trends`, `more/reports`, `more/components`). A sub-address (`needs/<sub>`, `ask/say=<text>`, `now/done/<segment>`, `more/phone/<sub>`, `more/look/<segment>`) is a segment of its parent view, not a view of its own; `now/done` counts separately because it is a key of its own in the map. Every entry follows the same shape: what the view is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them. Console actions post to the generic endpoint `POST /console/api/act`, covered in [The question sets, enumerated](question-sets.md) and [Aggregator HTTP routes and API](aggregator-routes.md).
 
 ## `#now` — Now
 
@@ -11,6 +11,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Defaults:** The fallback view: an unknown hash lands here.
 - **Behaviour:** The console's home view, drawn from the queue's current state. Counts are fleet queue tasks (queue-broker state: claimed is in progress, queued is next, blocked is blocked) — same words as the aggregator's board-derived work-item counts (`/queue`, Overview in-progress), different source; the page says so and cross-links the aggregator's wording (#14063). The need-you tile is the console's own set, not the aggregator's NEEDS USER intake queue.
 - **Failure shapes:** None recorded in the survey.
+
+## `#now/done` and `#now/done/<segment>` — Done
+
+- **What it is:** What was finished, in three segments — merged pull requests, finished queue tasks, closed issues (`viewDone`, reached as `now/done/<merged|tasks|closed>`, default `merged`).
+- **Inputs:** The done document (`docs.done`): the last week's merged pull requests, finished tasks with their verdicts, and closed issues.
+- **Behaviour:** Finished tasks with a recorded result are listed before those without one. Each segment names how much of the last week it shows, newest first.
+- **Failure shapes:** Before the document is read the view says it is reading; a document with nothing read yet says so rather than showing an empty week.
 
 ## `#next` — Next
 
@@ -38,7 +45,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** The index of the `more/*` views (`viewMore`, extra `ops`).
 - **Inputs:** Links to every aggregator dashboard page, grouped by `PAGE_GROUPS`, rendered from the dashboard manifest data (`app.js` at about line 1185).
-- **Behaviour:** The console's table of contents: the sixteen views below are reached from here.
+- **Behaviour:** The console's table of contents: the twenty-one views below are reached from here.
 - **Failure shapes:** None recorded in the survey.
 
 ## `#more/trends` — Trends
@@ -54,6 +61,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Inputs:** `GET /console/api/trends?days=<1|7|30>&end=<date>` reads the underlying history; queue counts are included only for a report ending today (`console/public/pages/reports.js`, `console/src/trends.ts`).
 - **Behaviour:** Earlier and later controls navigate historical periods. The report summarizes merged pull requests, feature work by project, issues and bugs, and finished queue tasks when task history is available; links in the feature section open the pull requests. This is the console's `#more/reports` view, not the aggregator's separate `/reports` review-conflict page documented in [The aggregator website, page by page](website-pages.md).
 - **Failure shapes:** Partial or not-yet-whole history is called out in the report; unavailable task history omits the queue section.
+
+## `#more/components` — Components
+
+- **What it is:** Every shared element the app is built with, shown once each on one screen (`public/pages/components.js`, #14433).
+- **Inputs:** The page's own `ELEMENTS` census: 15 shared elements (card, chip, row, tile, link, option, seg, stat, fold, empty, the chart kit's stat tiles, stacked columns and line chart, and the app frame's toast and sheet), each drawn with the class `app.css` gives it or the chart-kit function that makes it.
+- **Behaviour:** Change the theme, the text size or the spacing in `#more/look` and this screen shows what every element does under it, so a look can be judged on all of them at a glance — and a new screen has something to copy instead of inventing its own.
+- **Failure shapes:** None recorded.
 
 ## `#more/queue` — Queue
 
@@ -145,6 +159,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Inputs:** None recorded in the survey beyond the view's `VIEWS` entry.
 - **Behaviour:** The per-device companion to `#more/phone`, which lists all linked devices.
 - **Failure shapes:** None recorded in the survey.
+
+## `#more/look` and `#more/look/<segment>` — Appearance
+
+- **What it is:** How the app looks on this device, in three segments — colours, typeface, size and spacing (`viewLook`, reached as `more/look/<colours|type|layout>`, default `colours`).
+- **Inputs:** The device-local Look settings: follow the system's light/dark or one theme, the day and night themes, typeface, text size and spacing choices.
+- **Behaviour:** A sample card shows each choice on text, small print, the three status colours and each kind of button. Choices are kept on this device only.
+- **Failure shapes:** If the Look module cannot load on the device the view says so; a choice the device would not keep lasts only until the app is closed, and the view says that too.
 
 ## `#more/releases` — Releases
 

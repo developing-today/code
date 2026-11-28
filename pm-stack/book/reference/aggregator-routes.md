@@ -1,6 +1,6 @@
 # Aggregator HTTP routes and API
 
-The census counts 50 primary pages and views: 29 aggregator routes in [The aggregator website, page by page](website-pages.md) and 21 console views in [The console, view by view](console-views.md). This chapter covers the routes the census enumerates separately from that count: the aggregator's JSON twins, fragment and streaming routes, POST and write endpoints, and static and PWA routes; the console server's non-view routes; the console edge Worker's routes; and the other first-party HTTP surfaces in `pm-stack/`. Entries are grouped by surface and follow one shape: what the route is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them.
+The census counts 56 primary pages and views: 29 aggregator routes in [The aggregator website, page by page](website-pages.md) and 27 console views in [The console, view by view](console-views.md). This chapter covers the routes the census enumerates separately from that count: the aggregator's JSON twins, fragment and streaming routes, POST and write endpoints, and static and PWA routes; the console server's non-view routes; the console edge Worker's routes; and the other first-party HTTP surfaces in `pm-stack/`. Entries are grouped by surface and follow one shape: what the route is, its inputs, its defaults where the survey gives them, its behaviour, and its failure shapes where the survey records them.
 
 ## JSON twins of the manifest pages
 

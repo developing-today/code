@@ -179,7 +179,7 @@ describe("actions-exec applier (#14043 S3)", () => {
     const { needsDrewFile, applyFile } = await files();
     await answerApprove(needsDrewFile, "actions-exec-ext:eps:1", "fleet-actions-exec", "actions-exec-ext:eps:1");
     let nowMs = Date.parse("2026-11-27T03:00:00Z");
-    const failing = async () => ({
+    const failing = async (): Promise<DecideResult> => ({
       ok: false,
       exit: 3,
       error: "broker unreachable: reset",

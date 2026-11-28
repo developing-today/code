@@ -285,11 +285,6 @@ export function mobileView(views: readonly WorkView[], id: MobileViewId, ctx: Vi
         }
         break;
       }
-      case "needs_triage":
-      case "recent":
-      case "cold_backlog":
-        // Handled by the view-level `unavailable` above.
-        break;
     }
   }
 

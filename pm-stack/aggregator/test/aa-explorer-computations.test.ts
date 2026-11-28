@@ -512,7 +512,7 @@ describe("per-chart third-metric limits + magnification (#1400 remainder)", () =
   });
 
   test("applyChartLimit filters rows on the chart's third metric", () => {
-    const byCost = (p) => p.cost;
+    const byCost = (p: (typeof rows)[number]) => p.cost;
     expect(applyChartLimit(rows, byCost, { mode: "atmost", value: "1" }).map((p) => p.key)).toEqual([
       "cheap",
       "leader",
@@ -531,7 +531,7 @@ describe("per-chart third-metric limits + magnification (#1400 remainder)", () =
   });
 
   test("capPointsPerBand keeps input order with at most N per band", () => {
-    const bandOf = (p) => (p.score >= 90 ? 1 : 0);
+    const bandOf = (p: (typeof rows)[number]) => (p.score >= 90 ? 1 : 0);
     expect(capPointsPerBand(rows, 1, bandOf).map((p) => p.key)).toEqual(["cheap", "leader"]);
     expect(capPointsPerBand(rows, 2, bandOf).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);
     expect(capPointsPerBand(rows, "", bandOf).map((p) => p.key)).toEqual(["cheap", "leader", "luna", "unknown"]);

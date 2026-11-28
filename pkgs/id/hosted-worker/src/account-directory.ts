@@ -11,7 +11,13 @@
 // relabelled `us` (or any other jurisdiction) or silently backfilled.
 
 import { isMigrationId } from "./migration-fence.ts";
-import { FailClosed, parseBindingId, parseJurisdiction, SUPPORTED_JURISDICTIONS, type Jurisdiction } from "./routing.ts";
+import {
+  FailClosed,
+  parseBindingId,
+  parseJurisdiction,
+  SUPPORTED_JURISDICTIONS,
+  type Jurisdiction,
+} from "./routing.ts";
 
 /**
  * Directory migration phases (#3404, design §7). `stable` is the only
@@ -300,7 +306,8 @@ export function migrationShapeError(record: HostedAccountRecord): string | null 
   if (!(SUPPORTED_JURISDICTIONS as readonly string[]).includes(record.jurisdiction)) return "unsupported jurisdiction";
   switch (record.phase) {
     case "stable":
-      if (record.jurisdictionPending !== null || record.migrationId !== null) return "stable record carries migration state";
+      if (record.jurisdictionPending !== null || record.migrationId !== null)
+        return "stable record carries migration state";
       return null;
     case "pending":
     case "frozen":

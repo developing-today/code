@@ -61,6 +61,15 @@ in
     ];
     modules = [
       {
+        # Stamp the running system with the flake revision it was built
+        # from so `nixos-version --json` reports configurationRevision
+        # (absent by default on NixOS 26.11) and the drift census's
+        # laptop plane can observe a converged match (#15926).
+        # agent-rebuild builds from github:developing-today/code/main#amd,
+        # so self.rev is exactly the commit the census compares against.
+        system.configurationRevision = inputs.self.rev or inputs.self.dirtyRev or null;
+      }
+      {
         services.id-mail = {
           transport = "worker";
           workerUrl = "https://mail.security.cab";

@@ -812,4 +812,359 @@ mod tests {
         assert!(again.edits.is_empty());
         assert_eq!(again.unchanged_ids, ["c5"]);
     }
+
+    fn observed(
+        native_id: &str,
+        actor: Option<&str>,
+        remote: Option<&str>,
+        op: Option<&str>,
+        session: Option<&str>,
+        outbox: Option<&str>,
+    ) -> ObservedActivity {
+        ObservedActivity::new(
+            native_id,
+            actor.map(str::to_string),
+            remote.map(str::to_string),
+            op.map(str::to_string),
+            session.map(str::to_string),
+            outbox.map(str::to_string),
+        )
+        .expect("valid observed activity")
+    }
+
+    /// HYD-07 oracle (design §8: "this test uses same bot login from
+    /// two sessions with only one op/remote-ID map"): shared actor
+    /// login never attributes by itself; only a full
+    /// operation-ID-plus-remote-ID mapping is `Fleet`; `Uncertain`
+    /// and `External` stay visible under `--external-only`.
+    #[test]
+    fn pmo_hyd_external_only_includes_uncertain_shared_actor() {
+        let fleet_actors = ["fleet-bot"];
+        // One durable mapping: op-A in session-A produced remote r1.
+        let mappings = vec![
+            OperationMapping::new("op-A", "session-A", Some("out-1".to_string()), vec![
+                "r1".to_string(),
+            ])
+            .expect("valid mapping"),
+        ];
+
+        // Same bot login, full mapping: reliably Fleet, excluded
+        // from external-only.
+        let fleet_item = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-A"),
+            Some("out-1"),
+        );
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &fleet_item),
+            ActivityOrigin::Fleet {
+                operation_id: "op-A".to_string(),
+                session_id: "session-A".to_string(),
+            }
+        );
+        assert!(!is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &fleet_item
+        )));
+
+        // Same bot login from another session's write: no operation
+        // map, so Uncertain — included in external-only, never Fleet.
+        // Username never assigns session.
+        let other_session = observed("c2", Some("fleet-bot"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &other_session),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&ActivityOrigin::Uncertain));
+
+        // Distinct human actor with no Fleet markers: External,
+        // included in external-only.
+        let human = observed("c3", Some("alice"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &human),
+            ActivityOrigin::External
+        );
+        assert!(is_external_only_visible(&ActivityOrigin::External));
+
+        // Negative: coincidental same-body human comment. Body is not
+        // an input to the classifier at all, so a human item that
+        // happens to repeat Fleet wording is still External, never
+        // Fleet — and stays visible.
+        let same_body_human = observed("c4", Some("alice"), None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &same_body_human),
+            ActivityOrigin::External
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &same_body_human
+        )));
+
+        // Negative: stale mapping. The mapping is gone (operation
+        // retired), but the observation still claims op-A/r1: without
+        // a live mapping it is Uncertain, never Fleet — and stays
+        // visible.
+        let stale = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-A"),
+            None,
+        );
+        assert_eq!(
+            classify_origin(&[], &fleet_actors, &stale),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &[],
+            &fleet_actors,
+            &stale
+        )));
+
+        // Session disagreement: op-A's remote claimed under a
+        // different session is Uncertain, never Fleet.
+        let wrong_session = observed(
+            "c1",
+            Some("fleet-bot"),
+            Some("r1"),
+            Some("op-A"),
+            Some("session-B"),
+            None,
+        );
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &wrong_session),
+            ActivityOrigin::Uncertain
+        );
+
+        // Migration: legacy observation with no IDs at all is
+        // Uncertain (included), never silently excluded and never
+        // Fleet.
+        let legacy = observed("c0", None, None, None, None, None);
+        assert_eq!(
+            classify_origin(&mappings, &fleet_actors, &legacy),
+            ActivityOrigin::Uncertain
+        );
+        assert!(is_external_only_visible(&classify_origin(
+            &mappings,
+            &fleet_actors,
+            &legacy
+        )));
+
+        // Empty identity is rejected, never silently accepted.
+        assert!(OperationMapping::new("", "session-A", None, vec![]).is_err());
+        assert!(OperationMapping::new("op-A", "", None, vec![]).is_err());
+        assert!(
+            ObservedActivity::new("", None::<String>, None, None, None, None).is_err()
+        );
+    }
+}
+
+/// Fleet operation mapping for attribution — HYD-07 (design §4 and
+/// §8: "External attribution maps Fleet `operation_id`/`session_id`/
+/// `outbox_id` to remote returned IDs and content markers").
+///
+/// A mapping states that one Fleet operation (in one session,
+/// optionally via one outbox entry) produced the listed remote
+/// resource IDs. Shared GitHub App/bot logins are deliberately
+/// absent here: the login is passed separately to
+/// [`classify_origin`] and can only ever yield `Uncertain`, never
+/// `Fleet` on its own ("username never assigns session").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationMapping {
+    /// Fleet operation identity (e.g. queue operation ID).
+    pub operation_id: String,
+    /// Fleet session that performed the operation.
+    pub session_id: String,
+    /// Outbox entry that carried the write, if any.
+    pub outbox_id: Option<String>,
+    /// Remote resource IDs this operation is known to have produced.
+    pub remote_ids: Vec<String>,
+}
+
+impl OperationMapping {
+    /// Build one mapping; empty operation/session identity is a
+    /// typed rejection, never a silently accepted blank map.
+    pub fn new(
+        operation_id: impl Into<String>,
+        session_id: impl Into<String>,
+        outbox_id: Option<String>,
+        remote_ids: Vec<String>,
+    ) -> Result<Self, ContractError> {
+        let operation_id = operation_id.into();
+        let session_id = session_id.into();
+        if operation_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "operation mapping has empty operation_id".to_string(),
+            });
+        }
+        if session_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "operation mapping has empty session_id".to_string(),
+            });
+        }
+        Ok(OperationMapping {
+            operation_id,
+            session_id,
+            outbox_id,
+            remote_ids,
+        })
+    }
+}
+
+/// Attribution of one observed source activity item — HYD-07.
+///
+/// `Fleet` requires a reliable operation mapping (operation ID plus
+/// remote ID, with session agreement); everything else is either
+/// confidently external or of uncertain origin. Uncertain events are
+/// included by `--external-only` by default, alongside external
+/// ones; only `Fleet` is excluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActivityOrigin {
+    /// Reliably mapped to one Fleet operation in one session.
+    Fleet {
+        /// Matched operation identity.
+        operation_id: String,
+        /// Matched session identity.
+        session_id: String,
+    },
+    /// Confidently not Fleet-caused (e.g. distinct human actor with
+    /// no Fleet markers).
+    External,
+    /// Origin cannot be proven either way (e.g. shared bot login
+    /// with no operation map, partial/stale mapping, or legacy
+    /// observation with no IDs at all). Included as external by
+    /// default; never silently dropped.
+    Uncertain,
+}
+
+/// One observed source activity item for attribution — HYD-07.
+///
+/// The content body is deliberately not an input: coincidental
+/// same-body text (a human comment repeating Fleet wording) must
+/// never attribute to a Fleet session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedActivity {
+    /// Source-native item ID (occurrence identity).
+    pub native_id: String,
+    /// Actor login reported by the source, if any.
+    pub actor_login: Option<String>,
+    /// Remote resource ID reported by the source, if any.
+    pub remote_id: Option<String>,
+    /// Fleet operation ID claimed by local provenance, if any.
+    pub operation_id: Option<String>,
+    /// Fleet session ID claimed by local provenance, if any.
+    pub session_id: Option<String>,
+    /// Outbox entry claimed by local provenance, if any.
+    pub outbox_id: Option<String>,
+}
+
+impl ObservedActivity {
+    /// Build one observation; empty native identity is a typed
+    /// rejection, never a silently accepted blank record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        native_id: impl Into<String>,
+        actor_login: Option<String>,
+        remote_id: Option<String>,
+        operation_id: Option<String>,
+        session_id: Option<String>,
+        outbox_id: Option<String>,
+    ) -> Result<Self, ContractError> {
+        let native_id = native_id.into();
+        if native_id.is_empty() {
+            return Err(ContractError::InvalidSchema {
+                detail: "observed activity has empty native_id".to_string(),
+            });
+        }
+        Ok(ObservedActivity {
+            native_id,
+            actor_login,
+            remote_id,
+            operation_id,
+            session_id,
+            outbox_id,
+        })
+    }
+}
+
+/// Classify one observed item against the durable operation mappings
+/// — HYD-07 canonical attribution classifier.
+///
+/// * `Fleet` requires the observed `operation_id` **and**
+///   `remote_id` to match one mapping together (same operation
+///   produced this remote ID). When the observation carries a
+///   `session_id`, it must agree with the mapping's session;
+///   disagreement is `Uncertain`, never `Fleet`.
+/// * A shared Fleet actor login (bot/App) with no full mapping is
+///   `Uncertain`: the login proves nothing by itself, but the item
+///   could be another session's write, so it stays visible under
+///   `--external-only`.
+/// * An observation with no Fleet markers and a distinct (non-Fleet)
+///   actor is `External`.
+/// * An observation with no IDs at all (legacy) is `Uncertain`
+///   ("legacy uncertain"); it is included, never silently excluded.
+/// * Body/content similarity is not an input and can never produce
+///   `Fleet`.
+pub fn classify_origin(
+    mappings: &[OperationMapping],
+    fleet_actor_logins: &[&str],
+    observed: &ObservedActivity,
+) -> ActivityOrigin {
+    if let (Some(op), Some(remote)) = (observed.operation_id.as_deref(), observed.remote_id.as_deref())
+    {
+        for mapping in mappings {
+            if mapping.operation_id == op && mapping.remote_ids.iter().any(|id| id == remote) {
+                match observed.session_id.as_deref() {
+                    Some(session) if session != mapping.session_id => continue,
+                    _ => {
+                        return ActivityOrigin::Fleet {
+                            operation_id: mapping.operation_id.clone(),
+                            session_id: mapping.session_id.clone(),
+                        };
+                    }
+                }
+            }
+        }
+        // An operation claim or a mapped remote ID without a full
+        // match is a partial/stale mapping: uncertain, never Fleet.
+        return ActivityOrigin::Uncertain;
+    }
+    if observed.operation_id.is_some()
+        || observed.session_id.is_some()
+        || observed.outbox_id.is_some()
+    {
+        return ActivityOrigin::Uncertain;
+    }
+    if let Some(remote) = observed.remote_id.as_deref() {
+        if mappings
+            .iter()
+            .any(|m| m.remote_ids.iter().any(|id| id == remote))
+        {
+            return ActivityOrigin::Uncertain;
+        }
+    }
+    match observed.actor_login.as_deref() {
+        None => ActivityOrigin::Uncertain,
+        Some(login) if fleet_actor_logins.contains(&login) => ActivityOrigin::Uncertain,
+        Some(_) => ActivityOrigin::External,
+    }
+}
+
+/// Whether an attributed item is visible under `--external-only`
+/// with default semantics: `External` and `Uncertain` are included;
+/// only reliably attributed `Fleet` items are excluded.
+pub fn is_external_only_visible(origin: &ActivityOrigin) -> bool {
+    !matches!(
+        origin,
+        ActivityOrigin::Fleet {
+            operation_id: _,
+            session_id: _
+        }
+    )
 }

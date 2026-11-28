@@ -29,6 +29,15 @@
 //! child types are checked, never minimum counts or ordering, so the
 //! open, partial nodes a slice legitimately carries stay valid.
 //!
+//! A slice's open depths are checked against the slice itself: an
+//! `openStart`/`openEnd` claims that many nodes are cut through on
+//! that side, so the fragment must have that many openable (non-leaf)
+//! nodes down its first/last-child chain — the bound `ProseMirror`'s
+//! own `Slice.maxOpen` computes, and the condition its `Slice`
+//! constructor documents. A depth past that bound (a lone text node
+//! claiming `openStart: 1`, an empty paragraph claiming 2) is a slice
+//! no cut can produce; `replace` throws for it on every client.
+//!
 //! This does not yet prove that a structurally plausible step applies
 //! against the evolving document. Full server-side application is the
 //! later stage of #1618.
@@ -342,13 +351,16 @@ fn slice_size(schema: StepSchema, slice: Option<&Value>) -> Result<u64, String> 
         Some(Value::Object(slice)) => slice,
         Some(_) => return Err("`slice` must be a JSON object".to_owned()),
     };
-    let content = match slice.get("content") {
-        None | Some(Value::Null) => 0,
-        Some(Value::Array(nodes)) => fragment_size(schema, nodes, 0)?,
+    let nodes: &[Value] = match slice.get("content") {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(nodes)) => nodes,
         Some(_) => return Err("slice `content` must be an array".to_owned()),
     };
+    let content = fragment_size(schema, nodes, 0)?;
     let open_start = optional_depth(slice, "openStart")?;
     let open_end = optional_depth(slice, "openEnd")?;
+    check_open_depth("openStart", open_start, openable_depth(schema, nodes, true))?;
+    check_open_depth("openEnd", open_end, openable_depth(schema, nodes, false))?;
     content
         .checked_sub(open_start)
         .and_then(|rest| rest.checked_sub(open_end))
@@ -366,6 +378,42 @@ fn optional_depth(slice: &Map<String, Value>, field: &str) -> Result<u64, String
             .as_u64()
             .ok_or_else(|| format!("slice `{field}` must be a non-negative integer")),
     }
+}
+
+/// The depth to which a fragment can be open on one side: the number
+/// of non-leaf nodes down its first-child (start) or last-child (end)
+/// chain. This is `ProseMirror`'s `Slice.maxOpen` bound — text and
+/// leaf nodes cannot be cut through, and an empty container is open
+/// exactly one level. The fragment has already been validated by
+/// [`fragment_size`], so malformed nodes simply end the chain.
+fn openable_depth(schema: StepSchema, nodes: &[Value], start: bool) -> u64 {
+    let mut depth = 0;
+    let mut current = if start { nodes.first() } else { nodes.last() };
+    while let Some(node) = current {
+        let Some(kind) = node.get("type").and_then(Value::as_str) else {
+            break;
+        };
+        if kind == "text" || schema.is_leaf(kind) {
+            break;
+        }
+        depth += 1;
+        let children = node.get("content").and_then(Value::as_array);
+        current = match children {
+            Some(children) if start => children.first(),
+            Some(children) => children.last(),
+            None => None,
+        };
+    }
+    depth
+}
+
+fn check_open_depth(field: &str, open: u64, openable: u64) -> Result<(), String> {
+    if open > openable {
+        return Err(format!(
+            "slice `{field}` {open} exceeds the nodes openable on that side of its content ({openable})"
+        ));
+    }
+    Ok(())
 }
 
 fn fragment_size(schema: StepSchema, nodes: &[Value], depth: usize) -> Result<u64, String> {
@@ -776,6 +824,86 @@ mod tests {
             json!({"type": "bullet_list"}),
         ] {
             assert!(valid(node.clone()), "refused valid {node}");
+        }
+    }
+
+    #[test]
+    fn slice_open_depths_cannot_exceed_its_openable_edges() {
+        // Oracle: prosemirror-model's `Slice` contract — a non-zero
+        // open depth requires nodes of at least that depth on that
+        // side of the fragment (`Slice.maxOpen` walks the non-leaf
+        // first/last-child chain; an empty paragraph opens exactly
+        // one level). Each step below fits the old size check: its
+        // open depths sum to no more than its content size.
+        let refused = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).unwrap_err().reason
+        };
+        let cases: Vec<(Value, &str)> = vec![
+            // A text node cannot be cut through.
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openStart": 1}),
+                "openStart",
+            ),
+            (
+                json!({"content": [{"type": "text", "text": "x"}], "openEnd": 1}),
+                "openEnd",
+            ),
+            // A leaf node cannot be cut through either.
+            (
+                json!({"content": [{"type": "image", "attrs": {"src": "y"}}], "openStart": 1}),
+                "openStart",
+            ),
+            // An empty paragraph opens exactly one level, not two.
+            (
+                json!({"content": [{"type": "paragraph"}], "openStart": 2}),
+                "openStart",
+            ),
+            // paragraph > text opens one level (the text stops the chain).
+            (
+                json!({"content": [{"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}], "openStart": 2}),
+                "openStart",
+            ),
+            // blockquote > paragraph > text opens two levels, not three.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "text", "text": "x"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+            // The end chain follows last children: blockquote >
+            // paragraph > hard_break (leaf) still opens only two.
+            (
+                json!({"content": [{"type": "blockquote", "content": [
+                    {"type": "paragraph", "content": [
+                        {"type": "hard_break"}]}]}], "openEnd": 3}),
+                "openEnd",
+            ),
+        ];
+        for (slice, field) in cases {
+            let reason = refused(slice);
+            assert!(reason.contains(field), "{reason}");
+            assert!(reason.contains("openable"), "{reason}");
+        }
+        // Valid controls at exactly the openable bound, including the
+        // split-paragraph shape slice 1 already accepted.
+        let valid = |slice: Value| {
+            let step = json!({"stepType": "replace", "from": 1, "to": 1, "slice": slice});
+            check_steps(rich(), 13, &[step]).is_ok()
+        };
+        for slice in [
+            json!({"content": [{"type": "text", "text": "x"}]}),
+            json!({"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "paragraph"}, {"type": "paragraph"}],
+                   "openStart": 1, "openEnd": 1}),
+            json!({"content": [{"type": "blockquote", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "x"}]}]}], "openStart": 2, "openEnd": 2}),
+            json!({"content": [{"type": "paragraph", "content": [
+                {"type": "hard_break"}]}], "openStart": 1, "openEnd": 1}),
+        ] {
+            assert!(valid(slice.clone()), "refused valid {slice}");
         }
     }
 

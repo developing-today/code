@@ -56,9 +56,6 @@ describe("actions-exec applier failure alerts S4 (#14043 §4)", () => {
         handle: "h1",
         approve: true,
         answeredAt: "2026-11-27T03:00:00Z",
-        state: "failed",
-        attempts: 1,
-        updatedAt: "2026-11-27T03:00:01Z",
       },
       "broker unreachable: reset",
     );

@@ -82,9 +82,6 @@ test("append/read/head round trip through one tenant binding; the other binding 
 test("a non-contiguous append is refused, never silently stored", async () => {
   const store = new D1BridgeStore(fakeD1Binding());
   await store.ensureSchema();
-  await assert.rejects(
-    store.appendEvent({ author: AUTHOR, seq: 1, id: EVENT_ID, bytes: EVENT_BYTES }),
-    /sequence_gap/,
-  );
+  await assert.rejects(store.appendEvent({ author: AUTHOR, seq: 1, id: EVENT_ID, bytes: EVENT_BYTES }), /sequence_gap/);
   assert.equal(await store.storedEvent(AUTHOR, 1), null);
 });

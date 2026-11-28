@@ -26,14 +26,10 @@
   },
   "unique_count": 218,
   "added": [],
-  "removed": [
-    12657
-  ],
+  "removed": [12657],
   "label_changes": {
     "3404": {
-      "added": [
-        "status:in-review"
-      ],
+      "added": ["status:in-review"],
       "removed": []
     }
   },
@@ -63,10 +59,7 @@
       "epic/id-program": 185,
       "epic/id-platform": 35
     },
-    "removed": [
-      3810,
-      4767
-    ],
+    "removed": [3810, 4767],
     "added": []
   }
 }

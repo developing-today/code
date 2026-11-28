@@ -28,6 +28,27 @@ use id_worlds::world_session::{Inbound, InviteError, MAX_FRAME_BYTES, SessionIo,
 
 use super::wss_https::{MAX_WS_MESSAGE_BYTES, WSS_SUBPROTOCOL, decode_carrier_message};
 
+/// HTTP answer for a hub lease failure (#1067, F12.10): the global
+/// ceilings (`Busy`, `TooManyWorlds`) stay 503, while a per-account
+/// storage refusal is 507 with the quota message — never a 404 that
+/// reads as "no such world". Paths that pass no account never see
+/// the quota variant (a `None` account skips it); the arm is
+/// explicit so a future account-plumbing slice cannot regress into
+/// a silent 404.
+pub(crate) fn lease_failure_response(error: &ResolveError) -> Response {
+    match error {
+        ResolveError::Busy | ResolveError::TooManyWorlds => {
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+        ResolveError::StorageQuota => (
+            StatusCode::INSUFFICIENT_STORAGE,
+            Json(serde_json::json!({ "error": error.message() })),
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct InviteRequest {
     display_name: String,
@@ -226,10 +247,7 @@ async fn host_view_handler(
     // a new world as a side effect.
     let lease = match hub.lease(query.world.as_deref(), None).await {
         Ok(lease) => lease,
-        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return lease_failure_response(&error),
     };
     let world = lease.service().world();
     let (snapshot, view) = if query.after.is_none() {
@@ -519,10 +537,7 @@ async fn directory_respond(
         .and_then(|value| value.to_str().ok());
     let lease = match hub.lease(world.as_deref(), token).await {
         Ok(lease) => lease,
-        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return lease_failure_response(&error),
     };
     let caller = match caller_of(&hub, &asked, token) {
         Ok(caller) => caller,
@@ -637,10 +652,7 @@ async fn invite_handler(
     // A valid admin token may create the world it names.
     let lease = match hub.lease(request.world.as_deref(), supplied).await {
         Ok(lease) => lease,
-        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return lease_failure_response(&error),
     };
     match lease
         .service()
@@ -919,6 +931,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Oracle (#1067 F12.10 storage-boundary slice): a hub lease
+    /// failure answers distinctly per cause — the global ceilings
+    /// stay 503, a per-account storage refusal is 507 carrying the
+    /// quota message, and anything else (unknown world included) is
+    /// 404. Before this slice the quota arm did not exist and a
+    /// refused account read as "no such world".
+    #[tokio::test]
+    async fn lease_failures_answer_storage_quota_with_507() {
+        for (error, status) in [
+            (ResolveError::Busy, StatusCode::SERVICE_UNAVAILABLE),
+            (ResolveError::TooManyWorlds, StatusCode::SERVICE_UNAVAILABLE),
+            (ResolveError::UnknownWorld, StatusCode::NOT_FOUND),
+            (ResolveError::InvalidName, StatusCode::NOT_FOUND),
+            (ResolveError::Unavailable, StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(lease_failure_response(&error).status(), status);
+        }
+        let response = lease_failure_response(&ResolveError::StorageQuota);
+        assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
+        let body = axum::body::to_bytes(response.into_body(), 64 << 10)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], ResolveError::StorageQuota.message());
     }
 
     /// #9104 regression: paging a multi-page records set must not re-run

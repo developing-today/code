@@ -29,7 +29,16 @@ export interface CredentialDeps {
 
 export type CredentialResult =
   | { ok: true; token: string; credentialId: string; audience: string; scope: CredentialScope; expiresAt: string }
-  | { ok: false; reason: "session_not_live" | "account_not_active" | "binding_not_active" | "tenant_not_active" | "not_owner" | "invalid_scope" };
+  | {
+      ok: false;
+      reason:
+        | "session_not_live"
+        | "account_not_active"
+        | "binding_not_active"
+        | "tenant_not_active"
+        | "not_owner"
+        | "invalid_scope";
+    };
 
 const MAX_TTL_SECONDS = 15 * 60;
 
@@ -64,7 +73,13 @@ export async function issueCredential(
   try {
     sql.exec(
       "INSERT INTO credential (credential_id, tenant_id, audience, scope, issued_at, expires_at, revoked_at, issuer, jti) VALUES (?, ?, ?, ?, ?, ?, NULL, 'tenancy-worker', ?)",
-      credentialId, session.bindingId, tenant.turso_db_id, scope, issuedAt.toISOString(), expiresAt, jti,
+      credentialId,
+      session.bindingId,
+      tenant.turso_db_id,
+      scope,
+      issuedAt.toISOString(),
+      expiresAt,
+      jti,
     );
   } catch (error) {
     // Do not leave a usable token behind when metadata could not be recorded.
@@ -85,6 +100,10 @@ export async function revokeCredential(
   if (!row) return false;
   if (row.revoked_at !== null) return true;
   await issuer?.revoke?.(row.jti as string);
-  sql.exec("UPDATE credential SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL", now.toISOString(), credentialId);
+  sql.exec(
+    "UPDATE credential SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
+    now.toISOString(),
+    credentialId,
+  );
   return true;
 }
