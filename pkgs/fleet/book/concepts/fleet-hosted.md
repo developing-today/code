@@ -197,9 +197,13 @@ closed session is a 409 `session_closed`.
 
 The package also carries a thin TypeScript CLI (`cli.ts` /
 `src/cli.ts`, #12588) whose verb set is a fixed, caller-owned
-allowlist, and the two public routes `GET /health` and
-`GET /capabilities`; `/capabilities` mirrors the native
-`fleet capabilities` JSON shape.
+allowlist, and the three public routes `GET /health`,
+`GET /capabilities` and `GET /version`; `/capabilities` mirrors the native
+`fleet capabilities` JSON shape, and `/version` is a public meta route
+beside them, ahead of the auth plumbing: it answers `{ok, service, version}`
+naming the deployed commit (the `VERSION` deploy stamp, or `unknown` when
+unstamped), while `/health`'s version stays the static package version
+(#15793).
 
 ## The direct-read path
 
@@ -247,6 +251,7 @@ Every refusal is a `FailClosed` rendered as
 | Shape                     | Meaning                                                                                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 404 `not_found`           | Unmatched path; the Worker advertises nothing                                                                                                             |
+| 413 `body_too_large`      | A JSON request body over the 1 MiB cap (`MAX_JSON_BODY_BYTES`) on any ingress door; refused before parsing (#16519)                                                                 |
 | 401 `missing_token`       | No credential on a route that requires one                                                                                                                |
 | 403                       | Cross-tenant assertion, or a service token outside its door scope                                                                                         |
 | 503                       | One row per unconfigured dependency: auth, stamp signing (refused before any GitHub write), session registry, metadata store, queue store, webhook secret |

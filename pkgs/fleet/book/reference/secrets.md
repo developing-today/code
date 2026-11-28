@@ -83,3 +83,41 @@ fleet.secrets-broker-token
 ```
 
 Names only; the listing is the broker's cache, not the vault.
+
+## fleet secrets refresh
+
+```
+fleet secrets refresh
+```
+
+| Flag | Argument | Default | Meaning                          |
+| ---- | -------- | ------- | -------------------------------- |
+| —    | —        | —       | Takes no arguments and no flags. |
+
+### Behaviour
+
+Forces the local secrets broker to refresh now — through its peer leg
+first, then the upstream store legs (#13948 S5 §5.4) — instead of
+waiting for the next tick: it posts the broker's `/refresh` (202),
+then polls the broker's health until the refresh settles (120 s bound,
+500 ms interval) and reports the settled result:
+
+```console
+$ fleet secrets refresh
+refresh complete: leg=peer secrets=244 last_refresh_unix=1764123456
+```
+
+The leg is `peer`, `upstream-delta` or `upstream-full` — the leg that
+served the broker's last successful refresh, which the broker also
+publishes on its `/health` and `/peer/status` (null before the first
+success). A broker predating the leg field reports `unknown`. Output
+carries counts only, never secret names or values. Any argument past
+a help flag is a usage error, so a mistyped secret name can never be
+mistaken for a refresh.
+
+### Exit codes
+
+- `0` — ok, the refresh settled and the report above was printed.
+- `2` — usage (any argument or flag).
+- `3` — the broker is unreachable, the refresh failed, the broker is
+  not serving, or it did not settle within the wait bound.
