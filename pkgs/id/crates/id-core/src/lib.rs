@@ -75,6 +75,7 @@ pub mod seed_phrase;
 pub mod signed_envelope;
 pub mod social_object;
 pub mod swarm;
+pub mod swarm_fetch;
 pub mod sync_method;
 pub mod text;
 pub mod time;

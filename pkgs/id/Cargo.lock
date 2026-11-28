@@ -5122,6 +5122,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2 0.6.0",
+ "bao-tree",
  "base64 0.23.1",
  "blake3",
  "cbor-core",
