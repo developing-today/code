@@ -99,3 +99,25 @@ export const parseProxyMillis = (name, fallback) => {
     process.exit(1);
   }
 };
+
+const MAX_BODY_BYTES = 2147483647; // 2^31 - 1, the family ceiling above
+
+export const parseProxyBytesValue = (name, raw, fallback) => {
+  if (raw === undefined || raw === '') return fallback;
+  if (/^[0-9]+$/.test(raw)) {
+    const bytes = Number(raw);
+    if (bytes >= 1 && bytes <= MAX_BODY_BYTES) return bytes;
+  }
+  throw new Error(
+    `${name}="${raw}" is not a valid byte count (expected an integer 1-${MAX_BODY_BYTES})`
+  );
+};
+
+export const parseProxyBytes = (name, fallback) => {
+  try {
+    return parseProxyBytesValue(name, process.env[name], fallback);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+};
