@@ -365,6 +365,12 @@ describe("configuration", () => {
       ),
     ).toThrow(/https/);
     expect(() => readConfig({ PM_CONSOLE_ISSUERS_FILE: "/x" }, () => "{}")).toThrow(ConfigError);
+    // What the machine is called where machines are listed: what the
+    // environment says, made fit to show; unsaid, the host's own name is
+    // used when the console starts.
+    expect(readConfig({ PM_CONSOLE_MACHINE: "nixos" }).machineName).toBe("nixos");
+    expect(readConfig({ PM_CONSOLE_MACHINE: " Drew's laptop " }).machineName).toBe("Drew-s laptop");
+    expect(readConfig({}).machineName).toBe("");
     for (const bind of ["127.0.0.1", "::1", "localhost"]) {
       expect(readConfig({ PM_CONSOLE_BIND: bind }).bind).toBe(bind);
     }
@@ -947,6 +953,19 @@ describe("operations", () => {
     ]);
     await expect(ops.pr("12240")).rejects.toThrow(/failed \(exit 1\).*Not Found/);
     await expect(ops.mergePr("12240/merge")).rejects.toThrow(OpError);
+    // With the commit the owner was shown, GitHub is told to merge that
+    // and nothing pushed since.
+    const head = "0123456789abcdef0123456789abcdef01234567";
+    await ops.mergePr(12240, head);
+    expect(r.calls.at(-1)?.argv.slice(-4)).toEqual(["-f", "merge_method=merge", "-f", `sha=${head}`]);
+    // What is not a commit's full name is not passed on as one.
+    const before = r.calls.length;
+    await expect(ops.mergePr(12240, "main")).rejects.toThrow(/head: a commit/);
+    await expect(ops.mergePr(12240, 7)).rejects.toThrow(/head: a commit/);
+    expect(r.calls.length).toBe(before);
+    // And none given is none asked for.
+    await ops.mergePr(12240, null);
+    expect(r.calls.at(-1)?.argv.slice(-2)).toEqual(["-f", "merge_method=merge"]);
   });
 });
 
@@ -1020,13 +1039,55 @@ describe("HTTP surface", () => {
     expect((await handle(get("/elsewhere"), alone)).status).toBe(404);
   });
 
+  test("every file the page and the worker load is served here, served by the edge, and shipped in the edge's build", async () => {
+    // Three lists name the app's files: this service's, the edge's, and
+    // what the edge's build copies. A file missing from one of them
+    // works on the laptop and is a 404 behind Cloudflare, or the other
+    // way round; and the worker cannot open the app offline without
+    // every one of them.
+    const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
+    const page = [...read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g)].map((m) => m[1]);
+    const worker = [
+      ...(/const FILES = \[([^\]]+)\]/.exec(read("public/sw.js"))?.[1] ?? "").matchAll(/"\/console\/([^"]+)"/g),
+    ].map((m) => m[1]);
+    const loaded = [...new Set([...page, ...worker, "sw.js"])].sort();
+    expect(loaded).toEqual(["app.css", "app.js", "icon.svg", "outbox.js", "sw.js"]);
+    // The worker keeps everything the page loads, or the page would not open offline.
+    expect([...new Set(worker)].sort()).toEqual(page.sort());
+    const d = deps("owner");
+    for (const name of loaded) expect([name, (await handle(get(`/console/${name}`), d)).status]).toEqual([name, 200]);
+    const edgeServes = [
+      ...(/const STATIC: Record<string, string> = \{([^}]+)\}/.exec(read("edge/src/edge.ts"))?.[1] ?? "").matchAll(
+        /"([^"]+)":/g,
+      ),
+    ].map((m) => m[1]);
+    expect(edgeServes.sort()).toEqual(loaded);
+    const built = [
+      ...(
+        /for \(const name of \[([^\]]+)\]\) \{\s*cpSync\(join\(here, "\.\.", "public"/.exec(
+          read("edge/build.mjs"),
+        )?.[1] ?? ""
+      ).matchAll(/"([^"]+)"/g),
+    ].map((m) => m[1]);
+    expect(built.sort()).toEqual([...loaded, "index.html"].sort());
+  });
+
   test("the page and its files are served to the owner with a strict policy", async () => {
     const d = deps("owner");
     const page = await handle(get("/console/"), d);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
-    expect(await page.text()).toContain('src="/console/app.js"');
+    const html = await page.text();
+    expect(html).toContain('src="/console/app.js"');
     expect((await handle(get("/console/app.css"), d)).headers.get("content-type")).toContain("text/css");
+    // The file that keeps what the owner did with no connection comes
+    // before the app, which uses it; and the worker loads it by this address.
+    expect(html.indexOf('src="/console/outbox.js"')).toBeGreaterThan(0);
+    expect(html.indexOf('src="/console/outbox.js"')).toBeLessThan(html.indexOf('src="/console/app.js"'));
+    const outbox = await handle(get("/console/outbox.js"), d);
+    expect([outbox.status, outbox.headers.get("content-type")]).toEqual([200, "text/javascript; charset=utf-8"]);
+    expect(await outbox.text()).toContain("PMOutbox");
+    expect(await (await handle(get("/console/sw.js"), d)).text()).toContain('importScripts("/console/outbox.js")');
     // The site is only ever HTTPS, and says so.
     expect(page.headers.get("strict-transport-security")).toBe("max-age=31536000");
     // A visit does not download the app again: each file says which

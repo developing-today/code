@@ -7,10 +7,12 @@ import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, Ops, type Run } from "../src/ops.ts";
 import { Plan } from "../src/plan.ts";
 import { Push } from "../src/push.ts";
 import type { Deps } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { Work } from "../src/work.ts";
 
 const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19);
@@ -257,6 +259,7 @@ const state = {
       created: iso(60 * 20),
       author: "dezren39",
       branch: "task/suite-registry",
+      head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
     {
       number: 12241,
@@ -266,6 +269,7 @@ const state = {
       created: iso(60 * 19),
       author: "dezren39",
       branch: "task/f12-11-frames",
+      head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     },
     {
       number: 12390,
@@ -275,6 +279,7 @@ const state = {
       created: iso(60 * 3),
       author: "dezren39",
       branch: "wip/talos",
+      head: "cccccccccccccccccccccccccccccccccccccccc",
     },
   ],
   priorities: {
@@ -396,7 +401,8 @@ const demoRun: Run = async (argv) => {
   // The plan's screens: the roadmap files are the repository's own, read
   // from this checkout; the issues under them are made up.
   const answer = (out: unknown) => ({ code: 0, stdout: JSON.stringify(out), stderr: "" });
-  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md)$/.exec(path);
+  // So is the list of Workers the Platform screen is drawn from.
+  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md|pm-stack\/platform\/workers\.json)$/.exec(path);
   if (contents) {
     const text = await Bun.file(`${import.meta.dir}/../../../${contents[1]}`).text();
     return answer({ content: Buffer.from(text, "utf8").toString("base64") });
@@ -646,6 +652,8 @@ const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
               : { ok: true },
         ),
   has: () => true,
+  // The kinds a real machine has, for where what it can do is listed.
+  ownKeys: () => Object.keys(real),
   getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
 });
 
@@ -660,6 +668,11 @@ export const demoDeps: Deps = {
     status: 201,
   })),
   actions: table,
+  // What was done under each name, as the real host keeps it: an action
+  // a device sends twice is done once here too.
+  named: new Named(memoryStore()),
+  // What this machine is called where machines are listed.
+  self: { name: "framework", version: "0123abcd4567" },
   identify: async () => ({ via: "demo", email: "you@example.com" }),
   audit: async () => {},
 };

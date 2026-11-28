@@ -210,3 +210,451 @@ Step 2 is built (`src/plan.ts`, with its screens under More).
 
 Not in this step: at the edge these reads and `intake.send` still go to
 the laptop (held when it is away). Step 3 moves them.
+
+## 2026-11-23T11:10Z Update: the edge does the core itself
+
+Step 3 is built. What changed from the plan above is in how, not what.
+
+- **One gate.** `primary`: the switch on, both tokens there, and a
+  machine's report having said where things are. The minute of silence
+  that used to be waited for is gone, and with it the two-source
+  problem it was avoiding, which is settled the other way round: a
+  section the edge reads is the edge's alone. The laptop's copy of it
+  is not taken, nor its word on how current it is; the edge names those
+  sections in its answer to a report (`owns`) and the laptop stops
+  sending them. Turn the switch off and the laptop's next report brings
+  them back.
+- **The edge reads the way the laptop does.** There is no separate
+  path any more for a read made at the edge: each such section's loader
+  reads its source, and the document keeper (`src/docs.ts`) does the
+  rest as it does on the laptop: its interval, one read at a time, the
+  last good copy and the reason when a read fails. A document is
+  answered at once from what there is and a stale section is read
+  behind the answer. Measured in the Worker runtime before relying on
+  it: a read started behind an answer finishes, with or without being
+  handed to `waitUntil`, and a wake can read and write.
+- **Across restarts.** The object is put away when idle, so everything
+  it would otherwise learn again is kept: each good read (content
+  written only when it changes), and through the kept list of prompts
+  what each thread held, so a restart reads the list and no thread that
+  has not changed. Without that, a wake a minute would have meant every
+  thread every minute.
+- **Notifications with no machine.** While a device is subscribed the
+  object wakes itself each minute, reads the prompts and tells the
+  owner of a reply. The same wake notices a laptop gone quiet, and a
+  telling that failed is tried again a minute on (it used to wait for
+  the next report, which a quiet laptop never sends).
+- **More done here.** Merge, start a deploy, and intake, beside what
+  was already there. The reads that need only GitHub and the queue
+  store are one module (`src/reads.ts`) used by the laptop's server and
+  the edge alike: one pull request's page, the queue by state, ranked
+  issues, releases, roadmaps, bugs, intake.
+- **A refusal is handed on.** The edge's token is a fine-grained one
+  for automation, and what it may do was not known when this was
+  written; the laptop's own way in is another credential. So that
+  moving an action to the edge can never take it away from the owner:
+  when the edge's token is refused before anything was written, the
+  action goes to the laptop exactly as it did before, the edge leaves
+  that kind to the laptop for an hour, and health lists it under
+  `refused`. That list is how a missing permission will be seen.
+- **On by default.** `expose.py` gives the Worker its tokens unless told
+  off (`--edge-direct off`, or the switch under More, Cloudflare, both
+  remembered). This is the decision recorded above under "Decision",
+  point 3: the owner asked for Cloudflare to carry the core, and that
+  cannot happen without them. No value passes through anything but the
+  laptop's own script and Cloudflare's API. A run that was never told
+  and cannot do it says so and does not fail, so the rest of what that
+  script keeps is not held up.
+- **Checked.** 281 tests: 257 under bun and the keeper's 24. 82 planted
+  faults in the edge and its shared pieces: 78 caught, four that change
+  nothing that can be reached. 10 in the keeper's default: all caught. The
+  bundle in the real Worker runtime with the switch on, against
+  stand-ins for GitHub and the queue store on the runner: its own read
+  of each kind came back good, each carrying its token; this now runs
+  on every deploy. A phone-sized Chrome over the app's changed screens,
+  and axe-core over all 19 and the Cloudflare screen in each of its
+  states, light and dark: no violations.
+
+Not done in this step, and still a machine's: filing a queue task (held
+for one, as before); questions, needs and sessions; units, agents and
+messages; the sign-in settings. The edge still learns where things are
+from a machine's first report. Each has an issue (step 6).
+
+## 2026-11-23T11:12Z Update: step 3 after review
+
+Review of the change above (Codex, and a second reading of it here)
+found five ways it could show the owner less than the laptop did. All
+are closed in the same change, before it was merged.
+
+- **`off` was forgotten on a laptop that never had it on.** With on as
+  the default, `--edge-direct off` before any run had turned it on
+  took nothing away and remembered nothing, so the timer's next run
+  turned it on. It is remembered now, before the tidying, so a tidying
+  that is refused leaves the mode off all the same.
+- **After a restart, an action's change could be shown as it was
+  before.** The first look of an object that has just started shows
+  the copy kept from before; the read after an action took that
+  shortcut. What an action touched is now read from its source, always.
+- **What a machine did was not read again here.** A section the edge
+  reads is not taken from a machine, so an action the laptop did (one
+  handed on after a refusal, one only a machine does, one held and done
+  late) showed only when the section's interval came round: up to three
+  minutes for ranked issues. The laptop already says which sections an
+  action changed; those the edge reads are now read again at once.
+- **A refused read had nowhere to go.** Actions were handed on when the
+  edge's token was refused; sections were not, and a screen that
+  answers in part (the deploys, a roadmap) was answered here with its
+  error. Now a section the edge is refused for is the laptop's again for
+  the hour (out of `owns`, the laptop's copy shown, health saying
+  `read.<section>`), and a refused or part-refused screen is asked of
+  the laptop while one is reporting. This is the same rule as for
+  actions, and for the same reason: what the edge's token may do was
+  not known when this was built, and giving the edge its tokens must
+  not be able to take anything away.
+- **A read under way was trusted after a change.** The document keeper
+  shared a read already in flight, which may have been taken before
+  the action finished, and then counted the section fresh. After a
+  change it now waits for that read and reads once more
+  (`Docs.reread`); on the laptop too.
+
+Three more came out of building those, each a way the hand-over itself
+could have gone wrong:
+
+- **Calling too often looked like a refusal.** GitHub answers both
+  with a 403. The token is the fleet's too, and search (which the
+  ranked issues are read with) is what runs out first; an hour with a
+  machine for that is too long when no machine is there. It is told
+  apart by GitHub's own words, and handed on for five minutes.
+- **Reading the queue counted as having written.** Every call of the
+  queue store was noted as a write, so an action refused after it had
+  only read the queue was said as a failure when a machine could have
+  done it, and a section's refusal could be hidden by another
+  section's good read at the same moment. A request of the queue store
+  is now a write only if a statement in it is not a SELECT, and a
+  section is judged by the answers of the services it is read from.
+- **Turned away with nobody looking, the wakes would have ended.** The
+  minute's wake runs only while the edge reads the prompts. When it is
+  turned away for them the object now asks to be woken when that time
+  is up, if a device is there to tell.
+- **The hand-over was forgotten whenever the object was put away.** It
+  was kept in memory only. An object that starts again would have
+  claimed every section afresh, told the laptop so, and been refused
+  again on the next look: with the app closed, the laptop's copy of the
+  prompts would never have been taken, and no reply would have been
+  told of. What the edge is turned away for is now kept in its storage
+  until its time is up, and the owner can have it tried again at once
+  (More, Cloudflare, "Try again now") when the token has been put right.
+
+One thing found on the way that is not about the edge: text on the
+status colours. The success toast on the light page (3.3 to 1) and the
+failure toast and the danger button on the dark one (3.35 to 1) were
+below what can be read comfortably; none of them is on screen when the
+screens are scanned, which is how they were missed. Each status colour
+now has an ink of its own per theme, and a test measures every such
+pair with the WCAG formula on each run.
+
+Checked again: 302 tests (277 under bun, the keeper's 25). 65 more
+planted faults in all of this: 62 caught, three that change nothing
+that can be seen (a section a machine reads being read once more from
+the copy here; a wake that would find nothing to do; a kept entry past
+its time, which is dropped on first use anyway). The bundle in the
+Worker runtime with the switch on: all checks passed. A phone-sized
+Chrome over the Cloudflare screen in each state with the new control,
+and axe-core over the toasts and the danger dialog while they show,
+light and dark: no violations (three before the inks).
+
+## 2026-11-23T12:52Z Update: in service, and step 4 (with no connection)
+
+**Step 3 is in service.** Merged as #13205. At 12:00Z the public health
+answer said `primary: true`, both tokens present, nothing refused,
+and its own read of each kind (the board, pull requests, ranked issues,
+the prompts) good with the real tokens. Not checked: a write with the
+real token, which needs the owner's sign-in; a refusal would show under
+`refused` and be the laptop's to do.
+
+The deploy of that merge failed twice at its rehearsal on a scratch
+Worker: Cloudflare answered "This Worker does not exist" (10007) about
+a Worker wrangler had uploaded a second before. The real Worker was
+deployed by a manual run without the rehearsal; standing a Worker up is
+now made up to four times (#13235), and the next deploy passed on the
+third.
+
+**Step 4 is built: the app with no connection.** Decision 4 above, as
+it turned out:
+
+- **The device keeps a copy of everything it read.** The service
+  worker asks the network first and keeps each good answer under the
+  address it was asked for: the app's files, the three documents, and
+  every screen's own read. A copy is shown only when the network gives
+  no answer or is too slow to wait for, and is marked as one; an answer
+  that says no is never replaced by a copy. So nothing about a screen
+  had to change for it to work offline, and a screen added later works
+  offline from its first visit.
+- **Every action has a name, given on the device.** It is written to
+  the browser's database before it is sent, and sent at once when there
+  is a connection, as before. With none it waits, and goes when there
+  is one: from the page, or from the service worker if the app is
+  closed (Background Sync). One file (`public/outbox.js`) holds the
+  rules for both.
+- **Once, however often it arrives.** The edge writes down each name it
+  did with its answer; a machine does the same (`src/named.ts`, one
+  record for actions sent straight to it, relayed to it, and held for
+  it). A name offered again is answered from the record. This is the
+  rule that already protected a relayed action whose answer was lost,
+  extended back to where the action starts.
+- **What may have changed is not sent unasked.** The list the platform
+  already had for a machine that is away (what may be done late) is the
+  device's list too. A merge, a deploy, a cancel, an unblock and a
+  service action are kept, sent by themselves only within ten minutes,
+  and after that wait for the owner to look again. A merge now names
+  the commit the owner was shown, and GitHub merges only that: this
+  guards a merge asked for a second ago as much as one kept for hours.
+- **Signed out is told from offline** by asking past the service
+  worker without following the way to the sign-in page.
+
+What the owner sees: `offline` and how old the state is in the corner;
+a line under the header saying there is no connection and what is kept;
+More, On this device, where what is waiting, kept back, failed, with
+the platform or sent can be looked at, dropped, sent or tried again,
+and where a copy of every screen can be fetched before a flight.
+
+Checked: 321 tests under bun and the keeper's 25. Planted faults: 23 in
+the once-only rule on the edge and the laptop, 57 on the device (the
+outbox, the worker, the app's wording), all caught. In a real Chrome,
+against the demo laptop and the demo edge, light and dark: the app
+taken offline opens, shows each screen it had seen, says so, keeps
+three actions across a reload, sends each once when the connection is
+back, answers a repeat of each name without doing it again, keeps a
+three-hour-old merge back until it is confirmed, and forgets when
+asked; and with the app closed, the worker, woken as the browser wakes
+it, sends what was kept. axe-core over all 20 screens, the dialogs, the
+toasts and the new screen in each state: no violations.
+
+Not checked: a real phone with no signal, and the Android app (it is
+this site in Chrome, so nothing in it changed). Not done: copies are
+not encrypted on the device beyond what the device does itself; a
+screen never visited has no copy until it is visited or "keep a copy of
+every screen" is pressed.
+
+## 2026-11-23T15:40Z Update: step 4 after review
+
+Review of the offline work found six real faults, and looking at them
+found three more of the same kinds. All are fixed in the same change.
+
+- **A name could be done twice by two arrivals at the same moment.**
+  The laptop looked a name up, then waited for the audit's write, and
+  only then marked it as being done: two arrivals could both look and
+  both do it. A name is now taken first, with no waiting in between
+  (`Named.take`), and what is known of it is read after, on the laptop
+  and at the edge alike; the second arrival is told it is being done,
+  and asks again. The laptop's record of names is read once however
+  many ask together, and written one write at a time.
+- **A held action being done on the laptop looked "lost" to a retry.**
+  Doing a held action wrote "started" without marking the name as being
+  done, so a device sending it again meanwhile was told the laptop had
+  restarted, and offered a retry under a new name. Held actions now go
+  through the same taking and giving back as any other.
+- **Something done now could overtake something older.** A new action
+  was sent by itself, ahead of what was waiting on the device; the
+  older one, sent later, undid it (a rank changed twice ended as the
+  first). A new action is now written down and sent through the same
+  oldest-first pass as everything else (`sendInOrder`).
+- **Order is kept per thing, to the end.** Found while fixing the last:
+  an older change that nothing could take just now (503) or that was
+  still being done (409) let a newer change about the same thing go
+  first. Each action says what it is about (`subject` on the device,
+  `subjectOf` on the platform; a test holds them together); a later one
+  about the same thing waits behind an earlier one that has not been
+  taken, on the device and in what the edge holds for a machine. What
+  is about something else is not held up.
+- **"Do not send" during a send was ignored**, and so was an entry
+  another tab or the worker had dealt with meanwhile: each entry is now
+  read again just before it is sent.
+- **The worker gave up with things still waiting.** A 503 or a
+  "being done" left an entry waiting but ended the browser's wake as a
+  success, so nothing called again. The worker now asks to be woken
+  again while anything waits to be sent, and on the browser's last call
+  says what still waits.
+- **A full device broke reads.** A refused write to the cache failed
+  the read it belonged to. Keeping copies is now on a best effort; and
+  with no cache at all (a browser that gives the site no storage) the
+  worker installs and answers as if it kept nothing.
+
+A second review of those fixes found two more, both real:
+
+- **A name could be done once on each side.** Which side does a kind
+  can change (the edge is turned away for an hour, then takes it
+  back). An action given to the laptop, its answer lost, and sent again
+  after the change was done again by the edge, which had no record of
+  the name; and the other way about. The edge now writes down a name
+  it hands to a machine as given, and looks a name up before choosing
+  a side: a name keeps to the side that first took it.
+- **A refused answer was counted as sent.** An answer to a question
+  settled in the meantime comes back as a success that says "not
+  recorded". Sent from what the device kept, it was marked sent. It is
+  now "could not be done", with why, as the laptop already says of one
+  it does late.
+
+A third review found two more, both real, both in the page:
+
+- **An action waited its turn in memory.** It was written down only
+  once it held the turn to send; with another tab or the worker in the
+  middle of a slow send, closing the page lost it. It is now written
+  down first, and only the sending waits. One try at sending is given a
+  minute, so a request that hangs cannot hold every sender up.
+- **A taken-back answer left its question hidden.** The page kept its
+  own list of questions answered here. The list is now worked out from
+  what is kept: a question is out of the list while its answer waits
+  (across a reload too) and back when the answer is taken back or does
+  not count.
+
+A fourth review found three more, all real:
+
+- **A draft was erased by a send in the background.** When something
+  kept earlier was sent, the screen was drawn again whatever the owner
+  was doing, and a bug report, a note or a message half typed was
+  gone. A background send now draws the screen again only when nobody
+  is in the middle of something, and those three forms keep what is
+  typed across any redraw (as the prompt box already did).
+- **A cut-off answer was read as "sign in again".** An answer whose
+  body stops arriving is no answer, and is offered again; only a body
+  that arrives and is not JSON is taken for something other than the
+  platform.
+- **A failed answer could leave its question hidden**, if the list was
+  read while the answer was on its way. On failure the list is read
+  again whole.
+
+Checked: 342 tests under bun, the keeper's 25. 52 planted faults in
+the new code, all caught (two more were planted and found to change
+nothing: each is behind a second guard). In a real Chrome against both
+demos: the offline flow, light
+and dark; the worker woken with the app closed; an older waiting rank
+and a new one leave the device in order and are done in order (and with
+the old direct send planted, that check fails); an answer kept, taken
+back and kept again, and an action done while another sender holds the
+turn and the page then closed; a draft kept through a background send
+with the cursor in it and with it set aside, and a question back after
+its answer failed (each of these fails against the code before its
+fix); axe-core over 20
+screens, the dialogs and the toasts: no violations. The Worker in its
+real runtime passes its own checks.
+
+Found on the way: the console's TypeScript is never type-checked. A
+method added to the laptop's link had the name of one already there,
+and the second silently replaced the first; the tests passed for the
+wrong reason until a later change exposed it. A type check finds it at
+once, and 53 smaller complaints across the console, none of them a
+fault. Adding the check to CI is the next change.
+
+Not done, and filed as #13398: an older action held for a machine is
+not ordered against a newer one about the same thing that the edge
+does itself.
+
+## 2026-11-23T16:50Z Update: step 4 in service, and step 5 (machines)
+
+**Step 4 is in service.** Merged as #13287 after four rounds of review
+(thirteen findings, all real, each with a test and most with a check
+in a real browser that fails against the code before its fix). At
+16:38Z the Worker and the laptop both ran `2a96e875037d`; the Worker
+said it does the core itself and had been turned away for nothing.
+
+Seen in that answer: the Worker's own read of pull requests had failed
+a quarter of an hour earlier with GitHub's "rate limit exceeded" for
+the owner's account. The Worker's token is the fleet's, and the fleet
+had used the hour's allowance. The Worker treats that as "one too many
+just now" and asks again in five minutes, which is right; but a
+platform whose core reads stop when agents are busy is not doing the
+core by itself. Filed with the gaps: its own allowance.
+
+**Step 5 is built: the laptop is a machine.** Decision 5 above, as it
+turned out:
+
+- **A machine says what it is.** Each report carries the machine's name
+  and what it can do: the kinds of action it has and the sections it
+  reads. The edge keeps what it last said beside when it last reported.
+  A console older than this says nothing, and is shown as a machine
+  that has not said what it can do.
+- **The edge answers for the whole.** `GET /console/api/machines` is
+  answered at the edge with no machine asked: what the edge does itself
+  right now, each machine and whether it is reporting, and what waits
+  for one. A machine serving the app by itself answers the same read
+  with itself.
+- **What waits can be taken back.** `held.drop` removes one held action
+  before a machine has it, and records it as not sent under its name,
+  so the device that sent it learns so.
+- **The screen** (More, Machines) says each of those in words, and that
+  one machine can be connected today.
+
+What this does not do yet, and is filed: a second machine under its own
+key; each action sent to a machine that can do it (today there is one,
+so "a machine" is "the machine"); what is held kept per machine.
+
+Review found two faults, both real. Taken back, an action could be
+kept again when a device that never heard it was kept offered it again:
+taking back now ends the name, and the offer is answered "taken back".
+And the screen did not notice a machine going quiet unless something
+else changed: it now asks again while it is open, and is drawn again
+when what it shows has changed.
+
+Checked: 351 tests under bun. 28 planted faults in the new code, all
+caught. In a real Chrome against both demos, light and dark: the
+screen with nothing in front of the machine and with the edge in front;
+something held while the machine is out of reach, listed in the owner's
+words, taken back after a question, and recorded as not sent. axe-core
+over 21 screens and the new dialog: no violations.
+
+## 2026-11-23T17:20Z Update: step 5 in service, and step 6 begun (one platform)
+
+**Step 5 is in service.** Merged as #13471 after one round of review
+(two findings, both real). At 17:00Z the Worker ran `cf40e59c6e92`.
+
+**The Workers, counted.** The repository holds eighteen. Asked at their
+addresses from outside today, fourteen answered and four did not exist
+(the fleet's hosted front door and three of id's, all local-only by
+their own account). Of the fourteen, two are deployed from Actions (the
+PM console, the pkarr door). Twelve were deployed by hand from a
+machine: nothing in the repository says which commit each runs, and
+none can be put back from the app.
+
+**What is built: the list, and the screen.** "One platform" starts as
+one list that is true. `pm-stack/platform/workers.json` names every
+Worker, where it lives, what it does, whether it is in service, how it
+gets there, and what joining the platform means for it; a test beside
+it holds it to the repository, so it cannot quietly go stale. The edge
+reads it from the repository with the latest run of each deploy
+workflow, and More, Platform shows it with no machine. What joining
+means is written down in `pm-stack/platform/README.md`: deployed from
+Actions with a check and a way back, saying its version, its secrets
+set by the deploy, seen from the app.
+
+**What is not built.** No Worker was moved to Actions in this change:
+each has its own secrets and bindings, and deploying one I have not
+stood up from nothing would be a guess with someone's service. Each is
+its own issue, filed with the gaps, in the order the list gives.
+Whether each is in service is not checked by the edge itself: a Worker
+cannot ask another on the same account by its public address without a
+setting the console does not have, and changing how the console reaches
+out needs its own care (the same setting changes how it reaches the
+laptop).
+
+**Seen in service, and fixed here.** The Worker's own check of its
+reads had failed once on GitHub's rate limit and stood as failed for
+the hour, on the Cloudflare screen too. A check in which something
+could not be read is now made again in five minutes.
+
+**Every gap is an issue.** Sixteen, under the tracker #13504: the
+edge's own GitHub allowance (#13489), queue tasks from Cloudflare
+(#13490), questions and sessions with no machine (#13491), a message
+to an agent with no machine (#13502), the ordering case left out
+(#13398), a second machine (#13492), the twelve Workers deployed from
+Actions (#13493), the edge checking each Worker (#13494), platform
+settings from Actions (#13495), the stores managed from the app
+(#13496), the fold-in of two Workers (#13503), roadmap files for fleet
+and atlas (#13497), a type check (#13498), the signed-in flows in the
+real runtime (#13499), the Android app on a device (#13500), and what
+is left of offline (#13501). The PM stack's roadmap file has the rows.
+
+Checked: 357 tests under bun, 4 beside the list. In a real Chrome
+against both demos, light and dark: the Platform screen's counts,
+groups, each kind of row and its links. axe-core over 22 screens: no
+violations.

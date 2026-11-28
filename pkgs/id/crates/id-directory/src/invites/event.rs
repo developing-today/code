@@ -327,8 +327,10 @@ impl InviteEvent {
     ///
     /// # Errors
     ///
-    /// Fails if a source invite's depth exceeds [`MAX_SOURCE_DEPTH`] (§2), or the
-    /// encoded body exceeds [`MAX_BODY_LEN`] (§1).
+    /// Fails if an invite's depth exceeds [`MAX_SOURCE_DEPTH`] (§2) — a source
+    /// invite's directly, and a child invite's too: terms are public and can be
+    /// built without [`InviteBody::child_terms`], so signing enforces the cap on
+    /// both — or the encoded body exceeds [`MAX_BODY_LEN`] (§1).
     pub fn sign_terms(
         key: &SigningKey,
         ticket: &EndpointTicket,
@@ -338,6 +340,12 @@ impl InviteEvent {
             ensure!(
                 terms.depth_remaining <= MAX_SOURCE_DEPTH,
                 "a source invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
+                terms.depth_remaining
+            );
+        } else {
+            ensure!(
+                terms.depth_remaining <= MAX_SOURCE_DEPTH,
+                "a child invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
                 terms.depth_remaining
             );
         }
@@ -375,8 +383,9 @@ impl InviteEvent {
     /// # Errors
     ///
     /// Fails if the form is malformed: a v2 body over the [`MAX_BODY_LEN`] budget,
-    /// an unsupported version, a body that does not decode exactly, a v1 length
-    /// that is wrong, or a v1 role code this format does not define.
+    /// an unsupported version, a body that does not decode exactly, a v2 delegation
+    /// depth over [`MAX_SOURCE_DEPTH`], a v1 length that is wrong, or a v1 role
+    /// code this format does not define.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.starts_with(V2_MAGIC) {
             Self::from_v2_bytes(bytes)
@@ -409,6 +418,11 @@ impl InviteEvent {
             rest.is_empty(),
             "the invite event body has {} trailing bytes",
             rest.len()
+        );
+        ensure!(
+            body.depth_remaining <= MAX_SOURCE_DEPTH,
+            "an invite event's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
+            body.depth_remaining
         );
         let signature = bytes[bytes.len() - 64..]
             .first_chunk::<64>()
@@ -791,6 +805,33 @@ mod tests {
         bytes.extend_from_slice(&[0_u8; 64]);
         let error = InviteEvent::from_bytes(&bytes).unwrap_err();
         assert!(format!("{error:#}").contains("512"), "{error:#}");
+    }
+
+    #[test]
+    fn an_over_cap_depth_is_refused_at_decode_even_when_signed() {
+        // #13250: sign_terms refuses to mint over-cap events, but decode is
+        // the boundary for externally supplied bytes — a correctly signed
+        // body built without the constructor must not come back out of
+        // from_bytes, with or without a parent.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        for parent_digest in [None, Some([5; 32])] {
+            let body = InviteBody {
+                depth_remaining: 200,
+                parent_digest,
+                ..body_for(&key)
+            };
+            let event = signed(body, &key);
+            assert!(event.verify_signature().is_ok());
+            let error = InviteEvent::from_bytes(&event.to_bytes()).unwrap_err();
+            assert!(format!("{error:#}").contains("200"), "{error:#}");
+        }
+        // The cap itself still decodes: a source at exactly MAX_SOURCE_DEPTH.
+        let at_cap = InviteBody {
+            depth_remaining: MAX_SOURCE_DEPTH,
+            ..body_for(&key)
+        };
+        let event = signed(at_cap, &key);
+        assert_eq!(InviteEvent::from_bytes(&event.to_bytes()).unwrap(), event);
     }
 
     #[test]

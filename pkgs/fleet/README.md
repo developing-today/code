@@ -231,6 +231,13 @@ own release.
 5. **Deploy truth.** What a target runs is read from the deployed
    binary's own `Derived version:` line, never from paperwork
    (that read is the #5760 deployed-state check's input).
+6. **Who cuts them.** The workflow of record is the release-workflow
+   design record (`doc/2026-11-23T13-09-25Z_design_release-workflow-per-app-tags/`):
+   releases are cut only by `deploy release <app>` (pkgs/deploy,
+   #13306), which attests the main-gate for the tagged commit in the
+   tag's `release-attestation:v1` block, records the release in the
+   deploy ledger, and refuses a release-claiming deploy with no
+   attested tag behind it.
 
 ## Variants
 
@@ -434,6 +441,16 @@ requires a decision record in the same body of work — see
   a decision record in the same body of work** — the same PR, or the
   same run for non-PR work. See
   [the rule](../../doc/decisions/README.md#5-same-body-of-work).
+
+## Fleet program
+
+The fleet program — full investigation of the fleet system, design completion,
+and new designs toward a fully featured platform — is chartered by the
+[Fleet program investigation & build-out prompt](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/2026-11-23T12-45-06Z_design_fleet_program_investigation.md),
+tracked in [#13272](https://github.com/developing-today/code/issues/13272).
+Its deliverables include a fleet charter, the fleet book extended in place
+under `/code/fleet/`, and a prioritized map of all fleet issues with blockers
+marked.
 
 ## Build and smoke
 

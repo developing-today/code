@@ -13411,9 +13411,11 @@ mod audit_tests {
     // id on every line, admin commands included.
     #[test]
     fn audit_records_carry_target_correlation_and_schema_v2() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13468,9 +13470,11 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new(
             "audit-test",
@@ -13584,9 +13588,11 @@ mod audit_tests {
 
     #[test]
     fn issuance_is_audited_alongside_revocation_without_the_token() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13642,9 +13648,11 @@ mod audit_tests {
 
     #[test]
     fn install_program_writability_refusal_is_audited_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13734,9 +13742,11 @@ mod audit_tests {
 
     #[test]
     fn participant_readable_queries_emit_no_admin_audit_record() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13841,9 +13851,11 @@ mod audit_tests {
 
     #[test]
     fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13907,6 +13919,7 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        crate::test_tracing::register_audit_callsite();
         // Oracle: the audit records themselves (model-based replay).
         // Folding the accepted records — plus first-use grants — over
         // the initial state must reproduce the live ledger grants and
@@ -13922,6 +13935,7 @@ mod audit_tests {
             let records = Arc::new(Mutex::new(Vec::new()));
             let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
             let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
             let core = WorldCore::new(
                 "audit-test",

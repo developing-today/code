@@ -79,7 +79,7 @@ When a domain is not `Available`, `fn stub(...)` in `main.rs` prints to stderr a
 - `NotInBuild`: `fleet: this build does not include '<domain>'.` plus `This is the <build> build (<VERSION>).`, and ` The full build is 'fleet'.` when the build is not full.
 - `NarrowedByName`: `fleet: invoked as '<invoked_as>', this build does not include '<domain>'.` plus the explanation that the invocation is name-scoped to the profile and that invoked as `fleet` it carries the full surface.
 - `DisabledByConfig`: `fleet: '<domain>' is disabled by config on this host.` plus the instruction to re-enable the domain under `[domains]` in the named `fleet.toml` path.
-- `Available` (the step-1 form, for a surface compiled in with nothing behind it): `fleet: '<domain>' is included in this build but not implemented yet.` plus the step-1 skeleton wording of epic #5412.
+- `Available` (for a surface compiled in with nothing behind it): `fleet: '<domain>' is included in this build but not implemented yet.` plus the line naming the build and the not-implemented state.
 
 Help renders the same states without stubbing: domain help is registry data and is always available, even where the domain is not. Help marks each domain `included in this build`, `not in this build — invoking it prints the capability stub (exit 69)`, `narrowed out by this invocation name — … (exit 69)`, or `disabled by config on this host (exit 69 if invoked)`, and top-level help closes with: "A domain this invocation cannot use answers with a stub and exit code 69."
 

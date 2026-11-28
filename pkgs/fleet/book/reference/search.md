@@ -42,11 +42,11 @@ fleet search search <query> [options]
 | `--until`               | `YYYY-MM-DD`         | —                                         | Sessions created on/before (inclusive).                                                                                      |
 | `--max-sensitivity`     | `LV`                 | `personal`                                | `shareable \| personal \| local-only \| secret-bearing`. A _request_; the server clamps it to the client identity's ceiling. |
 | `--group-by-session`    | —                    | off                                       | Roll chunk hits up to sessions.                                                                                              |
-| `--expand`              | `N`                  | `0`                                       | Include N neighbouring chunks around each hit.                                                                               |
+| `--expand`              | `N`                  | `0`                                       | Include N neighbouring chunks around each hit (validated `0..=100`).                                                          |
 | `--with-message`        | —                    | off                                       | Include the parent message text.                                                                                             |
 | `--no-cache`            | —                    | off                                       | Bypass service cache _reads_; the fresh result still lands in the cache.                                                     |
 | `--no-wait`             | —                    | off                                       | Do not block: print the service job handle and return. (The one-shot default waits for the job.)                             |
-| `--hydrate`             | `N`                  | `0`                                       | Hydrate the top N results to full content.                                                                                   |
+| `--hydrate`             | `N`                  | `0`                                       | Hydrate the top N results to full content (validated ≤ 1000).                                                                  |
 | `--raw-rows[=branches]` | optional `=branches` | —                                         | Ungrouped rows: bare = flat fused rows; `=branches` = pre-fusion branch rows.                                                |
 | `--text`                | —                    | off                                       | Human-readable output instead of JSON (default output is JSON).                                                              |
 | `--model`               | `NAME`               | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model.                                                                                                             |
@@ -59,11 +59,9 @@ fleet search search <query> [options]
 
 Standalone-only engine knobs (`--backend`, `--db`) are deliberately not part of this surface.
 
-Known discrepancy: the help text spells the default model "Snowflake arctic-embed-m-v2.0", dropping the slash; the source constant is `Snowflake/snowflake-arctic-embed-m-v2.0`, and the help spelling is not a valid model id as written. This chapter documents the source value.
-
 ### Behaviour
 
-The search is hybrid FTS+vector over the Atlas corpus with the classification filters above, mirroring `atlas-search search`'s flags one-for-one where they translate to the wire request. Default output is JSON; `--text` renders human-readable output. With `--no-wait` on the service route, the command prints the service job handle and returns instead of blocking for the result.
+The search is hybrid FTS+vector over the Atlas corpus with the classification filters above — the subset of `atlas-search search`'s flags that translates to the wire request or to routing. Both `--flag value` and `--flag=value` spellings are accepted. Default output is JSON; `--text` renders human-readable output. With `--no-wait` on the service route, the command prints the service job handle and returns instead of blocking for the result.
 
 ### Exit codes
 
@@ -95,7 +93,7 @@ fleet search get-chunk <chunk-id> [--neighbors N] [--text]
 
 ### Behaviour
 
-Fetches one chunk with its provenance (session, client, sensitivity). **`get-chunk` always runs standalone** — it is job-scoped in the service protocol, so it cannot ride the service route; when via-service was _requested_ (flag/env/config — the seat default doesn't count) it prints the loud fallback note first, then delegates to the standalone artifact.
+Fetches one chunk with its provenance (session, client, sensitivity). The verb parses nothing beyond answering `--help` itself: every other argument is forwarded verbatim to the standalone atlas-search artifact, so atlas-search get-chunk's own options (`--context`, `--backend`, `--db`, `--vecdb`, `--via-service`, `--service-url`) work through this verb unchanged. **`get-chunk` always runs standalone** — it is job-scoped in the service protocol, so it cannot ride the service route; when via-service was _requested_ (flag/env/config — the seat default doesn't count) it prints the loud fallback note first, then delegates to the standalone artifact.
 
 ### Exit codes
 

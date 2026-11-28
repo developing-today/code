@@ -421,6 +421,27 @@ export class Work {
 
   // ---- asks: what the owner has told the fleet to do, in his words ------
 
+  /** Take a list of prompts read before as what is known of each
+   * thread, so that a prompt which has not changed since is not fetched
+   * again. For a holder that was restarted and kept its last list (the
+   * edge): without this every restart reads every thread anew. Anything
+   * that is not such a list is passed over. */
+  recall(asks: unknown): void {
+    if (!Array.isArray(asks)) return;
+    for (const ask of asks as { issue?: unknown; updated?: unknown; replies?: unknown }[]) {
+      if (!ask || !Number.isSafeInteger(ask.issue) || typeof ask.updated !== "string" || !Array.isArray(ask.replies)) {
+        continue;
+      }
+      const replies = (ask.replies as { you?: unknown; at?: unknown; text?: unknown }[]).filter(
+        (r) => r && typeof r.you === "boolean" && typeof r.at === "string" && typeof r.text === "string",
+      ) as { you: boolean; at: string; text: string }[];
+      if (replies.length !== ask.replies.length) continue;
+      if (!this.replies.has(ask.issue as number)) {
+        this.replies.set(ask.issue as number, { updated: ask.updated, replies });
+      }
+    }
+  }
+
   async asks() {
     const label = this.ops.cfg.promptLabel;
     // The issue list, not the search index: a prompt sent a second ago
@@ -455,7 +476,7 @@ export class Work {
     const out = [];
     for (const i of found.items) {
       let thread = this.replies.get(i.number);
-      if (i.comments > 0 && thread?.updated !== i.updated_at) {
+      if (i.comments > 0 && thread?.updated !== i.updated_at.slice(0, 19)) {
         // The newest comments are on the last page. Bots that only link the
         // issue elsewhere (the board sync) are not the fleet answering.
         // Read back from the last page until the replies shown are in
@@ -471,7 +492,7 @@ export class Work {
           comments = [...got.filter((c) => c.user?.type !== "Bot"), ...comments];
         }
         thread = {
-          updated: i.updated_at,
+          updated: i.updated_at.slice(0, 19),
           replies: comments.slice(-REPLIES_SHOWN).map((c) => ({
             you: (c.body ?? "").includes(OWNER_REPLY_MARK),
             at: c.created_at.slice(0, 19),

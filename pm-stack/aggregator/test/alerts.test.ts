@@ -113,6 +113,8 @@ describe("class + quiet merges (design §1/§2)", () => {
       "section-risk": true,
       "stack-health": true,
       "blocked-age": true,
+      // #10035: the prompt-answer class joins the defaults.
+      prompt: true,
     });
     expect(mergeClasses({ incident: false }).incident).toBe(false);
     expect(mergeClasses({ incident: true, "quota-wall": false })["quota-wall"]).toBe(false);
@@ -357,6 +359,7 @@ describe("validation", () => {
         "section-risk": true,
         "stack-health": true,
         "blocked-age": true,
+        prompt: true,
       });
       expect(ok.value.quiet.tz).toBe("America/Chicago");
     }

@@ -33,8 +33,10 @@
 //!                                #  from there via `id_events::event_store::BlockList`)
 //!
 //! [budgets]                        # absent: the #2247 code defaults apply
+//! app_inbound_bytes_per_second = 33554432    # 32 MiB/s app-wide inbound
 //! app_inbound_bytes_per_hour = 21474836480   # 20 GiB/h app-wide inbound
 //! per_peer_bytes_per_hour = 104857600        # 100 MiB/h per peer
+//! per_peer_burst_bytes_per_minute = 8388608  # 8 MiB/min per-peer burst window
 //! per_ip_bytes_per_hour = 262144000          # 250 MiB/h per directly observed IP
 //!
 //! [[budgets.counterparty]]         # an override row for one specific peer;

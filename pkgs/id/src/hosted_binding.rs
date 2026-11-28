@@ -1873,7 +1873,13 @@ impl HostedBindingService {
     /// Verify the key signature from the record's own stored transcript
     /// (§1.2): reconstruct the signed message from `challenge_id`, `sub`,
     /// `iroh_id`, `nonce`, and `expires_at` with no hosted-service access.
-    /// Returns `false` on any malformed field or mismatch.
+    /// The transcript names the key that performed the binding ceremony;
+    /// after a rebind that is a superseded key, so the transcript's key
+    /// must be the record's current key or one of its `history` keys —
+    /// the chain steps themselves are backed separately (§4.4 records,
+    /// checked by the caller). The record's current shape, current key
+    /// included, is covered by the service attestation, not by this
+    /// signature. Returns `false` on any malformed field or mismatch.
     #[must_use]
     pub fn verify_key_signature(record: &BindingRecord) -> bool {
         let transcript = &record.challenge_transcript;
@@ -1891,7 +1897,11 @@ impl HostedBindingService {
         };
         if transcript.challenge_id != record.challenge_id
             || transcript.sub != record.sub
-            || transcript.iroh_id != record.iroh_id
+            || (transcript.iroh_id != record.iroh_id
+                && !record
+                    .history
+                    .iter()
+                    .any(|entry| entry.iroh_id == transcript.iroh_id))
         {
             return false;
         }
@@ -2999,6 +3009,36 @@ mod tests {
         service
             .complete_browser_ceremony(OTHER_SUB, &root_key(21), None)
             .unwrap();
+    }
+
+    #[test]
+    fn key_signature_verifies_for_a_rebound_binding() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_DELAYED,
+        );
+        service.set_now_override(Some(T0 + REBIND_WAITING_PERIOD_SECS));
+        let (updated, _) = service
+            .effect_due_rebind(&request.rebind_id, &counter)
+            .unwrap();
+        // The transcript still names the ceremony key, now superseded
+        // into history: the signature verifies, linked to the current
+        // key by the attested history and the rebind records.
+        assert_eq!(updated.challenge_transcript.iroh_id, binding.iroh_id);
+        assert!(HostedBindingService::verify_key_signature(&updated));
+        // A transcript naming a key outside the chain still fails.
+        let mut foreign = updated.clone();
+        foreign.challenge_transcript.iroh_id = hex_encode(&root_key(77).verifying_key().to_bytes());
+        assert!(!HostedBindingService::verify_key_signature(&foreign));
     }
 
     #[test]

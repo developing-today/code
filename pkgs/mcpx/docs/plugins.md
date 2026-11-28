@@ -335,6 +335,6 @@ the v1 loader.
 
 ## vibeMcp
 
-Placeholder: what "vibeMcp" means is an open question for Drew (open
-question 1 on #1855) — this anchor holds the name, and no meaning is
-guessed here until he answers.
+Placeholder: what "vibeMcp" means is an open question for the user
+(open question 1 on #1855) — this anchor holds the name, and no
+meaning is guessed here until the user answers.

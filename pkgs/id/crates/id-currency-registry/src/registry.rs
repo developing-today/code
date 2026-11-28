@@ -195,13 +195,27 @@ pub struct RegisterAccount {
 pub enum RegistryError {
     /// No currency is registered under this id.
     UnknownCurrency(String),
-    /// `grant_minter` was attempted by an account that is not the
+    /// An issuer-only write (`grant_minter`, or a status
+    /// transition) was attempted by an account that is not the
     /// currency's issuer (design section 4.2).
     NotIssuer {
         /// The currency whose issuer set was checked.
         currency_id: String,
         /// The account that attempted the grant.
         account_id: String,
+    },
+    /// A status transition the lifecycle does not allow.
+    /// Sunset is terminal: a sunset currency cannot be frozen or
+    /// otherwise moved. Repeating the transition that produced
+    /// the current status is not an error — it succeeds without
+    /// a write (see [`Registry::freeze_currency`]).
+    InvalidTransition {
+        /// The currency whose transition was refused.
+        currency_id: String,
+        /// The status the currency is in.
+        from: CurrencyStatus,
+        /// The status the caller tried to move it to.
+        to: CurrencyStatus,
     },
     /// The store rejected the write.
     Store(StoreError),
@@ -217,9 +231,18 @@ impl fmt::Display for RegistryError {
                 currency_id,
                 account_id,
             } => {
+                write!(f, "account {account_id} is not the issuer of {currency_id}")
+            }
+            Self::InvalidTransition {
+                currency_id,
+                from,
+                to,
+            } => {
                 write!(
                     f,
-                    "account {account_id} is not the issuer of {currency_id} and cannot grant minters"
+                    "currency {currency_id} is {} and cannot become {}",
+                    from.as_str(),
+                    to.as_str()
                 )
             }
             Self::Store(err) => write!(f, "{err}"),
@@ -331,6 +354,84 @@ impl<S: Store> Registry<S> {
             granted_by: Some(granted_by),
         })?;
         Ok(())
+    }
+
+    /// Freeze a currency (design section 2.2): while frozen the
+    /// gateway refuses new writes. Issuer-only. See
+    /// [`Registry::set_status`] for the transition table.
+    pub fn freeze_currency(
+        &mut self,
+        currency_id: &str,
+        requested_by: impl Into<String>,
+    ) -> Result<CurrencyRecord, RegistryError> {
+        self.set_status(currency_id, CurrencyStatus::Frozen, requested_by)
+    }
+
+    /// Sunset a currency (design section 2.2): no new writes;
+    /// redemption window only. Issuer-only, and terminal — a
+    /// sunset currency cannot be frozen or otherwise moved. See
+    /// [`Registry::set_status`] for the transition table.
+    pub fn sunset_currency(
+        &mut self,
+        currency_id: &str,
+        requested_by: impl Into<String>,
+    ) -> Result<CurrencyRecord, RegistryError> {
+        self.set_status(currency_id, CurrencyStatus::Sunset, requested_by)
+    }
+
+    /// The one status-transition write (issue #13342). Only the
+    /// currency's issuer may move its status — the same
+    /// issuer-only rule as `grant_minter` (design section 4.2).
+    ///
+    /// The transition table, decided here:
+    ///
+    /// - `Active -> Frozen` (freeze) and `Active -> Sunset`
+    ///   (sunset) are the moves out of active.
+    /// - `Frozen -> Sunset` is allowed: sunset stays reachable
+    ///   from frozen, so freezing is never a trap short of the
+    ///   terminal state.
+    /// - Sunset is terminal: `Sunset -> Frozen` is refused with
+    ///   [`RegistryError::InvalidTransition`].
+    /// - Repeating the transition that produced the current
+    ///   status (freeze on frozen, sunset on sunset) is an
+    ///   idempotent success, not an error: the caller is told
+    ///   the record as it stands, with no second write. This is
+    ///   what lets the gateway service answer a retry whose
+    ///   intent finalize was lost after the transition landed.
+    fn set_status(
+        &mut self,
+        currency_id: &str,
+        target: CurrencyStatus,
+        requested_by: impl Into<String>,
+    ) -> Result<CurrencyRecord, RegistryError> {
+        let requested_by = requested_by.into();
+        let currency = self
+            .store
+            .currency_by_id(currency_id)
+            .ok_or_else(|| RegistryError::UnknownCurrency(currency_id.to_owned()))?
+            .clone();
+        if currency.issuer_id != requested_by {
+            return Err(RegistryError::NotIssuer {
+                currency_id: currency_id.to_owned(),
+                account_id: requested_by,
+            });
+        }
+        match (currency.status, target) {
+            (from, to) if from == to => Ok(currency),
+            (CurrencyStatus::Active, CurrencyStatus::Frozen | CurrencyStatus::Sunset)
+            | (CurrencyStatus::Frozen, CurrencyStatus::Sunset) => {
+                self.store.set_currency_status(currency.ledger_id, target)?;
+                Ok(CurrencyRecord {
+                    status: target,
+                    ..currency
+                })
+            }
+            (from, to) => Err(RegistryError::InvalidTransition {
+                currency_id: currency_id.to_owned(),
+                from,
+                to,
+            }),
+        }
     }
 
     /// Record a factory account in the registry index (design

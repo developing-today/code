@@ -81,6 +81,14 @@ jobs:
           bun test
           python3 -I -m unittest discover -s scripts -p 'test_*.py'
 
+      # The list of Workers the PM app's Platform screen is drawn from
+      # (pm-stack/platform/workers.json) is held to the repository: a
+      # Worker added, moved or renamed without the list being told
+      # fails here.
+      - name: Test the list of Workers against the repository
+        working-directory: pm-stack/platform
+        run: bun test
+
       - name: Test seed and deploy/install scripts
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh

@@ -4,6 +4,8 @@
 //! Usage: `atlas-github-comments --state <watermarks.json>
 //! --out <records.jsonl> [--repo <owner/name>]... [--skip-reviews]
 //! [--observed-date <YYYY-MM-DD>]`
+//! (`--help` prints the usage line, `--version` the version;
+//! both exit 0.)
 //!
 //! With no `--repo`, the estate is enumerated from the GitHub API
 //! (the `developing-today` and `developing-today-forks` orgs and
@@ -412,7 +414,20 @@ fn is_access_blocked(error: &str) -> bool {
     error.contains("Repository access blocked") || error.contains("HTTP 451")
 }
 
+const USAGE: &str = "usage: atlas-github-comments --state <watermarks.json> \
+    --out <records.jsonl> [--repo <owner/name>]... [--skip-reviews] \
+    [--observed-date <YYYY-MM-DD>]";
+
 fn main() -> ExitCode {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!("atlas-github-comments {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

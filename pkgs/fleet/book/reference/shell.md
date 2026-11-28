@@ -2,7 +2,7 @@
 
 `fleet shell` runs a command, or opens a shell, where builds belong: the laptop, a codespace, or here. A limited sandbox is the wrong place to compile. It adds no transport; it builds the argv for the verb that already knows how to get there. The domain rides on the `agent` capability.
 
-Known discrepancy: the top-level help for this domain lists only `targets` and hides every flag below. The flags are documented here from source (they appear only in the domain's `--help` text). A second discrepancy: the `--detach` usage error for local/codespace says "it needs --target laptop", but the actions target also accepts `--detach` with different semantics — the error string predates the actions target.
+Help: `fleet shell --help` prints the shell's own usage, with every flag below. (The registry's domain help — `fleet help shell` — names only the `targets` subcommand; the flags live in the shell usage.) A standing discrepancy: the `--detach` usage error for local/codespace says "it needs --target laptop", but the actions target also accepts `--detach` with different semantics — the error string predates the actions target.
 
 See also [fleet agent](agent.md) and [fleet laptop-agent](laptop-agent.md).
 

@@ -4,17 +4,18 @@ name: mcpx docs
 
 # Build the mcpx book (#1941, Approach C) and publish it to GitHub Pages.
 #
-# Pull requests build .#mcpx-docs and upload the rendered site as an
-# ordinary build artifact — no deploy, no PR previews (reviewers download
-# the artifact). Pushes to main and manual dispatches deploy the same
-# build to Pages via the Actions artifact flow: Pages source for this
-# repository is "GitHub Actions" (build_type=workflow), no generated
-# HTML is ever committed, and no extra repository or secret is needed.
+# Builds run on pushes to main and on manual dispatch — there is no
+# pull-request build (the sibling docs workflows, fleet-docs.yml,
+# atlas-docs.yml and id-docs.yml, are shaped the same way). Pushes and
+# dispatches deploy the build to Pages via the Actions artifact flow:
+# Pages source for this repository is "GitHub Actions"
+# (build_type=workflow), no generated HTML is ever committed, and no
+# extra repository or secret is needed.
 #
 # The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
 # #1939 / PR #2629): the same `nix build` locally and in CI. The
 # derivation takes the base URL as its `siteUrl` argument, baked in as
-# mdBook's site-url: PR/local builds use the default "/", the Pages
+# mdBook's site-url: plain builds use the default "/", the Pages
 # deploy overrides it with "/code/" (the project site's path) — builds
 # differ only in that one value (#1941).
 
@@ -65,14 +66,6 @@ jobs:
           test -f site/index.html.md
           grep -q 'rel="alternate" type="text/markdown"' site/index.html
 
-      - name: Upload site artifact (PR builds only)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: mcpx-docs-site
-          path: site
-          if-no-files-found: error
-
   deploy:
     name: "stage: build + upload Pages artifact"
     # Deploys only from main: pushes to main and manual dispatches
@@ -99,7 +92,7 @@ jobs:
       # (https://developing-today.github.io/code/), and mdBook needs
       # that path as its site-url: with "/" the generated 404 page
       # points its CSS/JS and navigation at the domain root and breaks.
-      # Same derivation as the PR build, differing only in the siteUrl
+      # Same derivation as the build job, differing only in the siteUrl
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |
@@ -141,6 +134,59 @@ jobs:
           chmod u+w site
           cp -rL result-fleet-docs site/fleet
           test -f site/fleet/index.html
+
+      # The atlas book (#13251, pkgs/atlas-search/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under atlas/ here, in the same deploy
+      # — a separate atlas-only deploy would wipe the mcpx and fleet
+      # books. Its build-only workflow is atlas-docs.yml; see the
+      # book's "Deploying this book" chapter
+      # (pkgs/atlas-search/book/operations/deploying-this-book.md).
+      - name: Nix build (atlas book, siteUrl /code/atlas/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.atlas-docs.override { siteUrl = "/code/atlas/"; }' \
+            --out-link result-atlas-docs
+
+      - name: Stage atlas book into site/atlas
+        run: |
+          rm -rf site/atlas
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding atlas/.
+          chmod u+w site
+          cp -rL result-atlas-docs site/atlas
+          test -f site/atlas/index.html
+
+      # The id book (#13332, pkgs/id/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under id/ here, in the same deploy
+      # — a separate id-only deploy would wipe the mcpx, fleet and
+      # atlas books. Its build-only workflow is id-docs.yml; see
+      # the book's "Deploying this book" chapter
+      # (pkgs/id/book/operations/deploying-this-book.md).
+      - name: Nix build (id book, siteUrl /code/id/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.id-docs.override { siteUrl = "/code/id/"; }' \
+            --out-link result-id-docs
+
+      - name: Stage id book into site/id
+        run: |
+          rm -rf site/id
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding id/.
+          chmod u+w site
+          cp -rL result-id-docs site/id
+          test -f site/id/index.html
+
 
       - uses: actions/configure-pages@v6
 

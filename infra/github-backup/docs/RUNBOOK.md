@@ -80,7 +80,7 @@ python3 $GB/bin/app_setup.py webhook-secret   # webhook secret -> Bitwarden by n
 python3 $GB/bin/app_setup.py install-report
 ```
 
-Owners where Drew is only a member (NixOS, vertexinc) cannot install the
+Owners where the user is only a member (NixOS, vertexinc) cannot install the
 App — they stay sweep-only; that is expected and recorded in config.json.
 
 ## 4. Adding a new owner/org to the mirror set + sweep
@@ -89,7 +89,7 @@ App — they stay sweep-only; that is expected and recorded in config.json.
 # 1. config edit only — add the login to "owners" in:
 $EDITOR $GB/config.json
 # 2. commit + PR the config change (developing-today/code), merge, pull on laptop.
-# 3. install the App on the new org (§3) if Drew is an admin there.
+# 3. install the App on the new org (§3) if the user is an admin there.
 # 4. pick up the new owner immediately instead of waiting for Sunday:
 python3 $GB/bin/reconcile.py
 ```

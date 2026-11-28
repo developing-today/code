@@ -807,6 +807,18 @@
       "status": "mapped"
     },
     {
+      "id": "pm-stack.platform",
+      "paths": ["pm-stack/platform/*.test.ts"],
+      "invocation": "cd pm-stack/platform && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test the list of Workers against the repository",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.dispatch",
       "paths": ["pm-stack/dispatch/test/*.test.ts"],
       "invocation": "cd pm-stack/dispatch && bun test",
@@ -1412,6 +1424,8 @@
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
         "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
         "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
+        "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+        "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
         "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
         "pkgs/id/crates/id-core/tests/swarm_bench.rs",
         "pkgs/id/crates/id-core/tests/typed_value.rs"
@@ -1504,7 +1518,9 @@
         "pkgs/id/crates/id-sync/tests/federation_b28.rs",
         "pkgs/id/crates/id-sync/tests/federation_b31.rs",
         "pkgs/id/crates/id-sync/tests/federation_b32.rs",
-        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs"
+        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs",
+        "pkgs/id/crates/id-sync/tests/bridge_live.rs",
+        "pkgs/id/crates/id-sync/tests/relay_poc.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {

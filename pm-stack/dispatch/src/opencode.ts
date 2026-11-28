@@ -6,7 +6,11 @@ import { readFile } from "node:fs/promises";
 import type { ModelRef } from "./validate.ts";
 import { outboundTimeout } from "./fetchTimeout.ts";
 
-const SESSION_LIST_LIMITS = [1_000, 10_000, 100_000] as const;
+// The OpenCode server caps `limit` at 200 and rejects a larger probe
+// with HTTP 400 (#13149), so the cap itself is the only usable
+// completeness probe: a response below 200 is complete; a response at
+// 200 is unprovable and listSessions fails closed.
+const SESSION_LIST_LIMITS = [200] as const;
 
 export class OpenCodeError extends Error {
   status = 502;
@@ -102,6 +106,38 @@ export class OpenCodeClient {
       throw new OpenCodeError("opencode session create returned no session id");
     }
     return { id: data.id };
+  }
+
+  /**
+   * The bare `opencode-go` model rides the active OpenCode Console login.
+   * Read that integration's active-first connection list so dispatch can
+   * guard the same account and pin the created session to its explicit
+   * account provider.
+   */
+  async activeIntegrationCredentialLabel(integrationId: string, directory: string): Promise<string> {
+    const data = (await this.api(
+      "GET",
+      `/api/integration?directory=${encodeURIComponent(directory)}`,
+    )) as unknown;
+    if (!Array.isArray(data)) throw new OpenCodeError("opencode integration list returned no array");
+    const integration = data.find(
+      (item): item is { id: string; connections?: unknown } =>
+        typeof item === "object" && item !== null && "id" in item && (item as { id?: unknown }).id === integrationId,
+    );
+    if (!integration || !Array.isArray(integration.connections)) {
+      throw new OpenCodeError(`opencode integration ${integrationId} has no connection list`);
+    }
+    // OpenCode guarantees credentials are ordered active-first; environment
+    // connections may follow but are not console accounts for this guard.
+    const active = integration.connections.find(
+      (connection): connection is { type: string; label?: unknown } =>
+        typeof connection === "object" && connection !== null && "type" in connection &&
+        (connection as { type?: unknown }).type === "credential",
+    );
+    if (!active || typeof active.label !== "string" || !active.label.trim()) {
+      throw new OpenCodeError(`opencode integration ${integrationId} has no active credential label`);
+    }
+    return active.label.trim();
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<void> {

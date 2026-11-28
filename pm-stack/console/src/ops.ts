@@ -13,6 +13,7 @@
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
+import { WORKERS_FILE, workersList } from "./platform.ts";
 
 export interface RunResult {
   code: number;
@@ -569,11 +570,11 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Let the edge act by itself while this host is away, or stop it.
-   * Turning it on gives the Worker the repository automation token and
-   * the queue store token, read from the secret store by the setup
-   * script and sent to Cloudflare; turning it off takes them away. It
-   * can only be done here, where the secret store is. */
+  /** Have the edge do the core itself, or stop it. On gives the Worker
+   * the repository automation token and the queue store token, read
+   * from the secret store by the setup script and sent to Cloudflare;
+   * off takes them away, and is remembered. It can only be done on a
+   * machine, where the secret store is. */
   async edgeDirect(on: unknown) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
     const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
@@ -647,7 +648,7 @@ export class Ops {
       html_url: string;
       created_at: string;
       user: { login: string };
-      head: { ref: string };
+      head: { ref: string; sha?: string };
     }[];
     return list.map((p) => ({
       number: p.number,
@@ -657,6 +658,9 @@ export class Ops {
       created: p.created_at.slice(0, 16),
       author: p.user.login,
       branch: p.head.ref,
+      // The commit it stood at when this was read: a merge asked for
+      // from this list is a merge of this, and of nothing pushed since.
+      ...(typeof p.head.sha === "string" ? { head: p.head.sha } : {}),
     }));
   }
 
@@ -681,14 +685,22 @@ export class Ops {
     };
   }
 
-  async mergePr(number: unknown) {
+  /** Merge a pull request. With `head`, the commit the owner was shown,
+   * GitHub merges only if that is still where it stands: a merge asked
+   * for a while ago (kept on a device that was offline) must not take
+   * in what was pushed since. */
+  async mergePr(number: unknown, head?: unknown) {
     const n = id(number, "pull request");
+    if (head !== undefined && head !== null && !(typeof head === "string" && /^[0-9a-f]{40}$/.test(head))) {
+      throw new OpError(400, "head: a commit's full name");
+    }
     const done = (await this.gh([
       "-X",
       "PUT",
       `repos/${this.cfg.repo}/pulls/${n}/merge`,
       "-f",
       "merge_method=merge",
+      ...(typeof head === "string" ? ["-f", `sha=${head}`] : []),
     ])) as { merged: boolean; sha: string };
     return { number: n, merged: done.merged, sha: done.sha };
   }
@@ -698,6 +710,57 @@ export class Ops {
   /** What GitHub's own record says of the site's deploys and the app's
    * builds: the last few runs of each on main, newest first. One that
    * could not be read says so by itself; the other still shows. */
+  /** Every Worker the repository holds, as its own list says
+   * (pm-stack/platform/workers.json, read from the repository so that
+   * a merge is all it takes to change it), and for each one deployed
+   * from Actions the latest run of that deploy on main. A run that
+   * could not be read says so by itself; the list still shows. */
+  async platform() {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${WORKERS_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of Workers could not be read");
+    let parsed: unknown;
+    try {
+      // GitHub wraps the encoded file in lines; decoding passes over them.
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of Workers is not valid JSON");
+    }
+    const list = workersList(parsed);
+    const flows = [...new Set(list.workers.map((w) => w.workflow).filter((f): f is string => f !== null))];
+    const last = async (workflow: string) => {
+      const found = (await this.gh([
+        `repos/${this.cfg.repo}/actions/workflows/${workflow}/runs?branch=main&per_page=1`,
+      ])) as {
+        workflow_runs?: {
+          head_sha: string;
+          status: string;
+          conclusion: string | null;
+          created_at: string;
+          html_url: string;
+        }[];
+      } | null;
+      const run = found?.workflow_runs?.[0];
+      return run
+        ? {
+            commit: run.head_sha.slice(0, 12),
+            state: run.status === "completed" ? (run.conclusion ?? "unknown") : run.status,
+            at: run.created_at,
+            url: run.html_url,
+          }
+        : null;
+    };
+    const runs = new Map(
+      await Promise.all(
+        flows.map(async (flow) => [flow, await last(flow).catch((e: Error) => ({ error: e.message }))] as const),
+      ),
+    );
+    return {
+      checked: list.checked,
+      malformed: list.malformed,
+      workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
+    };
+  }
+
   async releases() {
     const runs = async (workflow: string) => {
       const got = (await this.gh([

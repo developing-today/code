@@ -80,7 +80,6 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 /// The F12.14 portal policy types (code#1068), re-exported so the
 /// handle/hub portal surface names the same types the kernel checks.
 pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
-pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_BLOB,
     JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
@@ -88,7 +87,8 @@ pub use journal::{
     JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE,
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
     JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalAckMode, JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource,
+    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource,
     MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use metrics::{

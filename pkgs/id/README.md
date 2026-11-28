@@ -2,6 +2,17 @@
 
 A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store, retrieve, and share files across a decentralized network with optional collaborative web editing.
 
+## The book
+
+[`book/`](book/) (mdBook sources, [`book.toml`](book.toml) at this
+package's root) is the complete, self-contained reference for the
+platform — every command, flag, default, schema, protocol and
+operational procedure, plus the programme's design archive mapped
+chapter by chapter. It is published at
+https://developing-today.github.io/code/id/ and builds with
+`nix build .#id-docs`. Start there; this README is only the
+package's front door.
+
 ## Features
 
 - **P2P File Sharing**: Store and retrieve files using content-addressed hashes over the Iroh network
@@ -255,6 +266,7 @@ it is — a valid world capability, minted by the host's admin with
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
+| `walk`         |                                | The #9106 walking skeleton, driven by hand              |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
@@ -333,7 +345,7 @@ just test-rust         # Rust tests only (~408 unit + ~93 integration)
 just test-unit         # Unit tests only (fast, ~408 tests)
 just test-integration  # Integration tests only (~93 tests)
 just test-web-unit     # TypeScript unit tests (~304 assertions)
-just test-e2e          # Playwright E2E (chromium + firefox, 208 tests)
+just test-e2e          # Playwright E2E (chromium + firefox, 276 tests)
 just test-nix          # nix flake check (27 checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
@@ -355,50 +367,53 @@ just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture.
 
 ```
-src/
+src/                     # The `id` facade crate: entry point and node bootstrap,
+                         # plus the surfaces that compose the crates below
+                         # (file ops, currency gateway, hosted binding/export/ingest,
+                         # serve proxy, boards, grants)
 ├── main.rs              # Entry point
-├── lib.rs               # Library exports, node bootstrap
-├── cli.rs               # Clap argument definitions
-├── protocol.rs          # P2P request/response protocol
-├── store.rs             # Iroh blob store operations
-├── tags.rs              # Metadata tag system (alpha/omega dual-index)
-├── tuple.rs             # Sort-preserving binary key encoding
-├── helpers.rs           # Parsing and formatting utilities
-├── discovery.rs         # Peer discovery
-├── commands/            # Command implementations
-│   ├── put.rs, get.rs, find.rs, list.rs, peers.rs, id.rs, tag.rs
-│   ├── serve.rs         # Server with optional web UI
-│   ├── repl.rs          # REPL entry point
-│   └── client.rs        # Remote peer client
-├── repl/                # REPL internals
-│   ├── runner.rs        # Command dispatch and help
-│   └── input.rs         # Shell preprocessing (pipes, subshells, heredocs)
-└── web/                 # Web UI (feature-gated)
-    ├── routes.rs        # Axum HTTP handlers
-    ├── templates.rs     # HTML template rendering
-    ├── collab.rs        # WebSocket collaboration server
-    ├── tags_ws.rs       # WebSocket tag updates
-    ├── assets.rs        # rust-embed static asset serving
-    ├── content_mode.rs  # Content type detection
-    └── markdown.rs      # Markdown rendering
+└── lib.rs               # Library exports, node bootstrap
+
+crates/                  # The workspace crates the facade composes
+├── id-cli/              # Clap argument definitions, command implementations,
+│                        # REPL, server config
+├── id-core/             # Core types and abuse/budget policy
+├── id-store/            # Blob/content store, metadata tags (alpha/omega dual-index)
+├── id-events/           # Signed event store: ingest, chains, forks, range sync
+├── id-sync/             # Peer sync
+├── id-web/              # Web UI server (routes, collab, tags WS, world bridge,
+│                        # security layer)
+├── id-worlds/           # Worlds: sessions, journal, runtime
+├── id-caps/             # Capability surface and the MCP bridge
+├── id-groups/           # Groups
+├── id-directory/        # Directory
+├── id-config/           # Configuration
+├── id-currency-registry/ # Currency registry
+├── id-render/           # Rendering
+├── id-native-shell/     # Native shell
+├── id-hw-shell/         # Hardware shell
+└── id-import-notion/    # Notion importer
 
 web/                     # TypeScript frontend
-├── src/                 # ProseMirror editor, collab, themes, editor features
+├── src/                 # ProseMirror editor, collab, themes, editor features,
+│                        # world surface
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests (104 tests × 2 browsers = 208)
-├── tests/basic.spec.ts           # 19 UI fundamental tests
-├── tests/editor-features.spec.ts # 31 editor feature tests
-├── tests/file-operations.spec.ts # 18 file/tag operation tests
+e2e/                     # Playwright E2E tests (138 tests × 2 browsers = 276)
+├── tests/autosave.spec.ts        # 7 autosave tests
+├── tests/basic.spec.ts           # 20 UI fundamental tests
+├── tests/editor-features.spec.ts # 47 editor feature tests
+├── tests/file-operations.spec.ts # 20 file/tag operation tests
 ├── tests/navigation.spec.ts      # 17 navigation + SPA tests
-├── tests/websocket.spec.ts       # 19 WS + collaboration tests
+├── tests/websocket.spec.ts       # 22 WS + collaboration tests
+├── tests/world-surface.spec.ts   # 5 world surface tests
 └── playwright.config.ts          # 3-mode config: local / nix sandbox / VM test
 
 nix/tests/                   # NixOS VM integration tests
 ├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
 ├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
 ├── integration-test.nix     # Full cli_integration suite including serve_tests
-└── playwright-e2e-test.nix  # 4-VM full Playwright (208 interactive tests)
+└── playwright-e2e-test.nix  # 4-VM full Playwright (276 interactive tests)
 
 tests/
 └── cli_integration.rs   # ~93 integration tests
@@ -411,6 +426,41 @@ tests/
 - [web/README.md](web/README.md) — Wire protocol and frontend details
 - [docs/](docs/) — Feature documentation (chronological)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
+
+### ID program
+
+A full investigation, design-completion and build-out program for the ID platform is tracked in [#13240](https://github.com/developing-today/code/issues/13240). Its charter is the [program prompt](docs/2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md); the program epics are [#2056](https://github.com/developing-today/code/issues/2056) and [#9106](https://github.com/developing-today/code/issues/9106). Deliverables include an ID book published under `/code/id/` and a prioritized map of all ID issues with blockers marked.
+
+## Operator and contributor contract (DOC-01)
+
+The contract with the humans and agents who operate and change
+ID, in the shape of the fleet package's DOC-01 (#10728):
+
+- **The surface is the code.** The CLI's parsers, the web router,
+  the MCP bridge's tool table, the shell contract
+  (`contract/shell-contract.v1.json`) and the versioned schemas
+  are the authority on what ID can do. Documentation — this
+  README, `ARCHITECTURE.md`, `WEB.md`, and the book — must not
+  present a designed spelling as shipped. Where a doc and the
+  code disagree, the code wins and the disagreement is filed as
+  an issue in the same pass it is found.
+- **The book is part of the same change.** Any change to a
+  command, a flag, a default, a config key, an MCP tool, a web
+  route, a schema, a wire format, or an operational procedure
+  updates the matching chapter of [`book/`](book/) in the same
+  change. The rule is stated for readers in the book's own
+  "Keeping this book current" chapter. `create-missing = false`
+  in `book.toml` makes a missing chapter a build failure, never
+  a stub, and the `id-docs.yml` workflow builds `.#id-docs` on
+  `main` so a broken chapter fails by name.
+- **Capabilities are a boundary, not a convention.** Capability
+  ceilings and quotas are enforced in the host policy point and
+  the serving node, never in client goodwill. No change may move
+  enforcement into a guest, a client, or a doc.
+- **Wire formats are versioned, never edited in place.** A new
+  event, frame or schema version is a new `vN` artifact beside
+  the old one; the book's schema chapter follows the same rule
+  and describes the new version beside the old.
 
 ## License
 

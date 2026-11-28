@@ -32,7 +32,8 @@ interface Section {
 }
 
 /** Data that carries the time it was really read: a copy of a section
- * that somewhere else read (the host reporting to the edge). */
+ * that somewhere else read (the host reporting to the edge), or that
+ * was read here before a restart. */
 export class Stamped {
   constructor(
     public data: unknown,
@@ -40,8 +41,17 @@ export class Stamped {
     /** Why the place that read it could not read it again, if it could
      * not: the data is then its last good copy. */
     public error: string | null = null,
+    /** The loader that gave this can read the source itself: the copy
+     * is shown now and counted as old as it is, so it is read again as
+     * soon as its age calls for it, not a whole interval from now. */
+    public again = false,
   ) {}
 }
+
+/** A fingerprint of a section's content: how two holders of a copy tell
+ * that it has not changed without sending it. */
+export const fingerprint = (data: unknown): string =>
+  createHash("sha1").update(JSON.stringify(data)).digest("base64url");
 
 export interface Act {
   id: string;
@@ -92,6 +102,7 @@ export class Docs {
     if (!s) return Promise.resolve();
     if (s.loading) return s.loading;
     s.loading = (async () => {
+      let kept = false;
       try {
         const loaded = await s.load();
         const now = this.now();
@@ -100,41 +111,50 @@ export class Docs {
         s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
         s.error = loaded instanceof Stamped ? loaded.error : null;
         s.ok = s.error === null;
+        kept = loaded instanceof Stamped && loaded.again && s.goodAt > 0;
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
       } finally {
-        s.at = this.now();
+        // A kept copy its loader can replace is as stale as it is old.
+        s.at = kept ? s.goodAt : this.now();
         s.loading = null;
       }
     })();
     return s.loading;
   }
 
-  /** After an action: read the sections it changed, so the next document shows it. */
+  /** Resolves when no read of these sections is under way: what a
+   * document started reading behind its answer has then been read. */
+  async settled(names: string[] = [...this.sections.keys()]): Promise<void> {
+    for (;;) {
+      const loading = names.map((n) => this.sections.get(n)?.loading).filter((l) => l != null);
+      if (loading.length === 0) return;
+      await Promise.all(loading);
+    }
+  }
+
+  /** Every section there is a reader for, read yet or not. */
+  names(): string[] {
+    return [...this.sections.keys()];
+  }
+
+  /** Read these sections now. A read already under way is shared. */
   async touch(names: string[]): Promise<void> {
     await Promise.all(names.map((n) => this.refresh(n)));
   }
 
-  /** Record a section read by another trusted source, such as the edge
-   * reading GitHub or the queue store while the laptop is away. */
-  record(name: string, data: unknown, at = this.now()): void {
-    const s = this.sections.get(name);
-    if (!s) return;
-    s.data = data;
-    s.at = at;
-    s.goodAt = at;
-    s.ok = true;
-    s.error = null;
-  }
-
-  /** Keep the last good value, but say that a fresh read failed. */
-  recordFailure(name: string, error: unknown): void {
-    const s = this.sections.get(name);
-    if (!s) return;
-    s.at = this.now();
-    s.ok = false;
-    s.error = (error as Error).message.slice(0, 300);
+  /** After something changed these sections at their source: read them
+   * again, so the next document shows it. A read that was already under
+   * way may have been taken before the change, so it is waited for and
+   * the section is then read once more. */
+  async reread(names: string[]): Promise<void> {
+    await Promise.all(
+      names.map(async (n) => {
+        await this.sections.get(n)?.loading;
+        await this.refresh(n);
+      }),
+    );
   }
 
   private stale(s: Section): boolean {
@@ -162,6 +182,11 @@ export class Docs {
   good(name: string): unknown {
     const s = this.sections.get(name);
     return s && s.goodAt > 0 ? s.data : null;
+  }
+
+  /** Whether a read of this section has been tried at all, good or not. */
+  tried(name: string): boolean {
+    return (this.sections.get(name)?.at ?? 0) > 0;
   }
 
   /** When that data was read from its source, or 0 if it never was. A
@@ -240,9 +265,8 @@ export class Docs {
     const out: { name: string; at: number; hash: string; data: unknown; error: string | null }[] = [];
     for (const [name, s] of this.sections) {
       if (s.goodAt === 0) continue;
-      const hash = createHash("sha1").update(JSON.stringify(s.data)).digest("base64url");
       // The data is the last good copy; `error` says the latest read failed.
-      out.push({ name, at: s.goodAt, hash, data: s.data, error: s.ok ? null : s.error });
+      out.push({ name, at: s.goodAt, hash: fingerprint(s.data), data: s.data, error: s.ok ? null : s.error });
     }
     return out;
   }
