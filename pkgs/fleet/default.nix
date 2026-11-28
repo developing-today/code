@@ -260,7 +260,23 @@ let
           mkdir -p "$HOME"
         '';
 
-        env = envAttrs;
+        # The static (pkgsStatic) variants link fleet-cert in the full
+        # profile, whose `openssl` crate needs openssl-sys to find a
+        # musl OpenSSL: pkgsStatic's stdenv provides no pkg-config
+        # search path for it, so the build died with "Could not find
+        # directory of OpenSSL installation" (#16152, the fleet-smoke
+        # static-leg failure). Point openssl-sys at the pkgsStatic
+        # OpenSSL explicitly, following the pkgs/id/default.nix
+        # pattern, and require the static archive.
+        env =
+          envAttrs
+          // lib.optionalAttrs static {
+            OPENSSL_DIR = "${pkgsStatic.openssl.dev}";
+            OPENSSL_LIB_DIR = "${pkgsStatic.openssl.out}/lib";
+            OPENSSL_INCLUDE_DIR = "${pkgsStatic.openssl.dev}/include";
+            OPENSSL_STATIC = "1";
+            OPENSSL_NO_VENDOR = "1";
+          };
 
         inherit postInstall postFixup;
 
