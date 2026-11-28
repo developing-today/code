@@ -4854,9 +4854,10 @@ describe("the edge does the core itself", () => {
       run: { commit: expect.stringMatching(/^[0-9a-f]{12}$/), state: "success", at: "2026-11-22T11:50:00Z" },
     });
     const byName = new Map(p.workers.map((x) => [x.name, x]));
-    // One that a machine deploys by hand has no run to show; one that is not deployed, neither.
+    // A machine-deployed Worker has no Actions run to show; an undeployed one has neither.
     expect(byName.get("message-bridge")).toMatchObject({ deploy: "by hand", workflow: null, run: null });
-    expect(byName.get("fleet-hosted")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
+    expect(byName.get("fleet-hosted")).toMatchObject({ state: "in service", deploy: "by hand", workflow: null, run: null });
+    expect(byName.get("pm-notify")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
     expect(p.workers.map((x) => x.group)).toEqual(
       [...p.workers.map((x) => x.group)].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)),
     );
