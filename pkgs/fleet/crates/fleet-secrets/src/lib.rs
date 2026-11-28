@@ -2015,6 +2015,215 @@ impl SecretSource for OpSource {
     }
 }
 
+/// The 1Password capability spike (#13948 S5, design §3 + §7-S5):
+/// what this seat can do with `op`, established WITHOUT reading
+/// any item value. `op item list` returns metadata only (titles,
+/// ids, timestamps) and `op account list` names configured
+/// accounts; neither call touches a vault item's fields, so the
+/// probe never sees secret material.
+///
+/// Live result, laptop seat, 2026-11-28: the `op` CLI is present
+/// (2.41.1) but reports "No accounts configured for use with
+/// 1Password CLI" and no `OP_SERVICE_ACCOUNT_TOKEN` is set in a
+/// plain shell, so `mirror_write_ready` is false there — exactly
+/// the design's documented unverified premise. The mirror write
+/// path is therefore built dark (never attempted while the probe
+/// fails) with the failure recorded as `propagation pending` for
+/// the S6 reconcile, and open design question 4 (write identity:
+/// service account vs desktop-integration session) stays with
+/// Archer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpCapability {
+    /// An `op` binary resolves and runs.
+    pub cli_present: bool,
+    /// `op account list` succeeds: at least one account (or a
+    /// service-account token the CLI accepts) is configured.
+    pub account_configured: bool,
+    /// `OP_SERVICE_ACCOUNT_TOKEN` names a non-empty token in this
+    /// environment (self-loaded by [`OpTokenRunner`]).
+    pub service_account_token: bool,
+    /// A mirror vault is named (`FLEET_OP_VAULT` / `[secrets]
+    /// vault` / `[secrets] op_vault`), so a write would know where
+    /// to go.
+    pub vault_named: bool,
+}
+
+impl OpCapability {
+    /// Whether a mirror write may be attempted: CLI present, an
+    /// account configured, and a vault named. The service-account
+    /// token is informational (an account session can also authorize
+    /// the write), so it never gates. Anything less records
+    /// `propagation pending` instead of failing the put (§5.5).
+    pub fn mirror_write_ready(&self) -> bool {
+        self.cli_present && self.account_configured && self.vault_named
+    }
+
+    /// Build a capability from four metadata-only observations, so
+    /// the readiness rule is pinned by unit tests without spawning
+    /// a child.
+    pub fn from_observations(
+        cli_present: bool,
+        account_configured: bool,
+        service_account_token: bool,
+        vault_named: bool,
+    ) -> OpCapability {
+        OpCapability {
+            cli_present,
+            account_configured,
+            service_account_token,
+            vault_named,
+        }
+    }
+}
+
+/// Probe this seat's 1Password capability: one `op --version`
+/// (presence), one `op account list --format json` (metadata only,
+/// never an item value), plus the token/vault environment. The
+/// runner is the same [`OpTokenRunner`] discipline reads use, so
+/// the probe observes exactly the credential a read would carry.
+pub fn probe_op_capability() -> OpCapability {
+    let runner = OpTokenRunner::from_environment();
+    let cli_present = runner.run("op", &["--version"]).is_ok();
+    let account_configured = cli_present
+        && runner
+            .run("op", &["account", "list", "--format", "json"])
+            .is_ok();
+    let service_account_token = op_service_account_token()
+        .is_some_and(|t| !t.trim().is_empty());
+    let vault_named = std::env::var(OpSource::VAULT_ENV)
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty());
+    OpCapability::from_observations(
+        cli_present,
+        account_configured,
+        service_account_token,
+        vault_named,
+    )
+}
+
+/// The 1Password mirror-write end of a `put` dual-write (#13948 S5c,
+/// §5.5): the primary commit goes to Bitwarden first and the mirror
+/// follows, never the reverse, so a mirror failure degrades to
+/// `propagation pending` for the S6 reconcile instead of failing
+/// the put.
+///
+/// UNVERIFIED SPIKE (open design question 4, with Archer): no seat
+/// with a configured account was available — the laptop seat that
+/// ran the S5 spike has the CLI but no account — so the exact
+/// create/edit argv below has never run against a live vault. The
+/// verb ships dark ([secrets] `put_enabled` /
+/// `FLEET_SECRETS_PUT_ENABLED`) until the S6 reconcile is live; by
+/// then this path must have a live-spike receipt or it stays off.
+/// Unit tests pin the argv shape through the fake-runner seam only.
+///
+/// Secret handling: the value travels as one `field=value` argv
+/// entry — visible in the process list while the child runs. The
+/// primary path never takes values on argv; this mirror path
+/// accepts the narrower exposure because `op` offers no
+/// stdin-value form for item fields, and says so here so S6 can
+/// revisit it (write identity + argv exposure, open question 4).
+pub struct OpStore {
+    runner: Box<dyn CommandRunner>,
+    vault: String,
+    field: String,
+}
+
+impl OpStore {
+    /// The same vault/field rule reads use: `FLEET_OP_VAULT` /
+    /// `FLEET_OP_FIELD` beat `[secrets] op_vault` / `op_field`.
+    /// None names no vault — mirror writes are impossible, which
+    /// the caller reports as `propagation pending`, never an error.
+    pub fn from_config(config: &fleet_config::Config) -> Option<OpStore> {
+        let vault = OpSource::from_config(config)?.vault().to_string();
+        let field = config
+            .secrets_op_field()
+            .unwrap_or_else(|| OpSource::DEFAULT_FIELD.to_string());
+        Some(OpStore {
+            runner: Box::new(OpTokenRunner::from_environment()),
+            vault,
+            field,
+        })
+    }
+
+    /// The fake-runner seam unit tests pin the argv shape through.
+    pub fn with_runner(runner: Box<dyn CommandRunner>, vault: String, field: String) -> OpStore {
+        OpStore {
+            runner,
+            vault,
+            field,
+        }
+    }
+
+    /// Whether this store names the item `name` (titles only —
+    /// metadata, never values — the same discipline as
+    /// [`OpSource::list_names`]).
+    fn item_exists(&self, name: &str) -> Result<bool, SecretError> {
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op-store",
+            name: name.to_string(),
+            detail,
+        };
+        let raw = self
+            .runner
+            .run("op", &["item", "list", "--vault", &self.vault, "--format", "json"])
+            .map_err(|d| unavailable(format!("op item list: {d}")))?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| unavailable("op item list: output is not JSON".to_string()))?;
+        let items = parsed
+            .as_array()
+            .ok_or_else(|| unavailable("op item list: output is not a JSON array".to_string()))?;
+        for item in items {
+            let title = item.get("title").and_then(|t| t.as_str()).ok_or_else(|| {
+                unavailable("op item list: an item has no string \"title\"".to_string())
+            })?;
+            if title == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Store `value` under item `name`: edit the field on the
+    /// existing item, or create a `password`-category item carrying
+    /// it. The name is validated exactly as reads validate it; the
+    /// value is stored exactly as given.
+    pub fn store(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op-store",
+            name: name.to_string(),
+            detail,
+        };
+        let assignment = format!("{}={}", self.field, value);
+        let (op, args): (&str, Vec<&str>) = if self.item_exists(name)? {
+            (
+                "edit",
+                vec!["item", "edit", "--vault", &self.vault, name, &assignment],
+            )
+        } else {
+            (
+                "create",
+                vec![
+                    "item",
+                    "create",
+                    "--category",
+                    "password",
+                    "--vault",
+                    &self.vault,
+                    "--title",
+                    name,
+                    &assignment,
+                ],
+            )
+        };
+        self.runner
+            .run("op", &args)
+            .map(|_| ())
+            .map_err(|d| unavailable(format!("op item {op}: {d}")))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3959,5 +4168,88 @@ mod tests {
                 None => std::env::remove_var("FLEET_OP_FIELD"),
             }
         }
+    }
+
+    // ---- S5c put dual-write platform (#13948 §5.5) ----
+
+    #[test]
+    fn op_capability_readiness_needs_the_three_gating_legs() {
+        // All present: a mirror write may be attempted.
+        assert!(
+            OpCapability::from_observations(true, true, true, true).mirror_write_ready()
+        );
+        // Any single gating leg missing: the put records propagation
+        // pending instead of attempting the mirror write (§5.5). The
+        // service-account token is informational (an account session
+        // can also authorize the write), so it alone never gates.
+        for missing in [0, 1, 3] {
+            let mut legs = [true, true, true, true];
+            legs[missing] = false;
+            assert!(
+                !OpCapability::from_observations(legs[0], legs[1], legs[2], legs[3])
+                    .mirror_write_ready(),
+                "leg {missing} missing must keep the mirror write off"
+            );
+        }
+        assert!(
+            OpCapability::from_observations(true, true, false, true).mirror_write_ready(),
+            "token alone is informational, not gating"
+        );
+        // The live spike shape (2026-11-28 laptop seat: CLI present,
+        // no account, no token, no vault) is not ready.
+        assert!(
+            !OpCapability::from_observations(true, false, false, false).mirror_write_ready()
+        );
+    }
+
+    #[test]
+    fn op_store_edits_the_existing_item_and_creates_the_missing_one() {
+        // The argv shape is pinned but has no live-spike receipt
+        // (open design question 4): these tests prove what the dark
+        // verb WOULD run, not that a vault accepts it.
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let present = OpStore::with_runner(
+            Box::new(FakeOpList(calls.clone())),
+            "vault-a".into(),
+            "credential".into(),
+        );
+        present.store("alpha", "s3cr3t").unwrap();
+        let calls = calls.lock().unwrap();
+        // First the metadata-only existence check, then the edit.
+        assert_eq!(
+            calls[0],
+            ["item", "list", "--vault", "vault-a", "--format", "json"]
+        );
+        assert_eq!(
+            calls[1],
+            ["item", "edit", "--vault", "vault-a", "alpha", "credential=s3cr3t"]
+        );
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let missing = OpStore::with_runner(
+            Box::new(FakeOpList(calls.clone())),
+            "vault-a".into(),
+            "credential".into(),
+        );
+        missing.store("gamma", "s3cr3t").unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls[1][..7],
+            ["item", "create", "--category", "password", "--vault", "vault-a", "--title"]
+        );
+        assert_eq!(calls[1][7], "gamma");
+        assert_eq!(calls[1][8], "credential=s3cr3t");
+    }
+
+    #[test]
+    fn op_store_refuses_bad_names_before_spawning() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = OpStore::with_runner(
+            Box::new(FakeOpList(calls.clone())),
+            "vault-a".into(),
+            "credential".into(),
+        );
+        assert!(store.store("", "s3cr3t").is_err());
+        assert!(calls.lock().unwrap().is_empty());
     }
 }

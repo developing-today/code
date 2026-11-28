@@ -614,6 +614,13 @@ pub struct SecretsConfig {
     /// 1Password item field holding the value (`credential` when
     /// unset). Env `FLEET_OP_FIELD` beats this file value.
     pub op_field: Option<String>,
+    /// Whether the `fleet secrets put` dual-write verb is enabled
+    /// (#13948 S5c, §8). Default false: the verb ships dark until the
+    /// S6 reconcile loop is live, so no write path exists before drift
+    /// repair does. Env `FLEET_SECRETS_PUT_ENABLED` (`1`/`true`)
+    /// beats this file value; an explicit `false`/`0` in env keeps
+    /// it dark even when the file opts in.
+    pub put_enabled: Option<bool>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -1995,6 +2002,26 @@ impl Config {
             .map(str::to_string)
     }
 
+    /// Whether the `fleet secrets put` dual-write verb is enabled
+    /// (#13948 S5c, §8): env `FLEET_SECRETS_PUT_ENABLED` beats the
+    /// `[secrets] put_enabled` file value; unset in both places is
+    /// dark (false). Env spellings `1`/`true` (any case, trimmed)
+    /// enable; `0`/`false` disable; any other non-empty env value
+    /// is treated as unset (the file value applies) rather than
+    /// silently enabling a write path.
+    pub fn secrets_put_enabled(&self) -> bool {
+        if let Ok(raw) = std::env::var("FLEET_SECRETS_PUT_ENABLED") {
+            let v = raw.trim().to_ascii_lowercase();
+            if v == "1" || v == "true" {
+                return true;
+            }
+            if v == "0" || v == "false" {
+                return false;
+            }
+        }
+        self.secrets.put_enabled.unwrap_or(false)
+    }
+
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
         Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
@@ -2124,6 +2151,61 @@ mod tests {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn put_gate_is_dark_unless_env_or_file_opts_in() {
+        // #13948 S5c §8: env `FLEET_SECRETS_PUT_ENABLED` beats the
+        // `[secrets] put_enabled` file value; unset in both places
+        // is dark.
+        let saved = std::env::var("FLEET_SECRETS_PUT_ENABLED").ok();
+        unsafe {
+            std::env::remove_var("FLEET_SECRETS_PUT_ENABLED");
+        }
+        assert!(!Config::default().secrets_put_enabled());
+        let (_dir, path) = write_temp("[secrets]\nput_enabled = true\n");
+        assert!(Config::load_from(&path).unwrap().secrets_put_enabled());
+        // Env `1`/`true` enable over a dark file; `0`/`false`
+        // disable over an opted-in file; anything else leaves the
+        // file value in force (never silently enabling a write).
+        let (_dir2, dark_path) = write_temp("[secrets]\nput_enabled = false\n");
+        for enabled in ["1", "true", "TRUE", " True "] {
+            unsafe {
+                std::env::set_var("FLEET_SECRETS_PUT_ENABLED", enabled);
+            }
+            assert!(
+                Config::load_from(&dark_path).unwrap().secrets_put_enabled(),
+                "{enabled}"
+            );
+        }
+        for disabled in ["0", "false", "FALSE", " False "] {
+            unsafe {
+                std::env::set_var("FLEET_SECRETS_PUT_ENABLED", disabled);
+            }
+            assert!(
+                !Config::load_from(&path).unwrap().secrets_put_enabled(),
+                "{disabled}"
+            );
+        }
+        for inert in ["yes", "2", "enabled"] {
+            unsafe {
+                std::env::set_var("FLEET_SECRETS_PUT_ENABLED", inert);
+            }
+            assert!(
+                !Config::load_from(&dark_path).unwrap().secrets_put_enabled(),
+                "{inert} must not enable"
+            );
+            assert!(
+                Config::load_from(&path).unwrap().secrets_put_enabled(),
+                "{inert} must not disable"
+            );
+        }
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("FLEET_SECRETS_PUT_ENABLED", v),
+                None => std::env::remove_var("FLEET_SECRETS_PUT_ENABLED"),
+            }
+        }
     }
 
     #[test]

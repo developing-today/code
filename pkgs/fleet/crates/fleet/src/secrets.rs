@@ -20,13 +20,22 @@
 //!     write goes through fleet-secrets' `BwsStore`. `--store` /
 //!     `--vault` select the write store for this call; a
 //!     `1password` write exits 3 until an `op` write path exists.
+//!   * `put <name>` — dual-write a secret (#13948 S5c, §5.5): the
+//!     value is read from stdin, never argv, the name is mapped by
+//!     `Scope` exactly as `get`/`set` map it, the primary commit
+//!     goes to Bitwarden first and the 1Password mirror follows.
+//!     A mirror failure after the primary commit does not fail the
+//!     put; it reports `committed ... : propagation pending` for
+//!     the S6 reconcile. Ships dark (`[secrets] put_enabled` /
+//!     `FLEET_SECRETS_PUT_ENABLED`) until S6 is live.
 //!
 //! Exit codes: 0 ok · 2 usage · 3 unresolved / broker unavailable
 //! (3 matches the dispatch domain's unresolved-token exit, #5432).
 
 use fleet_config::Config;
 use fleet_secrets::{
-    BrokerSource, BwsStore, OpSource, Resolver, Scope, SecretError, StoreKind, StoreSelection,
+    BrokerSource, BwsStore, OpSource, OpStore, Resolver, Scope, SecretError, StoreKind,
+    StoreSelection,
 };
 
 const EXIT_OK: i32 = 0;
@@ -88,6 +97,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some("get") => cmd_get(config, &args[1..]),
         Some("list") => cmd_list(config, &args[1..]),
         Some("set") => cmd_set(config, &args[1..]),
+        Some("put") => cmd_put(config, &args[1..]),
         _ => usage(),
     }
 }
@@ -138,6 +148,23 @@ bws_project_id` / $FLEET_BWS_PROJECT_ID. The $FLEET_SECRETS_STORE and
 $FLEET_SECRETS_VAULT variables are the flag fallbacks. Writing to
 1password exits 3: no `op` write path exists yet.";
 
+const PUT_USAGE: &str = "\
+Usage: fleet secrets put <name>
+
+Dual-write a secret (#13948 S5, §5.5): the value is read from stdin
+(a single trailing newline is stripped) and never taken from argv,
+printed, or logged. The name is mapped by the profile's `Scope`
+exactly as `get`/`set` map it. The primary commit goes to Bitwarden
+first and the 1Password mirror follows, never the reverse; a mirror
+failure after the primary commit does not fail the put — it reports
+`committed <name>: propagation pending (<reason>)` for the S6
+reconcile instead.
+
+Ships dark: unless `[secrets] put_enabled` or
+$FLEET_SECRETS_PUT_ENABLED enables it, `put` exits 3 without reading
+stdin or contacting any store. Peer push and audit logging land with
+S6; until then the broker cache converges on its next refresh tick.";
+
 /// The usage a `--help`/`-h` flag anywhere in a leaf verb's arguments
 /// asks for, if any (#5627). Every other fleet leaf verb answers a help
 /// flag with its usage on stdout at exit 0 (dispatch, search, proxy —
@@ -153,6 +180,7 @@ fn leaf_help_usage(verb: &str, args: &[String]) -> Option<&'static str> {
         "get" => Some(GET_USAGE),
         "list" => Some(LIST_USAGE),
         "set" => Some(SET_USAGE),
+        "put" => Some(PUT_USAGE),
         _ => None,
     }
 }
@@ -362,6 +390,12 @@ impl SecretWriter for BwsStore {
     }
 }
 
+impl SecretWriter for OpStore {
+    fn write_secret(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        self.store(name, value)
+    }
+}
+
 /// Store `value` under `name` mapped through `scope` (#10358 D11:
 /// `set` is symmetric with `get`). The oracle is the design record's
 /// §6 matrix: the writer is asked for exactly `scope.to_full(name)`,
@@ -442,6 +476,155 @@ fn cmd_set(config: &Config, args: &[String]) -> i32 {
         return EXIT_UNRESOLVED;
     }
     run_set_with_writer(&writer, &scope, &parsed.name, stdin_value(&raw))
+}
+
+/// The mirror leg of a `put` dual-write (#13948 S5c, §5.5): either a
+/// writer to attempt, or a value-free reason the mirror is skipped
+/// and the put reports `propagation pending` for the S6 reconcile.
+enum MirrorPlan<'a> {
+    Attempt { writer: &'a dyn SecretWriter },
+    Skip { reason: String },
+}
+
+/// The outcome of a `put` dual-write: an exit code plus a
+/// value-free report line. Success (`committed ...`) goes to
+/// stdout; refusals and primary failures go to stderr with the
+/// `fleet secrets: ` prefix added by the caller.
+fn run_put_dual_write(
+    primary: &dyn SecretWriter,
+    mirror: &MirrorPlan<'_>,
+    scope: &Scope,
+    name: &str,
+    value: &str,
+) -> (i32, String) {
+    let full = match scope.to_full(name) {
+        Ok(full) => full,
+        Err(e) => return (EXIT_UNRESOLVED, e.to_string()),
+    };
+    if let Err(e) = primary.write_secret(&full, value) {
+        return (EXIT_UNRESOLVED, e.to_string());
+    }
+    match mirror {
+        MirrorPlan::Attempt { writer } => match writer.write_secret(&full, value) {
+            Ok(()) => (EXIT_OK, format!("committed {full}")),
+            Err(e) => (
+                EXIT_OK,
+                format!("committed {full}: propagation pending ({e})"),
+            ),
+        },
+        MirrorPlan::Skip { reason } => (
+            EXIT_OK,
+            format!("committed {full}: propagation pending ({reason})"),
+        ),
+    }
+}
+
+/// Parse `put` arguments: exactly one name, no flags. Any flag —
+/// including `--store`/`--vault` — is a usage error: `put` always
+/// dual-writes (Bitwarden primary, 1Password mirror), so a store
+/// selection would contradict the verb. A second positional (the
+/// shape of a value passed on argv) is refused like `set` refuses
+/// it; the value arrives on stdin only.
+fn parse_put_args(args: &[String]) -> Result<String, ()> {
+    if args.len() != 1 || args[0].starts_with('-') || args[0].is_empty() {
+        return Err(());
+    }
+    Ok(args[0].clone())
+}
+
+/// Name the missing 1Password capability legs for a `propagation
+/// pending` reason (value-free: legs only, never credentials).
+fn missing_op_legs() -> String {
+    let capability = fleet_secrets::probe_op_capability();
+    let mut missing = Vec::new();
+    if !capability.cli_present {
+        missing.push("1Password CLI not present");
+    }
+    if !capability.account_configured {
+        missing.push("no 1Password account is configured");
+    }
+    if !capability.vault_named {
+        missing.push("no 1Password vault is named");
+    }
+    if missing.is_empty() {
+        "1Password capability probe failed".to_string()
+    } else {
+        missing.join("; ")
+    }
+}
+
+fn cmd_put(config: &Config, args: &[String]) -> i32 {
+    if let Some(usage_text) = leaf_help_usage("put", args) {
+        println!("{usage_text}");
+        return EXIT_OK;
+    }
+    // Ships dark until S6 (§8): the gate runs before stdin is read
+    // or any store is contacted, so a disabled verb has no write
+    // path at all.
+    if !config.secrets_put_enabled() {
+        eprintln!(
+            "fleet secrets: put is disabled: set [secrets] put_enabled or \
+             $FLEET_SECRETS_PUT_ENABLED to enable it (ships dark until the S6 reconcile is live)"
+        );
+        return EXIT_UNRESOLVED;
+    }
+    let name = match parse_put_args(args) {
+        Ok(name) => name,
+        Err(()) => {
+            eprintln!("usage: fleet secrets put <name>");
+            return EXIT_USAGE;
+        }
+    };
+    let scope = match Scope::from_config(config) {
+        Ok(scope) => scope,
+        Err(e) => {
+            eprintln!("fleet secrets: secrets prefix: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let primary = match BwsStore::from_config(config) {
+        Some(store) => store,
+        None => {
+            eprintln!(
+                "fleet secrets: no Bitwarden project is configured for writes: set \
+                 [secrets] bws_project_id or $FLEET_BWS_PROJECT_ID"
+            );
+            return EXIT_UNRESOLVED;
+        }
+    };
+    let mut raw = String::new();
+    if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw) {
+        eprintln!("fleet secrets: failed reading the value from stdin: {e}");
+        return EXIT_UNRESOLVED;
+    }
+    let value = stdin_value(&raw).to_string();
+    // The mirror follows the primary, never the reverse (§5.5): no
+    // vault names a mirror target, or the capability probe fails,
+    // and the primary commit still stands with propagation pending.
+    let mirror_store = OpStore::from_config(config);
+    let mirror = match &mirror_store {
+        Some(store) => {
+            if fleet_secrets::probe_op_capability().mirror_write_ready() {
+                MirrorPlan::Attempt { writer: store }
+            } else {
+                MirrorPlan::Skip {
+                    reason: missing_op_legs(),
+                }
+            }
+        }
+        None => MirrorPlan::Skip {
+            reason: "no 1Password vault is named (set --vault, $FLEET_SECRETS_VAULT, \
+                     [secrets] vault, or $FLEET_OP_VAULT)"
+                .to_string(),
+        },
+    };
+    let (code, report) = run_put_dual_write(&primary, &mirror, &scope, &name, &value);
+    if code == EXIT_OK {
+        print_value(&report)
+    } else {
+        eprintln!("fleet secrets: {report}");
+        code
+    }
 }
 
 /// The names a scoped `list` prints (#10358 D5): only stored names
@@ -834,5 +1017,124 @@ mod tests {
         assert_eq!(leaf_help_usage("get", &args(&[])), None);
         assert_eq!(leaf_help_usage("list", &args(&["stray"])), None);
         assert_eq!(leaf_help_usage("bogus", &args(&["--help"])), None);
+    }
+
+    #[test]
+    fn put_help_forms_name_the_put_usage() {
+        for form in [
+            args(&["--help"]),
+            args(&["-h"]),
+            args(&["some-name", "--help"]),
+        ] {
+            assert_eq!(leaf_help_usage("put", &form), Some(PUT_USAGE));
+        }
+        assert_eq!(leaf_help_usage("put", &args(&["some-name"])), None);
+    }
+
+    #[test]
+    fn put_args_take_exactly_one_flagless_name() {
+        assert_eq!(parse_put_args(&args(&["alpha"])).unwrap(), "alpha");
+        // No name; a second positional (the value-on-argv shape);
+        // any flag (put always dual-writes, so a store selection
+        // contradicts the verb); an empty name.
+        for form in [
+            args(&[]),
+            args(&["alpha", "the-value-on-argv"]),
+            args(&["--store", "bitwarden", "alpha"]),
+            args(&["alpha", "--vault", "proj-1"]),
+            args(&["-x"]),
+            args(&[""]),
+        ] {
+            assert!(parse_put_args(&form).is_err(), "{form:?}");
+        }
+    }
+
+    #[test]
+    fn put_dual_write_reports_through_the_scope_matrix() {
+        // #13948 S5c §5.5 through the §6 scope matrix: the primary
+        // and the mirror are both asked for exactly
+        // `scope.to_full(name)`; a refused mapping reaches neither
+        // store; reports name the stored name and never the value.
+        let scope = Scope::prefixed("42").unwrap();
+        for (caller, stored) in [
+            ("alpha", Some("42.alpha")),
+            ("42.alpha", Some("42.alpha")),
+            ("42.", None),
+        ] {
+            let primary = RecordingStore::new(false);
+            let mirror = RecordingStore::new(false);
+            let plan = MirrorPlan::Attempt { writer: &mirror };
+            let (code, report) =
+                run_put_dual_write(&primary, &plan, &scope, caller, "fixture-value");
+            match stored {
+                Some(expected) => {
+                    assert_eq!(code, EXIT_OK, "{caller}");
+                    assert_eq!(
+                        primary.names.borrow().as_slice(),
+                        [expected.to_string()],
+                        "{caller}"
+                    );
+                    assert_eq!(
+                        mirror.names.borrow().as_slice(),
+                        [expected.to_string()],
+                        "{caller}"
+                    );
+                    assert_eq!(report, format!("committed {expected}"), "{caller}");
+                    assert!(!report.contains("fixture-value"), "{caller}");
+                }
+                None => {
+                    assert_eq!(code, EXIT_UNRESOLVED, "{caller}");
+                    assert!(primary.names.borrow().is_empty(), "{caller}");
+                    assert!(mirror.names.borrow().is_empty(), "{caller}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn put_primary_failure_fails_without_touching_the_mirror() {
+        // The commit point is the primary: its failure is exit 3
+        // and the mirror is never attempted.
+        let primary = RecordingStore::new(true);
+        let mirror = RecordingStore::new(false);
+        let plan = MirrorPlan::Attempt { writer: &mirror };
+        let (code, report) =
+            run_put_dual_write(&primary, &plan, &Scope::none(), "alpha", "fixture-value");
+        assert_eq!(code, EXIT_UNRESOLVED);
+        assert!(mirror.names.borrow().is_empty());
+        assert!(!report.contains("fixture-value"));
+    }
+
+    #[test]
+    fn put_mirror_outcomes_degrade_to_propagation_pending() {
+        // §5.5: after the primary commit, a skipped or failed
+        // mirror still exits 0 — the put stands and the S6
+        // reconcile repairs the drift.
+        let scope = Scope::none();
+        // Skipped mirror (no vault / probe failed).
+        let primary = RecordingStore::new(false);
+        let plan = MirrorPlan::Skip {
+            reason: "no 1Password vault is named".to_string(),
+        };
+        let (code, report) =
+            run_put_dual_write(&primary, &plan, &scope, "alpha", "fixture-value");
+        assert_eq!(code, EXIT_OK);
+        assert!(
+            report.contains("committed alpha: propagation pending (no 1Password vault is named)"),
+            "{report}"
+        );
+        assert!(!report.contains("fixture-value"));
+        // Failed mirror write: same outcome, broker error attached.
+        let primary = RecordingStore::new(false);
+        let mirror = RecordingStore::new(true);
+        let plan = MirrorPlan::Attempt { writer: &mirror };
+        let (code, report) =
+            run_put_dual_write(&primary, &plan, &scope, "alpha", "fixture-value");
+        assert_eq!(code, EXIT_OK);
+        assert!(
+            report.contains("committed alpha: propagation pending ("),
+            "{report}"
+        );
+        assert!(!report.contains("fixture-value"));
     }
 }
