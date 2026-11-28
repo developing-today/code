@@ -1,6 +1,7 @@
 // Cold-store rehydrator Worker (design section 6, v1).
 //
 //   GET /health          -> { ok: true }                         (no auth)
+//   GET /version         -> { ok: true, service, version }       (no auth)
 //   GET /fetch/<sha256>  -> the object's original bytes          (Bearer auth)
 //
 // The Worker is a thin front door: it looks the object up in the D1
@@ -311,6 +312,25 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/version") {
+      // #15793 criterion 1: unauthenticated deployed-commit answer for
+      // the edge worker-checks probe (pm-stack/console/edge/src/
+      // worker-checks.ts; commitOf reads the `version` field). Like
+      // /health it touches no manifest or Drive object, so it sits
+      // ahead of the Bearer gate on /fetch; only the commit SHA is
+      // exposed, and an unstamped deploy answers "unknown" honestly.
+      // VERSION is a plain var stamped per deploy (--var in
+      // deploy.mjs and the cf-worker-versions-release workflow).
+      if (request.method !== "GET") {
+        return errorResponse("method not allowed", 405);
+      }
+      return jsonResponse({
+        ok: true,
+        service: "cold-store-rehydrator",
+        version: env.VERSION ?? "unknown",
+      });
     }
 
     const match = url.pathname.match(FETCH_ROUTE);
