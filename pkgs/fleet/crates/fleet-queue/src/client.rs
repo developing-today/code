@@ -728,6 +728,52 @@ mod tests {
     }
 
     #[test]
+    fn repeated_task_flag_accumulates_for_batch_by_id_9178() {
+        // #9178 §3 (ported from PR #16396): --task repeats to name
+        // a batch. Oracle: every occurrence is kept (repeated and
+        // comma-joined forms read alike), while any other repeated
+        // flag stays a usage error.
+        let argv = |words: &[&str]| {
+            words.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        };
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11", "--task", "22"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22"]);
+        assert_eq!(args.get("task").as_deref(), Some("11,22"));
+        let args = parse_args_inner_multi(
+            &argv(&["--task", "11,22", "--task", "33"]),
+            &["task"],
+            &[],
+            &["task"],
+        )
+        .unwrap();
+        assert_eq!(args.get_list("task"), vec!["11", "22", "33"]);
+        let single = parse_args_inner_multi(&argv(&["--task", "11"]), &["task"], &[], &["task"])
+            .unwrap();
+        assert_eq!(single.get_i64("task"), Some(11));
+        // A repeated non-repeatable flag is still rejected.
+        assert!(
+            parse_args_inner_multi(&argv(&["--worker", "a", "--worker", "b"]), &["worker"], &[], &[])
+                .is_err()
+        );
+        // A repeatable boolean is still a duplicate-flag error.
+        assert!(
+            parse_args_inner_multi(
+                &argv(&["--bind", "--bind"]),
+                &["task"],
+                &["bind"],
+                &["bind"],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn task_ids_flag_parses_the_named_batch_9178() {
         // #9178 §3 oracle: --tasks names the batch explicitly —
         // a comma-separated list of positive ids, whitespace
