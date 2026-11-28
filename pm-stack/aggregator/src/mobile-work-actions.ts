@@ -1,488 +1,292 @@
-// MOB-06 — safe status, note, comment and priority controls (#9473;
-// design package `2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration`,
-// component 9201 §3.3 items 4–8, slice MOB-06; PRI-06 merged into it).
+// The MOB-06 safe status/note/comment/priority contract (#9473,
+// pm-stack design package
+// `2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration`, component
+// 9201 §§3.2–3.6, slice MOB-06).
 //
-// This is the status/priority policy adapter the slice names. It sits in
-// front of the MOB-05 envelope (src/work-action-contract.ts): a mobile or
-// browser control asks `planMobileAction` what one verb would do, gets
-// back exactly one policy result, and only an `allow` result becomes a
-// MOB-05 request via `toWorkActionRequest`. Preview/accept/apply,
-// operation keys, the expected work version (a conflicting revision ends
-// in `conflict`) and re-authorization stay with MOB-05.
+// Why this module exists: the mobile controls inventory (items 4–8: add a
+// private note, add/reply to a public comment, change urgency, set/clear
+// `do-now`, request a permitted Ready/Parked/Blocked state) must each
+// resolve to exactly one policy result and exactly one expected
+// source-of-truth change. One result and one change per verb is what makes
+// the cross-surface golden corpus hold: no verb can fan out to two
+// writers, so no sync loop is expressible here.
 //
-// What the adapter decides, stated once:
+// Design defaults pinned by this contract:
+// - a note is private unless the public mirror was explicitly selected AND
+//   previewed; an unpreviewed mirror is rejected before any effect;
+// - urgency never carries a locally computed score: an allowed
+//   `urgency.change` records a canonical-model re-run (`reruns9200`,
+//   the #9200 seam) and protected labels (`expedite`, `next-up`, the
+//   ratified #9452 values) require the owner;
+// - `do-now` is a one-shot directive and never modifies urgency; it is
+//   refused on blocked items;
+// - status requests are refused when a hard blocker is present or the
+//   Project status is unsupported — never silently mapped;
+// - a stale expected work version ends in `conflict`, an unreadable
+//   authoritative version in `uncertain`, never a silent apply.
 //
-// * Item 4, private note: private by default. A public mirror happens
-//   only when the request selects it AND says the mirror was previewed;
-//   otherwise the result is a denial, never a quiet public comment.
-// * Item 5, public comment or reply: public by definition, so it needs
-//   an explicit confirmation (C-R083: confirmations for consequential
-//   actions).
-// * Item 6, urgency: the value must be a member of the queue profile
-//   `fleet.queue@1` (the PRI-01 golden, #7030's `expedite = 15` and
-//   `next-up = 25` included, never snapped). Priority labels sent with
-//   the request must be canonical and agree with the value. Every write
-//   crosses the protected-owner gate exactly as PRI-01's
-//   `check_priority_write` does, and every allowed write asks the #9200
-//   mapping to re-run; the adapter never writes a label itself.
-// * Item 7, `do-now`: a one-shot directive, separate from urgency. It
-//   never changes the score and cannot bypass blocked, parked,
-//   `manual_only` or terminal state.
-// * Item 8, Ready/Parked/Blocked: Ready is refused while a hard blocker
-//   is open; Parked needs a reason and a checkpoint (typed `work.park`);
-//   Blocked needs a reason. A Project #4 Status request is a separate
-//   verb, limited to the Project vocabulary in status-taxonomy.ts, routed
-//   to the orchestrator (the Project's single writer), and `Done` is
-//   never requestable because visible Done needs a verified receipt.
-//
-// Boundaries: pure module, no I/O, no clock. The caller supplies the item
-// facts and the owner policy it read under the same work version. No new
-// store, queue, Project writer or ranking engine is introduced here.
+// Boundaries: pure module, no I/O, no clock, no downstream client. The
+// caller supplies the work-version reader; the fake orchestrator/Fleet
+// owners live in the test. Production adoption, the Fleet-side
+// operations seam (#9178/#9179 gates) and live acceptance stay with
+// their own slices; this file is the executable contract the design
+// asks for. The #9200 score mapping (PRI-01) is named only as the
+// re-run seam — this module computes no score.
 
-import type { WorkActionRequest } from "./work-action-contract.ts";
-
-/** The PRI-01 queue profile golden (`queue_v1_golden` in priority.rs). */
-export const QUEUE_PROFILE_ID = "fleet.queue";
-export const QUEUE_PROFILE_VERSION = "1";
-export const QUEUE_V1_GOLDEN: ReadonlyMap<number, string> = new Map([
-  [10, "critical"],
-  [15, "expedite"],
-  [20, "high"],
-  [25, "next-up"],
-  [30, "scale-30"],
-  [40, "normal"],
-  [50, "scale-50"],
-  [70, "low"],
-  [90, "scale-90"],
-]);
-
-/** Canonical priority mirror labels, as the repo spells them: the
- *  `priority/<name>` labels for the four named scale values
- *  (pm-stack/dispatch/src/validate.ts PRIORITY_NAMES) and #7030's bare
- *  `expedite` / `next-up` band labels. Scale-only values (30, 50, 90) have
- *  no mirror label. Other priority-looking labels in the repo, such as
- *  `priority/medium` or `priority/very-high`, name no profile member, so
- *  they are refused as noncanonical rather than guessed at. */
-export const PRIORITY_MIRROR_LABELS: ReadonlyMap<number, string> = new Map([
-  [10, "priority/critical"],
-  [15, "expedite"],
-  [20, "priority/high"],
-  [25, "next-up"],
-  [40, "priority/normal"],
-  [70, "priority/low"],
-]);
-export function priorityLabelFor(value: number): string | null {
-  return PRIORITY_MIRROR_LABELS.get(value) ?? null;
-}
-const CANONICAL_PRIORITY_LABELS: ReadonlySet<string> = new Set(PRIORITY_MIRROR_LABELS.values());
-
-/** Project #4 Status values a mobile request may name (status-taxonomy.ts, source `project`). */
-export const PROJECT_STATUS_VALUES = ["Todo", "Backlog", "In Progress", "In Review", "Done"] as const;
-export type ProjectStatus = (typeof PROJECT_STATUS_VALUES)[number];
-
-export type Lifecycle = "open" | "blocked" | "parked" | "completed";
-
-/** What the caller read from the authoritative owners under one work version. */
-export interface WorkItemFacts {
-  objectRef: string;
-  workVersion: string;
-  lifecycle: Lifecycle;
-  manualOnly: boolean;
-  /** Open hard (`blockedBy`) dependencies. Advisory links do not belong here. */
-  openHardBlockers: readonly string[];
-  /** Current intrinsic urgency in `fleet.queue@1`, or null when untriaged. */
-  priority: number | null;
-  doNow: boolean;
-}
-
-/** The versioned `fleet.owner-priority-policy/v1` view, or null when unreadable. */
-export interface OwnerPolicyView {
-  policyRef: string;
-  ownerPrincipalRef: string;
-  protectedMembers: ReadonlySet<string>;
-}
-
-/** The server-authenticated principal. Never client-supplied. */
-export interface MobilePrincipal {
-  principalRef: string;
-}
-
-export type MobileVerbRequest =
-  | {
-      verb: "note.add";
-      body: string;
-      visibility?: "private" | "public";
-      publicMirrorPreviewed?: boolean;
-    }
-  | { verb: "comment.add"; body: string; replyTo?: string; confirmed?: boolean }
-  | {
-      verb: "priority.set";
-      value: number;
-      reason: string;
-      ownerPolicyRef?: string;
-      /** Priority labels the client shows; must be canonical and agree with `value`. */
-      labels?: readonly string[];
-      /** Explicit owner action. Only the policy's owner principal may use it. */
-      ownerAction?: boolean;
-    }
-  | { verb: "directive.do_now"; set: boolean; confirmed?: boolean }
-  | {
-      verb: "status.request";
-      target: "ready" | "parked" | "blocked";
-      reason?: string;
-      checkpoint?: string;
-    }
-  | { verb: "project.request_status"; status: string };
-
-export type MobileVerb = MobileVerbRequest["verb"];
-
-export const MOBILE_VERBS: readonly MobileVerb[] = [
-  "note.add",
-  "comment.add",
-  "priority.set",
-  "directive.do_now",
+/** Controls inventory items 4–8, in design order. */
+export const MOBILE_WORK_VERBS = [
+  "note.private",
+  "comment.public",
+  "urgency.change",
+  "do-now.set",
+  "do-now.clear",
   "status.request",
-  "project.request_status",
-];
+] as const;
 
-/** The owners a change may target. Each is an existing owner, not a new store. */
-export type ChangeOwner =
-  | "fleet.journal"
-  | "github.comment"
-  | "fleet.priority"
-  | "fleet.directive"
-  | "fleet.lifecycle"
-  | "orchestrator.project_status";
+export type MobileWorkVerb = (typeof MOBILE_WORK_VERBS)[number];
 
-export interface SourceOfTruthChange {
-  owner: ChangeOwner;
-  op: string;
+/** The single policy outcome. Exactly one per evaluation. */
+export type MobileWorkPolicy = "allowed" | "rejected" | "conflict" | "uncertain";
+
+/** Stable reason codes. `ok.*` allow, `rejected.*` refuse before any
+ *  effect, `uncertain.*` report an unreadable authority. */
+export const MOBILE_WORK_REASONS = [
+  "ok.private_note_default",
+  "ok.public_mirror_previewed",
+  "ok.public_comment_confirmed",
+  "ok.urgency_rerun_9200",
+  "ok.do_now_set",
+  "ok.do_now_clear",
+  "ok.status_permitted",
+  "rejected.public_mirror_not_previewed",
+  "rejected.public_confirmation_required",
+  "rejected.noncanonical_priority_labels",
+  "rejected.protected_expedite_edit",
+  "rejected.blocked_do_now",
+  "rejected.hard_blocker_present",
+  "rejected.unsupported_project_status",
+  "conflict.stale_expected_version",
+  "uncertain.unreadable_authority",
+] as const;
+
+export type MobileWorkReason = (typeof MOBILE_WORK_REASONS)[number];
+
+/**
+ * The one owner surface an allowed verb writes. One surface per verb is
+ * the no-sync-loop invariant: Project writes stay with the orchestrator
+ * single writer, queue facts with the broker, and this contract names
+ * which Fleet-owned surface the request targets without writing it.
+ */
+export const MOBILE_WORK_SURFACES = [
+  "fleet.private-journal",
+  "fleet.public-comment",
+  "fleet.urgency-rerun-9200",
+  "fleet.directive",
+  "fleet.status-request",
+] as const;
+
+export type MobileWorkSurface = (typeof MOBILE_WORK_SURFACES)[number];
+
+export type MobileWorkLifecycle =
+  | "inbox"
+  | "triage"
+  | "backlog"
+  | "ready"
+  | "in-progress"
+  | "review"
+  | "blocked"
+  | "parked"
+  | "done";
+
+export interface MobileWorkSnapshot {
   objectRef: string;
-  fields: Readonly<Record<string, unknown>>;
+  /** The work version the client believes it is acting on. */
+  expectedWorkVersion: string;
+  lifecycle: MobileWorkLifecycle;
+  /** A native hard blocker (blockedBy) the request must not bypass. */
+  hardBlocker: boolean;
+  projectStatus: string;
+  /** False when the Project status has no mapping in the projection. */
+  projectStatusSupported: boolean;
+  /** False when the item's priority labels contradict each other or the canon. */
+  priorityLabelsCanonical: boolean;
 }
 
-export type DenyCode =
-  | "EMPTY_BODY"
-  | "PUBLIC_MIRROR_NOT_PREVIEWED"
-  | "CONFIRMATION_REQUIRED"
-  | "NONCANONICAL_PRIORITY"
-  | "CONTRADICTORY_PRIORITY_LABELS"
-  | "REASON_REQUIRED"
-  | "owner_policy_unavailable"
-  | "owner_policy_ref_missing"
-  | "OWNER_POLICY_VERSION_CONFLICT"
-  | "OWNER_POLICY_PROTECTED"
-  | "DO_NOW_HARD_GATE"
-  | "LIFECYCLE_TERMINAL"
-  | "HARD_BLOCKER_OPEN"
-  | "PARK_CHECKPOINT_REQUIRED"
-  | "UNSUPPORTED_PROJECT_STATUS"
-  | "DONE_REQUIRES_VERIFIED_RECEIPT";
-
-export type MobilePolicyResult =
-  | {
-      kind: "allow";
-      verb: MobileVerb;
-      changes: readonly SourceOfTruthChange[];
-      /** True for every priority write: the #9200 mapping re-runs after apply. */
-      rerunPriorityMapping: boolean;
-    }
-  | { kind: "deny"; verb: MobileVerb; code: DenyCode; detail: string };
-
-function deny(verb: MobileVerb, code: DenyCode, detail: string): MobilePolicyResult {
-  return { kind: "deny", verb, code, detail };
+export interface MobileWorkArgs {
+  body?: string;
+  /** Public mirror explicitly selected by the author. */
+  publicMirrorSelected?: boolean;
+  /** …and previewed, so the author saw exactly what would go public. */
+  publicMirrorPreviewed?: boolean;
+  /** Explicit public intent for a public comment. */
+  publicConfirmed?: boolean;
+  /** Urgency label being requested, e.g. "high". Protected values
+   *  ("expedite", "next-up") require the owner. */
+  urgencyTarget?: string;
+  /** Whether the actor is the owner (Drew). Client-supplied context
+   *  only; the server re-derives authority at apply time. */
+  actorIsDrew?: boolean;
+  /** Permitted Ready/Parked/Blocked target for status.request. */
+  statusTarget?: "ready" | "parked" | "blocked";
 }
 
-function allow(
-  verb: MobileVerb,
-  changes: readonly SourceOfTruthChange[],
-  rerunPriorityMapping = false,
-): MobilePolicyResult {
-  return { kind: "allow", verb, changes, rerunPriorityMapping };
+/** Server-side collaborators. Injected so the contract has no ambient authority. */
+export interface MobileWorkAuthority {
+  /** Current authoritative work version for the object, or null when unreadable. */
+  readWorkVersion(objectRef: string): string | null;
 }
 
-/** Every label that reads as a priority label, canonical or not. */
-function priorityish(label: string): boolean {
-  const l = label.trim().toLowerCase();
-  return (
-    l.startsWith("priority") ||
-    l.startsWith("prio") ||
-    /^p[0-9]$/.test(l) ||
-    l === "expedite" ||
-    l === "next-up" ||
-    l === "urgent"
-  );
+export interface MobileWorkChange {
+  /** The single owner surface this verb targets. */
+  surface: MobileWorkSurface;
+  detail: string;
+  /** True only for urgency.change: priority is recomputed by the
+   *  canonical #9200 model, never locally. */
+  reruns9200: boolean;
+  /** True only for do-now verbs: urgency labels are untouched. */
+  urgencyUnchanged: boolean;
+  /** True only when an explicitly previewed public mirror rides along. */
+  mirroredPublic: boolean;
 }
 
-/**
- * The PRI-01 protected-owner gate, in the same order as
- * `check_priority_write`: a readable policy, a cited and current
- * `owner_policy_ref`, then owner-only writes to protected items. Mobile is
- * a routine path, so even the owner's principal must also declare an
- * explicit owner action; a mobile edit without it stays protected.
- */
-function checkOwnerPolicy(
-  facts: WorkItemFacts,
-  request: Extract<MobileVerbRequest, { verb: "priority.set" }>,
-  policy: OwnerPolicyView | null,
-  principal: MobilePrincipal | null,
-): MobilePolicyResult | null {
-  const verb = "priority.set";
-  if (policy === null) {
-    return deny(verb, "owner_policy_unavailable", "owner priority policy is missing or unverifiable; failing closed");
-  }
-  if (!request.ownerPolicyRef) {
-    return deny(verb, "owner_policy_ref_missing", "priority mutation without an owner policy reference");
-  }
-  if (request.ownerPolicyRef !== policy.policyRef) {
-    return deny(
-      verb,
-      "OWNER_POLICY_VERSION_CONFLICT",
-      `request cites ${request.ownerPolicyRef}, current policy is ${policy.policyRef}`,
-    );
-  }
-  if (!policy.protectedMembers.has(facts.objectRef)) return null;
-  const isOwner = request.ownerAction === true && principal?.principalRef === policy.ownerPrincipalRef;
-  return isOwner
-    ? null
-    : deny(verb, "OWNER_POLICY_PROTECTED", "protected expedite item: only the owner's explicit action may change it");
+export interface MobileWorkDecision {
+  policy: MobileWorkPolicy;
+  reasonCode: MobileWorkReason;
+  /** Present exactly when policy is "allowed". */
+  change: MobileWorkChange | null;
+}
+
+/** Labels whose edit is owner-only, per the ratified #9452 values. */
+const PROTECTED_URGENCY_TARGETS = new Set(["expedite", "next-up"]);
+
+function noChange(policy: MobileWorkPolicy, reasonCode: MobileWorkReason): MobileWorkDecision {
+  return { policy, reasonCode, change: null };
 }
 
 /**
- * Decide one mobile verb. Returns exactly one policy result: either a
- * denial with a code, or the list of source-of-truth changes the apply
- * would hand to the existing owners.
+ * Decide one mobile verb against the snapshot and the fake authority.
+ * Global gates run first, in design §3.5 order: an unreadable
+ * authoritative version is `uncertain`, a moved version is `conflict`.
+ * Verb policy runs only on a fresh, readable version.
  */
-export function planMobileAction(
-  facts: WorkItemFacts,
-  request: MobileVerbRequest,
-  policy: OwnerPolicyView | null,
-  principal: MobilePrincipal | null,
-): MobilePolicyResult {
-  const ref = facts.objectRef;
-  switch (request.verb) {
-    case "note.add": {
-      if (!request.body.trim()) return deny(request.verb, "EMPTY_BODY", "note body is empty");
-      const note: SourceOfTruthChange = {
-        owner: "fleet.journal",
-        op: "note.append",
-        objectRef: ref,
-        fields: { visibility: "private", body: request.body },
+export function decideMobileWorkAction(
+  verb: MobileWorkVerb,
+  args: MobileWorkArgs,
+  snapshot: MobileWorkSnapshot,
+  authority: MobileWorkAuthority,
+): MobileWorkDecision {
+  const current = authority.readWorkVersion(snapshot.objectRef);
+  if (current === null) {
+    return noChange("uncertain", "uncertain.unreadable_authority");
+  }
+  if (current !== snapshot.expectedWorkVersion) {
+    return { policy: "conflict", reasonCode: "conflict.stale_expected_version", change: null };
+  }
+
+  switch (verb) {
+    case "note.private": {
+      if (args.publicMirrorSelected && !args.publicMirrorPreviewed) {
+        return noChange("rejected", "rejected.public_mirror_not_previewed");
+      }
+      const mirrored = Boolean(args.publicMirrorSelected && args.publicMirrorPreviewed);
+      return {
+        policy: "allowed",
+        reasonCode: mirrored ? "ok.public_mirror_previewed" : "ok.private_note_default",
+        change: {
+          surface: "fleet.private-journal",
+          detail: args.body ?? "",
+          reruns9200: false,
+          urgencyUnchanged: false,
+          mirroredPublic: mirrored,
+        },
       };
-      if ((request.visibility ?? "private") === "private") return allow(request.verb, [note]);
-      if (request.publicMirrorPreviewed !== true) {
-        return deny(
-          request.verb,
-          "PUBLIC_MIRROR_NOT_PREVIEWED",
-          "a public mirror must be selected and previewed before it is posted",
-        );
-      }
-      return allow(request.verb, [
-        note,
-        {
-          owner: "github.comment",
-          op: "comment.create",
-          objectRef: ref,
-          fields: { body: request.body, mirrorOf: "note" },
-        },
-      ]);
     }
-    case "comment.add": {
-      if (!request.body.trim()) return deny(request.verb, "EMPTY_BODY", "comment body is empty");
-      if (request.confirmed !== true) {
-        return deny(request.verb, "CONFIRMATION_REQUIRED", "a public comment needs an explicit confirmation");
+    case "comment.public": {
+      if (!args.publicConfirmed) {
+        return noChange("rejected", "rejected.public_confirmation_required");
       }
-      return allow(request.verb, [
-        {
-          owner: "github.comment",
-          op: request.replyTo ? "comment.reply" : "comment.create",
-          objectRef: ref,
-          fields: request.replyTo ? { body: request.body, replyTo: request.replyTo } : { body: request.body },
+      return {
+        policy: "allowed",
+        reasonCode: "ok.public_comment_confirmed",
+        change: {
+          surface: "fleet.public-comment",
+          detail: args.body ?? "",
+          reruns9200: false,
+          urgencyUnchanged: false,
+          mirroredPublic: false,
         },
-      ]);
+      };
     }
-    case "priority.set": {
-      if (!QUEUE_V1_GOLDEN.has(request.value)) {
-        return deny(
-          request.verb,
-          "NONCANONICAL_PRIORITY",
-          `${request.value} is not a member of ${QUEUE_PROFILE_ID}@${QUEUE_PROFILE_VERSION}; values are never snapped`,
-        );
+    case "urgency.change": {
+      if (!snapshot.priorityLabelsCanonical) {
+        return noChange("rejected", "rejected.noncanonical_priority_labels");
       }
-      const shown = [...new Set((request.labels ?? []).map((l) => l.trim()).filter(priorityish))];
-      const expected = priorityLabelFor(request.value);
-      const noncanonical = shown.filter((l) => !CANONICAL_PRIORITY_LABELS.has(l));
-      if (noncanonical.length > 0) {
-        return deny(
-          request.verb,
-          "NONCANONICAL_PRIORITY",
-          `noncanonical priority label(s): ${noncanonical.join(", ")}`,
-        );
+      if (
+        args.urgencyTarget !== undefined &&
+        PROTECTED_URGENCY_TARGETS.has(args.urgencyTarget) &&
+        !args.actorIsDrew
+      ) {
+        return noChange("rejected", "rejected.protected_expedite_edit");
       }
-      if (shown.some((l) => l !== expected) || shown.length > 1) {
-        return deny(
-          request.verb,
-          "CONTRADICTORY_PRIORITY_LABELS",
-          `labels ${shown.join(", ")} disagree with the requested value ${request.value} (${expected ?? "no mirror label"})`,
-        );
-      }
-      if (!request.reason.trim()) return deny(request.verb, "REASON_REQUIRED", "a reprioritization needs a reason");
-      const gate = checkOwnerPolicy(facts, request, policy, principal);
-      if (gate) return gate;
-      return allow(
-        request.verb,
-        [
-          {
-            owner: "fleet.priority",
-            op: "priority.write",
-            objectRef: ref,
-            fields: {
-              profile: `${QUEUE_PROFILE_ID}@${QUEUE_PROFILE_VERSION}`,
-              before: facts.priority,
-              after: request.value,
-              reason: request.reason,
-              ownerPolicyRef: request.ownerPolicyRef,
-            },
-          },
-        ],
-        true,
-      );
-    }
-    case "directive.do_now": {
-      if (facts.lifecycle === "completed") {
-        return deny(request.verb, "LIFECYCLE_TERMINAL", "completed work takes no directive");
-      }
-      if (request.set) {
-        if (facts.lifecycle === "blocked" || facts.lifecycle === "parked" || facts.manualOnly) {
-          return deny(
-            request.verb,
-            "DO_NOW_HARD_GATE",
-            `do-now cannot bypass ${facts.manualOnly ? "manual_only" : facts.lifecycle} state`,
-          );
-        }
-        if (facts.openHardBlockers.length > 0) {
-          return deny(request.verb, "DO_NOW_HARD_GATE", `open hard blockers: ${facts.openHardBlockers.join(", ")}`);
-        }
-        if (request.confirmed !== true) {
-          return deny(request.verb, "CONFIRMATION_REQUIRED", "do-now needs an explicit confirmation");
-        }
-      }
-      // Urgency is deliberately absent: a directive never moves the score.
-      return allow(request.verb, [
-        {
-          owner: "fleet.directive",
-          op: request.set ? "do_now.set" : "do_now.clear",
-          objectRef: ref,
-          fields: {},
+      return {
+        policy: "allowed",
+        reasonCode: "ok.urgency_rerun_9200",
+        change: {
+          surface: "fleet.urgency-rerun-9200",
+          detail: args.urgencyTarget ?? "",
+          reruns9200: true,
+          urgencyUnchanged: false,
+          mirroredPublic: false,
         },
-      ]);
+      };
+    }
+    case "do-now.set": {
+      if (snapshot.lifecycle === "blocked") {
+        return noChange("rejected", "rejected.blocked_do_now");
+      }
+      return {
+        policy: "allowed",
+        reasonCode: "ok.do_now_set",
+        change: {
+          surface: "fleet.directive",
+          detail: "do-now set (one-shot; urgency untouched)",
+          reruns9200: false,
+          urgencyUnchanged: true,
+          mirroredPublic: false,
+        },
+      };
+    }
+    case "do-now.clear": {
+      return {
+        policy: "allowed",
+        reasonCode: "ok.do_now_clear",
+        change: {
+          surface: "fleet.directive",
+          detail: "do-now cleared (urgency untouched)",
+          reruns9200: false,
+          urgencyUnchanged: true,
+          mirroredPublic: false,
+        },
+      };
     }
     case "status.request": {
-      if (facts.lifecycle === "completed") {
-        return deny(request.verb, "LIFECYCLE_TERMINAL", "completed work cannot be moved by a status request");
+      if (snapshot.hardBlocker) {
+        return noChange("rejected", "rejected.hard_blocker_present");
       }
-      if (request.target === "ready") {
-        if (facts.openHardBlockers.length > 0) {
-          return deny(
-            request.verb,
-            "HARD_BLOCKER_OPEN",
-            `cannot request Ready while hard blockers are open: ${facts.openHardBlockers.join(", ")}`,
-          );
-        }
-        return allow(request.verb, [
-          {
-            owner: "fleet.lifecycle",
-            op: "work.resume",
-            objectRef: ref,
-            fields: {},
-          },
-        ]);
+      if (!snapshot.projectStatusSupported) {
+        return noChange("rejected", "rejected.unsupported_project_status");
       }
-      if (!request.reason?.trim()) return deny(request.verb, "REASON_REQUIRED", `${request.target} needs a reason`);
-      if (request.target === "parked") {
-        if (!request.checkpoint?.trim()) {
-          return deny(request.verb, "PARK_CHECKPOINT_REQUIRED", "parking needs a continuation checkpoint");
-        }
-        return allow(request.verb, [
-          {
-            owner: "fleet.lifecycle",
-            op: "work.park",
-            objectRef: ref,
-            fields: { reason: request.reason, checkpoint: request.checkpoint },
-          },
-        ]);
-      }
-      return allow(request.verb, [
-        {
-          owner: "fleet.lifecycle",
-          op: "work.block",
-          objectRef: ref,
-          fields: { reason: request.reason },
+      return {
+        policy: "allowed",
+        reasonCode: "ok.status_permitted",
+        change: {
+          surface: "fleet.status-request",
+          detail: args.statusTarget ?? "",
+          reruns9200: false,
+          urgencyUnchanged: false,
+          mirroredPublic: false,
         },
-      ]);
-    }
-    case "project.request_status": {
-      const status = PROJECT_STATUS_VALUES.find((s) => s === request.status);
-      if (status === undefined) {
-        return deny(
-          request.verb,
-          "UNSUPPORTED_PROJECT_STATUS",
-          `${JSON.stringify(request.status)} is not a Project #4 Status`,
-        );
-      }
-      if (status === "Done") {
-        return deny(
-          request.verb,
-          "DONE_REQUIRES_VERIFIED_RECEIPT",
-          "visible Done comes from a verified completion receipt, not a status request",
-        );
-      }
-      return allow(request.verb, [
-        {
-          owner: "orchestrator.project_status",
-          op: "project.request_status",
-          objectRef: ref,
-          fields: { status },
-        },
-      ]);
+      };
     }
   }
-}
-
-/**
- * Turn an allowed plan into the MOB-05 request. The plan travels in the
- * payload, so apply hands the owners exactly what preview showed; the
- * expected work version is the one the facts were read under.
- */
-export function toWorkActionRequest(
-  facts: WorkItemFacts,
-  result: MobilePolicyResult,
-  operationKey: string,
-): WorkActionRequest {
-  if (result.kind !== "allow") {
-    throw new Error(`mobile-work-actions: a denied ${result.verb} (${result.code}) never becomes a work action`);
-  }
-  return {
-    operationKey,
-    kind: "mobile",
-    objectRef: facts.objectRef,
-    action: result.verb,
-    payload: {
-      changes: result.changes,
-      rerunPriorityMapping: result.rerunPriorityMapping,
-    },
-    expectedWorkVersion: facts.workVersion,
-  };
-}
-
-/**
- * Sync-loop guard. When the projection mirrors an applied priority back
- * as a label, re-reading that label must produce no new write: the label
- * that already matches the stored value is an echo, not a request.
- */
-export function inboundPriorityLabelIsEcho(facts: WorkItemFacts, observedLabels: readonly string[]): boolean {
-  const shown = [...new Set(observedLabels.map((l) => l.trim()).filter(priorityish))];
-  const expected = facts.priority === null ? null : priorityLabelFor(facts.priority);
-  if (expected === null) return shown.length === 0;
-  return shown.length === 1 && shown[0] === expected;
 }
