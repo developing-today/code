@@ -20,7 +20,7 @@ default = []
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
