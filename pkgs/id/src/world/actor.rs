@@ -801,9 +801,29 @@ impl WorldActor {
                 }
                 continue;
             }
+            if let Subscription::LocationWatch(spec) = sub
+                && let Err(error) = crate::world_caps::parse_loc_watch_interval_ms(spec)
+            {
+                if self.denied_subs.insert(spec.clone()) {
+                    self.deliver(crate::world_caps::subscription_refused_event(spec, &error))
+                        .await;
+                }
+                continue;
+            }
             let decision = self.core.ledger.decide(sub.cap());
             self.audit_provider_decision(sub.cap(), &decision, "program".to_owned());
             match decision {
+                Decision::Allow if matches!(sub, Subscription::LocationWatch(_)) => {
+                    // No host consent/source adapter is installed yet. Never arm
+                    // a sensor watch merely because the ledger permits it.
+                    let spec = sub.spec();
+                    if self.denied_subs.insert(spec.clone()) {
+                        self.deliver(crate::world_caps::subscription_refused_event(
+                            &spec,
+                            &CapError::consent_required(),
+                        )).await;
+                    }
+                }
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
                     let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -937,6 +957,9 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "device.info" => self.execute_device_info(&request.args),
+            // A ledger grant is not per-use sensor consent. Until a host
+            // adapter is installed, refuse rather than inventing a fix.
+            "loc.position" => Err(CapError::consent_required()),
             "chat.say" => self.execute_chat(&request.args),
             "chat.history" => Ok(serde_json::json!({
                 "lines": chat_history(

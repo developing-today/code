@@ -758,6 +758,8 @@ pub enum Subscription {
     Players,
     /// A tick event every this many milliseconds while someone is connected.
     Tick(u64),
+    /// A location watch, retaining the requested spelling for refusal events.
+    LocationWatch(String),
     /// A spec the host does not understand.
     Unknown(String),
 }
@@ -768,6 +770,9 @@ impl Subscription {
     pub fn parse(spec: &str) -> Self {
         if spec == "players" {
             return Self::Players;
+        }
+        if spec == "loc.watch" || spec.starts_with("loc.watch:") {
+            return Self::LocationWatch(spec.to_owned());
         }
         if let Some(ms) = spec.strip_prefix("time.tick:")
             && let Ok(ms) = ms.parse::<u64>()
@@ -784,6 +789,7 @@ impl Subscription {
         match self {
             Self::Players => "players",
             Self::Tick(_) => "time.tick",
+            Self::LocationWatch(_) => "loc.watch",
             Self::Unknown(spec) => spec,
         }
     }
@@ -794,6 +800,7 @@ impl Subscription {
         match self {
             Self::Players => "players".to_owned(),
             Self::Tick(ms) => format!("time.tick:{ms}"),
+            Self::LocationWatch(spec) => spec.clone(),
             Self::Unknown(spec) => spec.clone(),
         }
     }
@@ -914,6 +921,15 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
     ensure!(
         ticks <= MAX_TICK_INTERVALS,
         "at most {MAX_TICK_INTERVALS} tick intervals"
+    );
+    let watches = wants
+        .subscribe
+        .iter()
+        .filter(|sub| matches!(sub, Subscription::LocationWatch(_)))
+        .count();
+    ensure!(
+        watches <= MAX_LOC_WATCHES,
+        "at most {MAX_LOC_WATCHES} location watches"
     );
     Ok(wants)
 }
@@ -2515,6 +2531,14 @@ mod tests {
         );
         assert!(parse_loc_watch_interval_ms("loc.watch:fast").is_err());
         assert!(parse_loc_watch_interval_ms("time.tick:5000").is_err());
+    }
+
+    #[test]
+    fn loc_watch_wants_map_to_cap_and_enforce_count() {
+        let wants = parse_wants(r#"{"subscribe":["loc.watch","loc.watch:5000"]}"#).unwrap();
+        assert_eq!(wants.caps(), names(&["loc.watch"]));
+        assert!(wants.subscribe.contains(&Subscription::LocationWatch("loc.watch".into())));
+        assert!(parse_wants(r#"{"subscribe":["loc.watch:5000","loc.watch:5001","loc.watch:5002","loc.watch:5003","loc.watch:5004"]}"#).is_err());
     }
 
     #[test]
