@@ -15,9 +15,11 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 
 trait RequestTransportStream: Read + Write {
     fn request_transport(&self) -> RequestTransport;
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
 }
 
 impl RequestTransportStream for TcpStream {
@@ -27,12 +29,25 @@ impl RequestTransportStream for TcpStream {
             peer_ip: self.peer_addr().ok().map(|address| address.ip()),
         }
     }
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
 }
 
 #[cfg(feature = "queue-broker")]
 impl RequestTransportStream for crate::broker_tls::BrokerStream {
     fn request_transport(&self) -> RequestTransport {
         crate::broker_tls::BrokerStream::request_transport(self)
+    }
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            crate::broker_tls::BrokerStream::Plain(stream) => {
+                TcpStream::set_read_timeout(stream, timeout)
+            }
+            crate::broker_tls::BrokerStream::Tls(stream) => {
+                TcpStream::set_read_timeout(&stream.sock, timeout)
+            }
+        }
     }
 }
 
@@ -118,8 +133,13 @@ fn serve_connections<S, W, F, G>(
                 let Some(mut stream) = wrap(stream) else {
                     return;
                 };
-                if let Some((status, body)) = respond(&mut stream, &*precheck, &*handler) {
+                if let Some((status, body, body_consumed)) =
+                    respond(&mut stream, &*precheck, &*handler)
+                {
                     uds_http::write_response(&mut stream, status, &body);
+                    if !body_consumed {
+                        drain_unread(&mut stream);
+                    }
                 }
                 // Drop the connection before releasing the admission slot.
                 drop(stream);
@@ -131,7 +151,7 @@ fn respond<S: RequestTransportStream>(
     stream: &mut S,
     precheck: &impl Fn(&HttpRequest) -> Option<(u16, Vec<u8>)>,
     handler: &impl Fn(&HttpRequest) -> (u16, Vec<u8>),
-) -> Option<(u16, Vec<u8>)> {
+) -> Option<(u16, Vec<u8>, bool)> {
     let (mut head, length) = uds_http::read_tcp_head(stream)?;
     head.transport = stream.request_transport();
     // Reject ambiguous or unsupported framing, including duplicate TE.
@@ -148,17 +168,25 @@ fn respond<S: RequestTransportStream>(
         {
             true
         }
-        _ => return Some((400, b"{\"error\":\"invalid body framing\"}".to_vec())),
+        _ => return Some((400, b"{\"error\":\"invalid body framing\"}".to_vec(), false)),
     };
-    if let Some(response) = precheck(&head) {
-        return Some(response);
+    if let Some((status, body)) = precheck(&head) {
+        return Some((status, body, false));
     }
     if length > MAX_BODY_BYTES {
-        return Some((413, b"{\"error\":\"request body too large\"}".to_vec()));
+        return Some((
+            413,
+            b"{\"error\":\"request body too large\"}".to_vec(),
+            false,
+        ));
     }
     if let Some(expect) = head.header("Expect") {
         if !expect.eq_ignore_ascii_case("100-continue") {
-            return Some((417, b"{\"error\":\"unsupported expectation\"}".to_vec()));
+            return Some((
+                417,
+                b"{\"error\":\"unsupported expectation\"}".to_vec(),
+                false,
+            ));
         }
         stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok()?;
     }
@@ -171,14 +199,52 @@ fn respond<S: RequestTransportStream>(
             .ok()?;
         if body.len() > MAX_BODY_BYTES {
             // Match the prior tiny_http adapter's post-read refusal body.
-            return Some((413, b"{}".to_vec()));
+            return Some((413, b"{}".to_vec(), true));
         }
         head.body = body;
         head
     } else {
         uds_http::read_body(stream, head, length)?
     };
-    Some(handler(&req))
+    let (status, body) = handler(&req);
+    Some((status, body, true))
+}
+
+/// How long the lingering close below waits for one more chunk of
+/// the body a refused request pipelined with its head. The body was
+/// written before the response, so it is already in flight; this is
+/// a grace window for draining it, not a read deadline for peers.
+const LINGER_CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Lingering close for a response sent before the request body was
+/// consumed (precheck, framing and size refusals — #16583): closing
+/// a TCP socket with the pipelined body still unread makes the
+/// kernel reset the connection, and the reset can discard the
+/// response before the peer reads it — the intermittent
+/// `Connection reset by peer` on the broker_tls wrong-token
+/// roundtrip. Discard whatever the peer already sent, bounded in
+/// bytes and by one short timeout per read, so the close that
+/// follows is a clean FIN / TLS close_notify. A peer withholding
+/// its body delays only this connection's close, by one timeout;
+/// the response is already on the wire either way.
+fn drain_unread<S: RequestTransportStream>(stream: &mut S) {
+    if stream.set_read_timeout(Some(LINGER_CLOSE_TIMEOUT)).is_err() {
+        return;
+    }
+    let mut chunk = [0u8; 8192];
+    let mut drained = 0usize;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                drained += n;
+                if drained > MAX_BODY_BYTES {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +415,49 @@ mod tests {
         );
         let big = roundtrip(oversize.as_bytes(), None);
         assert!(big.starts_with("HTTP/1.1 413"), "{big}");
+    }
+
+    #[test]
+    fn precheck_refusal_with_pipelined_body_delivers_response() {
+        // Oracle (#16583): a precheck refusal for a request whose body
+        // was pipelined with its head must reach the client intact on
+        // every roundtrip — never discarded by a connection reset
+        // caused by closing the socket with the body still unread.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            serve(
+                listener,
+                |head| {
+                    if head.header("X-Agent-Token") == Some("secret") {
+                        None
+                    } else {
+                        Some((401, b"{\"error\":\"bad token\"}".to_vec()))
+                    }
+                },
+                |_| (200, b"ok".to_vec()),
+            );
+        });
+        for _ in 0..50 {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .write_all(
+                    b"POST /healthz HTTP/1.1\r\nHost: localhost\r\n\
+                      X-Agent-Token: wrong\r\nContent-Length: 2\r\n\
+                      Connection: close\r\n\r\n",
+                )
+                .unwrap();
+            stream.write_all(b"{}").unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+            assert!(
+                response.ends_with("{\"error\":\"bad token\"}"),
+                "{response}"
+            );
+        }
     }
 }

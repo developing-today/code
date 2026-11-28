@@ -765,8 +765,15 @@ mod tests {
 
         // Token auth is unchanged and still required: a wrong
         // token is refused by the precheck over the TLS leg.
-        let refused = roundtrip(addr, &mode, "wrong-token").unwrap();
-        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        // Oracle (#16583): the refusal must arrive intact on every
+        // roundtrip — closing the TLS leg with the pipelined body
+        // unread used to reset the connection and discard the 401
+        // before the client could read it (intermittent
+        // "Connection reset by peer" at this unwrap).
+        for _ in 0..25 {
+            let refused = roundtrip(addr, &mode, "wrong-token").unwrap();
+            assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        }
     }
 
     #[test]
