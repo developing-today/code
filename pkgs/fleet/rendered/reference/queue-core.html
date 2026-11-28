@@ -1,0 +1,473 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>fleet queue: core verbs - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="fleet-queue-core-verbs"><a class="header" href="#fleet-queue-core-verbs">fleet queue: core verbs</a></h1>
+<p><code>fleet queue</code> is the repo work queue: enqueue, claim, and complete tasks through the queue broker. Inside the binary the same surface is the standalone <code>repo-queue</code> program, and every per-verb usage string says <code>repo-queue</code>, not <code>fleet queue</code>; the two spellings are identical. The full command list is: <code>validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack</code>.</p>
+<p>Task states are <code>queued</code>, <code>claimed</code>, <code>parked</code>, <code>blocked</code>, <code>needs_review</code> (live) and <code>done</code>, <code>failed</code>, <code>cancelled</code> (terminal).</p>
+<p>This chapter covers the core verbs — <code>validate</code>, <code>enqueue</code>, <code>list</code>, <code>claim</code>, <code>release</code>, <code>show</code>, <code>health</code>. The lifecycle verbs are in <a href="queue-lifecycle.html">fleet queue: lifecycle verbs</a>, the GitHub fallback in <a href="queue-fallback.html">fleet queue: the fallback queue</a>, dispatch and sessions in <a href="queue-dispatch.html">fleet queue: dispatch and sessions</a>, and inspection/admin in <a href="queue-admin.html">fleet queue: inspection and admin</a>.</p>
+<h2 id="how-the-client-reaches-the-broker"><a class="header" href="#how-the-client-reaches-the-broker">How the client reaches the broker</a></h2>
+<p>The client never touches the database and never fetches from Bitwarden; it POSTs JSON to the <strong>queue-broker</strong>, which is the only process that talks to the Turso store (database <code>fleet-queue</code>). There are two routes, in selection order:</p>
+<ol>
+<li><strong>Direct route (on-laptop)</strong>, chosen when a broker URL is configured: environment <code>REPO_QUEUE_BROKER_URL</code>, else the file <code>~/.config/repo-queue/broker-url</code>. A <code>unix://&lt;path&gt;</code> value selects the broker’s Unix socket; anything else is read as <code>http://host:port</code> TCP (the broker dual-binds TCP + UDS; default TCP bind is the laptop tailnet address, port 4801). The direct-route token comes from env <code>REPO_QUEUE_TOKEN_FILE</code>, else <code>~/.config/queue-broker/token</code>, sent as header <code>X-Agent-Token</code>. Wire: raw HTTP/1.1, read timeout 300 s, write timeout 60 s. With no configured URL, fleet-config’s probe-based choice for the <code>queue-broker</code> role applies: a live role socket selects UDS; a failed UDS attempt falls back to the session-proxy route within the same call.</li>
+<li><strong>Session-proxy route (sandbox default):</strong> the client connects to the laptop-agent session proxy’s Unix socket — <code>$HOME/.cache/laptop-agent/broker.sock</code> (fleet-config’s <code>broker_socket()</code> wins when it loads; env beats config file beats that compiled-in default). Framing: 8-byte big-endian length prefix + one JSON envelope <code>{method:"POST", path, body, port:4801, token_file:"&lt;home&gt;/tools/queue-broker-token"}</code>. The proxy, on the laptop, reads the named token file there and forwards to the broker on port 4801. Read timeout 660 s. On a failed first attempt the client auto-spawns the proxy/broker program — a sibling <code>fleet</code> binary (<code>fleet proxy serve</code>) always wins; the Python <code>~/tools/laptop-agent-broker.py</code> is the fallback for standalone rollback builds — waits up to ~5 s for the socket, and retries once.</li>
+</ol>
+<p>Broker-unavailable on either route is exit 3, or the fallback switch (exit 6) for the work verbs — see <a href="queue-fallback.html">fleet queue: the fallback queue</a>.</p>
+<p>Broker envelopes are <code>{ok:true, ...}</code> or <code>{ok:false, exit, error}</code>; the client prints <code>error</code> and exits with <code>exit</code>. A broker envelope whose error carries PostgREST code <code>57014</code> (statement timeout) or <code>PGRST002</code> (schema cache) is retried with exponential backoff + jitter — base 500 ms, ×2, cap 20 s, max 6 attempts. Safe for writes because a 57014 means the statement rolled back.</p>
+<p>Broker server facts that shape client behaviour: the pre-body gate refuses from headers alone — wrong/missing token → <code>401 {"error":"unauthorized"}</code>; <code>Content-Length</code> over the 16 MiB cap → <code>413 {"error":"request body too large"}</code>. The only unauthenticated route is <code>GET /healthz</code> → <code>{"service":"queue-broker"}</code>. Non-POST → 405. Token files are read + trimmed; a missing, unreadable, empty, or whitespace-only file is a hard error naming the file. Before dispatch, the broker re-validates durations and <code>not_before</code> with the same ranges as the client; violations answer <code>{ok:false, exit:2, …}</code>. <code>/validate</code> and <code>/healthz</code> are served without the Turso backend; everything else answers exit 3 <code>queue backend not ready: …</code> until the backend connects.</p>
+<h2 id="global-parsing-rules-and-defaults"><a class="header" href="#global-parsing-rules-and-defaults">Global parsing rules and defaults</a></h2>
+<ul>
+<li><strong>Help:</strong> <code>repo-queue</code> with no args prints the top usage and exits 2; a single <code>--help</code>/<code>-h</code>/<code>help</code> exits 0. <code>&lt;verb&gt; --help</code> anywhere in the verb’s args prints that verb’s exact usage and exits 0 — help wins over every other argument, <em>except</em> when the help-looking token is the value of a value-flag (<code>fail 5 --error help</code> records the error text “help”; <code>park 5 --reason -h</code> parks with reason “-h”).</li>
+<li><strong>Parsing errors are exit 2:</strong> unknown flag, duplicate flag, a boolean given an inline value (<code>--dry-run=false</code>), a value flag with no value, a value flag followed by another <code>--flag</code> token, extra positionals past a verb’s arity (rejected before any broker contact), and non-numeric values for numeric flags (the message names the flag). Message + the verb’s usage go to stderr.</li>
+<li><strong><code>--worker</code> default:</strong> <code>repo-worker-code</code>. Exceptions: <code>cancel</code> defaults its worker to <code>fleet-monitor</code> (see <a href="queue-lifecycle.html">lifecycle verbs</a>); <code>stack record</code>’s owner worker and the outbox owner defaults differ (see <a href="queue-admin.html">inspection and admin</a>).</li>
+<li><strong><code>--queue</code> default — the divergence.</strong> The nominal default is <code>repo-health-code-shadow</code>, overridable by env <code>REPO_QUEUE_DEFAULT_QUEUE</code> — <strong>but</strong> <code>claim</code> and <code>list</code> are <em>unscoped</em> when neither flag nor env is present (one-queue model: the broker works across the one fleet queue), and <code>enqueue</code> has <strong>no</strong> default at all. Every other verb keeps the shadow default. The help surface presents all three behaviours identically (<code>[--queue &lt;name&gt;]</code> everywhere), so the divergence is invisible from help alone. Known discrepancy: this divergence is deliberate in source (#7016, #8097) but undocumented in help.</li>
+<li><strong><code>--lane</code></strong> on the holder-checked verbs (heartbeat, checkpoint, park, release, block, fail, complete): flag, else env <code>REPO_QUEUE_LANE</code>, else null — the broker then checks the worker alone. All scheduled lanes share one worker id, so the lane is what tells the broker whose claim a verb acts on.</li>
+<li><strong><code>--progress</code> / <code>--progress-file</code></strong> are mutually exclusive (both → exit 2). The file form reads the file’s text as the progress value.</li>
+<li><strong><code>--execution &lt;id&gt;</code></strong> (park, fail, complete) is parsed into an execution record <code>{lane, lane_id?, session_id, fallback_reason?}</code>; a lane-looking value (e.g. <code>opencode-a</code>, <code>any-n</code>) is split into mode (<code>opencode</code>/<code>direct</code>) + <code>lane_id</code>; the mode-only values <code>direct</code>/<code>opencode</code> pass through unchanged.</li>
+<li><strong>Durations are rejected, never clamped</strong>, identically at client and broker: lease 1..=86400 (default 2700), heartbeat extend 1..=86400 (default 900), park delay 1..=604800 (no default), list limit 1..=500 (default 20). <code>not_before</code> must be a non-empty RFC 3339 timestamp no more than 366 days in the future.</li>
+<li><strong>Mode line:</strong> claim, heartbeat, checkpoint, complete (and the fallback-switch envelope) carry a <code>mode_line</code> object <code>{verb, mode, route}</code> selected by the routing contract from observed legs (database / replica / github-write / github-read). Modes: <code>normal</code> (route <code>cloud</code>), <code>gh-read-degraded</code>, <code>gh-write-degraded</code>, <code>db-degraded</code> (route <code>github-markers</code>).</li>
+</ul>
+<h2 id="exit-codes-the-whole-queue-client"><a class="header" href="#exit-codes-the-whole-queue-client">Exit codes (the whole queue client)</a></h2>
+<p>Stated once here and referenced by every other queue chapter:</p>
+<ul>
+<li><strong>0</strong> — success.</li>
+<li><strong>1</strong> — gate / not-found: <code>verify-disposition</code> gate failure or unreadable GitHub readback; <code>show</code> task not found; fallback <code>complete</code> disposition rejection.</li>
+<li><strong>2</strong> — usage error (message + usage on stderr).</li>
+<li><strong>3</strong> — transport / broker-path failure: broker unreachable, HTTP 401 (token rejected), HTTP ≥400 broker error, malformed broker reply, unwritable signal file, <code>/events-list</code> not served by the broker (timeline/show), home unresolvable.</li>
+<li><strong>4</strong> — broker store failure: the default when a broker envelope <code>{ok:false}</code> carries no <code>exit</code> of its own; broker-side store/transport failures are emitted as exit 4. Also <code>stack replay</code>’s routed-conflict exit.</li>
+<li><strong>5</strong> — no-claim / no-row: the verb ran but there is no matching claimed row / no claimable task (<code>require_row</code> failure: “no matching claimed row (task not claimed by this worker, or already terminal)”).</li>
+<li><strong>6</strong> — fallback switch: a work verb’s primary-store failure switched the work to the GitHub fallback (see <a href="queue-fallback.html">the fallback queue</a>).</li>
+</ul>
+<p>Sources: <a href="https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-queue/src/client.rs">fleet-queue client</a>, <a href="https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-queue/src/client/support.rs">client support</a>, <a href="https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-queue/src/client/transport.rs">client transport</a>, <a href="https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-queue/src/queue_broker.rs">queue broker</a>, <a href="https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs">Turso queue store</a>.</p>
+<h2 id="fleet-queue-validate"><a class="header" href="#fleet-queue-validate">fleet queue validate</a></h2>
+<pre><code class="language-text">usage: repo-queue validate &lt;packet-path&gt;
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>&lt;packet-path&gt;</code> (positional)</td><td>file path</td><td>required</td><td>The packet JSON file to validate.</td></tr>
+<tr><td><em>(no flags)</em></td><td>—</td><td>—</td><td><code>validate</code> has no flags at all — not even <code>--json</code>; output is always the JSON object below.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> Loads the packet and validates it <em>through the broker</em> (<code>/validate</code>). An unreadable file dies exit 2 <code>cannot read packet file: …</code>; invalid JSON dies exit 2 <code>packet file is not valid JSON: …</code>. Validation failure dies with the broker’s exit code and the joined error list. On success it prints, on stdout, <code>{"valid": true, "dedupe_key": &lt;packet.dedupe_key|null&gt;, "kind": &lt;payload.kind|null&gt;, "title": &lt;packet.title|null&gt;}</code>.</p>
+<p>The validator checks, among other things: <code>priority</code> on the design scale [10, 20, 30, 40, 50, 70, 90]; <code>max_attempts</code> 1..=1000 (design default 1000); payload size hard ceiling 16384 bytes (warn above 4096); the payload <code>schema</code> const <code>"repo-task/v1"</code>; <code>kind</code> one of six values the validator allows (<code>pr_shepherd, triage, small_fix, ci_investigation, second_pass, feature_slice</code>); <code>repo</code> on the validator’s 9-repo allowlist; and the identity rule — a packet must carry at least one of <code>issue</code>, <code>prs</code> (non-empty), <code>set</code>, or <code>source</code>.</p>
+<p>Known discrepancy: the published packet schema (<code>repo-task-v1.schema.json</code>) allows only 4 kinds and 8 repos; the validator allows 6 kinds (adding <code>second_pass</code>, <code>feature_slice</code>) and 9 repos (adding legacy <code>dezren39/nix</code>, kept for in-flight dedupe keys after the rename to <code>dezren39/darwin-nix</code>). A packet valid to the broker can be invalid against the published schema, and vice versa. This chapter documents the validator (source) behaviour.</p>
+<p>Exit codes: 0 valid · 2 unreadable file / invalid JSON / usage · broker’s exit code on validation failure.</p>
+<pre><code class="language-text">$ fleet queue validate ./task.json
+{"valid": true, "dedupe_key": "fix: repo-health:v1:fix:developing-today/code:issue:13165", "kind": "small_fix", "title": "Write the fleet book queue chapters"}
+</code></pre>
+<h2 id="fleet-queue-enqueue"><a class="header" href="#fleet-queue-enqueue">fleet queue enqueue</a></h2>
+<pre><code class="language-text">usage: repo-queue enqueue &lt;packet-path&gt; [--queue &lt;name&gt;] [--platform &lt;p&gt;] [--dry-run] [--shadow-intent]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>&lt;packet-path&gt;</code> (positional)</td><td>file path</td><td>required</td><td>The packet JSON file to enqueue.</td></tr>
+<tr><td><code>--queue</code></td><td>queue name</td><td><strong>none — required in effect</strong></td><td>Target queue stream. Resolution: <code>--queue</code> flag → the packet’s own <code>"queue"</code> field → env <code>REPO_QUEUE_DEFAULT_QUEUE</code>. With none of the three: exit 2 (see Behaviour).</td></tr>
+<tr><td><code>--platform</code></td><td>platform family</td><td>unset</td><td>Restricts the item to a platform family; validated client-side. Absent = unset, claimable anywhere.</td></tr>
+<tr><td><code>--dry-run</code></td><td>boolean</td><td>off</td><td>Validate + ask the broker to build the row, print it, file nothing.</td></tr>
+<tr><td><code>--shadow-intent</code></td><td>boolean</td><td>off</td><td>Required to enqueue into a queue whose name ends in <code>-shadow</code>; without it, exit 2.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> Flow: read packet (exit 2 shapes as in <code>validate</code>) → broker <code>/validate</code> (a dry run still validates, with <code>dry_run</code> noted) → shadow guard → POST <code>/enqueue</code> <code>{packet, queue, dry_run, shadow_intent, platform}</code>.</p>
+<p>Queue resolution deliberately differs from every other verb: with no flag, no packet <code>"queue"</code> field, and no env, enqueue dies exit 2 with <code>enqueue: no queue resolved — … (enqueue has no default queue; the old shadow default silently misrouted work)</code>.</p>
+<p>Outputs:</p>
+<ul>
+<li><strong>Dry run:</strong> the would-be task row as JSON, with two extra keys: <code>"_dry_run": true</code> and <code>"_rpc": "agent.enqueue_repo_task"</code>. Exit 0.</li>
+<li><strong>Real run:</strong> one human line, any <code>warning: …</code> lines, then the task row as JSON. Exit 0. The line is one of:
+<ul>
+<li><code>enqueued new task &lt;id&gt; (queue &lt;q&gt;, status &lt;s&gt;)</code> — row created within 10 s skew of the call;</li>
+<li><code>dedupe hit: existing task &lt;id&gt; (queue &lt;q&gt;, status &lt;s&gt;, created &lt;ts&gt;)</code> — the dedupe key already has a live row; nothing was filed. Warnings are added when the holding row is in a different queue than requested, or in a terminal state;</li>
+<li><code>revived: existing task &lt;id&gt; (…)</code> — dedupe hit on a <code>queued</code> row whose <code>updated_at</code> is fresh (broker revived it in place);</li>
+<li><code>revived: new task &lt;id&gt; (…), predecessor task &lt;pid&gt; (&lt;pstatus&gt;)</code> — the envelope carried <code>revived_from</code>: the key’s prior task was terminal, a fresh task was created linked to it;</li>
+<li><code>work already queued: existing task &lt;id&gt; (queue &lt;q&gt;, status &lt;s&gt;) holds &lt;identity&gt;; nothing filed (set payload.dedupe_override to file a deliberate parallel)</code> — the envelope carried <code>work_identity_collision</code>: a <em>live</em> task already holds this work identity (repo, issue, kind family), regardless of dedupe key.</li>
+</ul>
+</li>
+</ul>
+<p>Dedupe semantics: dedupe is by <code>(queue, dedupe_key)</code> among <strong>live</strong> rows (the Turso backend does a read-then-insert check — its <code>(queue, dedupe_key)</code> index is deliberately NOT unique). A key held only by terminal rows accepts a new row. A <em>cancelled</em> row is revived in place by enqueue (fields reset, attempts 0, lease deleted, <code>enqueued</code> event flagged <code>revived_from_cancelled</code>); a <em>failed</em> row deliberately does not revive — re-enqueue of a failed identity files a new row or is an explicit operator action (the <code>revive</code> verb).</p>
+<p>At enqueue the broker also: enriches a packet that names an issue but carries no <code>labels</code> array from the GitHub mirror in the same store; selects the stored priority from label bands (<code>expedite</code> → 15, <code>next-up</code> → 25 — stored values deliberately not on the packet priority scale); and normalizes <code>max_attempts</code> / <code>required_budget_minutes</code> from the packet copy into the payload mirror.</p>
+<p>Exit codes: 0 enqueued / dedupe hit / revived / dry run · 2 unreadable packet, invalid JSON, no queue resolved, shadow queue without <code>--shadow-intent</code>, usage · 3 transport · 4 broker store failure.</p>
+<pre><code class="language-text">$ fleet queue enqueue ./task.json --queue repo-health-code
+enqueued new task 19479 (queue repo-health-code, status queued)
+{"id": 19479, "queue": "repo-health-code", "status": "queued", "dedupe_key": "fix: repo-health:v1:fix:developing-today/code:issue:13165", "payload": {"schema": "repo-task/v1", "kind": "small_fix", "…": "…"}}
+</code></pre>
+<h2 id="fleet-queue-list"><a class="header" href="#fleet-queue-list">fleet queue list</a></h2>
+<pre><code class="language-text">usage: repo-queue list [--queue &lt;name&gt;] [--status &lt;s&gt;] [--limit &lt;n&gt;] [--not-before &lt;ts&gt;] [--lane &lt;l&gt;] [--worker &lt;w&gt;] [--task &lt;id&gt;] [--json]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--queue</code></td><td>queue name</td><td>unscoped</td><td>Flag → env <code>REPO_QUEUE_DEFAULT_QUEUE</code> → <strong>no scope</strong> (all queues). Never the shadow default.</td></tr>
+<tr><td><code>--status</code></td><td>status string</td><td>unset</td><td>Filter by status. Help names <code>queued|parked|claimed|blocked</code> as the actionable set; any status string is forwarded.</td></tr>
+<tr><td><code>--limit</code></td><td>integer</td><td>20</td><td>Range 1..=500, rejected (never clamped) outside it, exit 2 naming <code>--limit</code>.</td></tr>
+<tr><td><code>--not-before</code></td><td>RFC 3339 timestamp</td><td>unset</td><td>Filter; validated client-side with the park/revive rule, exit 2 on garbage.</td></tr>
+<tr><td><code>--lane</code></td><td>lane id</td><td>unset</td><td>Filter forwarded to the broker.</td></tr>
+<tr><td><code>--worker</code></td><td>worker id</td><td>unset</td><td>Filter forwarded to the broker.</td></tr>
+<tr><td><code>--task</code></td><td>task id</td><td>unset</td><td>Narrow to one task regardless of status ordering — the recovery path for verifying a just-completed task.</td></tr>
+<tr><td><code>--json</code></td><td>—</td><td>off</td><td>Exact-task status form: requires <code>--queue</code> and <code>--task</code> together; see <strong>Exact form</strong> below. The bulk flags do not apply in that form.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> A bare <code>list</code> prints a scope note to <strong>stderr</strong>: it shows one queue (or every queue when unscoped) in the broker’s default ordering — <em>newest terminal rows first</em> — “not the actionable set”, with pointers to <code>--status</code>, <code>--queue</code>, <code>--limit</code>. Fetching is paged at 100 rows/page with broker offsets, because a single oversized <code>/list</code> reply used to render as a silent “(no tasks)”. A reply with no <code>rows</code> array is an error (exit 3), never an empty list.</p>
+<p>Output is a table with columns <code>task, priority, status, age, dedupe_key, title</code> (title truncated to 72 chars); <code>(no tasks)</code> when empty. When the broker reports a total: <code>(N matching tasks)</code>, or <code>(truncated: showing X of N matching tasks — raise --limit to see more)</code>.</p>
+<p><strong>Exact form (<code>--json</code>, #8581 pilot).</strong> With <code>--json</code>, <code>--queue</code> and <code>--task</code> are required together (exit 2 without both) and no other list flag applies (exit 2 naming it). The verb makes one scoped rich <code>/list</code> read and prints a single JSON record instead of the table: <code>verb</code>, <code>mode</code> and <code>route</code> actually used (the #8581 contract vocabulary), <code>queue</code>, <code>task_id</code>, <code>as_of</code> (when this seat observed the answer), and a <code>result</code> of <code>found</code> (the broker row rides under <code>task</code>, attributed to <code>source: cloud</code>, with the row’s own <code>task_as_of</code> when it carries a timestamp), <code>not_found</code>, <code>partial</code>, or <code>unknown</code>. Only a complete authoritative zero — ok reply, empty rows, total reported as 0, no truncation — is <code>not_found</code>; a truncated window, an uncertified zero, or a reply naming other tasks is <code>partial</code> with a <code>detail</code> naming why, and a transport failure, a denial, a broker error envelope, a malformed reply, or a matching row that names a different queue is <code>unknown</code> with its own <code>detail</code>. This slice attempts no replica or marker fallback: when nothing served, the record says <code>mode: db-degraded</code>, <code>route: unavailable</code> rather than naming a route it never took. Exit codes in this form: 0 found · 1 not_found · 3 partial / unknown / transport · the broker envelope’s own exit (default 4) on a broker error.</p>
+<p>Exit codes: 0 ok · 2 usage (including out-of-range <code>--limit</code>, bad <code>--not-before</code>) · 3 transport / malformed reply · 4 broker store failure.</p>
+<pre><code class="language-text">$ fleet queue list --status queued --limit 3
+task     priority  status  age   dedupe_key                                                        title
+19479    20        queued  4m    fix: repo-health:v1:fix:developing-today/code:issue:13165         Write the fleet book queue chapters
+19480    30        queued  2m    triage: repo-health:v1:triage:developing-today/code:issue:13170   Triage the failing nightly
+(2 matching tasks)
+</code></pre>
+<h2 id="fleet-queue-claim"><a class="header" href="#fleet-queue-claim">fleet queue claim</a></h2>
+<pre><code class="language-text">usage: repo-queue claim [--queue &lt;name&gt;] [--worker &lt;id&gt;] [--lease-seconds &lt;n&gt;] [--lane &lt;l&gt;] [--task &lt;id&gt;] [--count &lt;n&gt;] [--from-session &lt;id&gt;] [--platform &lt;p&gt;] [--session-id &lt;id&gt;] [--model-provider &lt;p&gt;] [--model-id &lt;id&gt;] [--model-variant &lt;v&gt;] [--filter &lt;f&gt;] [--pool &lt;p&gt;] [--launched-by &lt;who&gt;] [--remaining-budget-minutes &lt;n&gt;] [--handoff] [--bind]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--queue</code></td><td>queue name</td><td>unscoped</td><td>Flag → env → unscoped across the one fleet queue, priority order.</td></tr>
+<tr><td><code>--worker</code></td><td>worker id</td><td><code>repo-worker-code</code></td><td>Claiming worker identity, stamped on the row + <code>leases</code> table. Passing it explicitly counts as claim intent even though it equals the default (see bare-claim refusal).</td></tr>
+<tr><td><code>--lease-seconds</code></td><td>integer seconds</td><td>2700 (45 min)</td><td>Lease length. Range 1..=86400, rejected outside, exit 2. A 0/negative lease is “born expired”.</td></tr>
+<tr><td><code>--lane</code></td><td>lane id</td><td>unset</td><td>Lane identity for this claim; validated broker-side against the lane registry (unknown lane / worker mismatch / disabled lane / queue mismatch each refuse and claim nothing). Canonical lane universe: 6 families (<code>code, any, not-code, opencode, openchamber, nix</code>) × <code>a..=z</code> = 156 lanes, all enabled.</td></tr>
+<tr><td><code>--task</code></td><td>task id</td><td>unset</td><td>By-id claim: take exactly that row when the by-id predicate allows (a queued row under the ordinary predicate, or a sink/handed-off row).</td></tr>
+<tr><td><code>--count</code></td><td>integer</td><td>1</td><td>Batch claim: the broker runs the same atomic pick n times. Range 1..=5, enforced client- and broker-side; outside → exit 2.</td></tr>
+<tr><td><code>--from-session</code></td><td>session id</td><td>unset</td><td>With <code>--task</code>: session-to-session <strong>transfer</strong>. The named session must be the task’s current holder (its session mark is the capability); a mismatch refuses and leaves the claim untouched. The task never passes through queued/parked.</td></tr>
+<tr><td><code>--platform</code></td><td>platform family</td><td>unset</td><td>A <em>mark</em>, not a filter: stamped on the row and the claimed event; a mismatched or undeclared claim claims items all the same.</td></tr>
+<tr><td><code>--session-id</code></td><td>session id</td><td>unset</td><td>The claiming session’s own id, recorded as a mark on the claimed event; also enables model-stamp derivation and <code>--bind</code>. Session ids have the shape <code>ses_</code> + alphanumerics.</td></tr>
+<tr><td><code>--model-provider</code></td><td>provider name</td><td>unset</td><td>The claiming session’s serving model provider, stamped by the broker as the row’s <code>claim_provider</code>.</td></tr>
+<tr><td><code>--model-id</code></td><td>model id</td><td>unset</td><td>Stamped as the row’s <code>claim_model</code>.</td></tr>
+<tr><td><code>--model-variant</code></td><td>variant name</td><td>unset</td><td>Stamped as the row’s <code>claim_variant</code>. If all model flags are absent and <code>--session-id</code> is given, the stamp is <em>derived</em> from the session’s own record; derivation failure never fails the claim.</td></tr>
+<tr><td><code>--filter</code></td><td>filter expression</td><td>unset</td><td>Claimer-side boolean filter expression over task metadata (repo, queue, pool, platform, label, kind, priority, lane, model), evaluated by the broker inside the claim.</td></tr>
+<tr><td><code>--pool</code></td><td>pool identity</td><td>unset</td><td>The claimer’s declared pool identity; recorded like the other marks and used only to satisfy a task’s own <code>requires.pool</code>.</td></tr>
+<tr><td><code>--launched-by</code></td><td>who</td><td><code>opencode-claimant</code> (only sent with <code>--bind</code>)</td><td>Who launched the bound session.</td></tr>
+<tr><td><code>--remaining-budget-minutes</code></td><td>integer minutes</td><td>unset</td><td>The claimer’s remaining shift budget. The broker only matches requirement-bearing tasks whose <code>required_budget_minutes</code> fits; omitting it leaves requirement-bearing tasks unclaimed. Skips are reported (see no-claim output).</td></tr>
+<tr><td><code>--handoff</code></td><td>boolean</td><td>off</td><td>Pick = the next recorded opencode handoff (status <code>handed_off</code>) from the sink; the broker picks the row, the caller names no task.</td></tr>
+<tr><td><code>--bind</code></td><td>boolean</td><td>off</td><td>Claim + lane-assign + session-bind in ONE broker round trip via <code>/claim-flow</code>. Requires <code>--session-id</code>, a single (non-batch) claim, and no <code>--from-session</code>; violations die exit 2 before broker contact. A post-claim lane/bind failure inside the flow is answered as a partial SUCCESS envelope carrying <code>claim_flow_partial</code> (never a retryable error) — the client prints the note on stderr and stamps <code>claim_flow_partial</code> onto the printed row.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour — bare-claim refusal.</strong> A claim with no task, no filter, no queue scope, no count, no handoff/bind, and no identity marks (worker, lane, session-id, pool, platform, from-session) is refused <em>before any broker contact</em>, exit 2: “a bare claim is never a meaningful intent and has repeatedly stolen the queue’s top task during CLI probing”.</p>
+<p><strong>Behaviour — the pick.</strong> One atomic conditional update (libSQL is single-writer, so the claim is one conditional UPDATE whose WHERE re-checks claimability against the picked row; a competing claim after the first lands matches no row and returns no claim, exit 5). Eligible: <code>queued</code> rows with <code>attempts &lt; max_attempts</code> and <code>not_before</code> null or due, plus <code>parked</code> rows whose <code>not_before</code> is due. Order: <code>priority ASC, created_at ASC</code> (lowest number = highest priority). Claiming sets status <code>claimed</code>, <code>worker_id</code>, <code>claimed_at</code>, <code>lease_until = now + lease_seconds</code>, upserts the <code>leases</code> row, writes a <code>claimed</code> event — and increments <code>attempts</code> by 1 for a fresh (queued) claim but <strong>0 for a parked resume</strong> (park/resume must not consume attempts; the event carries <code>resumed_from_park</code>). Every claim first runs lease expiry opportunistically: abandoned claims whose lease lapsed become claimable at the moment anyone looks.</p>
+<p><strong>Behaviour — no-double-serve guard.</strong> After a successful primary claim, the client checks the task’s issue against the GitHub fallback (see <a href="queue-fallback.html">the fallback queue</a>). If the issue is <code>live</code> or <code>contested</code> in the fallback under a <em>different</em> worker, the client immediately blocks the task back with reason-class <code>fallback_held</code> and prints <code>{"task": null, "guard": "fallback_held", "held_by": &lt;w&gt;, "repo": …, "issue": …}</code>, exit 5. If the GitHub check itself fails, the claim is served with a <code>guard_warning</code> key added (the guard fails open; a GitHub outage must not stall every claim). Batch claims run the same guard per row; held rows land in <code>guard_held</code>.</p>
+<p><strong>Behaviour — timeline mirroring.</strong> On a pre-#9046 broker the client appends <code>session_bound</code> / <code>model_stamp</code> events after a claim (and a <code>session_unbound</code> for the from-session on a transfer); a post-#9046 broker stamps in-op and its rows carry <code>claim_session_id</code>, making the appends a no-op. Timeline appends are fail-soft — they warn, never fail the claim.</p>
+<p><strong>Output.</strong> Success: the task row <strong>verbatim</strong> as JSON (the row is the contract: <code>{id, queue, status, dedupe_key, payload, …}</code>), exit 0, plus a <code>mode_line</code>. A row that arrives with a null or empty-object <code>payload</code> is treated as payload-less and reported as <em>no claim</em>. Batch output: <code>{"tasks": […rows…], "claimed": k, "requested": n, "guard_held": […]}</code>, exit 0 when k ≥ 1. No-claim output: <code>{"task": null}</code> — deliberately carrying no id/queue/status a caller could mistake for a task — plus any of <code>budget_skipped</code>, <code>max_required_budget_minutes</code>, <code>queued</code>, <code>at_cap_queued</code>, <code>queued_not_yet_due</code>, <code>parked_due</code> the broker supplied; stderr gets the diagnostic <code>no claimable task — Q queued (A at the attempt cap, D not yet due), P parked due</code> (with <code>; every queued task is at the attempt cap</code> when that is the whole story). Exit 5.</p>
+<p>Exit codes: 0 claimed · 2 usage / bare-claim refusal / out-of-range lease or count / <code>--bind</code> precondition failure · 3 transport · 4 broker store failure · 5 no claimable task, or claim held by the no-double-serve guard · 6 fallback switch on primary-store failure.</p>
+<pre><code class="language-text">$ fleet queue claim --worker repo-worker-code --lane code-a --session-id ses_01J9EXAMPLE0000000000000
+{"id": 19479, "queue": "repo-health-code", "status": "claimed", "worker_id": "repo-worker-code", "lane_id": "code-a", "lease_until": "2026-11-23T04:50:00Z", "dedupe_key": "fix: repo-health:v1:fix:developing-today/code:issue:13165", "payload": {"schema": "repo-task/v1", "kind": "small_fix"}, "mode_line": {"verb": "claim", "mode": "normal", "route": "cloud"}}
+$ fleet queue claim --worker repo-worker-code --lane code-a
+{"task": null, "queued": 0, "parked_due": 0}
+no claimable task — 0 queued (0 at the attempt cap, 0 not yet due), 0 parked due
+(exit 5)
+</code></pre>
+<h2 id="fleet-queue-release"><a class="header" href="#fleet-queue-release">fleet queue release</a></h2>
+<pre><code class="language-text">usage: repo-queue release &lt;task-id&gt; [--worker &lt;id&gt;] [--lane &lt;id&gt;] [--reason &lt;text&gt;]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>&lt;task-id&gt;</code> (positional)</td><td>task id</td><td>required</td><td>The claimed task to release.</td></tr>
+<tr><td><code>--worker</code></td><td>worker id</td><td><code>repo-worker-code</code></td><td>Holder identity; the row must be claimed by this worker (and lane, when supplied).</td></tr>
+<tr><td><code>--lane</code></td><td>lane id</td><td>env <code>REPO_QUEUE_LANE</code>, else null</td><td>Holder lane check; null means the broker checks the worker alone.</td></tr>
+<tr><td><code>--reason</code></td><td>text</td><td><strong>required</strong></td><td>Why this task goes back to the pool; recorded on a <code>released</code> event. Must be non-empty.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> Returns the task to <code>queued</code>, immediately claimable; the reason is recorded on a <code>released</code> event. Used by dispatch for an item whose sub-task failed to launch/bind — back to the pool in the same touch instead of sitting claimed until lease expiry. Release also closes the session binding window on the timeline (<code>session_unbound</code>, trigger <code>release</code>). On success it prints the broker’s returned task row as JSON and exits 0. When no matching claimed row exists, it dies exit 5 with <code>release: no matching claimed row (task not claimed by this worker, or already terminal)</code>.</p>
+<p>Help: the usage writes <code>--reason</code> bare — it is <strong>required and non-empty</strong> — missing → exit 2 <code>release requires --reason "&lt;why this task goes back to the pool&gt;" (#8217)</code>. The top-level usage line lists the same flags as the per-verb usage, <code>[--lane &lt;id&gt;]</code> included; a parity test cross-checks the two so they cannot drift apart again.</p>
+<p>Exit codes: 0 released · 2 usage / missing or empty <code>--reason</code> · 3 transport · 4 broker store failure · 5 no matching claimed row.</p>
+<pre><code class="language-text">$ fleet queue release 19479 --worker repo-worker-code --lane code-a --reason "sub-task failed to launch; returning to pool"
+{"id": 19479, "queue": "repo-health-code", "status": "queued", "worker_id": null, "lease_until": null}
+</code></pre>
+<h2 id="fleet-queue-show"><a class="header" href="#fleet-queue-show">fleet queue show</a></h2>
+<pre><code class="language-text">usage: repo-queue show &lt;task-id&gt; [--limit &lt;n&gt;] [--json]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>&lt;task-id&gt;</code> (positional)</td><td>task id</td><td>required</td><td>The task to show.</td></tr>
+<tr><td><code>--limit</code></td><td>integer</td><td>10</td><td>History tail length; validated with the list-limit rule (1..=500), rejected outside, exit 2.</td></tr>
+<tr><td><code>--json</code></td><td>boolean</td><td>off</td><td>Print the details + history as JSON instead of the rendered form.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> Shows one task’s current details + recent history: the rich <code>/list</code> row for the task is the source of truth for mutable state, plus the tail of the same 14-kind event timeline <code>timeline</code> reads (see <a href="queue-admin.html">inspection and admin</a>). Task not found: stderr <code>repo-queue show: task &lt;id&gt; not found</code>, exit 1. A broker without <code>/events-list</code>: exit 3.</p>
+<p>Exit codes: 0 ok · 1 task not found · 2 usage · 3 transport / broker does not serve <code>/events-list</code> · 4 broker store failure.</p>
+<pre><code class="language-text">$ fleet queue show 19479
+task 19479 — repo-health-code — claimed by repo-worker-code (lane code-a)
+title: Write the fleet book queue chapters
+lease_until: 2026-11-23T04:50:00Z
+recent events: claimed, session_bound, checkpoint
+</code></pre>
+<h2 id="fleet-queue-health"><a class="header" href="#fleet-queue-health">fleet queue health</a></h2>
+<pre><code class="language-text">usage: repo-queue health [--queue &lt;name&gt;] [--worker &lt;id&gt;]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--queue</code></td><td>queue name</td><td>unset</td><td>Scopes the request body when given. Health uses the plain flag only — no env/shadow-default resolution is applied to the body.</td></tr>
+<tr><td><code>--worker</code></td><td>worker id</td><td><code>repo-worker-code</code></td><td><strong>Attribution only</strong> — accepted because the claimant packet mandates <code>--worker</code> on every verb; it changes neither the request body nor the printed table.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Behaviour.</strong> POSTs <code>/health</code> through the fallback-switch path: a dead primary switches the work to the GitHub fallback, exit 6 (see <a href="queue-fallback.html">the fallback queue</a>). Output: first line <code>project: &lt;netloc&gt; (resolved via &lt;source&gt;)</code> (source defaults to <code>bitwarden</code>), then a table whose columns are whatever keys the broker’s health rows carry (per-queue counts by status); <code>(no queues have tasks)</code> when empty. This verb is distinct from the broker’s unauthenticated <code>GET /healthz</code>.</p>
+<p>Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure · 6 fallback switch on primary-store failure.</p>
+<pre><code class="language-text">$ fleet queue health
+project: db.dezren39.turso.io (resolved via bitwarden)
+queue                 queued  claimed  parked  blocked  done
+repo-health-code      12      3        1       0        481
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../reference/builtins.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../reference/queue-lifecycle.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../reference/builtins.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../reference/queue-lifecycle.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

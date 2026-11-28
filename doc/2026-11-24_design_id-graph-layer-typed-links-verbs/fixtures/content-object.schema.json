@@ -5,12 +5,12 @@
   "type": "object",
   "required": ["object_id", "author", "created_claim", "kind", "body", "schema_version"],
   "properties": {
-    "object_id": {"type": "string", "minLength": 1},
-    "author": {"type": "string", "pattern": "^ed25519:[0-9a-f]{4,}$"},
-    "created_claim": {"type": "string"},
-    "kind": {"type": "string", "enum": ["chat-message", "forum-post", "image"]},
-    "body": {"type": "object"},
-    "schema_version": {"type": "integer", "minimum": 1}
+    "object_id": { "type": "string", "minLength": 1 },
+    "author": { "type": "string", "pattern": "^ed25519:[0-9a-f]{4,}$" },
+    "created_claim": { "type": "string" },
+    "kind": { "type": "string", "enum": ["chat-message", "forum-post", "image"] },
+    "body": { "type": "object" },
+    "schema_version": { "type": "integer", "minimum": 1 }
   },
   "additionalProperties": false
 }

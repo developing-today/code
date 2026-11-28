@@ -1,0 +1,60 @@
+# live capture — sandbox seat 'muse' (100.107.76.35), 2026-11-25T01:31Z, agent felix
+
+=== systemctl cat resource-sampler ===
+No files found for resource-sampler.service.
+--- is-enabled/is-active: not-found / inactive
+
+=== systemctl cat hatch-execd ===
+# /etc/systemd/system/hatch-execd.service
+[Unit]
+Description=hatch-execd
+DefaultDependencies=no
+StartLimitIntervalSec=0
+After=hatch-execd.socket
+Requires=hatch-execd.socket
+
+[Service]
+Type=simple
+UMask=0007
+ExecStartPre=/bin/sh -c 'test -f /opt/hatch/runtime-cell/runtime-cell.ready'
+ExecStart=/opt/hatch/runtime-cell/run-execd.sh --socket /run/hatch/execd/execd.sock
+WorkingDirectory=/home/hatch
+Restart=always
+RestartSec=1
+LimitNOFILE=65535
+SyslogIdentifier=hatch-execd
+--- is-enabled/is-active: static / inactive
+
+=== systemctl cat hatch-ca-trust ===
+# /etc/systemd/system/hatch-ca-trust.service
+[Unit]
+Description=Refresh guest CA trust from the Sentinel egress anchor
+ConditionPathIsDirectory=/run/hatch/cell-anchors
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mkdir -p /usr/local/share/ca-certificates
+ExecStart=/usr/bin/ln -sfn /run/hatch/cell-anchors/hatch-egress-ca.pem /usr/local/share/ca-certificates/hatch-egress-ca.crt
+ExecStart=/usr/sbin/update-ca-certificates
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
+--- is-enabled/is-active: enabled / inactive
+
+=== sha256 live unit files ===
+41ab8434f10374674c754be02e7fe95591880c3c7ecae42f99463212fa0f93ac  /etc/systemd/system/hatch-execd.service
+c0a39e26e6f9d0dc82c39bdfb82de9286f4fc133609e2acb329387a228cc3c33  /etc/systemd/system/hatch-execd.socket
+3666a09a9146d03b71705b778242d930d80c8db881aca575f6593d2b9fd0032c  /etc/systemd/system/hatch-ca-trust.service
+71c91eae35a2518a52cb24ed0bbd553e261ce3327e2c9442a930876bfd8234e1  /etc/systemd/system/hatch-ca-trust.path
+
+=== sha256 committed resource-sampler (dezren39/hatch-personal, scripts/resource-sampler/) ===
+23116a2b679601e93764af5067b6160736039384c37636541a05ecc51f80ea2a  /home/hatch/hatch-personal/scripts/resource-sampler/resource-sampler.service
+adcadcc741e840d78a5cd09c959cfcc6be1a13473692251788e8ebcfc8328b4f  /home/hatch/hatch-personal/scripts/resource-sampler/resource-sampler.sh
+f5d5b0692b8f4835167807827afde7debcb88433cf7fd7c3443ed72b79940389  /home/hatch/hatch-personal/scripts/resource-sampler/install-sampler-units.sh
+
+=== ls -la /etc/systemd/system (matching) ===
+-rw-r--r-- 1 root root  187 Nov 24 23:18 hatch-ca-trust.path
+-rw-r--r-- 1 root root  430 Nov 24 23:18 hatch-ca-trust.service
+-rw-r--r-- 1 root root  430 Jan  1  1970 hatch-execd.service
+-rw-r--r-- 1 root root  353 Jan  1  1970 hatch-execd.socket

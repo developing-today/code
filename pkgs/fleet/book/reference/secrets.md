@@ -4,6 +4,8 @@
 
 The platform rule is that secrets are resolved by name through the fleet-secrets chain only; no domain shells out to `bws` or reads a token file on its own.
 
+Writes exist at the same library level, for one flow: fleet-secrets' `BwsStore` stores a value under a name through `bws secret create` (replacing any existing secret of that name, then verifying by reading it back), into the Bitwarden project named by `$FLEET_BWS_PROJECT_ID` or `[secrets] bws_project_id`. Its only caller is [`fleet bridge exchange`](bridge.md#fleet-bridge-exchange), putting a freshly minted per-agent credential under its name during bootstrap enrolment. There is still no `fleet secrets` write verb, and the broker remains a read-through cache.
+
 ## The resolution chain (shared context)
 
 `get` walks this chain in order:

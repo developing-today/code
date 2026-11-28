@@ -8,7 +8,7 @@ A domain exists in fleet because three things agree: the registry names it, a Ca
 
 ### Domains
 
-`pub const DOMAINS: &[Domain]` is the full registry, in help order, with 12 entries: `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`, `gh`, `bridge`, `agent`, `shell`, `search`, `laptop-agent`. `pub fn domain(name)` is a linear find over it.
+`pub const DOMAINS: &[Domain]` is the full registry, in help order, with 22 entries: `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`, `gh`, `bridge`, `orgs`, `kv`, `id`, `agent`, `shell`, `search`, `cert`, `laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `host`, `actions`. `pub fn domain(name)` is a linear find over it.
 
 `struct Domain` is the unit that help lists, stubs name, and config disables:
 
@@ -23,15 +23,15 @@ A domain exists in fleet because three things agree: the registry names it, a Ca
 
 `struct AliasRoute { domain, implied_arg }` and `pub fn alias_route(argv0)` define the argv0 map. The shipped aliases are: `repo-queue` → `queue`; `queue-broker` → `serve` with implied arg `queue-broker`; `secrets-broker` → `serve` with implied arg `secrets-broker`; `laptop-agent-broker` → `proxy` with implied arg `serve`; `atlas-search` → `search`; `laptop-agent` → `laptop-agent`. An argv0 that is none of {`fleet`, a variant name, an alias} is a usage error at exit 2 naming the expected names. `is_known_invocation_name(name)` is `fleet` ∨ variant name ∨ alias.
 
-### Capabilities: the 15 atoms
+### Capabilities: the 22 atoms
 
-`enum Capability` has 15 variants with stable string ids (`Capability::id`, `Capability::ALL`):
+`enum Capability` has 22 variants with stable string ids (`Capability::id`, `Capability::ALL`):
 
-`proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue`, `queue-broker`, `secrets-broker`, `search`, `search-serve`, `dispatch`, `dispatch-test`, `laptop-agent`, `secrets`, `gh`, `bridge`, `agent`.
+`proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue`, `queue-broker`, `secrets-broker`, `search`, `search-serve`, `dispatch`, `dispatch-test`, `laptop-agent`, `secrets`, `gh`, `bridge`, `agent`, `commander`, `laptop-http`, `laptop-ssh`, `laptop`, `cert`, `actions`, `orgs`.
 
 Note there is no `shell` capability atom: the `shell` domain rides on the `agent` capability.
 
-`CapabilitySet` is a `BTreeSet<Capability>`, built with `capability_set(&[…])`. Named sets: `full_capabilities()` (all 15), `serve_capabilities()` = {ProxyConnect, ProxyServe, ProxyRawSplice, QueueBroker, SecretsBroker, SearchServe, Secrets}, and `connect_capabilities()` = {ProxyConnect, ProxyRawSplice}.
+`CapabilitySet` is a `BTreeSet<Capability>`, built with `capability_set(&[…])`. Named sets: `full_capabilities()` (all 22), `serve_capabilities()` = {ProxyConnect, ProxyServe, ProxyRawSplice, QueueBroker, SecretsBroker, SearchServe, Secrets}, and `connect_capabilities()` = {ProxyConnect, ProxyRawSplice}.
 
 ### `CapState`: the four availability states
 

@@ -774,7 +774,7 @@ fn malformed_revocation_and_admission_inputs_are_rejected() {
             until: 300
         })
     );
-    assert!(reg.revocations().is_empty());
+    assert_eq!(reg.revocations(), [] as [RevocationRecord; 0]);
 
     // Duplicate revocation and record ids are rejected.
     reg.apply_revocation(key_revocation("rev-1", key_a, 200, 200))

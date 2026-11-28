@@ -29,7 +29,10 @@ name: pm-console-edge deploy
 # itself, or are published by the host. Three secrets are optional, put
 # there by the host's scripts/expose.py --edge-direct (off by default):
 # GITHUB_TOKEN and QUEUE_TOKEN, which let it act itself while the laptop
-# is away, and EDGE_DIRECT, the opt-in that must read `on`. It has no
+# is away, and EDGE_DIRECT, the opt-in that must read `on`. A fourth,
+# BRIDGE_TOKEN, is uploaded in the same pass when the vault holds it:
+# the PM stack's own bridge credential, which the Worker presents to
+# the message-bridge Worker over its service binding (#14373). It has no
 # route here either. The host's pm-stack/console/scripts/expose.py sends
 # the hostname through it once it answers its health check, and
 # `expose.py --edge off` takes the hostname off it again, which is the

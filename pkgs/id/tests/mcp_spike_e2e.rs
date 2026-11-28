@@ -28,6 +28,7 @@ use id_caps::mcp_bridge::{BridgeSession, ToolAction, v1_tool_definitions};
 use id_caps::mcp_policy::{
     AuditOutcome, CapabilityCeiling, PolicyOutcome, PolicySession, Quota, RefusalKind, RoleGrant,
 };
+use id_caps::role_config::QuotaClass;
 use iroh::endpoint::{RelayMode, presets};
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, TransportAddr};
@@ -89,10 +90,14 @@ fn spike_grant() -> RoleGrant {
             object_classes: BTreeSet::from(["cell".to_owned()]),
             program_allowlist: BTreeSet::from(["tic-tac-toe".to_owned()]),
         },
-        quota: Quota {
-            frames: 8,
-            tool_calls: 32,
-            program_invocations: 1,
+        role: "spike".to_owned(),
+        quota_class: QuotaClass {
+            budget: Quota {
+                frames: 8,
+                tool_calls: 32,
+                program_invocations: 1,
+            },
+            replenishment: None,
         },
         rate_limits: Vec::new(),
     }
@@ -243,6 +248,7 @@ async fn spike_run_joins_reads_chats_invokes_once_and_leaves() {
             spike_grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             SigningKey::from_bytes(&[5; 32]),
+            SPIKE_NOW,
         ),
     };
 
@@ -349,7 +355,7 @@ async fn spike_run_joins_reads_chats_invokes_once_and_leaves() {
         PolicyOutcome::Refused(refusal) => assert_eq!(refusal.kind, RefusalKind::Ceiling),
         other => panic!("an unlisted program must be refused, got {other:?}"),
     }
-    assert_eq!(agent.session.spend().program_invocations, 0);
+    assert_eq!(agent.session.spend(SPIKE_NOW).program_invocations, 0);
 
     // The one bounded invocation: the named program on the named
     // object, decided against the current screen revision. Exactly
@@ -445,7 +451,7 @@ async fn spike_run_joins_reads_chats_invokes_once_and_leaves() {
     assert_eq!(invoke_event.object.as_deref(), Some("tic-tac-toe"));
     assert_eq!(invoke_event.quota_charged.program_invocations, 1);
     session.verify_audit().unwrap();
-    let summary = session.owner_summary();
+    let summary = session.owner_summary(SPIKE_NOW);
     assert_eq!(summary.actions, 9);
     assert_eq!(summary.executed, 8);
     assert_eq!(summary.refusals, 1);

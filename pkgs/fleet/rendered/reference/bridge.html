@@ -1,0 +1,623 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>fleet bridge - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="fleet-bridge"><a class="header" href="#fleet-bridge">fleet bridge</a></h1>
+<p><code>fleet bridge</code> is the mailbox client for the message bridge (at <code>https://bridge.security.cab</code>). Every fleet agent has a <strong>mailbox</strong> on the bridge named after it, and registers with optional <strong>groups</strong> (<code>muse</code>, <code>code-lanes</code>, …). Central sends a message or a command to one agent, a group, or all; the agent reads its mailbox, does the work, and posts its answer back, which marks the command handled.</p>
+<p>See also <a href="../concepts/bridge.html">The bridge: fleet messaging</a>.</p>
+<p>Each verb has its own help: <code>fleet bridge &lt;command&gt; --help</code> prints that verb’s usage section plus the shared defaults-and-exit-codes footer, as the domain status line advertises. A bare <code>fleet bridge --help</code> prints the whole-domain usage text.</p>
+<h2 id="tokens-urls-and-defaults-all-verbs"><a class="header" href="#tokens-urls-and-defaults-all-verbs">Tokens, URLs, and defaults (all verbs)</a></h2>
+<p>Two token families, both resolved <strong>by name</strong> through fleet-secrets; values are never printed, logged, or put in argv:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Family</th><th>Secret name</th><th>Opens</th><th>URL shape</th></tr>
+</thead>
+<tbody>
+<tr><td>Owner token (central verbs)</td><td><code>message-bridge.access-token</code> (renamable via <code>[bridge] owner_token_name</code>)</td><td><code>send</code>, <code>agents</code>, <code>log</code></td><td><code>/api/&lt;owner-token&gt;/fleet/…</code></td></tr>
+<tr><td>Fleet token (agent verbs)</td><td><code>message-bridge.fleet-token</code></td><td><code>hello</code>, <code>inbox</code>, <code>post</code>, <code>ack</code>, <code>work</code> — agent routes only; it cannot send commands</td><td><code>/fleet/&lt;fleet-token&gt;/…</code></td></tr>
+<tr><td>Per-agent credential</td><td><code>bridge.&lt;agent&gt;-fleet-token</code> (the name the agent profile records)</td><td>The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token</td><td><code>/fleet/&lt;credential&gt;/…</code></td></tr>
+<tr><td>Notes token (notes family)</td><td><code>bridge.&lt;agent&gt;-token</code> (renamable via <code>[bridge] notes_token_name</code>)</td><td><code>notes send</code>, <code>notes inbox</code>, <code>notes ack</code> for the token’s class/name identity</td><td><code>Authorization: Bearer</code> header on <code>/notes/…</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Tokens travel <strong>in the URL path</strong>, so every error string is scrubbed of token values (<code>&lt;token&gt;</code>) before it is printed, and a 404 is reported as “a wrong token, an old bridge without fleet mailboxes, or a wrong URL”. Plain <code>http</code> URLs are accepted only to this machine; anything else must be <code>https</code>, because tokens ride the path.</p>
+<p>Derivation fallback: when the fleet token’s secret is missing but the owner token resolves (the laptop seat), the fleet token is <strong>derived from the owner token exactly as the bridge derives it</strong>: <code>base64url(HMAC-SHA256(key = owner token bytes, message = "message-bridge/fleet-token/v1"))</code>. The derived value is used in-process only; it is never written anywhere.</p>
+<p>Defaults: the agent name defaults to <code>$FLEET_AGENT</code>, then <code>[bridge] agent</code>; groups to <code>$FLEET_AGENT_GROUPS</code>, then <code>[bridge] groups</code>; the bridge URL to <code>$FLEET_BRIDGE_URL</code>, then <code>[bridge] url</code>, then <code>https://bridge.security.cab</code> (env beats file throughout). Output is the bridge’s JSON, passed through.</p>
+<p>Exit codes for every verb unless noted: <code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request (its JSON error goes to stderr).</p>
+<h2 id="fleet-bridge-send"><a class="header" href="#fleet-bridge-send">fleet bridge send</a></h2>
+<pre><code>fleet bridge send --to &lt;targets&gt; [--command] [--sender NAME] &lt;text | -&gt;
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--to</code></td><td><code>&lt;targets&gt;</code></td><td>required</td><td>Targets: <code>agent:&lt;name&gt;</code> (or a bare name), <code>group:&lt;name&gt;</code>, <code>all</code>. Repeat <code>--to</code> or comma-separate.</td></tr>
+<tr><td><code>--command</code></td><td>—</td><td>off (plain message)</td><td>Mark the send as a command.</td></tr>
+<tr><td><code>--sender</code></td><td><code>NAME</code></td><td>—</td><td>Sender name recorded on the message.</td></tr>
+<tr><td><code>&lt;text | -&gt;</code> (positional)</td><td>text</td><td>required</td><td>Message text; <code>-</code> reads it from stdin.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour"><a class="header" href="#behaviour">Behaviour</a></h3>
+<p>Central verb (owner token). Sends a message — or, with <code>--command</code>, a command — to one agent, a group, or all agents. Route: <code>POST /api/&lt;owner-token&gt;/fleet/send</code>. A command sits in the target mailboxes until an agent takes it (see <code>inbox --take</code>) and posts an answer back, which marks it handled.</p>
+<h3 id="exit-codes"><a class="header" href="#exit-codes">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example"><a class="header" href="#example">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge send --to group:muse --command "run the nightly triage"
+</code></pre>
+<p>Sends a command to every agent in the <code>muse</code> group.</p>
+<h2 id="fleet-bridge-agents"><a class="header" href="#fleet-bridge-agents">fleet bridge agents</a></h2>
+<pre><code>fleet bridge agents
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>—</td><td>—</td><td>—</td><td>Takes no arguments and no flags.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-1"><a class="header" href="#behaviour-1">Behaviour</a></h3>
+<p>Central verb (owner token). Lists the registered agents, their groups, and unread counts. Route: <code>GET /api/&lt;owner-token&gt;/fleet/agents</code>. The bridge’s agent registry is exactly the set of agents that have said <code>hello</code> (name, groups, last-seen, unread counts).</p>
+<h3 id="exit-codes-1"><a class="header" href="#exit-codes-1">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-1"><a class="header" href="#example-1">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge agents
+</code></pre>
+<p>Prints the registered agents, groups, and unread counts as the bridge’s JSON.</p>
+<h2 id="fleet-bridge-log"><a class="header" href="#fleet-bridge-log">fleet bridge log</a></h2>
+<pre><code>fleet bridge log [--agent A] [--direction inbound|outbound] [--kind message|command] [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td>—</td><td>Filter to one agent.</td></tr>
+<tr><td><code>--direction</code></td><td><code>inbound|outbound</code></td><td>—</td><td>Filter by direction.</td></tr>
+<tr><td><code>--kind</code></td><td><code>message|command</code></td><td>—</td><td>Filter by kind.</td></tr>
+<tr><td><code>--since-id</code></td><td><code>N</code></td><td>—</td><td>Only rows after this id.</td></tr>
+<tr><td><code>--before-id</code></td><td><code>N</code></td><td>—</td><td>Only rows before this id.</td></tr>
+<tr><td><code>--limit</code></td><td><code>N</code></td><td>bridge default</td><td>Maximum rows.</td></tr>
+<tr><td><code>--order</code></td><td><code>asc|desc</code></td><td>bridge default</td><td>Row order.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-2"><a class="header" href="#behaviour-2">Behaviour</a></h3>
+<p>Central verb (owner token). Reads the central message log. Route: <code>GET /api/&lt;owner-token&gt;/fleet/messages?…</code> with the filters as query parameters.</p>
+<h3 id="exit-codes-2"><a class="header" href="#exit-codes-2">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-2"><a class="header" href="#example-2">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge log --kind command --limit 5
+</code></pre>
+<p>Shows the five most recent commands in the central log.</p>
+<h2 id="fleet-bridge-mint-enroll"><a class="header" href="#fleet-bridge-mint-enroll">fleet bridge mint-enroll</a></h2>
+<pre><code>fleet bridge mint-enroll --agent A [--kind K] [--groups g1,g2] [--notes-identity I] [--ttl SECS]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td>required</td><td>The new agent’s name; the token is bound to it and enrolls no other.</td></tr>
+<tr><td><code>--kind</code></td><td><code>K</code></td><td><code>agent</code></td><td>The agent kind the token is bound to.</td></tr>
+<tr><td><code>--groups</code></td><td><code>g1,g2</code></td><td>—</td><td>Groups the mailbox registers with at exchange.</td></tr>
+<tr><td><code>--notes-identity</code></td><td><code>I</code></td><td>—</td><td>A class/name notes identity to register at exchange.</td></tr>
+<tr><td><code>--ttl</code></td><td><code>SECS</code></td><td><code>86400</code></td><td>The token’s lifetime in seconds (60 to 604800).</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-3"><a class="header" href="#behaviour-3">Behaviour</a></h3>
+<p>Central verb (owner token). Mints a bootstrap enroll token. Route: <code>POST /api/&lt;owner-token&gt;/enroll-tokens</code>. The answer carries the token value <strong>once</strong>: the bridge stores only its SHA-256 hash and can never show it again. Hand the value to the new seat, which runs <code>fleet agent enroll --name A --kind K --bootstrap &lt;value&gt;</code>; the exchange burns the token and returns the agent’s fleet credential and notes token, likewise once. The PM console’s Agents screen mints these from its Provisioning section and shows the value and the command once, on that screen only.</p>
+<h3 id="exit-codes-3"><a class="header" href="#exit-codes-3">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-3"><a class="header" href="#example-3">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge mint-enroll --agent scout-2 --kind muse --groups muse
+</code></pre>
+<p>Mints a day-long bootstrap token for <code>scout-2</code> and prints it, once.</p>
+<h2 id="fleet-bridge-enroll-tokens"><a class="header" href="#fleet-bridge-enroll-tokens">fleet bridge enroll-tokens</a></h2>
+<pre><code>fleet bridge enroll-tokens
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>—</td><td>—</td><td>—</td><td>Takes no arguments and no flags.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-4"><a class="header" href="#behaviour-4">Behaviour</a></h3>
+<p>Central verb (owner token). Lists every minted bootstrap token’s state: <code>pending</code>, <code>used</code> (with the exchange’s time), <code>expired</code> (its TTL lapsed), or <code>revoked</code> (with the revocation time), each with its binding (agent, kind, groups, notes identity) and mint/expiry times. Route: <code>GET /api/&lt;owner-token&gt;/enroll-tokens</code>. State only: no hash or value is ever shown — the value existed once, in the mint answer.</p>
+<h3 id="exit-codes-4"><a class="header" href="#exit-codes-4">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-4"><a class="header" href="#example-4">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge enroll-tokens
+</code></pre>
+<p>Shows which minted tokens are still outstanding, and how each closed one ended.</p>
+<h2 id="fleet-bridge-revoke-enroll"><a class="header" href="#fleet-bridge-revoke-enroll">fleet bridge revoke-enroll</a></h2>
+<pre><code>fleet bridge revoke-enroll (--agent A | --token-hash H)
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td>—</td><td>Take back every still-pending token minted for this agent; the answer counts them.</td></tr>
+<tr><td><code>--token-hash</code></td><td><code>H</code></td><td>—</td><td>Revoke the one token stored under this SHA-256 hash; the answer is <code>{revoked: true|false}</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-5"><a class="header" href="#behaviour-5">Behaviour</a></h3>
+<p>Central verb (owner token). Revokes unused bootstrap tokens. Route: <code>POST /api/&lt;owner-token&gt;/enroll-tokens/revoke</code>. Exactly one form is required. The hash is not a credential — it cannot enroll anything — so it may travel where a token value never may. Used tokens are untouched: they became credentials, revoked with <code>fleet bridge revoke --agent</code>. Expired tokens are already dead and keep their state.</p>
+<h3 id="exit-codes-5"><a class="header" href="#exit-codes-5">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-5"><a class="header" href="#example-5">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge revoke-enroll --agent scout-2
+</code></pre>
+<p>Takes back every outstanding token minted for <code>scout-2</code>.</p>
+<h2 id="fleet-bridge-mint-credential"><a class="header" href="#fleet-bridge-mint-credential">fleet bridge mint-credential</a></h2>
+<pre><code>fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:&lt;name&gt;]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td>required</td><td>The agent (or service) the credential belongs to; it acts only as itself.</td></tr>
+<tr><td><code>--scopes</code></td><td><code>s1,s2</code></td><td>see below</td><td>Any of <code>inbox</code>, <code>send</code>, <code>read</code>. Agent mints default to <code>inbox, send</code>; service mints to <code>send, read</code>.</td></tr>
+<tr><td><code>--addr</code></td><td><code>service:&lt;name&gt;</code></td><td>—</td><td>Make it a service credential, bound to that address; the name must be the agent’s own.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-6"><a class="header" href="#behaviour-6">Behaviour</a></h3>
+<p>Central verb (owner token). Mints a per-agent credential directly, for an agent already enrolled or for a service. Route: <code>POST /api/&lt;owner-token&gt;/fleet/credentials/mint</code>. Like the enroll mint, the answer carries the credential value <strong>once</strong> and the bridge stores only its hash. Enroll-minted credentials never carry <code>read</code>; that scope is for service credentials like the PM stack’s.</p>
+<h3 id="exit-codes-6"><a class="header" href="#exit-codes-6">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-6"><a class="header" href="#example-6">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge mint-credential --agent pm-stack --addr service:pm-stack
+</code></pre>
+<p>Mints the PM stack’s service credential and prints it, once, to be stored in the vault as <code>bridge.pm-stack-token</code>.</p>
+<h2 id="fleet-bridge-hello"><a class="header" href="#fleet-bridge-hello">fleet bridge hello</a></h2>
+<pre><code>fleet bridge hello [--agent A] [--groups g1,g2]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>Agent name to register.</td></tr>
+<tr><td><code>--groups</code></td><td><code>g1,g2</code></td><td><code>$FLEET_AGENT_GROUPS</code>, then <code>[bridge] groups</code></td><td>Comma-separated groups to join.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-7"><a class="header" href="#behaviour-7">Behaviour</a></h3>
+<p>Agent verb (fleet token). Registers / refreshes this agent and its groups — this is the registry write: the bridge’s agent registry is exactly the set of agents that have said hello. Route: <code>POST /fleet/&lt;fleet-token&gt;/hello</code> with <code>{agent, groups}</code>.</p>
+<p>Under a <strong>per-agent credential</strong> the hello only refreshes: the credential’s groups were bound when the owner minted its bootstrap token and set by the exchange, and a credentialed hello (or inbox call) cannot change them — group membership drives <code>group:&lt;name&gt;</code> addressing, so it is not the caller’s to reassign. The shared fleet token keeps caller-supplied groups.</p>
+<h3 id="exit-codes-7"><a class="header" href="#exit-codes-7">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-7"><a class="header" href="#example-7">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge hello --agent archer --groups muse
+</code></pre>
+<p>Registers <code>archer</code> in the <code>muse</code> group (or refreshes an existing registration).</p>
+<h2 id="fleet-bridge-inbox"><a class="header" href="#fleet-bridge-inbox">fleet bridge inbox</a></h2>
+<pre><code>fleet bridge inbox [--agent A] [--groups g1,g2] [--commands | --messages] [--all] [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>Mailbox to read.</td></tr>
+<tr><td><code>--groups</code></td><td><code>g1,g2</code></td><td><code>$FLEET_AGENT_GROUPS</code>, then <code>[bridge] groups</code></td><td>Groups whose mail is included.</td></tr>
+<tr><td><code>--commands</code></td><td>—</td><td>off</td><td>Only commands. Mutually exclusive in effect with <code>--messages</code>.</td></tr>
+<tr><td><code>--messages</code></td><td>—</td><td>off</td><td>Only plain messages.</td></tr>
+<tr><td><code>--all</code></td><td>—</td><td>off (unread only)</td><td>Include read messages as well as unread.</td></tr>
+<tr><td><code>--since-id</code></td><td><code>N</code></td><td>—</td><td>Only rows after this id.</td></tr>
+<tr><td><code>--limit</code></td><td><code>N</code></td><td>bridge default</td><td>Maximum rows.</td></tr>
+<tr><td><code>--take</code></td><td>—</td><td>off</td><td>Mark what this call returns as read.</td></tr>
+<tr><td><code>--wait</code></td><td><code>SECS</code></td><td>off</td><td>Poll until something arrives or SECS pass (capped at 24 h in source).</td></tr>
+<tr><td><code>--interval</code></td><td><code>SECS</code></td><td><code>15</code></td><td>Poll interval while waiting.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-8"><a class="header" href="#behaviour-8">Behaviour</a></h3>
+<p>Agent verb (fleet token). Reads this agent’s mailbox: unread by default; <code>--all</code> includes read ones; <code>--take</code> marks what it returns as read; <code>--wait</code> polls (default interval 15 s) until something arrives or SECS pass. Route: <code>GET /fleet/&lt;fleet-token&gt;/inbox?…</code>.</p>
+<h3 id="exit-codes-8"><a class="header" href="#exit-codes-8">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-8"><a class="header" href="#example-8">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge inbox --agent archer --commands --take
+</code></pre>
+<p>Takes this agent’s unread commands, marking them read as they are returned.</p>
+<h2 id="fleet-bridge-post"><a class="header" href="#fleet-bridge-post">fleet bridge post</a></h2>
+<pre><code>fleet bridge post [--agent A] [--reply-to ID] [--to ADDR] [--instruction | --kind K] &lt;text | -&gt;
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>Posting agent.</td></tr>
+<tr><td><code>--reply-to</code></td><td><code>ID</code></td><td>—</td><td>Answer that row (and mark it read).</td></tr>
+<tr><td><code>--to</code></td><td><code>ADDR</code></td><td>central</td><td>Send to any address instead: <code>drew</code>, <code>claude</code>, <code>chatgpt</code>, <code>connectors</code>, <code>agent:&lt;name&gt;</code> (or a bare name), <code>group:&lt;name&gt;</code>, <code>agents</code>, <code>all</code>. Repeat or comma-separate.</td></tr>
+<tr><td><code>--instruction</code></td><td>—</td><td>off</td><td>Make it an instruction. Requires <code>--to</code>.</td></tr>
+<tr><td><code>--kind</code></td><td><code>K</code></td><td>—</td><td>Kind override; <code>--kind instruction</code> is equivalent to <code>--instruction</code>.</td></tr>
+<tr><td><code>&lt;text | -&gt;</code> (positional)</td><td>text</td><td>required</td><td>Message text; <code>-</code> reads it from stdin.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-9"><a class="header" href="#behaviour-9">Behaviour</a></h3>
+<p>Agent verb (fleet token). Posts a message to central by default; with <code>--reply-to</code> it answers that row (and marks it read) — posting an answer back is what marks a command handled. Route: <code>POST /fleet/&lt;fleet-token&gt;/send</code>.</p>
+<h3 id="exit-codes-9"><a class="header" href="#exit-codes-9">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage (including <code>--instruction</code> without <code>--to</code>) · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-9"><a class="header" href="#example-9">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge post --agent archer --reply-to 412 "nightly triage done: 3 issues filed"
+</code></pre>
+<p>Answers message 412 and marks it read.</p>
+<h2 id="fleet-bridge-ack"><a class="header" href="#fleet-bridge-ack">fleet bridge ack</a></h2>
+<pre><code>fleet bridge ack [--agent A] (--up-to ID | ID...)
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>Agent whose mailbox to ack in.</td></tr>
+<tr><td><code>--up-to</code></td><td><code>ID</code></td><td>—</td><td>Mark every message up to this id read. Alternative to listing ids.</td></tr>
+<tr><td><code>ID...</code> (positional)</td><td>ids</td><td>—</td><td>Mark exactly these messages read.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-10"><a class="header" href="#behaviour-10">Behaviour</a></h3>
+<p>Agent verb (fleet token). Marks messages read without posting an answer. Route: <code>POST /fleet/&lt;fleet-token&gt;/ack</code>.</p>
+<h3 id="exit-codes-10"><a class="header" href="#exit-codes-10">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage (neither <code>--up-to</code> nor any id) · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-10"><a class="header" href="#example-10">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge ack --agent archer --up-to 412
+</code></pre>
+<p>Marks all of <code>archer</code>’s messages up to id 412 as read.</p>
+<h2 id="fleet-bridge-work"><a class="header" href="#fleet-bridge-work">fleet bridge work</a></h2>
+<pre><code>fleet bridge work [--agent A] --state acted|queued|done [--task ID] ID...
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>Agent whose mailbox copy to mark.</td></tr>
+<tr><td><code>--state</code></td><td><code>acted|queued|done</code></td><td>required</td><td>The lifecycle state to record.</td></tr>
+<tr><td><code>--task</code></td><td><code>ID</code></td><td>—</td><td>The fleet queue task the instruction became; required for <code>queued</code>.</td></tr>
+<tr><td><code>ID...</code> (positional)</td><td>ids</td><td>required</td><td>The instruction rows to mark; several ids are marked one by one.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-11"><a class="header" href="#behaviour-11">Behaviour</a></h3>
+<p>Agent verb (fleet token). Records the <strong>work-item lifecycle</strong> of instructions in this agent’s own mailbox. Route: <code>POST /fleet/&lt;fleet-token&gt;/work</code> with <code>{agent, id, state, task_id?}</code> per id. An instruction starts at <code>received</code>; the receiving agent moves its own copy forward — <code>acted</code> (handled in-session), <code>queued</code> (it became a fleet queue task; <code>--task</code> names it), then <code>done</code>. States move only forward (<code>received</code> → <code>acted</code> | <code>queued</code> → <code>done</code>); re-marking the current state is a no-op. Only the receiving agent can mark a row: with a per-agent credential, naming another agent or another agent’s row is the bridge’s plain 404. The owner sees every row’s state and task id in the pipeline, so an instruction that is neither acted on nor queued stays visible at <code>received</code>. Notes instructions carry the same lifecycle on the notes surface (<code>POST /notes/work</code>, same body shape); connector-channel instructions store no lifecycle fields — their read state stands in for <code>acted</code> in the pipeline.</p>
+<p>The rule the lifecycle serves, carried verbatim by this book, the verb’s help text, and the woken-agent text the intake ladder hands out with a pushed command:</p>
+<blockquote>
+<p>Task it or queue it. An instruction is a work item: do the work now, in this session, and reply — or queue it as a repo-task/v1 packet whose context_refs carry the bridge surface, the message id and the batch, and reply with the task id. Record the outcome with fleet bridge work: –state acted for work done in-session, –state queued –task <id> for queued work, –state done when the work is finished. An instruction that is neither acted on nor queued is a defect: it stays at received, where the owner can see it stuck in the pipeline.</id></p>
+</blockquote>
+<h3 id="exit-codes-11"><a class="header" href="#exit-codes-11">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage (including <code>--state queued</code> without <code>--task</code>) · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-11"><a class="header" href="#example-11">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge work --agent archer --state queued --task 23500 412
+</code></pre>
+<p>Records that archer queued instruction 412 as fleet queue task 23500.</p>
+<h2 id="fleet-bridge-exchange"><a class="header" href="#fleet-bridge-exchange">fleet bridge exchange</a></h2>
+<pre><code>fleet bridge exchange --agent A --bootstrap TOKEN
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--agent</code></td><td><code>A</code></td><td><code>$FLEET_AGENT</code>, then <code>[bridge] agent</code></td><td>The agent name the bootstrap token was minted for.</td></tr>
+<tr><td><code>--bootstrap</code></td><td><code>TOKEN</code></td><td>required</td><td>The single-use bootstrap token the owner minted (console hand-off).</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-12"><a class="header" href="#behaviour-12">Behaviour</a></h3>
+<p>Provisioning verb (no stored token; the bootstrap token rides the request body and is scrubbed from every error). Trades the token at <code>POST /enroll/exchange</code> for the agent’s own credentials — a per-agent fleet credential and, when the mint carried a notes identity, a notes token. The values come back exactly once and go straight into the vault through fleet-secrets’ write path (Bitwarden, into the project named by <code>$FLEET_BWS_PROJECT_ID</code> or <code>[secrets] bws_project_id</code>) under <code>bridge.&lt;agent&gt;-fleet-token</code> and <code>bridge.&lt;agent&gt;-token</code>. The verb prints names and metadata only — never a value. A refused exchange (wrong, used, expired or revoked token, or a name that is not the minted name) stores nothing; if storing fails after a successful exchange, the error says so loudly, because the burned token cannot be replayed. <code>fleet agent enroll --bootstrap</code> runs this verb first, then enrols as usual.</p>
+<h3 id="exit-codes-12"><a class="header" href="#exit-codes-12">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport, credentials or vault write · <code>4</code> the bridge refused the exchange.</p>
+<h3 id="example-12"><a class="header" href="#example-12">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge exchange --agent muse-9 --bootstrap &lt;token from the console&gt;
+</code></pre>
+<p>Stores <code>muse-9</code>’s credentials under <code>bridge.muse-9-fleet-token</code> and <code>bridge.muse-9-token</code> and prints the exchange’s names and metadata.</p>
+<h2 id="fleet-bridge-notes"><a class="header" href="#fleet-bridge-notes">fleet bridge notes</a></h2>
+<pre><code>fleet bridge notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] &lt;text | -&gt;
+fleet bridge notes inbox
+fleet bridge notes ack (--up-to ID | ID...)
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--to</code></td><td><code>CLASS/NAME</code></td><td>—</td><td>Recipient identity; a <code>*</code> segment wildcards (<code>muse/*</code>, <code>*/archer</code>, <code>*/*</code>). Required unless <code>--reply-to</code> is given.</td></tr>
+<tr><td><code>--kind</code></td><td><code>note|instruction</code></td><td><code>note</code></td><td><code>instruction</code> makes the note a work item: it lands in the recipient’s inbox <strong>without a sender</strong> (the bridge keeps the sender store-side).</td></tr>
+<tr><td><code>--reply-to</code></td><td><code>ID</code></td><td>—</td><td>Answer a note in your own inbox. The reply is routed store-side to that note’s real sender — including an instruction whose sender you cannot see — and may replace <code>--to</code>.</td></tr>
+<tr><td><code>--up-to</code> (ack)</td><td><code>ID</code></td><td>—</td><td>Acknowledge every note up to this id. Alternative to listing ids.</td></tr>
+<tr><td><code>ID...</code> (ack, positional)</td><td>ids</td><td>—</td><td>Acknowledge exactly these notes.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-13"><a class="header" href="#behaviour-13">Behaviour</a></h3>
+<p>The class/name notes family, authenticated by the calling identity’s own notes token as a <code>Bearer</code> header (routes <code>POST /notes/send</code>, <code>GET /notes/inbox</code>, <code>POST /notes/ack</code>). Inbox rows carry <code>kind</code> and <code>reply_to</code>; a plain note names its sender in <code>from</code>, an instruction’s <code>from</code> is null. Replying to an instruction therefore needs nothing but its id: the replier never learns who sent it, and the reply still reaches them.</p>
+<h3 id="exit-codes-13"><a class="header" href="#exit-codes-13">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport or credentials · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-13"><a class="header" href="#example-13">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge notes send --reply-to 41 "check done, filed as task 23101"
+</code></pre>
+<p>Answers note 41 — even if it arrived as a sender-free instruction.</p>
+<h2 id="fleet-bridge-health"><a class="header" href="#fleet-bridge-health">fleet bridge health</a></h2>
+<pre><code>fleet bridge health
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Argument</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>—</td><td>—</td><td>—</td><td>Takes no arguments and no flags, and <strong>no token</strong>.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="behaviour-14"><a class="header" href="#behaviour-14">Behaviour</a></h3>
+<p>Reads the bridge’s <code>/healthz</code>, <strong>unauthenticated</strong> — the only bridge verb that needs no token. It proves the service answers; it proves nothing about whether this seat holds a usable token (that is what <code>fleet agent doctor</code>’s bridge leg checks, with a real mailbox read).</p>
+<h3 id="exit-codes-14"><a class="header" href="#exit-codes-14">Exit codes</a></h3>
+<p><code>0</code> ok · <code>2</code> usage · <code>3</code> transport · <code>4</code> the bridge refused the request.</p>
+<h3 id="example-14"><a class="header" href="#example-14">Example</a></h3>
+<pre><code class="language-console">$ fleet bridge health
+</code></pre>
+<p>Prints the bridge’s health JSON.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../reference/gh.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../reference/agent.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../reference/gh.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../reference/agent.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

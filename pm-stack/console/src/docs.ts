@@ -15,8 +15,8 @@
 // them depends on this process.
 import { createHash } from "node:crypto";
 
-export type DocName = "core" | "questions" | "ops";
-export const DOC_NAMES: DocName[] = ["core", "questions", "ops"];
+export type DocName = "core" | "questions" | "ops" | "done";
+export const DOC_NAMES: DocName[] = ["core", "questions", "ops", "done"];
 
 interface Section {
   /** Refresh when older than this while someone is looking. */
@@ -67,6 +67,7 @@ const DOCS: Record<DocName, string[]> = {
   core: ["board", "sessions", "census", "asks", "questionCount"],
   questions: ["questions"],
   ops: ["prs", "priorities", "agents", "services", "more"],
+  done: ["done"],
 };
 /** Stop refreshing when nobody has asked for this long. */
 const WATCH_MS = 10 * 60_000;

@@ -415,21 +415,42 @@ const down: Net = () => {
   throw new TypeError("Failed to fetch");
 };
 
+/** The app's own list of its files, as the services serve it. */
+const LIST = readFileSync(join(PUBLIC, "files.json"), "utf8");
+/** A network on which the app is served: its list is the real one, and
+ * anything else asked for is a file. */
+const served: Net = (url) =>
+  url.pathname === "/console/files.json"
+    ? new Response(LIST, { headers: { "content-type": "application/json" } })
+    : new Response(`the file ${url.pathname}`, { status: 200 });
+
 test("installed, the worker has the app's own files, and one it cannot fetch does not stop it", async () => {
   const w = worker([], {
     net: (url) => {
       // One is refused, and one gets no answer at all.
       if (url.pathname === "/console/app.css") return new Response("no", { status: 503 });
       if (url.pathname === "/icons/icon-512.png") throw new TypeError("Failed to fetch");
-      return new Response(`the file ${url.pathname}`, { status: 200 });
+      return served(url);
     },
   });
   await w.fire("install", {});
+  // Written out by hand: the page, the list, and what the list says is
+  // kept from the start. No typeface is among them (22 files nobody
+  // may ever choose), and neither is the worker itself.
   expect(w.caches.kept()).toEqual([
     "/console/",
     "/console/app.js",
+    "/console/charts.js",
+    "/console/files.json",
     "/console/icon.svg",
+    "/console/look.css",
+    "/console/look.js",
     "/console/outbox.js",
+    "/console/pages/index.js",
+    "/console/pages/reports.js",
+    "/console/pages/trends.js",
+    "/console/themes.css",
+    "/console/ui.js",
     "/icons/icon-192.png",
     "/manifest.webmanifest",
   ]);
@@ -439,6 +460,25 @@ test("installed, the worker has the app's own files, and one it cannot fetch doe
   await w.caches.open("someone-elses");
   await w.fire("activate", {});
   expect(await w.caches.keys()).toEqual(["pm-console-v1", "someone-elses"]);
+});
+
+test("a new worker drops what an older build kept that this one no longer knows, and keeps the rest", async () => {
+  const w = worker([], { net: served });
+  await w.fire("install", {});
+  // A file an older build kept that the list no longer names, put
+  // there the way that build would have put it.
+  const cache = await w.caches.open("pm-console-v1");
+  await cache.put("/console/dropped.js", new Response("old code", { status: 200 }));
+  // And one of the app's reads, kept as reads are kept.
+  const read = w.get("/console/api/queue");
+  expect((await read.given)?.status).toBe(200);
+  await read.settled();
+  await w.fire("activate", {});
+  const kept = w.caches.kept();
+  expect(kept).not.toContain("/console/dropped.js");
+  expect(kept).toContain("/console/api/queue");
+  expect(kept).toContain("/console/");
+  expect(kept).toContain("/console/app.js");
 });
 
 test("the app opens with no connection, from the page as it was last fetched", async () => {
@@ -457,9 +497,16 @@ test("the app opens with no connection, from the page as it was last fetched", a
   await w.get("/console/app.js").settled();
   w.state.net = down;
   expect(await (await w.get("/console/app.js").given)?.text()).toBe("code");
-  // With nothing kept, no connection is no answer: the browser says so.
+  // With nothing kept and no connection, the page is the worker's own
+  // offline page: it says what happened, and it is not kept as though
+  // it were the app. A read in the same state is still no answer: the
+  // app answers for those itself.
   const bare = worker([], { net: down });
-  await expect(bare.get("/console/", { mode: "navigate" }).given).rejects.toThrow("Failed to fetch");
+  const offline = await bare.get("/console/", { mode: "navigate" }).given;
+  expect(offline?.status).toBe(503);
+  expect(await offline?.text()).toContain("No connection");
+  expect(bare.caches.kept()).toEqual([]);
+  await expect(bare.get("/console/api/queue").given).rejects.toThrow("Failed to fetch");
   // A way to the sign-in page is passed on, not answered from the copy:
   // the owner has to be able to sign in.
   w.state.net = () => new Response(null, { status: 302, headers: { location: "https://login.example/" } });
@@ -590,8 +637,70 @@ test("what is not the app's reading is left alone", async () => {
   expect(w.asked).toEqual([]);
 });
 
+test("without the app's list of files the page alone is kept at first, and each file as the page asks for it", async () => {
+  // The list could not be fetched when the worker was installed (the
+  // sign-in had lapsed, say). The worker is installed all the same.
+  const w = worker([], {
+    net: (url) => (url.pathname === "/console/files.json" ? new Response("no", { status: 503 }) : served(url)),
+  });
+  await w.fire("install", {});
+  expect(w.caches.kept()).toEqual(["/console/", "/icons/icon-192.png", "/icons/icon-512.png", "/manifest.webmanifest"]);
+  expect(w.did).toEqual(["skipWaiting"]);
+  // The next visit asks for the app's files through the worker, and
+  // each is kept as it is answered.
+  for (const path of ["/console/app.js", "/console/themes.css"]) {
+    const asked = w.get(path);
+    expect(await (await asked.given)?.text()).toBe(`the file ${path}`);
+    await asked.settled();
+  }
+  expect(w.caches.kept()).toContain("/console/app.js");
+  expect(w.caches.kept()).toContain("/console/themes.css");
+  // A list that is not a list (a sign-in page answered in its place) is no list.
+  const odd = worker([], {
+    net: (url) => (url.pathname === "/console/files.json" ? new Response("<html>sign in</html>") : served(url)),
+  });
+  await odd.fire("install", {});
+  expect(odd.caches.kept()).toEqual([
+    "/console/",
+    "/icons/icon-192.png",
+    "/icons/icon-512.png",
+    "/manifest.webmanifest",
+  ]);
+});
+
+test("a typeface is kept when it is first used, and shown from that copy with no connection", async () => {
+  const w = worker([], { net: served });
+  await w.fire("install", {});
+  const font = "/console/fonts/inter.woff2";
+  expect(w.caches.kept()).not.toContain(font);
+  const first = w.get(font);
+  expect(await (await first.given)?.text()).toBe(`the file ${font}`);
+  await first.settled();
+  expect(w.caches.kept()).toContain(font);
+  w.state.net = down;
+  expect(await (await w.get(font).given)?.text()).toBe(`the file ${font}`);
+  // One never asked for is not there to show: the page falls back to
+  // the device's own typeface.
+  await expect(w.get("/console/fonts/lexend.woff2").given).rejects.toThrow("Failed to fetch");
+});
+
+test("what is under /console and is not one of the app's files is left to the browser", async () => {
+  const w = worker([], { net: served });
+  await w.fire("install", {});
+  // The Android build is a download, and large: not kept, not answered here.
+  expect(w.get("/console/pm-console.apk").given).toBeUndefined();
+  // The worker's own file is the browser's to fetch and keep.
+  expect(w.get("/console/sw.js").given).toBeUndefined();
+  // Nothing outside the app's own folder shape.
+  expect(w.get("/console/../secrets.json").given).toBeUndefined();
+  expect(w.get("/console/Some File.js").given).toBeUndefined();
+  expect(w.asked.filter((a) => a.includes("apk") || a.includes("sw.js"))).toEqual([]);
+});
+
 test("asked to forget, the worker drops what the app read and keeps the app itself", async () => {
-  const w = worker([], { net: (url) => json({ path: url.pathname }) });
+  const w = worker([], {
+    net: (url) => (url.pathname === "/console/files.json" ? served(url) : json({ path: url.pathname })),
+  });
   await w.fire("install", {});
   for (const path of ["/console/api/doc/core", "/console/api/roadmap?area=id", "/console/health"]) {
     await w.get(path).settled();
@@ -605,8 +714,17 @@ test("asked to forget, the worker drops what the app read and keeps the app itse
     "/console/",
     "/console/app.css",
     "/console/app.js",
+    "/console/charts.js",
+    "/console/files.json",
     "/console/icon.svg",
+    "/console/look.css",
+    "/console/look.js",
     "/console/outbox.js",
+    "/console/pages/index.js",
+    "/console/pages/reports.js",
+    "/console/pages/trends.js",
+    "/console/themes.css",
+    "/console/ui.js",
     "/icons/icon-192.png",
     "/icons/icon-512.png",
     "/manifest.webmanifest",

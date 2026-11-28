@@ -270,6 +270,35 @@ impl WorldService {
         self.world.set_execution_profile(profile).await
     }
 
+    /// Replace this world's presentation policy, admin only, journaled
+    /// before the reply (#14731 slice 2b).
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for a policy past its bounds or a storage failure.
+    pub async fn set_presentation_policy(
+        &self,
+        supplied_admin: Option<&str>,
+        policy: id_core::presentation_policy::PresentationPolicy,
+    ) -> anyhow::Result<id_core::presentation_policy::PresentationPolicy> {
+        self.authorize_admin(supplied_admin)
+            .map_err(|_| anyhow::anyhow!("admin denied"))?;
+        self.world.set_presentation_policy(policy).await
+    }
+
+    /// Read this world's presentation policy. No token: the policy is
+    /// public pre-join metadata (#5970 §5).
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the world actor is closed.
+    pub async fn presentation_policy(
+        &self,
+    ) -> anyhow::Result<id_core::presentation_policy::PresentationPolicy> {
+        self.world.presentation_policy().await
+    }
+
     /// Let admins compile Roc sources into this world on the fly.
     #[must_use]
     pub fn with_compiler(mut self, compiler: Compiler) -> Self {
@@ -722,8 +751,11 @@ impl WorldService {
             }
         }
 
-        // Native workers are never offered for peer download: only the Wasm
-        // tier gets pinned in the blob store.
+        // Native workers are not pinned in the blob store the way the Wasm
+        // tier is; a native module is still downloadable by
+        // join-capability holders via the module-directory fallback in
+        // `module_bytes` — download is not install (install needs an
+        // admin token plus a native-enabled server).
         let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?.clone();
         let pin = (!is_native).then(|| {
             blobs
@@ -904,7 +936,9 @@ impl WorldService {
     }
 
     /// Read the currently pinned module artifact for peer download.
-    /// The caller must already have authenticated as a world participant.
+    /// The caller must already have authenticated as a world participant
+    /// (a join-capability holder); guest program code cannot invoke a
+    /// download — only session frames can.
     ///
     /// Falls back to the module directory when there is no blob pin to
     /// serve from. A read-only replica clears its blob store so module
@@ -959,8 +993,9 @@ impl WorldService {
             .parse()
             .map_err(|_| InstallError::InvalidUpload)?;
         // Wasm installs are pinned in the blob store; native installs are
-        // saved only in the module directory (they are never offered for
-        // peer download), so a stored native module is read from there.
+        // saved only in the module directory and served from there for
+        // join-capability-holder downloads (download is not install:
+        // install needs an admin token plus a native-enabled server),
         if let Some(blobs) = self.blobs.as_ref()
             && let Ok(bytes) = blobs.blobs().get_bytes(hash).await
             && bytes.len() <= MAX_WORLD_MODULE_BYTES

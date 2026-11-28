@@ -45,4 +45,15 @@
             android:targetClass="today.developing.pmconsole.OpenActivity"
             android:targetPackage="today.developing.pmconsole" />
     </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_messages"
+        android:shortcutId="messages"
+        android:shortcutLongLabel="@string/sc_messages_long"
+        android:shortcutShortLabel="@string/sc_messages">
+        <intent
+            android:action="today.developing.pmconsole.OPEN_MESSAGES"
+            android:targetClass="today.developing.pmconsole.OpenActivity"
+            android:targetPackage="today.developing.pmconsole" />
+    </shortcut>
 </shortcuts>
