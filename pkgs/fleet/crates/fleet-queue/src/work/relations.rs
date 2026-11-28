@@ -1747,7 +1747,20 @@ pub fn active_hard_blocker_count(edges: &[Edge]) -> usize {
 /// reaches the view is unsatisfied. Precedence follows
 /// `validate_resolution`: only a resolved edge may carry an
 /// override, so quarantine is checked first.
-pub fn blocker_state(_edge: &Edge) -> BlockerState {
+pub fn blocker_state(edge: &Edge) -> BlockerState {
+    if edge.status == EdgeStatus::Quarantined {
+        return BlockerState::Quarantined;
+    }
+    if edge
+        .resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.override_)
+    {
+        return BlockerState::OverrideActive;
+    }
+    if edge.source.missing_node_id() || edge.target.missing_node_id() {
+        return BlockerState::UnresolvedExternal;
+    }
     BlockerState::Unsatisfied
 }
 
@@ -3146,11 +3159,7 @@ mod tests {
         // edge: quarantined edges are held aside, an override in force
         // wins over the ends, an unresolved external blocks by
         // default, and a plain active hard blocker is unsatisfied.
-        let mut plain = edge(
-            Relation::Blocks,
-            issue("a/x", "7", Some("I_7")),
-            work("1"),
-        );
+        let mut plain = edge(Relation::Blocks, issue("a/x", "7", Some("I_7")), work("1"));
         plain.hardness = Hardness::Hard;
         plain.validate().unwrap();
         assert_eq!(blocker_state(&plain), BlockerState::Unsatisfied);
@@ -3159,10 +3168,7 @@ mod tests {
         // may keep an end without a provider id; it still gates.
         let mut unresolved = edge(Relation::Blocks, issue("a/x", "7", None), work("1"));
         unresolved.hardness = Hardness::Hard;
-        assert_eq!(
-            unresolved.validate().unwrap_err().code(),
-            "unresolved_ref"
-        );
+        assert_eq!(unresolved.validate().unwrap_err().code(), "unresolved_ref");
         unresolved.reason_code = EdgeOrigin::Imported;
         unresolved.certainty = Certainty::Uncertain;
         unresolved.validate().unwrap();
@@ -3174,11 +3180,7 @@ mod tests {
         quarantined.status = EdgeStatus::Quarantined;
         quarantined.resolution = resolved("imported_cycle_held_aside");
         quarantined.validate().unwrap();
-        assert!(transition(
-            Some(EdgeStatus::Active),
-            EdgeStatus::Quarantined
-        )
-        .is_ok());
+        assert!(transition(Some(EdgeStatus::Active), EdgeStatus::Quarantined).is_ok());
         assert!(!quarantined.gates_readiness());
         assert_eq!(blocker_state(&quarantined), BlockerState::Quarantined);
 
