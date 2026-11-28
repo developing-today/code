@@ -2757,6 +2757,44 @@ mod tests {
 
     #[allow(clippy::unwrap_used, clippy::panic)]
     #[tokio::test]
+    async fn test_apply_steps_rejects_slice_with_unopenable_depths() {
+        // Oracle: prosemirror-model's `Slice` contract — an open
+        // depth requires that many openable (non-leaf) nodes on that
+        // side of the fragment. A lone text node claiming
+        // `openStart: 1` fits the size check but is a slice no cut
+        // can produce; `replace` throws for it on every client, so
+        // it is refused before storage like the cases above.
+        let doc = Document::with_doc_and_mode(
+            serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            ContentMode::Markdown,
+        );
+        let mut updates = doc.broadcast.subscribe();
+        let invalid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "text", "text": "bad"}], "openStart": 1}
+        })];
+
+        let error = apply_steps(&doc, 0, &invalid, 123).await.unwrap_err();
+        assert!(error.contains("openStart"), "{error}");
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert_eq!(
+            doc.content_size.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(updates.try_recv().is_err());
+
+        // Control at exactly the openable bound: an empty paragraph
+        // opens one level on each side (the paragraph-split shape).
+        let valid = vec![serde_json::json!({
+            "stepType": "replace", "from": 0, "to": 0,
+            "slice": {"content": [{"type": "paragraph"}], "openStart": 1, "openEnd": 1}
+        })];
+        assert_eq!(apply_steps(&doc, 0, &valid, 123).await.unwrap(), 1);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
     async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
         let doc = Document::new();
         let mut updates = doc.broadcast.subscribe();
